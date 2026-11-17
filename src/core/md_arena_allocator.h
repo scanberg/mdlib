@@ -31,6 +31,10 @@ void md_arena_allocator_reset(struct md_allocator_i* arena);
 // Get the backing allocator for the arena
 struct md_allocator_i* md_arena_allocator_backing(struct md_allocator_i* arena);
 
+// The backing allocator of alloc where it is an arena of md_arena_allocator_create, else NULL: what its memory comes
+// from, which a temporary scope avoids as it avoids alloc (md_temp_begin_avoid)
+struct md_allocator_i* md_arena_allocator_backing_of(const struct md_allocator_i* alloc);
+
 
 
 // Specialized arena allocator which uses resorts to the os virtual memory allocator

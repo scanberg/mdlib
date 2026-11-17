@@ -27,14 +27,18 @@
 // It may of course be modified through some special operations, though it is not expected to change frequently.
 typedef struct md_system_t {
     // ALLOCATORS. What the data gives, the CORE of the system (md_system_fields.h: the atoms, their types, the residues,
-    // the instances, the assemblies), is allocated with alloc. What inference writes, the DERIVED (the bonds, the
-    // molecules, the rings, the chemistry, the fragments, ...) and the reference state, with derived_alloc: it is
-    // replaced whenever the system is inferred again, and what is replaced is freed with it. So
-    // alloc may be an arena, which frees nothing (the core is there as long as the system), while derived_alloc is one
-    // which frees (the heap): the system then holds one copy of the derived, however often it changes. NULL is alloc:
-    // the derived is allocated with it too (md_system_derived_alloc).
+    // the instances, the assemblies, the bonds given), is allocated with alloc, which may be an arena: the core is there
+    // as long as the system. What inference writes, the DERIVED (the bonds, the molecules, the rings, the chemistry, the
+    // fragments, ...), and the reference state are in derived_arena, the system's own: md_system_infer infers into a
+    // new arena and destroys the one before, so the derived is replaced whole and the system holds one copy of it,
+    // however often it is inferred. NULL until something of the derived is written (md_system_derived_alloc); destroyed
+    // with the system. Its pages come from derived_backing, alloc when NULL: where alloc is an arena, which keeps what
+    // is freed, the pages of every inference stay until it is reset, so a system inferred again and again (edited by
+    // hand, in a viewer) is given a backing which frees (the heap). One which allows another thread, for an inference
+    // in the background (md_system_infer_prepare).
     md_allocator_i*             alloc;
-    md_allocator_i*             derived_alloc;
+    md_allocator_i*             derived_arena;
+    md_allocator_i*             derived_backing;
 
     // TOPOLOGY VERSION. Changes whenever the topology does: the atoms, their types (what the particles are), their
     // flags, the residues, the instances, the parts and their types, the bonds, and what is derived from them (rings,
@@ -106,10 +110,8 @@ typedef struct md_system_t {
     md_str_t                    description;
 } md_system_t;
 
-// The allocator of the system's DERIVED arrays and its reference state (md_system_t, ALLOCATORS)
-static inline md_allocator_i* md_system_derived_alloc(const md_system_t* sys) {
-    return sys->derived_alloc ? sys->derived_alloc : sys->alloc;
-}
+// The arena of the system's DERIVED arrays and its reference state (md_system_t, ALLOCATORS), created when it has none
+md_allocator_i* md_system_derived_alloc(md_system_t* sys);
 
 #ifdef __cplusplus
 extern "C" {
@@ -595,9 +597,13 @@ static inline md_bond_flags_t md_system_bond_flags(const md_system_t* sys, md_bo
 void md_system_reset(md_system_t* sys); // Reset to empty state, maintain allocators
 void md_system_free(md_system_t* sys); // Free all memory associated with the system, including the allocator if set.
 
-// The DERIVED arrays of the system (md_system_fields.h) and its reference state freed, with md_system_derived_alloc, and
-// emptied: the rest of the system as it was. What replaces them is given to the system after.
+// The DERIVED arrays of the system (md_system_fields.h) and its reference state freed (its derived arena destroyed),
+// and emptied: the rest of the system as it was.
 void md_system_derived_free(md_system_t* sys);
+
+// The DERIVED arrays of the system and its reference state emptied, without freeing them: what holds them (its derived
+// arena) is the caller's to destroy, which takes them from the system (md_system_infer, md_system_infer_publish).
+void md_system_derived_clear(md_system_t* sys);
 
 // A copy of src in dst's allocator, which dst keeps: every array of the system, its reference state and description,
 // and its topology version (it is the same topology). Not the attribute table, which dst gets empty, nor the force

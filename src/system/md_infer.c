@@ -115,16 +115,10 @@ void md_system_infer_type_colors(md_system_t* sys) {
     }
 }
 
-bool md_system_infer(md_system_t* sys, const md_system_state_t* state, const md_executor_t* executor) {
-    MD_ASSERT(sys);
-
-    if (sys->atom.count == 0) return false;
-    if (!sys->alloc) {
-        MD_LOG_ERROR("System allocator not set");
-        return false;
-    }
+// The derived of a system which has none, into its arena (md_system_derived_alloc), from its reference state
+static bool infer_layer(md_system_t* sys, const md_executor_t* executor) {
     md_tick_t prof_t = mdi_infer_profile ? md_tick_now() : 0;
-    md_system_topology_changed(sys);
+    const md_system_state_t* state = &sys->reference;
 
     // What is written is of the derived (md_system_t, ALLOCATORS)
     md_allocator_i* alloc = md_system_derived_alloc(sys);
@@ -167,7 +161,6 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, const md_
             md_bond_merge(&bonds, &sys->given_bond, &inferred, num_complete ? sys->atom.bonds_complete : NULL, N, alloc);
             md_temp_end(temp);
         }
-        md_bond_data_free(&sys->bond, alloc);
         sys->bond = bonds;
         PROFILE_STEP("bonds");
     }
@@ -191,11 +184,9 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, const md_
     {
         md_chain_data_t chains = {0};
         md_chain_infer(&chains, sys, alloc);
-        md_chain_data_free(&sys->chain, alloc);
         sys->chain = chains;
         md_part_data_t parts = {0};
         md_part_infer(&parts, sys, alloc);
-        md_part_data_free(&sys->part, alloc);
         sys->part = parts;
         PROFILE_STEP("chains, parts");
     }
@@ -246,26 +237,10 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, const md_
 
         if (br.molecules) {
             molecules_inferred = true;
-            md_molecule_data_free(&sys->molecule, alloc);
             if (molecules_own) molecule_data_copy(&sys->molecule, &br.molecule, alloc);
             else              sys->molecule = br.molecule;
-            // The fragments are of the molecules, looked up by their slots: gone with them until inferred again
-            // (md_system_infer_fragments). Their types stay, for the colours to be kept.
-            sys->fragment.count = 0;
-            sys->fragment.template_count = 0;
-            md_array_shrink(sys->fragment.mol_template, 0);
-            md_array_shrink(sys->fragment.frag_offset, 0);
-            md_array_shrink(sys->fragment.template_molecule, 0);
-            md_array_shrink(sys->fragment.template_slot_offset, 0);
-            md_array_shrink(sys->fragment.slot_frag, 0);
-            md_array_shrink(sys->fragment.template_frag_offset, 0);
-            md_array_shrink(sys->fragment.frag_type, 0);
-            md_array_shrink(sys->fragment.frag_slot_offset, 0);
-            md_array_shrink(sys->fragment.frag_slot, 0);
         }
         if (br.rings) {
-            md_ring_data_free(&sys->ring, alloc);
-            sys->ring = (md_ring_data_t){0};
             if (side_by_side) COPY_INTO(sys->ring.rings, br.ring.rings, alloc);
             else              sys->ring = br.ring;
         }
@@ -274,8 +249,6 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, const md_
         if (chem) mdi_chem_write(sys, chem);
         if (chem) PROFILE_STEP("chemistry write");
         if (br.backbone) {
-            md_backbone_data_t old = { .protein = sys->protein_backbone, .nucleic = sys->nucleic_backbone };
-            md_backbone_data_free(&old, alloc);
             if (side_by_side) {
                 sys->protein_backbone = (md_protein_backbone_data_t){ .range.count = br.backbone_data.protein.range.count, .segment.count = br.backbone_data.protein.segment.count };
                 sys->nucleic_backbone = (md_nucleic_backbone_data_t){ .range.count = br.backbone_data.nucleic.range.count, .segment.count = br.backbone_data.nucleic.segment.count };
@@ -303,7 +276,6 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, const md_
         // After the bonds, the rings (a sterol is told by its fused rings) and the classification of the residues
         md_lipid_data_t lipids = {0};
         md_lipid_infer(&lipids, sys, alloc);
-        md_lipid_data_free(&sys->lipid, alloc);
         sys->lipid = lipids;
         md_system_infer_lipid_kinds(sys);
         PROFILE_STEP("lipids");
@@ -323,15 +295,32 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, const md_
     // The structures of the molecules inferred are of the topology as it is now (md_system_molecule_structures_valid)
     if (molecules_inferred) sys->molecule.topology_version = sys->topology_version;
 
-    // Record the state the topology above was inferred from. Written here, as part of performing
-    // the inference, so it cannot disagree with what it produced.
-    if (state != &sys->reference) {
-        sys->reference.alloc = alloc;
-        md_system_state_copy(&sys->reference, state);
-    }
-    PROFILE_STEP("reference");
-
     return true;
+}
+
+bool md_system_infer(md_system_t* sys, const md_system_state_t* state, const md_executor_t* executor) {
+    MD_ASSERT(sys);
+    MD_ASSERT(state);
+
+    if (sys->atom.count == 0) return false;
+    if (!sys->alloc) {
+        MD_LOG_ERROR("System allocator not set");
+        return false;
+    }
+    md_system_topology_changed(sys);
+
+    // A new layer: the derived anew in an arena of its own, the one before destroyed after, which the state inferred
+    // from may be of (the system's reference)
+    md_system_t old = *sys;
+    if (state == &sys->reference) state = &old.reference;
+    md_system_derived_clear(sys);
+    // The state inferred from, recorded first as the reference: what the derived is of, by construction
+    sys->reference.alloc = md_system_derived_alloc(sys);
+    md_system_state_copy(&sys->reference, state);
+
+    const bool ok = infer_layer(sys, executor);
+    if (old.derived_arena) md_arena_allocator_destroy(old.derived_arena);
+    return ok;
 }
 
 // ### INFERENCE WHILE THE SYSTEM IS IN USE ###
@@ -339,20 +328,6 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, const md_
 #define INFER_COPY_ARRAY(f) do { \
         work->sys.f = NULL; \
         if (md_array_size(sys->f)) md_array_push_array(work->sys.f, sys->f, md_array_size(sys->f), alloc); \
-    } while (0);
-
-#define INFER_COPY_STRINGS(f) do { \
-        work->sys.f = NULL; \
-        const size_t n = md_array_size(sys->f); \
-        if (n) { \
-            md_array_resize(work->sys.f, n, dalloc); \
-            for (size_t i = 0; i < n; ++i) work->sys.f[i] = md_str_empty(sys->f[i]) ? (md_str_t){0} : md_alloc_str(dalloc, sys->f[i]); \
-        } \
-    } while (0);
-
-#define INFER_COPY_DERIVED(f) do { \
-        work->sys.f = NULL; \
-        if (md_array_size(sys->f)) md_array_push_array(work->sys.f, sys->f, md_array_size(sys->f), dalloc); \
     } while (0);
 
 bool md_system_infer_prepare(md_system_infer_work_t* work, const md_system_t* sys, const md_system_state_t* state, md_allocator_i* alloc) {
@@ -365,15 +340,14 @@ bool md_system_infer_prepare(md_system_infer_work_t* work, const md_system_t* sy
     // (which its owner may add to meanwhile).
     work->sys = *sys;
     work->sys.alloc = alloc;
-    // What it infers, with the system's allocator of the derived, which the system frees it with once published: alloc
-    // where the system has none (md_system_t, ALLOCATORS), and then alloc is kept with the system
-    work->sys.derived_alloc = sys->derived_alloc;
+    // Of the derived nothing: what it infers is in an arena of its own (of the system's backing), which the system takes
+    // once published (md_system_t, ALLOCATORS)
+    md_system_derived_clear(&work->sys);
     md_allocator_i* dalloc = md_system_derived_alloc(&work->sys);
     work->sys.nonbonded = NULL;
     work->sys.description = (md_str_t){0};
     md_memset(&work->sys.attributes, 0, sizeof(work->sys.attributes));
     work->sys.attributes.alloc = alloc;
-    md_memset(&work->sys.reference, 0, sizeof(work->sys.reference));
     work->base_version = sys->topology_version;
 
     // The types of the atoms, which the owner may change meanwhile (a color, a radius): a few of them
@@ -384,10 +358,6 @@ bool md_system_infer_prepare(md_system_infer_work_t* work, const md_system_t* sy
     INFER_COPY_ARRAY(atom.type.radius)
     INFER_COPY_ARRAY(atom.type.color)
     INFER_COPY_ARRAY(atom.type.flags)
-
-    // What inference writes, of its own: what the data gave of it is added to or replaced
-    MD_SYSTEM_DERIVED_ARRAYS(INFER_COPY_DERIVED)
-    MD_SYSTEM_DERIVED_STRINGS(INFER_COPY_STRINGS)
 
     // The one attribute inference reads: the formal charges the data gives, which the chemistry starts from
     // (md_chem_perceive)
@@ -401,23 +371,21 @@ bool md_system_infer_prepare(md_system_infer_work_t* work, const md_system_t* sy
 
     // The coordinates, which the system's owner changes as it likes (a frame of a run): those inferred from, and kept
     // as the reference of what is inferred
-    if (state && (state->xyz || state->num_atoms)) {
-        work->sys.reference.alloc = dalloc;
-        if (!md_system_state_copy(&work->sys.reference, state)) {
-            md_system_infer_discard(work);
-            return false;
-        }
+    work->sys.reference.alloc = dalloc;
+    if (state && !md_system_state_copy(&work->sys.reference, state)) {
+        md_system_infer_discard(work);
+        return false;
     }
     return true;
 }
 
 #undef INFER_COPY_ARRAY
-#undef INFER_COPY_STRINGS
-#undef INFER_COPY_DERIVED
 
 bool md_system_infer_run(md_system_infer_work_t* work, const md_executor_t* executor) {
     MD_ASSERT(work);
-    return md_system_infer(&work->sys, &work->sys.reference, executor);
+    // Into the arena the work was prepared with, which has nothing else than the reference
+    md_system_topology_changed(&work->sys);
+    return infer_layer(&work->sys, executor);
 }
 
 bool md_system_infer_publish(md_system_t* sys, md_system_infer_work_t* work) {
@@ -428,17 +396,15 @@ bool md_system_infer_publish(md_system_t* sys, md_system_infer_work_t* work) {
     MD_ASSERT(sys->atom.count == work->sys.atom.count && sys->atom.type_idx == work->sys.atom.type_idx);
     MD_ASSERT(sys->residue.count == work->sys.residue.count && sys->residue.atom_offset == work->sys.residue.atom_offset);
 
-    // Inferred with the system's allocator of the derived, which the system frees it with
-    MD_ASSERT(work->sys.derived_alloc == sys->derived_alloc);
-    // What the system had of the derived: given back (to an arena, which frees nothing, this is nothing)
+    // The work's layer becomes the system's: its arena, and the one the system had destroyed
     md_system_derived_free(sys);
-
 #define MOVE(f) sys->f = work->sys.f;
     MD_SYSTEM_DERIVED_STRUCTS(MOVE)
     MD_SYSTEM_DERIVED_ARRAYS(MOVE)
     MD_SYSTEM_DERIVED_STRINGS(MOVE)
 #undef MOVE
     sys->reference = work->sys.reference;
+    sys->derived_arena = work->sys.derived_arena;
 
     // Of its own: the work's attributes go with it
     md_memset(work, 0, sizeof(*work));
@@ -448,7 +414,7 @@ bool md_system_infer_publish(md_system_t* sys, md_system_infer_work_t* work) {
 
 void md_system_infer_discard(md_system_infer_work_t* work) {
     MD_ASSERT(work);
-    // Its derived arrays and its reference, its own (the core is the system's)
+    // Its arena: its derived arrays and its reference (the core is the system's)
     md_system_derived_free(&work->sys);
     md_memset(work, 0, sizeof(*work));
 }

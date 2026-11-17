@@ -46,11 +46,12 @@ struct md_allocator_i* md_get_heap_allocator(void);
 // Begin a temporary allocation scope using the default temp arena for this thread.
 md_temp_scope_t md_temp_begin(void);
 
-// Begin a temporary allocation scope using a temp arena different from the supplied allocator.
+// Begin a temporary allocation scope using a temp arena different from the supplied allocator, and from what it takes
+// its memory from where it is an arena of md_arena_allocator_create (md_arena_allocator_backing_of).
 md_temp_scope_t md_temp_begin_avoid(const md_allocator_i* avoid);
 
-// Whether alloc is one of the calling thread's temporary arenas: one which no other thread may allocate from, as this
-// thread's temporary scopes may use it at any time.
+// Whether alloc is one of the calling thread's temporary arenas, or an arena of one (md_arena_allocator_backing_of):
+// one which no other thread may allocate from, as this thread's temporary scopes may use it at any time.
 bool md_temp_is_thread_arena(const md_allocator_i* alloc);
 
 // Begin a temporary allocation scope using an explicitly supplied arena.

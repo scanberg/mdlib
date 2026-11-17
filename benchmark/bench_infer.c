@@ -43,7 +43,7 @@
 #include <string.h>
 
 // The benchmark's own revision: bumped with every change of it, so that a result names the build it came from
-#define MD_INFER_BENCH_REV "R4"
+#define MD_INFER_BENCH_REV "R5"
 
 #define MAX_COUNTS 32
 

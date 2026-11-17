@@ -18,7 +18,9 @@ extern "C" {
 // Infers the derived of a system (md_system_fields.h), all of it anew, from its core and the supplied state, and
 // records that state as sys->reference: the bonds, the coordination, the kinds of the residues and the roles of their
 // atoms, the chains and the parts, the molecules, the rings, the backbones, the chemistry, the lipids, the kinds of the
-// residues and the fragments, in that order.
+// residues and the fragments, in that order. Into a new derived arena (md_system_t, ALLOCATORS): the one before, and so
+// every pointer into the derived the system had (its bonds, its molecules, ...), is destroyed once it is done. state may
+// be the system's reference.
 //
 // The bonds are those given (md_system_t::given_bond) with those inferred from the coordinates between the atoms whose
 // bonds are not given complete (md_atom_data_t::bonds_complete, md_bond_merge): of a system a topology describes whole,
@@ -45,26 +47,25 @@ bool md_system_infer(struct md_system_t* sys, const struct md_system_state_t* st
 void md_system_infer_type_colors(struct md_system_t* sys);
 
 // INFERENCE WHILE THE SYSTEM IS IN USE. Inference reads the CORE of a system (the atoms, their types, the residues, the
-// instances, the assemblies) and writes the rest, the DERIVED (md_system_fields.h). So a system can be shown and used
-// while it is inferred on another thread, without a copy of it:
+// instances, the assemblies, the bonds given) and writes the rest, the DERIVED (md_system_fields.h), anew. So a system
+// can be shown and used while it is inferred on another thread, without a copy of it:
 //
-//   md_system_infer_prepare   The work: of the system, what inference writes, copied into alloc; the coordinates
-//                                  in state, which become its reference; the per atom arrays of the core shared. On
+//   md_system_infer_prepare   The work: a derived arena of its own, with the coordinates in state, which become its
+//                                  reference; the per atom arrays of the core shared, nothing of the derived. On
 //                                  the thread which owns the system.
 //   md_system_infer_run       Inference on the work: on any thread, while the system is read (and its core
 //                                  is not written: what changes the topology waits for the work, or discards it).
-//   md_system_infer_publish   The derived arrays of the work become the system's, which keeps its core, its
-//                                  attributes and its force field. On the thread which owns the system, nothing
+//   md_system_infer_publish   The derived arena of the work becomes the system's, the one it had destroyed; the
+//                                  system keeps its core, its attributes and its force field. On the thread which owns
+//                                  the system, nothing
 //                                  else reading it. False, and nothing done, when the topology of the system changed
 //                                  after the work was prepared: the work is of a system which is no more.
 //
-// What the work infers (its DERIVED arrays and its reference state) is allocated with the system's allocator of the
-// derived (md_system_t, ALLOCATORS), which must allow several threads (the heap does), and becomes the system's when
-// published, or is freed with md_system_infer_discard. The rest of the work, the types of the atoms (copied, a few per
-// system, so that the system's may be changed meanwhile: their colors, their radii), is in alloc, which the caller
-// frees after either. Of a system without an allocator of the derived, all of the work is in alloc, which the caller
-// then keeps with the system once published (its arrays become the system's). The work is never md_system_free'd: it
-// shares arrays of the system.
+// What the work infers (its DERIVED arrays and its reference state) is in its derived arena (md_system_t, ALLOCATORS),
+// whose pages come from the system's derived backing on the thread which runs it (the heap allows that), and which
+// becomes the system's when published, or is destroyed with md_system_infer_discard. The rest of the work, the types of
+// the atoms (copied, a few per system, so that the system's may be changed meanwhile: their colors, their radii), is in
+// alloc, which the caller frees after either. The work is never md_system_free'd: it shares arrays of the system.
 typedef struct md_system_infer_work_t {
     struct md_system_t sys;     // Inferred on: md_system_infer_run
     uint64_t base_version;      // The topology version of the system it was prepared of

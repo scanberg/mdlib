@@ -498,21 +498,33 @@ void md_system_unwrap(md_system_state_t* state, const md_system_t* sys) {
     }
 }
 
-// The DERIVED arrays and the reference state, with the allocator of the derived (md_system_t, ALLOCATORS)
+md_allocator_i* md_system_derived_alloc(md_system_t* sys) {
+    MD_ASSERT(sys);
+    if (!sys->derived_arena) {
+        sys->derived_arena = md_arena_allocator_create(sys->derived_backing ? sys->derived_backing : sys->alloc, MD_MEGABYTES(1));
+    }
+    return sys->derived_arena;
+}
+
+void md_system_derived_clear(md_system_t* sys) {
+    MD_ASSERT(sys);
+#define CLEAR_ARRAY(f) sys->f = NULL;
+#define CLEAR_STRUCT(f) md_memset(&sys->f, 0, sizeof(sys->f));
+    MD_SYSTEM_DERIVED_ARRAYS(CLEAR_ARRAY)
+    MD_SYSTEM_DERIVED_STRINGS(CLEAR_ARRAY)
+    MD_SYSTEM_DERIVED_STRUCTS(CLEAR_STRUCT)
+#undef CLEAR_ARRAY
+#undef CLEAR_STRUCT
+    md_memset(&sys->reference, 0, sizeof(sys->reference));
+    sys->derived_arena = NULL;
+}
+
+// The DERIVED arrays and the reference state: all of them in the arena of the derived (md_system_t, ALLOCATORS)
 void md_system_derived_free(md_system_t* sys) {
     MD_ASSERT(sys);
-    md_allocator_i* alloc = md_system_derived_alloc(sys);
-    if (!alloc) return;
-#define FREE_ARRAY(f) md_array_free(sys->f, alloc);
-#define FREE_STRINGS(f) for (size_t i = 0; i < md_array_size(sys->f); ++i) { if (!md_str_empty(sys->f[i])) md_free_str(alloc, sys->f[i]); } md_array_free(sys->f, alloc);
-#define CLEAR_STRUCT(f) md_memset(&sys->f, 0, sizeof(sys->f));
-    MD_SYSTEM_DERIVED_ARRAYS(FREE_ARRAY)
-    MD_SYSTEM_DERIVED_STRINGS(FREE_STRINGS)
-    MD_SYSTEM_DERIVED_STRUCTS(CLEAR_STRUCT)
-#undef FREE_ARRAY
-#undef FREE_STRINGS
-#undef CLEAR_STRUCT
-    md_system_state_free(&sys->reference);
+    md_allocator_i* arena = sys->derived_arena;
+    md_system_derived_clear(sys);
+    if (arena) md_arena_allocator_destroy(arena);
 }
 
 void md_system_free(md_system_t* sys) {
@@ -526,7 +538,7 @@ void md_system_free(md_system_t* sys) {
         sys->nonbonded = NULL;
     }
 
-    // What inference writes, with the allocator of the derived
+    // What inference writes: its arena
     md_system_derived_free(sys);
 
     // ATOM
@@ -695,15 +707,16 @@ bool md_system_copy(md_system_t* dst, const md_system_t* src) {
         return false;
     }
     md_allocator_i* alloc = dst->alloc;
-    md_allocator_i* derived_alloc = dst->derived_alloc;
+    md_allocator_i* derived_backing = dst->derived_backing;
     md_system_free(dst);
 
-    // The counts and everything which is not an array, as they are; the arrays below anew, the derived with dst's
-    // allocator of the derived
+    // The counts and everything which is not an array, as they are; the arrays below anew, the derived in an arena of
+    // dst's own (of its backing) where src has any
     *dst = *src;
     dst->alloc = alloc;
-    dst->derived_alloc = derived_alloc;
-    md_allocator_i* dalloc = md_system_derived_alloc(dst);
+    dst->derived_backing = derived_backing;
+    dst->derived_arena = NULL;
+    md_allocator_i* dalloc = src->derived_arena ? md_system_derived_alloc(dst) : NULL;
     dst->nonbonded = NULL;
     md_memset(&dst->attributes, 0, sizeof(dst->attributes));
     dst->attributes.alloc = alloc;
@@ -716,8 +729,12 @@ bool md_system_copy(md_system_t* dst, const md_system_t* src) {
 #define COPY_DERIVED_STRINGS(f) copy_strings(&dst->f, src->f, dalloc);
     MD_SYSTEM_CORE_ARRAYS(COPY_FIELD)
     MD_SYSTEM_CORE_STRINGS(COPY_STRINGS)
-    MD_SYSTEM_DERIVED_ARRAYS(COPY_DERIVED)
-    MD_SYSTEM_DERIVED_STRINGS(COPY_DERIVED_STRINGS)
+    if (dalloc) {
+        MD_SYSTEM_DERIVED_ARRAYS(COPY_DERIVED)
+        MD_SYSTEM_DERIVED_STRINGS(COPY_DERIVED_STRINGS)
+    } else {
+        md_system_derived_clear(dst);
+    }
 #undef COPY_FIELD
 #undef COPY_STRINGS
 #undef COPY_DERIVED
@@ -728,7 +745,7 @@ bool md_system_copy(md_system_t* dst, const md_system_t* src) {
 
     // REFERENCE STATE
     md_memset(&dst->reference, 0, sizeof(dst->reference));
-    if (src->reference.xyz || src->reference.num_atoms) {
+    if (dalloc && (src->reference.xyz || src->reference.num_atoms)) {
         dst->reference.alloc = dalloc;
         md_system_state_copy(&dst->reference, &src->reference);
     }
@@ -740,10 +757,10 @@ bool md_system_copy(md_system_t* dst, const md_system_t* src) {
 void md_system_reset(md_system_t* sys) {
     MD_ASSERT(sys);
     md_allocator_i* alloc = sys->alloc;
-    md_allocator_i* derived_alloc = sys->derived_alloc;
+    md_allocator_i* derived_backing = sys->derived_backing;
     md_system_free(sys);
     sys->alloc = alloc;
-    sys->derived_alloc = derived_alloc;
+    sys->derived_backing = derived_backing;
     // The table allocates through its own handle, so every loader gets a usable table without
     // having to remember to wire this up itself.
     sys->attributes.alloc = alloc;
