@@ -1179,12 +1179,10 @@ static int run_gpu(int argc, char** argv) {
        0.2 A stick a pixel wide, then half), thinning out, shrinking out, or
        thinning out while spacefill at full radii thins in across the same
        band (each atom drawn by one of the two) */
-    enum { FADE_NONE, FADE_THIN, FADE_SHRINK, FADE_TO_SPACEFILL, FADE_CELLS };
+    enum { FADE_NONE, FADE_THIN, FADE_SHRINK, FADE_TO_SPACEFILL };
     const struct { const char* name; bool licorice; float dist; int fade; } looks[] = {
         { "spacefill, near", false, 0.6f, FADE_NONE },
         { "spacefill, far",  false, 6.0f, FADE_NONE },
-        { "spacefill, cells over 1.5 to 0.75 px/A, near", false, 0.6f, FADE_CELLS },
-        { "spacefill, cells over 1.5 to 0.75 px/A, far",  false, 6.0f, FADE_CELLS },
         { "licorice, near",  true,  0.6f, FADE_NONE },
         { "licorice thinning out over 2.5 to 1.25 px/A, near",        true, 0.6f, FADE_THIN },
         { "licorice shrinking out over 2.5 to 1.25 px/A, near",       true, 0.6f, FADE_SHRINK },
@@ -1331,10 +1329,7 @@ static int run_gpu(int argc, char** argv) {
                 if (looks[li].licorice) { rep.type = MD_RENDER_MOL_REP_LICORICE; rep.params.licorice.radius = 0.2f; }
                 else                    { rep.type = MD_RENDER_MOL_REP_SPACEFILL; rep.params.spacefill.radius_scale = 1.0f; }
                 const float band[2] = { 2.5f, 1.25f };
-                if (looks[li].fade == FADE_CELLS) {
-                    rep.params.spacefill.cells[0] = 1.5f;
-                    rep.params.spacefill.cells[1] = 0.75f;
-                } else if (looks[li].fade != FADE_NONE) {
+                if (looks[li].fade != FADE_NONE) {
                     rep.fade.mode = looks[li].fade == FADE_SHRINK ? MD_RENDER_FADE_SHRINK : MD_RENDER_FADE_THIN;
                     memcpy(rep.fade.out, band, sizeof(band));
                 }

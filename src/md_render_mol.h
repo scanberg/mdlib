@@ -406,21 +406,6 @@ typedef struct md_render_mol_topo_t {
                                               covalent bonds, when small_bond_count)    */
     uint32_t      mixed_bond_count;        /* other bonds touching small molecules:
                                               their points follow every regroup         */
-
-    /* The cells' points, spacefill's level of detail for the small
-       molecules (its `cells` band): a point per grid cell, written by every
-       update after the residues' points (points point_count + derived_count
-       + residue_point_count + c), at the centroid of the cell's points with
-       the radius of the sphere of their volume, as the residues'; radius 0
-       for an empty cell. Each stands for the least atom of its cell
-       (atom_order; a water's oxygen where the waters come before the ions),
-       set by the plan and by every regroup, as is cell_key: per small atom's
-       point, its cell's point less the small atoms' first (the key of the
-       small atoms' fade, whose batch starts there). Before the first regroup
-       the cells are in molecule order, not in space: their spheres are as
-       large as their molecules are spread. */
-    uint32_t      cell_point_count;        /* grid_cells                               */
-    md_gpu_addr_t cell_key;                /* uint32 per small atom's point             */
     md_gpu_addr_t small_tables;            /* internal: their kinds, and each one's record
                                               (in the last grouping's order)            */
     uint32_t      kind_count;              /* internal: the kinds of small molecule     */
@@ -514,12 +499,6 @@ enum {
        orientation forgets the last update's (see below) and starts from the
        structure alone. */
     MD_RENDER_MOL_UPDATE_RESET_BACKBONE = 1u << 2,
-    /* No representation draws the residues' or the cells' points (spacefill
-       without its residues and cells bands): the update leaves them as they
-       are. They cost a pass over the points (on lavapipe at 1M atoms of
-       water, half the copy's time); a representation that draws them after
-       updates with this flag draws them stale. */
-    MD_RENDER_MOL_UPDATE_NO_COARSE = 1u << 3,
 };
 
 /* A regroup reorders the topology: every per-frame block gathered from it
@@ -726,12 +705,7 @@ typedef struct md_render_mol_rep_t {
            (MD_RENDER_MOL_HIT_RESIDUE). {0, 0}: atoms throughout. The
            representation's own fade goes on: its `in` on the atoms, its
            `out` on the residues' spheres, THIN only. */
-        /* cells: as residues, for the atoms of small molecules (water,
-           ions): across it they hand over to a sphere per grid cell (the
-           topology's cell points, about 16 waters each), cell by cell;
-           their pick their cell's atom (MD_RENDER_MOL_HIT_ATOM). {0, 0}:
-           atoms throughout. */
-        struct { float radius_scale; float residues[2]; float cells[2]; } spacefill;
+        struct { float radius_scale; float residues[2]; } spacefill;
         struct { float radius; } licorice;
         struct { float ball_scale; float stick_radius; } ball_and_stick;
         struct { float radius; } bonds;
@@ -821,8 +795,7 @@ enum {
     MD_RENDER_MOL_PART_LIPID_SPHERES,                           /* + 0 always, 1 the split heads' variant */
     MD_RENDER_MOL_PART_LIPID_TUBES = MD_RENDER_MOL_PART_LIPID_SPHERES + 2,  /* + 0 chains, 1 ring systems, 2 slabs */
     MD_RENDER_MOL_PART_RESIDUES = MD_RENDER_MOL_PART_LIPID_TUBES + 3,       /* spacefill's residues' spheres */
-    MD_RENDER_MOL_PART_SMALL_ATOMS,     /* spacefill's atoms of small molecules, apart with residues or cells */
-    MD_RENDER_MOL_PART_CELLS,           /* spacefill's cells' spheres */
+    MD_RENDER_MOL_PART_SMALL_ATOMS,     /* spacefill's atoms of small molecules, apart with residues */
 };
 
 /* Appends the batches that draw `rep` to out[0 .. cap). Returns how many it

@@ -43,7 +43,7 @@ typedef struct topo_layout_t {
     uint64_t backbone_index, backbone_segment, backbone_carbonyl, backbone_chain;
     uint64_t nucleic_index, nucleic_segment, nucleic_face;
     uint64_t derived_offset, derived_member, derived_weight, derived_radius;
-    uint64_t residue_point_offset, residue_point_residue, residue_cluster_offset, residue_key, cell_key;
+    uint64_t residue_point_offset, residue_point_residue, residue_cluster_offset, residue_key;
     uint64_t ring_points[MD_RENDER_MOL_RING_SIZES], ring_segment[MD_RENDER_MOL_RING_SIZES], stick_points, stick_segment;
     uint64_t gap_points, gap_residue;
     uint64_t order_points, order_bond, order_ref, bond_single;
@@ -244,7 +244,7 @@ typedef struct dyn_layout_t {
    topology instance that wrote them (none yet: no memory). The nucleic
    band's axes (float4 per control point). The double bonds' sides and the
    partners' (float4 each, md_render's). The axes of the sterols' slabs. The points and their velocities
-   include the derived points (after the atoms'), the residues' and the cells' (after those). Last, only in a block
+   include the derived points (after the atoms') and the residues' (after those). Last, only in a block
    allocated with them, the points' velocities.
    Not packed positions apart (1dd0efd6): fewer bytes per update, but
    md_render reads the points several times a frame, much of it scattered,
@@ -255,7 +255,7 @@ static dyn_layout_t dyn_layout(uint32_t n_atoms, uint32_t n_mol, uint32_t n_sbon
     L.scan_n      = cells + 1;
     L.scan_blocks = (L.scan_n + SCAN_BLOCK - 1) / SCAN_BLOCK;
     uint64_t o = 0;
-    L.points   = o; o = align256(o + ((uint64_t)n_atoms + n_der + n_rp + cells) * 16u);
+    L.points   = o; o = align256(o + ((uint64_t)n_atoms + n_der + n_rp) * 16u);
     L.params   = o; o = align256(o + 16u * 4u);
     L.cell     = o; o = align256(o + 32u * 4u);        /* the positions' cell, as a frame's words */
     L.mol_slot = o; o = align256(o + (uint64_t)n_mol * 16u);
@@ -269,7 +269,7 @@ static dyn_layout_t dyn_layout(uint32_t n_atoms, uint32_t n_mol, uint32_t n_sbon
     L.prt_side = o; o = align256(o + (uint64_t)n_prt * 16u);
     L.lip_axis = o; o = align256(o + (uint64_t)n_slab * 16u);
     L.size = o;
-    L.velocity = o; o = align256(o + ((uint64_t)n_atoms + n_der + n_rp + cells) * 8u);
+    L.velocity = o; o = align256(o + ((uint64_t)n_atoms + n_der + n_rp) * 8u);
     L.size_velocity = o;
     return L;
 }
@@ -1088,19 +1088,6 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
         if (cells) coff[static_clusters + cells] = static_atoms + a;
         if (bond_cells) boff[c0 + cells] = static_bonds0 + b;
     }
-    /* The cells' points in the initial grouping: each small point's cell,
-       each cell's least atom (as sol_offsets sets them at every regroup) */
-    uint32_t* cell_of_pt = md_temp_alloc(temp, ((size_t)small_atoms + 1) * 4u);
-    uint32_t* cell_atom  = md_temp_alloc(temp, ((size_t)cells + 1) * 4u);
-    if (!cell_of_pt || !cell_atom) return false;
-    for (uint32_t k = 0; k < cells; ++k) {
-        uint32_t least = UINT32_MAX;
-        for (uint32_t p = coff[static_clusters + k]; p < coff[static_clusters + k + 1]; ++p) {
-            cell_of_pt[p - static_atoms] = k;
-            if (order[p] < least) least = order[p];
-        }
-        cell_atom[k] = least != UINT32_MAX ? least : 0u;
-    }
     /* Every atom's point (the inverse of the order), and the mixed bonds */
     uint32_t* inv = md_temp_alloc(temp, ((size_t)n + 1) * 4u);
     if (!inv) return false;
@@ -1607,7 +1594,7 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
     L.state               = o; o = align256(o + 4u);            /* the regroups' count: word 0 */
     L.atom_type           = o; o = align256(o + ((uint64_t)n + 1) / 2 * 4u);
     L.type_radius         = o; o = align256(o + ((uint64_t)sys->atom.type.count + 1) * 4u);
-    L.atom_order          = o; o = align256(o + ((uint64_t)n_res + n_der + n_rp + cells) * 4u);
+    L.atom_order          = o; o = align256(o + ((uint64_t)n_res + n_der + n_rp) * 4u);
     L.point_type          = o; o = align256(o + (uint64_t)n_res * 4u);
     L.mixed_point         = o; o = align256(o + (uint64_t)n * 4u);
     const uint32_t rwords = (n + 31) / 32;
@@ -1655,7 +1642,6 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
     L.residue_point_residue  = o; o = align256(o + (uint64_t)n_rp * 4u);
     L.residue_cluster_offset = o; o = align256(o + ((uint64_t)n_rc + 1u) * 4u);
     L.residue_key            = o; o = align256(o + (n_rp ? (uint64_t)static_atoms * 4u : 0u));
-    L.cell_key               = o; o = align256(o + (uint64_t)small_atoms * 4u);
     L.small_tables = o; o += small_mols ? SL.size : 0;
     L.size = o ? o : 256;
 
@@ -1672,11 +1658,6 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
     memcpy(img + L.atom_order, order, (size_t)n_res * 4u);
     if (n_der) memcpy(img + L.atom_order + (size_t)n_res * 4u, der.atom, (size_t)n_der * 4u);
     if (n_rp)  memcpy(img + L.atom_order + ((size_t)n_res + n_der) * 4u, rp_atom, (size_t)n_rp * 4u);
-    if (cells) memcpy(img + L.atom_order + ((size_t)n_res + n_der + n_rp) * 4u, cell_atom, (size_t)cells * 4u);
-    {
-        uint32_t* key = (uint32_t*)(img + L.cell_key);         /* the cell's point, less the small atoms' first */
-        for (uint32_t k = 0; k < small_atoms; ++k) key[k] = n_res + n_der + n_rp + cell_of_pt[k] - static_atoms;
-    }
     memcpy(img + L.residue_point_offset,   rp_off, ((size_t)n_rp + 1u) * 4u);
     memcpy(img + L.residue_cluster_offset, rc_off, ((size_t)n_rc + 1u) * 4u);
     if (n_rp) memcpy(img + L.residue_point_residue, rp_res, (size_t)n_rp * 4u);
@@ -1796,7 +1777,6 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
     T->size                = L.size;
     T->dynamic_size           = dyn_layout(n_res, small_mols, small_bonds, cells, n_cp, n_na, n_der, n_ord[0], n_prt, n_slab, n_rp).size;
     T->dynamic_size_velocity  = dyn_layout(n_res, small_mols, small_bonds, cells, n_cp, n_na, n_der, n_ord[0], n_prt, n_slab, n_rp).size_velocity;
-    T->cell_point_count       = cells;
     T->resident            = L.resident;
     T->regroups            = L.state;
     T->atom_type           = L.atom_type;
@@ -1846,7 +1826,6 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
     T->residue_point_residue  = L.residue_point_residue;
     T->residue_cluster_offset = L.residue_cluster_offset;
     T->residue_key            = L.residue_key;
-    T->cell_key               = L.cell_key;
     T->small_tables        = small_mols ? L.small_tables : 0;
     #undef RES
     #undef BA
@@ -1916,7 +1895,6 @@ bool md_render_mol_write(md_gpu_stream_t s, md_render_mol_topo_t* out, const md_
     out->residue_point_residue  = base + plan->layout.residue_point_residue;
     out->residue_cluster_offset = base + plan->layout.residue_cluster_offset;
     out->residue_key            = base + plan->layout.residue_key;
-    out->cell_key               = base + plan->layout.cell_key;
     out->small_tables        = plan->layout.small_molecule_count ? base + plan->layout.small_tables : 0;
     if (content) content[MD_RENDER_CONTENT_GEOMETRY]++;
     return true;
@@ -1948,7 +1926,7 @@ typedef struct gpu_mol_args_t {
     md_gpu_addr_t na_index, na_face, na_axis;
     md_gpu_addr_t der_offset, der_member, der_weight, der_radius;
     md_gpu_addr_t ord_points, ord_ref, ord_side, prt_points, prt_ref, prt_side, lip_tubes, lip_side, lip_axis;
-    md_gpu_addr_t res_offset, cell_key;
+    md_gpu_addr_t res_offset;
     uint32_t stride, n_mol, cells, n_atoms, static_atoms, static_atom_clusters, static_bonds, static_bond_clusters;
     uint32_t has_bonds, mode, n, atom_count, type_count, vel_stride, has_velocity, has_radius, mixed_count;
     uint32_t fr_threads;
@@ -1958,7 +1936,7 @@ typedef struct gpu_mol_args_t {
     float    bb_scale[3];                                           /* coil, helix, sheet */
     uint32_t dbg, na_count, der_count, der_cell, ord_count, prt_count, lip_count, res_count;
 } gpu_mol_args_t;
-_Static_assert(sizeof(gpu_mol_args_t) == 67 * 8 + 48 * 4, "gpu_mol_args_t mirrors Args");
+_Static_assert(sizeof(gpu_mol_args_t) == 66 * 8 + 48 * 4, "gpu_mol_args_t mirrors Args");
 
 /* The bench's probes of the regroup's write (not in the header): what it
    leaves out (see Args.dbg in the shader: the atoms' order, the bonds; never
@@ -2111,7 +2089,6 @@ static void base_args(gpu_mol_args_t* a, const md_render_mol_topo_t* topo, md_gp
     a->der_count           = topo->derived_count;
     a->res_offset          = topo->residue_point_offset;
     a->res_count           = topo->residue_point_count;
-    a->cell_key            = topo->cell_key;
     a->ord_points          = topo->order_points;
     a->ord_ref             = topo->order_ref;
     a->ord_count           = topo->order_count[0];
@@ -2261,8 +2238,8 @@ static bool update_impl(md_render_mol_t r, md_gpu_stream_t s, const md_render_mo
             ok = ok && launch(s, r->k_gather, groups_for(topo->point_count, 64), &a, hook, user, "gather");
         }
     }
-    if (ok && (topo->derived_count || topo->residue_point_count || topo->cell_point_count)) {
-        /* the derived points, the residues' and the cells' from the copy just gathered:
+    if (ok && (topo->derived_count || topo->residue_point_count)) {
+        /* the derived points and the residues' from the copy just gathered:
            the members at their images nearest the first's in the reference
            frame's cell (that of the gather's minimum images), or as they are */
         a.der_cell = fr ? 1u + (atoms->frame_count == 4 ? 1u : 0u) : 0u;
@@ -2282,8 +2259,7 @@ static bool update_impl(md_render_mol_t r, md_gpu_stream_t s, const md_render_mo
             }
         }
         if (topo->derived_count)       ok = launch(s, r->k_derive, groups_for(topo->derived_count, 64), &a, hook, user, "derived");
-        if (ok && (topo->residue_point_count || topo->cell_point_count) && !(flags & MD_RENDER_MOL_UPDATE_NO_COARSE))
-            ok = launch(s, r->k_residues, groups_for(topo->residue_point_count + topo->cell_point_count, 64), &a, hook, user, "residues and cells");
+        if (ok && topo->residue_point_count) ok = launch(s, r->k_residues, groups_for(topo->residue_point_count, 64), &a, hook, user, "residues");
     }
     if (ok && topo->backbone_count) {
         /* The backbone's axes, from the copy just gathered; whether each is
@@ -2788,27 +2764,6 @@ static md_render_points_t atom_points(const md_render_mol_topo_t* topo, md_gpu_a
     return p;
 }
 
-static void move_points(md_render_points_t* p, uint32_t first);
-
-/* Spheres on the points first .. first + count - 1 of the copy, each its w
-   for its radius, thinning in across `band` (and out across the
-   representation's `out`, which b's fade holds) */
-static md_render_batch_t coarse_batch(const md_render_batch_t* base, const md_render_batch_t* b,
-                                      uint32_t first, uint32_t count, const float band[2], float scale) {
-    md_render_batch_t c = *base;
-    c.kind  = MD_RENDER_SPHERES;
-    c.count = count;
-    move_points(&c.points, first);
-    c.points.radius_table       = 0;
-    c.points.radius_table_count = 0;
-    c.style.spheres.radius_scale = scale;
-    c.style.spheres.radius_add   = 0.0f;
-    c.fade      = b->fade;
-    c.fade.mode = MD_RENDER_FADE_THIN;
-    memcpy(c.fade.in, band, sizeof(c.fade.in));
-    return c;
-}
-
 /* The points from `first` on: a batch over the tail of the copy (its
    positions, radii, velocities and attributes' indices moved; its elements
    counted from there) */
@@ -2871,7 +2826,7 @@ uint32_t md_render_mol_emit(const md_render_mol_topo_t* topo, md_gpu_addr_t dyna
     base.fade            = rep->fade;
     base.fade.key        = 0;                   /* keys are the topology's (spacefill's residues) */
 
-    bool  spheres = false, sticks = false, residues = false, cells = false;   /* residues, cells: spacefill's levels of detail */
+    bool  spheres = false, sticks = false, residues = false;   /* residues: spacefill's level of detail */
     float sphere_scale = 0.0f, sphere_add = 0.0f, stick_radius = 0.0f, spread = 0.0f;   /* spread: the multiple bonds' (0: none) */
     md_render_sphere_style_t dash_ends = { 0.0f, 0.0f };     /* the spheres the dashes run between */
     uint32_t classes = rep->bond_classes;
@@ -2881,26 +2836,21 @@ uint32_t md_render_mol_emit(const md_render_mol_topo_t* topo, md_gpu_addr_t dyna
     case MD_RENDER_MOL_REP_SPACEFILL: {
         spheres = true;
         sphere_scale = rep->params.spacefill.radius_scale;
-        const float* bands[2] = { rep->params.spacefill.residues, rep->params.spacefill.cells };
-        const char*  names[2] = { "residues", "cells" };
-        for (int k = 0; k < 2; ++k) {
-            const float* band = bands[k];
-            if (band[0] == 0.0f && band[1] == 0.0f) continue;
-            if (!(band[0] > band[1] && band[1] > 0.0f)) {
-                MD_LOG_ERROR("md_render_mol: spacefill's %s band is {start, end} with start > end > 0 (got {%g, %g})", names[k], band[0], band[1]);
-                return 0;
-            }
-            if (rep->fade.mode & ~(uint32_t)MD_RENDER_FADE_THIN) {
-                MD_LOG_ERROR("md_render_mol: spacefill with %s fades by THIN only", names[k]);
-                return 0;
-            }
-            if (rep->fade.mode && ((rep->fade.in[0] > 0.0f && rep->fade.in[1] < band[0]) || (rep->fade.out[0] > 0.0f && band[1] < rep->fade.out[0]))) {
-                MD_LOG_ERROR("md_render_mol: spacefill's %s band must lie between its fade's `in` and `out` bands", names[k]);
-                return 0;
-            }
+        const float* band = rep->params.spacefill.residues;
+        if (band[0] == 0.0f && band[1] == 0.0f) break;
+        if (!(band[0] > band[1] && band[1] > 0.0f)) {
+            MD_LOG_ERROR("md_render_mol: spacefill's residues band is {start, end} with start > end > 0 (got {%g, %g})", band[0], band[1]);
+            return 0;
         }
-        residues = rep->params.spacefill.residues[0] > 0.0f && topo->residue_point_count != 0;
-        cells    = rep->params.spacefill.cells[0] > 0.0f && topo->cell_point_count != 0;
+        if (rep->fade.mode & ~(uint32_t)MD_RENDER_FADE_THIN) {
+            MD_LOG_ERROR("md_render_mol: spacefill with residues fades by THIN only");
+            return 0;
+        }
+        if (rep->fade.mode && ((rep->fade.in[0] > 0.0f && rep->fade.in[1] < band[0]) || (rep->fade.out[0] > 0.0f && band[1] < rep->fade.out[0]))) {
+            MD_LOG_ERROR("md_render_mol: spacefill's residues band must lie between its fade's `in` and `out` bands");
+            return 0;
+        }
+        residues = topo->residue_point_count != 0;
         break;
     }
     case MD_RENDER_MOL_REP_LICORICE:
@@ -3183,16 +3133,14 @@ uint32_t md_render_mol_emit(const md_render_mol_topo_t* topo, md_gpu_addr_t dyna
         b.cluster_count  = topo->atom_cluster_count;
         b.style.spheres.radius_scale = sphere_scale;
         b.style.spheres.radius_add   = sphere_add;
-        if (!residues && !cells) {
+        if (!residues) {
             put(out, cap, &n, &b);
             return n;
         }
-        /* The levels of detail. The static atoms, keyed by their residue's
-           point, thin out across the residues' band, and the residues'
-           points (a batch over the tail of the copy) thin in across it; the
-           small molecules' atoms (a batch over their tail), keyed by their
-           cell's point, thin out across the cells' band, and the cells'
-           points thin in. Without a band, a part is drawn as it was. */
+        /* The level of detail: the static atoms keyed by their residue's
+           point, thinning out across the band; the residues' points, a
+           batch over the tail of the copy, thinning in across it; the
+           small molecules' atoms, a batch over their tail, as they are */
         const uint32_t n_static = topo->point_count - topo->small_atom_count;
         const uint32_t c_static = topo->atom_cluster_count - topo->grid_cells;
         if (!rep->fade.mode) memset(&b.fade, 0, sizeof(b.fade));     /* bands without a mode: none */
@@ -3200,11 +3148,9 @@ uint32_t md_render_mol_emit(const md_render_mol_topo_t* topo, md_gpu_addr_t dyna
             md_render_batch_t bs = b;
             bs.count         = n_static;
             bs.cluster_count = c_static;
-            if (residues) {
-                bs.fade.mode = MD_RENDER_FADE_THIN;
-                memcpy(bs.fade.out, rep->params.spacefill.residues, sizeof(bs.fade.out));
-                bs.fade.key  = topo->residue_key;
-            }
+            bs.fade.mode     = MD_RENDER_FADE_THIN;
+            memcpy(bs.fade.out, rep->params.spacefill.residues, sizeof(bs.fade.out));
+            bs.fade.key      = topo->residue_key;
             put(out, cap, &n, &bs);
         }
         if (topo->small_atom_count) {
@@ -3214,27 +3160,25 @@ uint32_t md_render_mol_emit(const md_render_mol_topo_t* topo, md_gpu_addr_t dyna
             move_points(&bm.points, n_static);
             bm.cluster_offset = topo->atom_cluster_offset + (md_gpu_addr_t)c_static * 4u;
             bm.cluster_count  = topo->grid_cells;
-            if (cells) {
-                bm.fade.mode = MD_RENDER_FADE_THIN;
-                memcpy(bm.fade.out, rep->params.spacefill.cells, sizeof(bm.fade.out));
-                bm.fade.key  = topo->cell_key;
-            }
             put(out, cap, &n, &bm);
         }
-        if (residues) {
-            md_render_batch_t br = coarse_batch(&base, &b, topo->point_count + topo->derived_count, topo->residue_point_count,
-                                                rep->params.spacefill.residues, sphere_scale);
-            br.key = (rep->key << 8) | MD_RENDER_MOL_PART_RESIDUES;
-            br.id  = topo->residue_point_residue;
+        {
+            const uint32_t first = topo->point_count + topo->derived_count;
+            md_render_batch_t br = base;
+            br.key   = (rep->key << 8) | MD_RENDER_MOL_PART_RESIDUES;
+            br.kind  = MD_RENDER_SPHERES;
+            br.count = topo->residue_point_count;
+            br.id    = topo->residue_point_residue;
+            move_points(&br.points, first);
+            br.points.radius_table       = 0;      /* w: the residue's radius */
+            br.points.radius_table_count = 0;
             br.cluster_offset = topo->residue_cluster_offset;
             br.cluster_count  = topo->residue_cluster_count;
+            br.style.spheres.radius_scale = sphere_scale;
+            br.fade = b.fade;                          /* the representation's `out` */
+            br.fade.mode = MD_RENDER_FADE_THIN;
+            memcpy(br.fade.in, rep->params.spacefill.residues, sizeof(br.fade.in));
             put(out, cap, &n, &br);
-        }
-        if (cells) {
-            md_render_batch_t bc = coarse_batch(&base, &b, topo->point_count + topo->derived_count + topo->residue_point_count,
-                                                topo->cell_point_count, rep->params.spacefill.cells, sphere_scale);
-            bc.key = (rep->key << 8) | MD_RENDER_MOL_PART_CELLS;      /* runs of 64 cells: rows of the grid */
-            put(out, cap, &n, &bc);
         }
     }
     return n;
@@ -3252,7 +3196,7 @@ bool md_render_mol_decode_pick(const md_render_pick_t* pick, md_render_mol_hit_t
     hit->rep_key  = pick->key >> 8;
     hit->instance = pick->instance;
     memcpy(hit->position, pick->position, sizeof(hit->position));
-    if ((part == MD_RENDER_MOL_PART_ATOMS || part == MD_RENDER_MOL_PART_SMALL_ATOMS || part == MD_RENDER_MOL_PART_CELLS) && pick->kind == MD_RENDER_SPHERES) {
+    if ((part == MD_RENDER_MOL_PART_ATOMS || part == MD_RENDER_MOL_PART_SMALL_ATOMS) && pick->kind == MD_RENDER_SPHERES) {
         hit->kind = MD_RENDER_MOL_HIT_ATOM;
         hit->atom = pick->attr;
         return true;
