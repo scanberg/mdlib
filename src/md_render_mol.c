@@ -18,16 +18,9 @@
 
 #include "md_render_mol_shaders.inl"
 
-static uint32_t bond_class(md_bond_flags_t flags) {
-    switch (md_bond_kind(flags)) {
-    case MD_BOND_KIND_COORDINATE:  return MD_RENDER_MOL_BOND_COORDINATE;
-    case MD_BOND_KIND_ELASTIC:     return MD_RENDER_MOL_BOND_ELASTIC;
-    case MD_BOND_KIND_METALLIC:    return MD_RENDER_MOL_BOND_METALLIC;
-    case MD_BOND_KIND_INTERACTION: return MD_RENDER_MOL_BOND_INTERACTION;
-    case MD_BOND_KIND_HYDROGEN:    return MD_RENDER_MOL_BOND_HYDROGEN;
-    default:                       return MD_RENDER_MOL_BOND_COVALENT;
-    }
-}
+/* The bonds' groups are the kinds' three bits (MD_RENDER_MOL_BOND_KIND) */
+_Static_assert(MD_BOND_FLAG_KIND_MASK == (MD_RENDER_MOL_BOND_KIND_COUNT - 1) << 5, "md_bond_kind_t is no longer bits 5-7");
+#define COVALENT MD_RENDER_MOL_BOND_KIND(MD_BOND_KIND_COVALENT)
 
 static uint64_t align256(uint64_t x) { return (x + 255u) & ~(uint64_t)255u; }
 
@@ -40,7 +33,7 @@ static uint64_t align256(uint64_t x) { return (x + 255u) & ~(uint64_t)255u; }
 /* The topology block, as offsets */
 typedef struct topo_layout_t {
     uint64_t state, atom_type, type_radius, atom_order, point_type, mixed_point, resident, atom_cluster_offset, bond_pairs, bond_ids;
-    uint64_t bond_cluster_offset[MD_RENDER_MOL_BOND_CLASS_COUNT];
+    uint64_t bond_cluster_offset[MD_RENDER_MOL_BOND_KIND_COUNT];
     uint64_t backbone_index, backbone_segment, backbone_carbonyl, backbone_chain;
     uint64_t nucleic_index, nucleic_segment, nucleic_face;
     uint64_t derived_offset, derived_member, derived_weight, derived_radius;
@@ -987,21 +980,21 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
         sm_aoff[k] = a;
     }
 
-    /* Bonds by class; within a class the static ones by the cluster of their
+    /* Bonds by kind; within a kind the static ones by the cluster of their
        first static atom (stable), then those within small molecules
        (covalent only: other kinds between small molecules are rare and stay
        static, in chunks) */
-    uint32_t* cls  = md_temp_alloc(temp, ((size_t)nb + 1) * 4u);
-    uint32_t* key  = md_temp_alloc(temp, ((size_t)nb + 1) * 4u);
-    if (!cls || !key) return false;
+    uint32_t* bkind = md_temp_alloc(temp, ((size_t)nb + 1) * 4u);
+    uint32_t* key   = md_temp_alloc(temp, ((size_t)nb + 1) * 4u);
+    if (!bkind || !key) return false;
     const uint32_t NONE = static_clusters;            /* no static atom: sorted last */
     const uint32_t nkeys = static_clusters + 2;       /* + NONE, + small            */
     const uint32_t SMALL_KEY = static_clusters + 1;
     uint32_t small_bonds = 0;
     for (uint32_t i = 0; i < nb; ++i) {
-        cls[i] = bond_class(sys->bond.flags ? sys->bond.flags[kept[i]] : 0);
+        bkind[i] = MD_RENDER_MOL_BOND_KIND(md_bond_kind(sys->bond.flags ? sys->bond.flags[kept[i]] : 0));
         uint32_t a = BA(i), b = BB(i);
-        if (cls[i] == MD_RENDER_MOL_BOND_COVALENT && IS_SMALL(a) && mol_of[a] == mol_of[b]) {
+        if (bkind[i] == COVALENT && IS_SMALL(a) && mol_of[a] == mol_of[b]) {
             key[i] = SMALL_KEY;
             sm_boff[sm_index[mol_of[a]] + 1]++;
             small_bonds++;
@@ -1011,17 +1004,17 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
     }
     for (uint32_t k = 0; k < small_mols; ++k) sm_boff[k + 1] += sm_boff[k];
 
-    /* Counting sort by (class, key) */
-    const size_t nbuckets = (size_t)MD_RENDER_MOL_BOND_CLASS_COUNT * nkeys;
+    /* Counting sort by (kind, key) */
+    const size_t nbuckets = (size_t)MD_RENDER_MOL_BOND_KIND_COUNT * nkeys;
     uint32_t* bucket = md_temp_alloc_zero(temp, (nbuckets + 1) * 4u);
     uint32_t* sorted = md_temp_alloc(temp, ((size_t)nb + 1) * 4u);
     uint32_t* sm_bfill = md_temp_alloc_zero(temp, ((size_t)small_mols + 1) * 4u);
     uint32_t* sm_blocal = md_temp_alloc(temp, ((size_t)small_bonds + 1) * 4u);
     uint32_t* sm_bids   = md_temp_alloc(temp, ((size_t)small_bonds + 1) * 4u);
     if (!bucket || !sorted || !sm_bfill || !sm_blocal || !sm_bids) return false;
-    for (uint32_t i = 0; i < nb; ++i) bucket[(size_t)cls[i] * nkeys + key[i] + 1]++;
+    for (uint32_t i = 0; i < nb; ++i) bucket[(size_t)bkind[i] * nkeys + key[i] + 1]++;
     for (size_t k = 0; k < nbuckets; ++k) bucket[k + 1] += bucket[k];
-    for (uint32_t i = 0; i < nb; ++i) sorted[bucket[(size_t)cls[i] * nkeys + key[i]]++] = i;
+    for (uint32_t i = 0; i < nb; ++i) sorted[bucket[(size_t)bkind[i] * nkeys + key[i]]++] = i;
     for (uint32_t i = 0; i < nb; ++i) {
         if (key[i] != SMALL_KEY) continue;
         uint32_t k = sm_index[mol_of[BA(i)]];
@@ -1039,24 +1032,24 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
         }
     }
 
-    /* The grid's capacity, and the clusters of every class */
+    /* The grid's capacity, and the clusters of every kind */
     const uint32_t cells = small_atoms ? (small_atoms + CELL_ATOMS - 1) / CELL_ATOMS : 0;
     const uint32_t bond_cells = small_bonds ? cells : 0;
-    uint32_t class_count[MD_RENDER_MOL_BOND_CLASS_COUNT] = {0};
-    for (uint32_t i = 0; i < nb; ++i) class_count[cls[i]]++;
+    uint32_t kind_count[MD_RENDER_MOL_BOND_KIND_COUNT] = {0};
+    for (uint32_t i = 0; i < nb; ++i) kind_count[bkind[i]]++;
     {
         uint32_t off = 0;
-        for (uint32_t c = 0; c < MD_RENDER_MOL_BOND_CLASS_COUNT; ++c) { T->bond_class_offset[c] = off; off += class_count[c]; }
-        T->bond_class_offset[MD_RENDER_MOL_BOND_CLASS_COUNT] = off;
+        for (uint32_t c = 0; c < MD_RENDER_MOL_BOND_KIND_COUNT; ++c) { T->bond_kind_offset[c] = off; off += kind_count[c]; }
+        T->bond_kind_offset[MD_RENDER_MOL_BOND_KIND_COUNT] = off;
     }
     /* Static bond clusters: a new one where the key changes or at CLUSTER */
-    uint32_t* boff = md_temp_alloc(temp, ((size_t)nb + MD_RENDER_MOL_BOND_CLASS_COUNT * ((size_t)cells + 2) + 1) * 4u);
+    uint32_t* boff = md_temp_alloc(temp, ((size_t)nb + MD_RENDER_MOL_BOND_KIND_COUNT * ((size_t)cells + 2) + 1) * 4u);
     if (!boff) return false;
-    uint32_t boff_base[MD_RENDER_MOL_BOND_CLASS_COUNT];
+    uint32_t boff_base[MD_RENDER_MOL_BOND_KIND_COUNT];
     uint32_t nboff = 0;
-    for (uint32_t c = 0; c < MD_RENDER_MOL_BOND_CLASS_COUNT; ++c) {
-        const uint32_t beg = T->bond_class_offset[c];
-        const uint32_t n_static = class_count[c] - (c == MD_RENDER_MOL_BOND_COVALENT ? small_bonds : 0);
+    for (uint32_t c = 0; c < MD_RENDER_MOL_BOND_KIND_COUNT; ++c) {
+        const uint32_t beg = T->bond_kind_offset[c];
+        const uint32_t n_static = kind_count[c] - (c == COVALENT ? small_bonds : 0);
         boff_base[c] = nboff;
         uint32_t cnt = 0, run = 0, prev = UINT32_MAX;
         for (uint32_t j = 0; j < n_static; ++j) {
@@ -1064,17 +1057,17 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
             if (j == 0 || k != prev || run == CLUSTER) { boff[nboff + cnt++] = j; run = 0; }
             prev = k; run++;
         }
-        if (c == MD_RENDER_MOL_BOND_COVALENT) T->bond_cluster_count[c] = cnt + bond_cells;
+        if (c == COVALENT) T->bond_cluster_count[c] = cnt + bond_cells;
         else                                  T->bond_cluster_count[c] = cnt;
         nboff += T->bond_cluster_count[c] + 1;
-        /* closing entry; the covalent class's cell entries follow below */
-        if (c != MD_RENDER_MOL_BOND_COVALENT || !bond_cells) boff[nboff - 1] = n_static;
+        /* closing entry; the covalent bonds' cell entries follow below */
+        if (c != COVALENT || !bond_cells) boff[nboff - 1] = n_static;
     }
 
     /* The small molecules' initial grouping (before any update): in molecule
        order, cell k holding molecules [k * mols / cells, (k + 1) * mols / cells) */
-    const uint32_t c0 = boff_base[MD_RENDER_MOL_BOND_COVALENT] + (T->bond_cluster_count[0] - bond_cells);
-    const uint32_t static_bonds0 = class_count[0] - small_bonds;
+    const uint32_t c0 = boff_base[COVALENT] + (T->bond_cluster_count[0] - bond_cells);
+    const uint32_t static_bonds0 = kind_count[0] - small_bonds;
     {
         uint32_t m = 0, a = 0, b = 0;
         for (uint32_t k = 0; k < cells; ++k) {
@@ -1376,11 +1369,11 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
     T->gap_count[0] = n_gap[0];
     T->gap_count[1] = n_gap[1];
 
-    /* The multiple bonds (see the topology), in the covalent class's order:
+    /* The multiple bonds (see the topology), in the covalent bonds' order:
        the doubles, then the triples; per double the atoms that give its
        plane, at their points */
-    const uint32_t cov_beg = T->bond_class_offset[MD_RENDER_MOL_BOND_COVALENT];
-    const uint32_t cov_n   = class_count[MD_RENDER_MOL_BOND_COVALENT];
+    const uint32_t cov_beg = T->bond_kind_offset[COVALENT];
+    const uint32_t cov_n   = kind_count[COVALENT];
     const uint32_t cov_static = cov_n - small_bonds;
     uint32_t  n_ord[2] = { 0, 0 };
     uint32_t* od_pts  = md_temp_alloc(temp, ((size_t)cov_static + 1) * 8u);
@@ -1603,7 +1596,7 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
     L.atom_cluster_offset = o; o = align256(o + (uint64_t)(T->atom_cluster_count + 1) * 4u);
     L.bond_pairs          = o; o = align256(o + (uint64_t)nb * 8u);
     L.bond_ids            = o; o = align256(o + (uint64_t)nb * 4u);
-    for (uint32_t c = 0; c < MD_RENDER_MOL_BOND_CLASS_COUNT; ++c) L.bond_cluster_offset[c] = o + (uint64_t)boff_base[c] * 4u;
+    for (uint32_t c = 0; c < MD_RENDER_MOL_BOND_KIND_COUNT; ++c) L.bond_cluster_offset[c] = o + (uint64_t)boff_base[c] * 4u;
     o = align256(o + (uint64_t)nboff * 4u);
     L.backbone_index      = o; o = align256(o + (uint64_t)n_cp * 4u);
     L.backbone_segment    = o; o = align256(o + (uint64_t)n_cp * 4u);
@@ -1689,9 +1682,9 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
         uint32_t* pairs = (uint32_t*)(img + L.bond_pairs);
         uint32_t* ids   = (uint32_t*)(img + L.bond_ids);
         uint32_t  nm    = 0;
-        for (uint32_t c = 0; c < MD_RENDER_MOL_BOND_CLASS_COUNT; ++c) {
-            const uint32_t beg = T->bond_class_offset[c];
-            const uint32_t n_static = class_count[c] - (c == MD_RENDER_MOL_BOND_COVALENT ? small_bonds : 0);
+        for (uint32_t c = 0; c < MD_RENDER_MOL_BOND_KIND_COUNT; ++c) {
+            const uint32_t beg = T->bond_kind_offset[c];
+            const uint32_t n_static = kind_count[c] - (c == COVALENT ? small_bonds : 0);
             for (uint32_t j = 0; j < n_static; ++j) {
                 uint32_t i = sorted[beg + j];
                 uint32_t a = BA(i), b = BB(i);
@@ -1788,7 +1781,7 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
     T->atom_cluster_offset = L.atom_cluster_offset;
     T->bond_pairs          = L.bond_pairs;
     T->bond_ids            = L.bond_ids;
-    for (uint32_t c = 0; c < MD_RENDER_MOL_BOND_CLASS_COUNT; ++c) T->bond_cluster_offset[c] = L.bond_cluster_offset[c];
+    for (uint32_t c = 0; c < MD_RENDER_MOL_BOND_KIND_COUNT; ++c) T->bond_cluster_offset[c] = L.bond_cluster_offset[c];
     T->backbone_index      = L.backbone_index;
     T->backbone_segment    = L.backbone_segment;
     T->backbone_carbonyl   = L.backbone_carbonyl;
@@ -1857,7 +1850,7 @@ bool md_render_mol_write(md_gpu_stream_t s, md_render_mol_topo_t* out, const md_
     out->atom_cluster_offset = base + plan->layout.atom_cluster_offset;
     out->bond_pairs          = base + plan->layout.bond_pairs;
     out->bond_ids            = base + plan->layout.bond_ids;
-    for (uint32_t c = 0; c < MD_RENDER_MOL_BOND_CLASS_COUNT; ++c) out->bond_cluster_offset[c] = base + plan->layout.bond_cluster_offset[c];
+    for (uint32_t c = 0; c < MD_RENDER_MOL_BOND_KIND_COUNT; ++c) out->bond_cluster_offset[c] = base + plan->layout.bond_cluster_offset[c];
     out->backbone_index      = base + plan->layout.backbone_index;
     out->backbone_segment    = base + plan->layout.backbone_segment;
     out->backbone_carbonyl   = base + plan->layout.backbone_carbonyl;
@@ -2061,17 +2054,17 @@ static void base_args(gpu_mol_args_t* a, const md_render_mol_topo_t* topo, md_gp
     a->point_type          = topo->point_type;
     a->mixed_point         = topo->mixed_point;
     a->atom_cluster_offset = topo->atom_cluster_offset;
-    a->bond_pairs          = topo->bond_pairs;      /* the covalent class is first: its bonds start at 0 */
+    a->bond_pairs          = topo->bond_pairs;      /* the covalent bonds are first: they start at 0 */
     a->bond_ids            = topo->bond_ids;
-    a->bond_cluster_offset = topo->bond_cluster_offset[MD_RENDER_MOL_BOND_COVALENT];
+    a->bond_cluster_offset = topo->bond_cluster_offset[COVALENT];
     a->n_mol               = n_mol;
     a->cells               = cells;
     a->n_atoms             = topo->small_atom_count;
     a->static_atoms        = topo->point_count - topo->small_atom_count;
     a->static_atom_clusters= topo->atom_cluster_count - cells;
     a->has_bonds           = topo->small_bond_count ? 1u : 0u;
-    a->static_bonds        = (topo->bond_class_offset[MD_RENDER_MOL_BOND_COVALENT + 1] - topo->bond_class_offset[MD_RENDER_MOL_BOND_COVALENT]) - topo->small_bond_count;
-    a->static_bond_clusters= a->has_bonds ? topo->bond_cluster_count[MD_RENDER_MOL_BOND_COVALENT] - cells : 0;
+    a->static_bonds        = (topo->bond_kind_offset[COVALENT + 1] - topo->bond_kind_offset[COVALENT]) - topo->small_bond_count;
+    a->static_bond_clusters= a->has_bonds ? topo->bond_cluster_count[COVALENT] - cells : 0;
     a->mixed_count         = topo->mixed_bond_count;
     a->n                   = D.scan_n;
     a->bb_index            = topo->backbone_index;
@@ -2830,8 +2823,8 @@ uint32_t md_render_mol_emit(const md_render_mol_topo_t* topo, md_gpu_addr_t dyna
     bool  spheres = false, sticks = false, residues = false;   /* residues: spacefill's level of detail */
     float sphere_scale = 0.0f, sphere_add = 0.0f, stick_radius = 0.0f, spread = 0.0f;   /* spread: the multiple bonds' (0: none) */
     md_render_sphere_style_t dash_ends = { 0.0f, 0.0f };     /* the spheres the dashes run between */
-    uint32_t classes = rep->bond_classes;
-    const uint32_t default_classes = MD_RENDER_MOL_BONDS(MD_RENDER_MOL_BOND_COVALENT) | MD_RENDER_MOL_BONDS(MD_RENDER_MOL_BOND_COORDINATE);
+    uint32_t kinds = rep->bond_kinds;
+    const uint32_t default_kinds = MD_RENDER_MOL_BONDS(MD_BOND_KIND_COVALENT) | MD_RENDER_MOL_BONDS(MD_BOND_KIND_COORDINATE);
 
     switch (rep->type) {
     case MD_RENDER_MOL_REP_SPACEFILL: {
@@ -2857,20 +2850,20 @@ uint32_t md_render_mol_emit(const md_render_mol_topo_t* topo, md_gpu_addr_t dyna
     case MD_RENDER_MOL_REP_LICORICE:
         spheres = sticks = true;
         sphere_add = stick_radius = rep->params.licorice.radius;
-        if (!classes) classes = default_classes;
+        if (!kinds) kinds = default_kinds;
         spread = 1.0f;
         break;
     case MD_RENDER_MOL_REP_BALL_AND_STICK:
         spheres = sticks = true;
         sphere_scale = rep->params.ball_and_stick.ball_scale;
         stick_radius = rep->params.ball_and_stick.stick_radius;
-        if (!classes) classes = default_classes;
+        if (!kinds) kinds = default_kinds;
         spread = 1.3f;
         break;
     case MD_RENDER_MOL_REP_BONDS:
         sticks = true;
         stick_radius = rep->params.bonds.radius;
-        if (!classes) classes = MD_RENDER_MOL_BONDS_ALL;
+        if (!kinds) kinds = MD_RENDER_MOL_BONDS_ALL;
         dash_ends.radius_add = stick_radius;      /* no spheres: as far as a stick's round end */
         break;
     case MD_RENDER_MOL_REP_RIBBONS: {
@@ -3011,24 +3004,27 @@ uint32_t md_render_mol_emit(const md_render_mol_topo_t* topo, md_gpu_addr_t dyna
         dash_ends.radius_scale = sphere_scale;
         dash_ends.radius_add   = sphere_add;
     }
-    /* md_gl's BOND DASHES: radius, dash and gap per class, relative to the sticks' */
-    static const float dash_style[MD_RENDER_MOL_BOND_CLASS_COUNT][3] = {
-        [MD_RENDER_MOL_BOND_COVALENT]    = { 1.00f, 2.4f, 0.6f },
-        [MD_RENDER_MOL_BOND_COORDINATE]  = { 0.70f, 2.0f, 0.8f },
-        [MD_RENDER_MOL_BOND_ELASTIC]     = { 1.00f, 2.4f, 0.6f },
-        [MD_RENDER_MOL_BOND_METALLIC]    = { 1.00f, 2.4f, 0.6f },
-        [MD_RENDER_MOL_BOND_INTERACTION] = { 0.35f, 0.5f, 1.1f },
-        [MD_RENDER_MOL_BOND_HYDROGEN]    = { 0.45f, 0.9f, 0.9f },
+    /* md_gl's BOND DASHES: radius, dash and gap per kind, relative to the sticks';
+       the two values that are no kind as the others */
+    static const float dash_style[MD_RENDER_MOL_BOND_KIND_COUNT][3] = {
+        [MD_RENDER_MOL_BOND_KIND(MD_BOND_KIND_COVALENT)]    = { 1.00f, 2.4f, 0.6f },
+        [MD_RENDER_MOL_BOND_KIND(MD_BOND_KIND_COORDINATE)]  = { 0.70f, 2.0f, 0.8f },
+        [2]                                                 = { 1.00f, 2.4f, 0.6f },
+        [3]                                                 = { 1.00f, 2.4f, 0.6f },
+        [MD_RENDER_MOL_BOND_KIND(MD_BOND_KIND_ELASTIC)]     = { 1.00f, 2.4f, 0.6f },
+        [MD_RENDER_MOL_BOND_KIND(MD_BOND_KIND_METALLIC)]    = { 1.00f, 2.4f, 0.6f },
+        [MD_RENDER_MOL_BOND_KIND(MD_BOND_KIND_INTERACTION)] = { 0.35f, 0.5f, 1.1f },
+        [MD_RENDER_MOL_BOND_KIND(MD_BOND_KIND_HYDROGEN)]    = { 0.45f, 0.9f, 0.9f },
     };
-    const uint32_t by_kind = MD_RENDER_MOL_BONDS(MD_RENDER_MOL_BOND_COORDINATE) | MD_RENDER_MOL_BONDS(MD_RENDER_MOL_BOND_INTERACTION) |
-                             MD_RENDER_MOL_BONDS(MD_RENDER_MOL_BOND_HYDROGEN);
+    const uint32_t by_kind = MD_RENDER_MOL_BONDS(MD_BOND_KIND_COORDINATE) | MD_RENDER_MOL_BONDS(MD_BOND_KIND_INTERACTION) |
+                             MD_RENDER_MOL_BONDS(MD_BOND_KIND_HYDROGEN);
     const uint32_t dashed = rep->dashes == MD_RENDER_MOL_DASHES_ALL ? MD_RENDER_MOL_BONDS_ALL
                           : rep->dashes == MD_RENDER_MOL_DASHES_NONE ? 0u : by_kind;
     uint32_t n = 0;
     if (sticks) {
-        for (uint32_t c = 0; c < MD_RENDER_MOL_BOND_CLASS_COUNT; ++c) {
-            if (!(classes & MD_RENDER_MOL_BONDS(c))) continue;
-            uint32_t beg = topo->bond_class_offset[c], end = topo->bond_class_offset[c + 1];
+        for (uint32_t c = 0; c < MD_RENDER_MOL_BOND_KIND_COUNT; ++c) {
+            if (!(kinds & (1u << c))) continue;
+            uint32_t beg = topo->bond_kind_offset[c], end = topo->bond_kind_offset[c + 1];
             if (end <= beg) continue;
             md_render_batch_t b = base;
             b.key   = (rep->key << 8) | (MD_RENDER_MOL_PART_BONDS + c);
@@ -3039,13 +3035,13 @@ uint32_t md_render_mol_emit(const md_render_mol_topo_t* topo, md_gpu_addr_t dyna
             b.cluster_offset = topo->bond_cluster_offset[c];
             b.cluster_count  = topo->bond_cluster_count[c];
             b.style.capsules.radius = stick_radius;
-            if (dashed & MD_RENDER_MOL_BONDS(c)) {
+            if (dashed & (1u << c)) {
                 b.style.capsules.radius      = stick_radius * dash_style[c][0];
                 b.style.capsules.dash_length = stick_radius * dash_style[c][1];
                 b.style.capsules.gap_length  = stick_radius * dash_style[c][2];
                 b.style.capsules.dash_ends   = dash_ends;
             }
-            const bool orders = c == MD_RENDER_MOL_BOND_COVALENT && rep->bond_orders && spread > 0.0f && topo->bond_single;
+            const bool orders = c == COVALENT && rep->bond_orders && spread > 0.0f && topo->bond_single;
             if (orders) b.style.capsules.radius_scale = topo->bond_single;     /* the multiple bonds: below */
             put(out, cap, &n, &b);
             if (!orders) continue;
@@ -3079,7 +3075,7 @@ uint32_t md_render_mol_emit(const md_render_mol_topo_t* topo, md_gpu_addr_t dyna
            in a fused system, two dashes over each bond, or one where those
            would be shorter than the tube is thick in the ring of its size
            with bonds of 1.39 */
-        if (rep->bond_orders && spread > 0.0f && (classes & MD_RENDER_MOL_BONDS(MD_RENDER_MOL_BOND_COVALENT))) {
+        if (rep->bond_orders && spread > 0.0f && (kinds & MD_RENDER_MOL_BONDS(MD_BOND_KIND_COVALENT))) {
             const float tube = 0.33f * stick_radius, inset = 1.9f * spread * stick_radius;
             for (uint32_t k = 0; k < MD_RENDER_MOL_RING_SIZES; ++k) {
                 const uint32_t nr = topo->aromatic_count[k], nd = topo->aromatic_dashed[k], nc = 3u + k;
@@ -3244,7 +3240,7 @@ bool md_render_mol_decode_pick(const md_render_pick_t* pick, md_render_mol_hit_t
         hit->atom = pick->attr;
         return true;
     }
-    if (((part >= MD_RENDER_MOL_PART_BONDS && part < MD_RENDER_MOL_PART_BONDS + MD_RENDER_MOL_BOND_CLASS_COUNT) ||
+    if (((part >= MD_RENDER_MOL_PART_BONDS && part < MD_RENDER_MOL_PART_BONDS + MD_RENDER_MOL_BOND_KIND_COUNT) ||
          (part >= MD_RENDER_MOL_PART_DOUBLE && part < MD_RENDER_MOL_PART_TRIPLE + 3) || part == MD_RENDER_MOL_PART_PARTNER) && pick->kind == MD_RENDER_CAPSULES) {
         hit->kind = MD_RENDER_MOL_HIT_BOND;
         hit->bond = pick->id;
