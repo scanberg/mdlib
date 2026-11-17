@@ -104,8 +104,8 @@ lifetime:
     the band's axes (by every update): the corners are the atoms' points.
 
 Implemented: SPACEFILL, LICORICE, BALL_AND_STICK, BONDS over bonds grouped by
-kind, the bonds that are not covalent dashed in a style per kind (md_gl's
-BOND DASHES: see md_render_mol_dashes_t); CARTOON
+kind, each kind in a style of its own (md_render_mol_bond_style_t; by default
+md_gl's BOND DASHES); CARTOON
 of proteins and of atomistic nucleic acids; the gaps of the chains, dashed
 (md_render_mol_rep_t.chain_gaps); the bond orders (bond_orders: double and
 triple bonds, the circles of aromatic rings, the dashed partners of
@@ -143,25 +143,34 @@ extern "C" {
 #define MD_RENDER_MOL_BONDS(kind)       (1u << MD_RENDER_MOL_BOND_KIND(kind))
 #define MD_RENDER_MOL_BONDS_ALL         ((1u << MD_RENDER_MOL_BOND_KIND_COUNT) - 1u)
 
-/* Which bonds the sticks draw dashed (md_render's dashed capsules), each in
-   the style of its kind, so that the kinds are told apart and the
-   stronger reads as the stronger: the thicker, the more of its length
-   covered, the longer its dashes (md_gl's BOND DASHES). Relative to the
-   radius r of the representation's sticks:
+/* The style of a kind of bond: the caller's data, a table of
+   MD_RENDER_MOL_BOND_KIND_COUNT entries by MD_RENDER_MOL_BOND_KIND, read by
+   md_render_mol_emit (not kept). Lengths relative to the radius r of the
+   representation's sticks, so that one table serves every representation.
+   Dashed (dash > 0): md_render's dashed capsules, run between the surfaces
+   of the representation's spheres at the atoms (the joints of a licorice,
+   the balls of a ball and stick; the sticks' radius for BONDS), so that none
+   is hidden or cut by one. The covalent entry's radius and colour go to the
+   double and triple bonds' sticks too, its colour to the aromatic circles
+   and the partners. */
+typedef struct md_render_mol_bond_style_t {
+    float    radius;       /* times r; 0: not drawn                                */
+    float    dash, gap;    /* times r; dash 0: solid                               */
+    uint32_t color;        /* RGBA8, the whole kind's; 0: the atoms' (the rep's
+                              colour)                                              */
+} md_render_mol_bond_style_t;
+
+/* The default: md_gl's BOND DASHES, the kinds that are not covalent dashed so
+   that they are told apart and the stronger reads as the stronger: the
+   thicker, the more of its length covered, the longer its dashes.
                     radius    dash    gap     covered
      COORDINATE     0.70 r    2.0 r   0.8 r   71 %    nearly a stick
      HYDROGEN       0.45 r    0.9 r   0.9 r   50 %    even dashes
      INTERACTION    0.35 r    0.5 r   1.1 r   31 %    dotted
-     the others     1.00 r    2.4 r   0.6 r   80 %    only with DASHES_ALL
-   They run between the surfaces of the representation's spheres at the
-   atoms (the joints of a licorice, the balls of a ball and stick; the
-   sticks' radius for BONDS), so that none is hidden or cut by one. */
-typedef enum md_render_mol_dashes_t {
-    MD_RENDER_MOL_DASHES_BY_KIND = 0,   /* those which are not covalent: coordinate,
-                                           hydrogen bonds, interactions             */
-    MD_RENDER_MOL_DASHES_NONE,          /* none: all solid                          */
-    MD_RENDER_MOL_DASHES_ALL,           /* all, covalent, elastic and metallic too  */
-} md_render_mol_dashes_t;
+     the others     1.00 r    solid
+   All in the atoms' colours. md_gl's dashes for those others, to dash every
+   kind: 1.00 r, 2.4 r, 0.6 r (80 %). Copy it to change it. */
+extern const md_render_mol_bond_style_t md_render_mol_bond_styles[MD_RENDER_MOL_BOND_KIND_COUNT];
 
 /* Molecules of at most this many atoms are "small": regrouped by position on
    every update instead of by the topology once */
@@ -728,9 +737,10 @@ typedef struct md_render_mol_rep_t {
 
     /* Which bond kinds the sticks draw: MD_RENDER_MOL_BONDS(...) mask.
        0 takes the type's default (covalent and coordinate; BONDS: all).
-       Which of them dashed: md_render_mol_dashes_t. */
-    uint32_t                 bond_kinds;
-    md_render_mol_dashes_t   dashes;
+       bond_style: theirs, MD_RENDER_MOL_BOND_KIND_COUNT entries, read by
+       emit; NULL: md_render_mol_bond_styles. */
+    uint32_t                          bond_kinds;
+    const md_render_mol_bond_style_t* bond_style;
 
     /* Dashed lines over the breaks of the chains (md_gl's chain gaps):
        CARTOON from end to end of the cartoon, 0.14 (0.7 of the coil at a
