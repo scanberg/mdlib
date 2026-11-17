@@ -124,6 +124,7 @@ struct Args {
     uint* lip_side;             // the point its axis points at (UINT32_MAX: none)
     uint* lip_axis;             // float4: its axis (md_render's)
     uint* res_offset;           // the residues' points: each one's first static point, [res_count + 1]
+    uint* cell_key;             // per small atom's point: its cell's point, less the small atoms' first
     uint  stride;
     uint  n_mol;
     uint  cells;
@@ -485,15 +486,29 @@ void sol_write(uint3 tid : SV_DispatchThreadID) {
     }
 }
 
-// cells + 1 entries: the last is the totals (the exclusive scan's end)
+// cells + 1 entries: the last is the totals (the exclusive scan's end). And
+// each cell's point (md_render_mol_topo_t): its points' key, and the atom it
+// stands for, the least of its atoms (not the first point's: the molecules'
+// order in a cell is the atomics', and an ion first would colour it)
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void sol_offsets(uint3 tid : SV_DispatchThreadID) {
     Args a = MD_ARGS;
     uint n = a.cells + 1u;
+    uint first = a.atom_count + a.der_count + a.res_count;     // the cells' points
     for (uint c = tid.x; c < n; c += grid_threads(n)) {
-        a.atom_cluster_offset[a.static_atom_clusters + c] = a.static_atoms + a.cnt[4u * c];
+        uint p0 = a.static_atoms + a.cnt[4u * c];
+        a.atom_cluster_offset[a.static_atom_clusters + c] = p0;
         if (a.has_bonds != 0u) a.bond_cluster_offset[a.static_bond_clusters + c] = a.static_bonds + a.cnt[4u * c + 1u];
+        if (c < a.cells) {
+            uint p1 = a.static_atoms + a.cnt[4u * c + 4u];
+            uint least = 0xFFFFFFFFu;
+            for (uint p = p0; p < p1; ++p) {
+                a.cell_key[p - a.static_atoms] = first + c - a.static_atoms;
+                least = min(least, a.atom_order[p]);
+            }
+            a.atom_order[first + c] = least != 0xFFFFFFFFu ? least : 0u;
+        }
     }
     if (tid.x == 0u) a.regroups[0] = a.regroups[0] + 1u;  // the records' buffers swap
 }
@@ -901,25 +916,35 @@ void derive(uint3 tid : SV_DispatchThreadID) {
     }
 }
 
-// The residues' points (md_render_mol_topo_t): each the centroid of its run
-// of static points, at their images nearest the first's where the update has
-// a cell (as derive), with the radius of the sphere of their volume as its
-// w: sqrt(5/3 Rg^2 + mean r^2), Rg the centres' radius of gyration, r the
-// points' radii (the caller's, or their types'); its velocity their mean.
-// Written after the derived points. A thread a residue: its points are
-// consecutive, and the next thread's follow them.
+// The residues' points, then the cells' (md_render_mol_topo_t): each the
+// centroid of its run of points (a residue's static points in a cluster; a
+// grid cell's, by the cluster offsets the regroup writes), at their images
+// nearest the first's where the update has a cell (as derive), with the
+// radius of the sphere of their volume as its w: sqrt(5/3 Rg^2 + mean r^2),
+// Rg the centres' radius of gyration, r the points' radii (the caller's, or
+// their types'); its velocity their mean. An empty cell: radius 0, which
+// md_render neither draws nor bounds. Written after the derived points. A
+// thread a run: its points are consecutive, and the next thread's follow.
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void residues(uint3 tid : SV_DispatchThreadID) {
     Args a = MD_ARGS;
-    uint n = a.res_count;
+    uint n = a.res_count + a.cells;
     bool vel = a.has_velocity != 0u || a.has_fvel != 0u;
     CellP cell;
     cell.ax = cell.bx = cell.by = cell.cx = cell.cy = cell.cz = 0.0;
     cell.r  = float3(0.0);
     if (a.der_cell != 0u) cell = cell_p(a.der_cell == 1u ? a.fpar0 : a.fpar1);
     for (uint k = tid.x; k < n; k += grid_threads(n)) {
-        uint   p0  = a.res_offset[k], p1 = a.res_offset[k + 1u];
+        uint   q   = a.atom_count + a.der_count + k;
+        uint   p0, p1;
+        if (k < a.res_count) { p0 = a.res_offset[k]; p1 = a.res_offset[k + 1u]; }
+        else                 { uint c = a.static_atom_clusters + k - a.res_count; p0 = a.atom_cluster_offset[c]; p1 = a.atom_cluster_offset[c + 1u]; }
+        if (p1 <= p0) {
+            store_point(a.points, q, uint3(0u), 0u);
+            if (vel) storeAligned<8>((uint2*)a.vel_out + q, uint2(0u));
+            continue;
+        }
         float3 ref = ld3(a.points, 4u * p0);
         float3 s = float3(0.0), v = float3(0.0);
         float  s2 = 0.0, r2 = 0.0;
@@ -939,7 +964,6 @@ void residues(uint3 tid : SV_DispatchThreadID) {
         float  inv = 1.0 / float(max(p1 - p0, 1u));
         float3 m   = s * inv;
         float  rad = sqrt(max(5.0 / 3.0 * (s2 * inv - dot(m, m)), 0.0) + r2 * inv);
-        uint   q   = a.atom_count + a.der_count + k;
         store_point(a.points, q, asuint(ref + m), asuint(rad));
         if (vel) {
             v *= inv;
