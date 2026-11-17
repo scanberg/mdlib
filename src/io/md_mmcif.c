@@ -248,12 +248,6 @@ static inline mmcif_entity_t* mmcif_entity_find_or_create(md_array(mmcif_entity_
 // An optional _atom_site column: absent from this file, or present and holding one of mmCIF's two
 // null tokens ('.' unknown, '?' not applicable). NAN for all three, which the publisher below reads
 // as "this atom has no value" without confusing it with a real zero.
-static inline bool float_bits_nan(float v) {
-    uint32_t u;
-    md_memcpy(&u, &v, sizeof(u));
-    return (u & 0x7F800000u) == 0x7F800000u && (u & 0x007FFFFFu) != 0;
-}
-
 static inline float mmcif_optional_float(const md_str_t tok[], const int table[], int field) {
     if (table[field] == -1) {
         return NAN;
@@ -1616,19 +1610,8 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
             md_attributes_publish_atom_column(&sys->attributes, MD_STR_LIT("atom/occupancy"),     md_unit_none(),                     1, occupancy,     sys->atom.count);
             md_attributes_publish_atom_column(&sys->attributes, MD_STR_LIT("atom/b_factor"),      md_unit_pow(md_unit_angstrom(), 2), 1, b_iso,         sys->atom.count);
             md_attributes_publish_atom_column(&sys->attributes, MD_STR_LIT("atom/formal_charge"), md_unit_none(),                     1, formal_charge, sys->atom.count);
-
-            // The formal charges given by the file are the system's (md_atom_data_t) until perception replaces them,
-            // which keeps them by reading the column above. Built with fast math, so NAN (no value) is told by its
-            // bits and not by q != q.
-            bool any_charge = false;
-            for (size_t i = 0; i < sys->atom.count && !any_charge; ++i) any_charge = !float_bits_nan(formal_charge[i]);
-            if (any_charge) {
-                md_array_resize(sys->atom.formal_charge, sys->atom.count, md_system_derived_alloc(sys));
-                for (size_t i = 0; i < sys->atom.count; ++i) {
-                    const float q = formal_charge[i];
-                    sys->atom.formal_charge[i] = float_bits_nan(q) ? 0 : (int8_t)MD_CLAMP(lroundf(q), -8, 8);
-                }
-            }
+            // The formal charges the file gives are this column: what the chemistry starts from (md_chem_perceive), which
+            // writes the system's (md_atom_data_t::formal_charge, inferred)
         }
 
         if (sys->residue.atom_offset) {
