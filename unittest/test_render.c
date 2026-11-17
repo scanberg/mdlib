@@ -5573,10 +5573,11 @@ UTEST(render, mol_derived_points) {
     f_close(&fx);
 }
 
-/* The bonds that are not covalent dashed, in their class's style (md_gl's
-   BOND DASHES): the coordinate bonds of a catalyst. Their batches' styles by
-   representation and dash mode; drawn, the dashes cover part of what the
-   solid sticks do, never more */
+/* The bonds that are not covalent dashed, in their kind's style (md_gl's
+   BOND DASHES, the default table): the coordinate bonds of a catalyst. Their
+   batches' styles by representation and by the caller's table (radius,
+   dashes, colour; radius 0 not drawn; a negative length refused); drawn,
+   the dashes cover part of what the solid sticks do, never more */
 UTEST(render, mol_bonds_dashed_by_kind) {
     fix_t fx;
     if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
@@ -5616,17 +5617,33 @@ UTEST(render, mol_bonds_dashed_by_kind) {
     EXPECT_NEAR(0.8f * r, cd->gap_length, 1e-6f);
     EXPECT_EQ(0.0f, cd->dash_ends.radius_scale);       /* licorice: its joints, r */
     EXPECT_NEAR(r, cd->dash_ends.radius_add, 1e-6f);
+    EXPECT_EQ((int)MD_RENDER_COLOR_POINTS, (int)bt[1].color.mode);   /* the atoms' colours */
     md_render_batch_t dashed = bt[1];
-    rep.dashes = MD_RENDER_MOL_DASHES_NONE;
+    const uint32_t kc = MD_RENDER_MOL_BOND_KIND(MD_BOND_KIND_COORDINATE), kv = MD_RENDER_MOL_BOND_KIND(MD_BOND_KIND_COVALENT);
+    md_render_mol_bond_style_t tab[MD_RENDER_MOL_BOND_KIND_COUNT];
+    memcpy(tab, md_render_mol_bond_styles, sizeof(tab));
+    tab[kc] = (md_render_mol_bond_style_t){ 1.0f, 0.0f, 0.0f, 0xFF00FF00u };     /* solid, a colour of its own */
+    rep.bond_style = tab;
     ASSERT_EQ(3u, md_render_mol_emit(&topo, dyn, &atoms, &rep, bt, 8));
     EXPECT_EQ(0.0f, bt[1].style.capsules.dash_length);
     EXPECT_NEAR(r, bt[1].style.capsules.radius, 1e-6f);
+    EXPECT_EQ((int)MD_RENDER_COLOR_UNIFORM, (int)bt[1].color.mode);
+    EXPECT_EQ(0xFF00FF00u, bt[1].color.uniform);
+    EXPECT_EQ((int)MD_RENDER_COLOR_POINTS, (int)bt[0].color.mode);
     md_render_batch_t solid = bt[1];
-    rep.dashes = MD_RENDER_MOL_DASHES_ALL;
+    solid.color = bt[0].color;                                                 /* compared below by coverage only */
+    tab[kv] = (md_render_mol_bond_style_t){ 1.0f, 2.4f, 0.6f, 0 };             /* md_gl's DASHES_ALL for the covalent */
     ASSERT_EQ(3u, md_render_mol_emit(&topo, dyn, &atoms, &rep, bt, 8));
     EXPECT_NEAR(2.4f * r, bt[0].style.capsules.dash_length, 1e-6f);
     EXPECT_NEAR(0.6f * r, bt[0].style.capsules.gap_length, 1e-6f);
     EXPECT_NEAR(1.0f * r, bt[0].style.capsules.radius, 1e-6f);
+    tab[kc].radius = 0.0f;                                                     /* not drawn */
+    ASSERT_EQ(2u, md_render_mol_emit(&topo, dyn, &atoms, &rep, bt, 8));
+    EXPECT_EQ((uint64_t)(5 << 8 | (MD_RENDER_MOL_PART_BONDS + kv)), bt[0].key);
+    EXPECT_EQ((uint64_t)(5 << 8 | MD_RENDER_MOL_PART_ATOMS), bt[1].key);
+    tab[kc] = (md_render_mol_bond_style_t){ 0.7f, -1.0f, 0.8f, 0 };
+    EXPECT_EQ(0u, md_render_mol_emit(&topo, dyn, &atoms, &rep, bt, 8));      /* refused */
+    rep.bond_style = NULL;
     md_render_mol_rep_t bs = {0};
     bs.key = 6; bs.type = MD_RENDER_MOL_REP_BALL_AND_STICK; bs.params.ball_and_stick.ball_scale = 0.3f; bs.params.ball_and_stick.stick_radius = 0.12f;
     ASSERT_EQ(3u, md_render_mol_emit(&topo, dyn, &atoms, &bs, bt, 8));
