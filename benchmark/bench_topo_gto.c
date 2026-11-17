@@ -29,7 +29,11 @@
 // same critical points (type, position within 1e-5 Bohr), and the edges both have (with the separatrices
 // traced in fp32 on the GPU a few can differ, where a path runs close to the boundary between two basins).
 // Each run prints hashes of its critical points and edges, and each input a fingerprint of the geometry,
-// basis and density matrix, so runs on other machines or builds compare too.
+// basis and density matrix, so runs on other machines or builds compare too. The critical points hash
+// twice: exactly (the float positions and densities, bit for bit) and rounded (to 1e-9 Bohr and 1e-9 in
+// rho). The exact hash differs in the last bits between compilers and math libraries, and between the CPU
+// and GPU paths where they polish a CP from different cubes; on a symmetric molecule a coordinate that is
+// 0 by symmetry comes out as 1e-17 or so, which float keeps. The rounded hash compares across all of these.
 
 #include <md_system.h>
 #include <md_gto.h>
@@ -246,6 +250,25 @@ static bool same_bytes(const md_topo_extremum_graph_t* a, const md_topo_extremum
 static uint64_t fnv64(uint64_t h, const void* p, size_t n) {
     const uint8_t* b = (const uint8_t*)p;
     for (size_t i = 0; i < n; ++i) h = (h ^ b[i]) * 1099511628211ull;
+    return h;
+}
+
+// The critical points with positions and densities rounded to 1e-9 (from the double vertices where the graph
+// has them): a hash that does not see the last bits.
+static uint64_t cp_hash_rounded(const md_topo_extremum_graph_t* g) {
+    uint64_t h = 1469598103934665603ull;
+    for (uint32_t i = 0; i < g->num_vertices; ++i) {
+        double v[4];
+        if (g->vertices_f64) {
+            const md_topo_vert_f64_t* d = &g->vertices_f64[i];
+            v[0] = d->x; v[1] = d->y; v[2] = d->z; v[3] = d->value;
+        } else {
+            const md_topo_vert_t* f = &g->vertices[i];
+            v[0] = f->x; v[1] = f->y; v[2] = f->z; v[3] = f->value;
+        }
+        const int64_t q[5] = { (int64_t)g->types[i], llround(v[0] * 1e9), llround(v[1] * 1e9), llround(v[2] * 1e9), llround(v[3] * 1e9) };
+        h = fnv64(h, q, sizeof(q));
+    }
     return h;
 }
 
@@ -577,8 +600,8 @@ int main(int argc, char** argv) {
                     uint64_t hv = fnv64(1469598103934665603ull, g0->vertices, sizeof(md_topo_vert_t) * g0->num_vertices);
                     hv = fnv64(hv, g0->types, sizeof(*g0->types) * g0->num_vertices);
                     const uint64_t he = fnv64(1469598103934665603ull, g0->edges, sizeof(md_topo_edge_t) * g0->num_edges);
-                    printf("       result hashes (to compare runs and builds): critical points %016llx, edges %016llx\n",
-                           (unsigned long long)hv, (unsigned long long)he);
+                    printf("       result hashes (to compare runs and builds): critical points %016llx, edges %016llx; critical points rounded to 1e-9 %016llx\n",
+                           (unsigned long long)hv, (unsigned long long)he, (unsigned long long)cp_hash_rounded(g0));
                     if (dump_path) {
                         char fn[1100];
                         snprintf(fn, sizeof(fn), "%s.%s.txt", dump_path, gpu ? "gpu" : "cpu");

@@ -632,6 +632,15 @@ void ao_main(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
 // Of seven tilings measured (64/32/16 rows, 128/256 threads, 288 or 96 columns per group, 24-72
 // accumulators), this one was within 11% of the fastest on an M4 Pro, an RTX 3080 and a UHD 770 alike;
 // that was with 272 columns (9 groups of 32), before the Hessian remainders over the cube itself left.
+//
+// REGISTERS: keep gemm_main at 128 or fewer. An NVIDIA SM has 65536 registers, so a 256-thread group fits
+// twice at <= 128 per thread and once above. With 9 column groups (72 accumulators) the GTX 1060 compiled it
+// to 165 (one group per SM, 8 warps); with 8 (64 accumulators) to exactly 128 (two, 16 warps), and the
+// GEMM took 38% less time on a 72-atom system (4913 -> 3029 ms; per batch -40%), far more than the 11%
+// fewer columns. It sits at the limit: one register more, from any change here or a ninth column group,
+// gives that back, and Vulkan offers no portable way to cap it. md_topo_gto_bench --profile prints the
+// register count NVIDIA's driver reports. (The 3080 has the same 65536 per SM; Apple GPUs allocate
+// registers differently, and the M4 Pro gained less.)
 
 #define GT  64                  // rows per tile
 #define GKC 16                  // j per chunk
