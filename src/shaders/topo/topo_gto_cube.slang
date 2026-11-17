@@ -5,7 +5,7 @@
 //
 // Each cube c +- h is decided with the CPU reference's tests (see md_topo.c): a rigorous upper bound
 // of rho below rho_min, exclusion of grad rho along the axes, the Newton distance, or Krawczyk on the
-// cube or the 1.5x cube (one zero, or none). What changes in fp32 is that every quantity a test uses
+// 1.5x cube (one zero, or none). What changes in fp32 is that every quantity a test uses
 // carries a bound on its own rounding error, and a test decides only with those bounds added. The error
 // model assumes only what any conforming GPU guarantees:
 //   * + - * correctly rounded; FMA contraction and reassociation only change which a priori bound
@@ -39,11 +39,10 @@
 //
 // Every sum runs in a fixed order, so a cube's result depends only on its batch, never on the chunk.
 //
-// Outcome per cube (low 4 bits): 0 discard, 1 root (Krawczyk certified, on the cube or the 1.5x cube;
-// the CPU polishes it in double), 2 split, 3 escalate (fp32 cannot decide: the gradient is inside its rounding
+// Outcome per cube (low 4 bits): 0 discard, 1 root (Krawczyk certified on the 1.5x cube; the CPU
+// polishes it in double), 2 split, 3 escalate (fp32 cannot decide: the gradient is inside its rounding
 // noise and the cube is too small for a Krawczyk proof at that noise, or h <= h_min; the CPU takes the
-// cube and its subtree in double). Bit 4: Krawczyk was tried on the 1.5x cube (a root then certified there,
-// else on the cube). Bits 8..15: which test.
+// cube and its subtree in double). Bit 4: Krawczyk was tried. Bits 8..15: which test.
 // Bits 16..23, for a split: the children that still need an evaluation (child_excluded below).
 
 #include "../md_gpu.slang"
@@ -84,8 +83,7 @@
 
 #define WHY_RHO      1u
 #define WHY_EXCL     2u
-#define WHY_NEWT     3u
-#define WHY_KOUT     4u         // Krawczyk on the cube: no zero
+#define WHY_NEWT     3u         // 4: a test no longer made (Krawczyk on the cube itself)
 #define WHY_KOUT_I   5u         // Krawczyk on the 1.5x cube: no zero
 #define WHY_ROOT     6u
 #define WHY_SPLIT    7u
@@ -874,7 +872,6 @@ struct Eval {
     float A[3][3], e_A[3][3];
     float q_up[3], r_up[3], rho_up;     // over the cube
     float dH_i[3][3];                   // the Hessian enclosure over the 1.5x cube
-    float dH_c[3][3];                   // ... over the cube: its polynomial terms, the 1.5x cube's remainder sums
 };
 
 // decide_main and its helpers index a few small local arrays with runtime indices (the free coordinates
@@ -1235,21 +1232,15 @@ void decide_main(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
             qu += abs(x + y) + EDOT(M3(a, c, p), M1(qq)) + EDOT(M2(a, p), M2(c, qq)) + 2.0 * UF * (abs(x) + abs(y));
         }
         const int t = ab_index(a, c);
-        // The remainder sums (EP_PI) hold over the 1.5x cube, so over the cube too: the cube's enclosure takes
-        // them with its own polynomial terms, and needs no sums of its own.
-        const float rest = 2.0 * E[(EP_PI + t) * fs] * safe + bt.tail.z;
-        const float vi = (hi * lT[t] + 2.0 * hi2 * qu + rest) * safe;
-        const float vc = (h * lT[t] + 2.0 * h2 * qu + rest) * safe;
+        const float vi = (hi * lT[t] + 2.0 * hi2 * qu + 2.0 * E[(EP_PI + t) * fs] * safe + bt.tail.z) * safe;
         ev.dH_i[a][c] = vi; ev.dH_i[c][a] = vi;
-        ev.dH_c[a][c] = vc; ev.dH_c[c][a] = vc;
     }
     ev.rho_up = (ev.rho + ev.e_rho + 2.0 * E[(EP_PART + 0) * fs] * safe + E[(EP_PART + 1) * fs] * safe + bt.tail.x) * safe;
     #undef DOT
     #undef EDOT
 
     // ---- tests: rho bound, exclusion along the axes term by term, the Newton distance, Krawczyk on the
-    //      cube and then the 1.5x cube, then the exact quadratic exclusion, the costliest, once the cheap ones
-    //      have failed
+    //      1.5x cube, then the exact quadratic exclusion, the costliest, once the cheap ones have failed
     uint outc = OUT_SPLIT, why = WHY_SPLIT;
     bool decided = false, tried_infl = false;
     if (ev.rho_up < args.eps) { outc = OUT_DISCARD; why = WHY_RHO; decided = true; }
@@ -1257,15 +1248,10 @@ void decide_main(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
     const Lin lin = linear(ev, bt.tail.y);
     if (!decided && lin.ok && newton_dist(ev, lin, h)) { outc = OUT_DISCARD; why = WHY_NEWT; decided = true; }
     if (!decided && lin.ok) {
-        const int kc = krawczyk(lin, ev.dH_c, h);
-        if (kc == 1) { outc = OUT_ROOT; why = WHY_ROOT; decided = true; }
-        else if (kc == -1) { outc = OUT_DISCARD; why = WHY_KOUT; decided = true; }
-        else {
-            tried_infl = true;      // the host polishes a root certified here against the 1.5x cube
-            const int ki = krawczyk(lin, ev.dH_i, hi);
-            if (ki == 1) { outc = OUT_ROOT; why = WHY_ROOT; decided = true; }
-            else if (ki == -1) { outc = OUT_DISCARD; why = WHY_KOUT_I; decided = true; }
-        }
+        tried_infl = true;
+        const int kr = krawczyk(lin, ev.dH_i, hi);
+        if (kr == 1) { outc = OUT_ROOT; why = WHY_ROOT; decided = true; }
+        else if (kr == -1) { outc = OUT_DISCARD; why = WHY_KOUT_I; decided = true; }
     }
     [ForceUnroll] for (int a = 0; a < 3; ++a) if (!decided && excl_quad(ev, T, eT, h, a)) { outc = OUT_DISCARD; why = WHY_EXCL; decided = true; }
     if (!decided) {
