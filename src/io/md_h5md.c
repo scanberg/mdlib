@@ -1073,14 +1073,18 @@ static bool h5md_system_from_core(md_system_t* sys, md_system_state_t* state, hi
     }
     sys->atom.count = N;
 
+    // Read in the scratch, the pairs of the file which name particles of the system, then given at once
     md_array(md_atom_pair_t) bonds = 0;
     h5md_read_bonds(&bonds, file, p, scratch);
-    md_bond_given_reserve(&sys->given_bond, md_array_size(bonds), sys->alloc);
-    for (size_t i = 0; i < md_array_size(bonds); ++i) {
-        md_array_push(sys->given_bond.pairs, bonds[i], sys->alloc);
-        md_array_push(sys->given_bond.flags, md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_TOPOLOGY), sys->alloc);
-    }
-    sys->given_bond.count = md_array_size(bonds);
+    const size_t num_bonds = md_array_size(bonds);
+    md_bond_data_t* given = &sys->given_bond;
+    md_bond_given_reserve(given, num_bonds, sys->alloc);
+    md_array_resize(given->pairs, num_bonds, sys->alloc);
+    md_array_resize(given->flags, num_bonds, sys->alloc);
+    if (num_bonds) md_memcpy(given->pairs, bonds, num_bonds * sizeof(md_atom_pair_t));
+    const md_bond_flags_t topology = md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_TOPOLOGY);
+    for (size_t i = 0; i < num_bonds; ++i) given->flags[i] = topology;
+    given->count = num_bonds;
     // The connectivity of the topology, of every atom; without it (a file of coordinates alone) the bonds are inferred
     if (sys->given_bond.count) {
         md_system_set_bonds_complete(sys);
