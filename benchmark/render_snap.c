@@ -15,6 +15,7 @@
 //     --fade-in MODE S0 S1 the last --rep fades in across S0 > S1
 //     --residues S0 S1     the last --rep (spacefill) hands its atoms over to a sphere per
 //                          residue across S0 > S1 (pixels per A)
+//     --cells S0 S1        ... and its small molecules' atoms to a sphere per grid cell
 //     --view NAME          front, back, side, top or iso; repeatable (default front)
 //     --zoom Z             camera distance, 1 = the scene just fits (default 1)
 //     --replicate N        N x N x N copies along the cell (its box, or the bounds), as instances
@@ -229,6 +230,7 @@ typedef struct rep_arg_t {
     float                    param;      /* < 0: the type's default */
     md_render_fade_t         fade;
     float                    residues[2];
+    float                    cells[2];
 } rep_arg_t;
 
 static bool parse_fade_mode(const char* s, uint32_t* mode) {
@@ -325,6 +327,10 @@ static int run(int argc, char** argv) {
             band[0] = (float)atof(argv[i + 2]);
             band[1] = (float)atof(argv[i + 3]);
             i += 3;
+        } else if (!strcmp(a, "--cells") && i + 2 < argc) {
+            if (n_reps == 0) { fprintf(stderr, "%s before any --rep\n", a); return 2; }
+            reps[n_reps - 1].cells[0] = (float)atof(argv[++i]);
+            reps[n_reps - 1].cells[1] = (float)atof(argv[++i]);
         } else if (!strcmp(a, "--residues") && i + 2 < argc) {
             if (n_reps == 0) { fprintf(stderr, "%s before any --rep\n", a); return 2; }
             reps[n_reps - 1].residues[0] = (float)atof(argv[++i]);
@@ -484,6 +490,7 @@ static int run(int argc, char** argv) {
         case MD_RENDER_MOL_REP_SPACEFILL:
             rep.params.spacefill.radius_scale = p >= 0 ? p : 1.0f;
             memcpy(rep.params.spacefill.residues, reps[k].residues, sizeof(reps[k].residues));
+            memcpy(rep.params.spacefill.cells, reps[k].cells, sizeof(reps[k].cells));
             break;
         case MD_RENDER_MOL_REP_LICORICE:       rep.params.licorice.radius = p >= 0 ? p : 0.2f; break;
         case MD_RENDER_MOL_REP_BALL_AND_STICK: rep.params.ball_and_stick.ball_scale = p >= 0 ? p : 0.3f; rep.params.ball_and_stick.stick_radius = 0.12f; break;
