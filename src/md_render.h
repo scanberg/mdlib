@@ -128,7 +128,7 @@ extern "C" {
 
 /* Pipelines and kernels shared by every view of one device. Not a global:
    tests render headless on a device of their own. */
-typedef struct md_render* md_render_t;
+typedef struct md_render* md_render_ctx_t;
 
 typedef struct md_render_desc_t {
     struct md_allocator_i* alloc;   /* host allocations; NULL: the default heap */
@@ -137,11 +137,11 @@ typedef struct md_render_desc_t {
 
 /* Synchronous and possibly slow (pipeline compilation): once, at start-up.
    NULL on failure (logged), including a device without graphics support. */
-md_render_t md_render_create(md_gpu_device_t device, const md_render_desc_t* desc);
+md_render_ctx_t md_render_create(md_gpu_device_t device, const md_render_desc_t* desc);
 
 /* Every view must already be destroyed. Deferred like md_gpu's pipeline and
    kernel destruction. */
-void md_render_destroy(md_render_t render);
+void md_render_destroy(md_render_ctx_t render);
 
 /* =========================================================================
    Points
@@ -524,7 +524,7 @@ typedef struct md_render_status_t {
 } md_render_status_t;
 
 /* Records nothing: targets are made at the first draw, at its size. */
-md_render_view_t md_render_view_create(md_render_t render, const char* label);
+md_render_view_t md_render_view_create(md_render_ctx_t render, const char* label);
 
 /* Deferred and non-blocking. */
 void md_render_view_destroy(md_gpu_stream_t stream, md_render_view_t view);

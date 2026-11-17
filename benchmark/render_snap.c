@@ -370,8 +370,8 @@ static int run(int argc, char** argv) {
     md_gpu_device_info(dev, &info);
     printf("device: %s (%s)\n", info.name, info.driver);
     md_gpu_stream_t s = md_gpu_stream_default(dev, MD_GPU_STREAM_GRAPHICS);
-    md_render_t r = md_render_create(dev, NULL);
-    md_render_mol_t kernels = md_render_mol_create(dev, NULL);
+    md_render_ctx_t r = md_render_create(dev, NULL);
+    md_render_mol_ctx_t kernels = md_render_mol_create(dev, NULL);
     if (!s || !r || !kernels) { fprintf(stderr, "md_render could not start\n"); return 1; }
 
     md_temp_scope_t temp = md_temp_begin();

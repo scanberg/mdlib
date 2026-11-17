@@ -767,11 +767,11 @@ static int cmp_d(const void* a, const void* b) { double x = *(const double*)a, y
 
 /* md_render_mol_update with a hook after each launch: in md_render_mol.c,
    not in its header (it is for this profile only) */
-bool md_render_mol_update_hooked(md_render_mol_t kernels, md_gpu_stream_t stream, const md_render_mol_topo_t* topo,
+bool md_render_mol_update_hooked(md_render_mol_ctx_t kernels, md_gpu_stream_t stream, const md_render_mol_topo_t* topo,
                                  md_gpu_addr_t dynamic, const md_render_mol_atoms_t* atoms,
                                  md_render_mol_update_flags_t flags, void (*hook)(void* user, const char* pass), void* user);
 
-bool md_render_mol_frame_upload_hooked(md_render_mol_t kernels, md_gpu_stream_t stream, const md_render_mol_topo_t* topo, md_gpu_addr_t dynamic,
+bool md_render_mol_frame_upload_hooked(md_render_mol_ctx_t kernels, md_gpu_stream_t stream, const md_render_mol_topo_t* topo, md_gpu_addr_t dynamic,
                                        md_render_mol_frames_t* frames, uint32_t slot, const md_render_mol_frame_t* frame,
                                        md_render_mol_update_flags_t flags, void (*hook)(void* user, const char* pass), void* user);
 
@@ -845,7 +845,7 @@ static void print_times(const char* name, double* t, uint32_t reps) {
    unified memory, nothing is copied); the upload from host memory, through
    the stream, is timed beside it. */
 /* The best of `reps` frame updates from the given slots (velocities when dt) */
-static double time_frames(md_gpu_stream_t s, md_render_mol_t kernels, scene_t* sc, md_render_mol_atoms_t* atoms,
+static double time_frames(md_gpu_stream_t s, md_render_mol_ctx_t kernels, scene_t* sc, md_render_mol_atoms_t* atoms,
                           uint32_t count, const uint32_t slot[4], float dt, double* t, uint32_t reps) {
     atoms->frame_count = count;
     for (uint32_t k = 0; k < 4; ++k) atoms->frame_slot[k] = slot[k];
@@ -860,7 +860,7 @@ static double time_frames(md_gpu_stream_t s, md_render_mol_t kernels, scene_t* s
     return t[0];
 }
 
-static void bench_frames(md_gpu_stream_t s, md_render_mol_t kernels, scene_t* sc, uint32_t reps) {
+static void bench_frames(md_gpu_stream_t s, md_render_mol_ctx_t kernels, scene_t* sc, uint32_t reps) {
     const uint32_t n = sc->atoms;
     float cell[9] = { sc->box, 0, 0, 0, sc->box, 0, 0, 0, sc->box };
     md_gpu_mem_t up = md_gpu_malloc(s, MD_GPU_MEM_HOST_WRITE, md_render_mol_frame_size(&sc->topo));
@@ -995,7 +995,7 @@ static void bench_frames(md_gpu_stream_t s, md_render_mol_t kernels, scene_t* sc
    instead (md_render_mol's override; the copy writes it). Three rounds of
    the two, their draws pooled: a GPU clock that drifts during the run moves
    both. */
-static void bench_radii(md_gpu_stream_t s, md_render_t r, md_render_mol_t kernels, scene_t* sc, const md_render_mol_atoms_t* atoms, uint32_t W, uint32_t H, uint32_t reps) {
+static void bench_radii(md_gpu_stream_t s, md_render_ctx_t r, md_render_mol_ctx_t kernels, scene_t* sc, const md_render_mol_atoms_t* atoms, uint32_t W, uint32_t H, uint32_t reps) {
     float* hr = malloc((size_t)sc->atoms * 4);
     md_gpu_addr_t arad = hr ? md_gpu_malloc(s, MD_GPU_MEM_DEVICE, (size_t)sc->atoms * 4).gpu : 0;
     if (!arad) { free(hr); return; }
@@ -1140,8 +1140,8 @@ static int run_gpu(int argc, char** argv) {
     md_gpu_device_info_t info;
     md_gpu_device_info(dev, &info);
     md_gpu_stream_t s = md_gpu_stream_default(dev, MD_GPU_STREAM_GRAPHICS);
-    md_render_t r = md_render_create(dev, NULL);
-    md_render_mol_t kernels = md_render_mol_create(dev, NULL);
+    md_render_ctx_t r = md_render_create(dev, NULL);
+    md_render_mol_ctx_t kernels = md_render_mol_create(dev, NULL);
     if (!s || !r || !kernels) { fprintf(stderr, "md_render could not start\n"); return 1; }
 
     printf("mdlib %s\n", MD_BENCH_SOURCE_REV);
@@ -1538,8 +1538,8 @@ static int run_heavy(int argc, char** argv) {
     md_gpu_device_info_t info;
     md_gpu_device_info(dev, &info);
     md_gpu_stream_t s = md_gpu_stream_default(dev, MD_GPU_STREAM_GRAPHICS);
-    md_render_t r = md_render_create(dev, NULL);
-    md_render_mol_t kernels = md_render_mol_create(dev, NULL);
+    md_render_ctx_t r = md_render_create(dev, NULL);
+    md_render_mol_ctx_t kernels = md_render_mol_create(dev, NULL);
     if (!s || !r || !kernels) { fprintf(stderr, "md_render could not start\n"); return 1; }
 
     printf("mdlib %s\n", MD_BENCH_SOURCE_REV);

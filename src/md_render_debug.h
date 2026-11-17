@@ -43,15 +43,15 @@ void md_render_debug_spline_order(uint32_t buckets);
 void md_render_debug_raster_probe(uint32_t mode);
 /* Called with each pass's name as it is recorded */
 void md_render_debug_pass_hook(void (*hook)(void* user, const char* pass), void* user);
-bool md_render_debug_kernel_info(md_render_t r, uint32_t i, const char** name, md_gpu_kernel_info_t* info);
-bool md_render_debug_pipeline_info(md_render_t r, uint32_t i, const char** name, md_gpu_pipeline_info_t* info);
+bool md_render_debug_kernel_info(md_render_ctx_t r, uint32_t i, const char** name, md_gpu_kernel_info_t* info);
+bool md_render_debug_pipeline_info(md_render_ctx_t r, uint32_t i, const char** name, md_gpu_pipeline_info_t* info);
 
 /* ---- md_render_mol ------------------------------------------------------------ */
 
 void md_render_mol_debug_prefetch(uint32_t windows_ahead);
 void md_render_mol_debug_write(uint32_t leave_out);
 void md_render_mol_debug_frame_groups(uint32_t groups);
-bool md_render_mol_debug_kernel_info(md_render_mol_t r, uint32_t i, const char** name, md_gpu_kernel_info_t* info);
+bool md_render_mol_debug_kernel_info(md_render_mol_ctx_t r, uint32_t i, const char** name, md_gpu_kernel_info_t* info);
 
 #ifdef __cplusplus
 }
