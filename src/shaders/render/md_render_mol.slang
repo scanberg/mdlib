@@ -25,7 +25,7 @@
 //
 //     gather   the copy that is drawn: per point (cluster order), its atom's
 //              position and a word (x, y, z, w), and its velocity. w is the
-//              point's type and flags (POINT_TYPE_* below) from the
+//              point's type from the
 //              topology's point_type, in order: md_render takes the radius
 //              from the types' table (the topology's type_radius), so a
 //              change of radii is a change of that table and nothing else.
@@ -55,7 +55,7 @@ struct Args {
     uint* position;             // float3 per atom, `stride` bytes apart
     uint* velocity;             // packed half3 per atom, `vel_stride` bytes apart
     uint* radius_override;      // float per atom
-    uint* points;               // float4 per point (x, y, z, w: the type and flags, or a radius): the copy
+    uint* points;               // float4 per point (x, y, z, w: the type, or a radius): the copy
     uint* vel_out;              // uint2 per point
     uint* params;               // 16 words: ordered bounds, then the grid
     uint* mol_slot;             // uint4 per slot (a molecule, the last grouping's order): its first
@@ -83,7 +83,7 @@ struct Args {
     uint* bond_pairs;           // the topology's (the covalent class first): from static_bonds on
     uint* bond_ids;
     uint* bond_cluster_offset;  // the covalent class's: from static_bond_clusters on
-    uint* point_type;           // the topology's: per point its type and flags (POINT_TYPE_*), in point order
+    uint* point_type;           // the topology's: per point its type, in point order
     uint* frame0;               // frames: the slots combined
     uint* frame1;
     uint* frame2;
@@ -175,10 +175,6 @@ static const uint P_LO    = 6u;    // 3 floats
 static const uint P_INV   = 9u;    // 1 / edge
 static const uint P_DIM   = 10u;   // 3 uints
 static const uint P_EDGE  = 13u;
-
-// point_type: the type in the low 16 bits (md_render's radius table index),
-// the point's flags in the high 16 (none yet)
-static const uint POINT_TYPE_MASK = 0xFFFFu;
 
 uint grid_threads(uint n) { return 64u * min((n + 63u) / 64u, 65535u); }
 uint group_start(uint3 tid, uint gi) { return tid.x - gi; }
@@ -467,7 +463,7 @@ void sol_write(uint3 tid : SV_DispatchThreadID) {
         for (uint i = 0u; i < k.x; ++i) {
             uint atom = r.x + a.kind_atom[k.z + i];
             if ((a.dbg & 1u) == 0u) a.atom_order[p0 + i] = atom;
-            a.point_type[p0 + i] = a.kind_type[k.z + i];   // flags: none yet
+            a.point_type[p0 + i] = a.kind_type[k.z + i];
             if (a.has_src != 0u) a.src_point[p0 + i - a.static_atoms] = r.w + i;   // its point in the last grouping
             if ((r.z & REC_MIXED) != 0u) a.mixed_point[atom] = p0 + i;
         }
@@ -514,7 +510,7 @@ void sol_mixed(uint3 tid : SV_DispatchThreadID) {
 }
 
 
-// A point's w: its type and flags, or the caller's radius for its atom
+// A point's w: its type, or the caller's radius for its atom
 uint point_w(Args a, uint p, uint atom) {
     return a.has_radius != 0u ? a.radius_override[atom] : a.point_type[p];
 }
@@ -524,7 +520,7 @@ uint point_w(Args a, uint p, uint atom) {
 // makes: Slang marks it Aligned 4 and NVIDIA splits it in four (with the
 // radius read back from the copy to complete it, the two-frame gather was
 // 6.3 ms on a GTX 1060). Not 12 bytes of 16 either: 0.7 ms slower than the
-// whole store on the M4. w: the point's type and flags (or a radius).
+// whole store on the M4. w: the point's type (or a radius).
 [ForceInline]
 void store_point(uint* points, uint p, uint3 v, uint r) {
     storeAligned<16>((uint4*)points + p, uint4(v, r));
@@ -928,7 +924,7 @@ void residues(uint3 tid : SV_DispatchThreadID) {
             s  += d;
             s2 += dot(d, d);
             uint  w = a.points[4u * p + 3u];
-            uint  t = w & POINT_TYPE_MASK;
+            uint  t = w;
             float r = a.has_radius != 0u ? asfloat(w) : (t < a.type_count ? asfloat(a.type_radius[t]) : 0.0);
             r2 += r * r;
             if (vel) {

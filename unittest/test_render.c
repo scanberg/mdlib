@@ -2,6 +2,7 @@
 
 #include <md_render.h>
 #include <md_render_mol.h>
+#include <md_render_debug.h>
 
 #include <md_system.h>
 #include <md_system_state.h>
@@ -575,10 +576,9 @@ UTEST(render, spline_straight_parts) {
        the same ids and depths to the bit, all from the hardware raster */
     md_render_view_t hw = md_render_view_create(fx.r, "hardware only");
     md_render_frame_t fh = f;
-    fh.options = MD_RENDER_NO_COMPUTE_RASTER;
+    md_render_debug_view(hw, MD_RENDER_DEBUG_NO_COMPUTE_RASTER, 0.0f);
     ASSERT_TRUE(md_render_view_draw(fx.gfx, hw, &fh, NULL));
-    f.small_pixels = 1000.0f;
-    f.content[MD_RENDER_CONTENT_GEOMETRY]++;
+    md_render_debug_view(fx.view, 0, 1000.0f);
     ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
     md_gpu_stream_sync(fx.gfx);
     md_render_stats_t st;
@@ -925,7 +925,7 @@ UTEST(render, spline_curves_match_the_sweep) {
     b.style.splines.axis    = f_buf(&fx, axis, sizeof(axis));
     b.style.splines.profile = f_buf(&fx, profile, sizeof(profile));
     md_render_frame_t f = frame_of(W, H, cam, &b, 1);
-    f.options = MD_RENDER_NO_COMPUTE_RASTER;
+    md_render_debug_view(fx.view, MD_RENDER_DEBUG_NO_COMPUTE_RASTER, 0.0f);
     ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
 
     sweep_t sw;
@@ -988,8 +988,7 @@ UTEST(render, spline_curves_match_the_sweep) {
        raster, the same ids and depths to the bit */
     md_render_view_t cr = md_render_view_create(fx.r, "compute raster");
     md_render_frame_t fc = f;
-    fc.options = 0;
-    fc.small_pixels = 1000.0f;
+    md_render_debug_view(cr, 0, 1000.0f);
     ASSERT_TRUE(md_render_view_draw(fx.gfx, cr, &fc, NULL));
     md_gpu_stream_sync(fx.gfx);
     md_render_stats_t st;
@@ -2787,7 +2786,7 @@ UTEST(render, external_ids) {
     ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
     /* The caller's renderer writes id 1 + 3 * 1000 + 17 (instance 3, element 17) at pixel (1, 1) */
     uint32_t id[2];
-    md_render_encode_id(1, 0, 3 * 1000 + 17, id);
+    md_render_encode_id(1, 3 * 1000 + 17, id);
     md_render_targets_t t = md_render_view_targets(fx.view);
     md_gpu_mem_t up = md_gpu_malloc(fx.gfx, MD_GPU_MEM_HOST_WRITE, 8);
     memcpy(up.cpu, id, 8);
@@ -2852,9 +2851,6 @@ static void dense_scene(fix_t* fx, dense_t* d) {
 /* md_render's occlusion settings, for a test of the path its defaults skip,
    and its own choice whether to cull by occlusion at all (in md_render.c, not
    in its header) */
-void md_render_debug_occlusion(float margin_radii, float min_px);
-void md_render_debug_occlusion_auto(bool on);
-void md_render_debug_pass_hook(void (*hook)(void* user, const char* pass), void* user);
 
 /* ids and depths equal; with depth_only, depths (an index renumbers the elements) */
 static int compare_views_ex(fix_t* fx, md_render_view_t a, md_render_view_t b, uint32_t W, uint32_t H, int* covered, bool depth_only) {
@@ -2894,11 +2890,11 @@ UTEST(render, culling_and_compute_raster_change_nothing) {
 
     md_render_view_t ref = md_render_view_create(fx.r, "reference");
     md_render_frame_t fr = frame_of(W, H, make_camera(&c), d.b, 2);
-    fr.options = MD_RENDER_NO_OCCLUSION_CULLING | MD_RENDER_NO_COMPUTE_RASTER;
+    md_render_debug_view(ref, MD_RENDER_DEBUG_NO_OCCLUSION | MD_RENDER_DEBUG_NO_COMPUTE_RASTER, 0.0f);
     ASSERT_TRUE(md_render_view_draw(fx.gfx, ref, &fr, NULL));
 
     md_render_frame_t f = frame_of(W, H, make_camera(&c), d.b, 2);
-    f.small_pixels = 4.0f;
+    md_render_debug_view(fx.view, 0, 4.0f);
     md_render_stats_t st;
     /* First raster: no pyramid yet, so nothing is occluded in phase 1 */
     ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
@@ -2984,7 +2980,7 @@ UTEST(render, culling_and_compute_raster_change_nothing) {
         md_render_debug_occlusion(2.0f, 0.0f);
         md_render_view_t vo = md_render_view_create(fx.r, "every element tested");
         md_render_frame_t fo = frame_of(W, H, make_camera(&c), d.b, 2);
-        fo.small_pixels = 4.0f;
+        md_render_debug_view(vo, 0, 4.0f);
         ASSERT_TRUE(md_render_view_draw(fx.gfx, vo, &fo, NULL));
         fo.content[MD_RENDER_CONTENT_GEOMETRY]++;
         ASSERT_TRUE(md_render_view_draw(fx.gfx, vo, &fo, NULL));
@@ -2994,7 +2990,7 @@ UTEST(render, culling_and_compute_raster_change_nothing) {
         EXPECT_GT(so.occluded, (d.n_sph + d.n_cap) / 4);
         md_render_view_t ro = md_render_view_create(fx.r, "its reference");
         md_render_frame_t fro = fo;
-        fro.options = MD_RENDER_NO_OCCLUSION_CULLING | MD_RENDER_NO_COMPUTE_RASTER;
+        md_render_debug_view(ro, MD_RENDER_DEBUG_NO_OCCLUSION | MD_RENDER_DEBUG_NO_COMPUTE_RASTER, 0.0f);
         ASSERT_TRUE(md_render_view_draw(fx.gfx, ro, &fro, NULL));
         EXPECT_EQ(0, compare_views(&fx, vo, ro, W, H, &covered));
         md_render_view_destroy(fx.gfx, vo);
@@ -3009,9 +3005,9 @@ UTEST(render, culling_and_compute_raster_change_nothing) {
         md_render_view_t rj = md_render_view_create(fx.r, "jittered reference");
         md_render_frame_t fj = frame_of(W, H, make_camera(&c), d.b, 2);
         fj.jitter = MD_RENDER_JITTER_ALWAYS;
-        fj.small_pixels = 4.0f;
+        md_render_debug_view(vj, 0, 4.0f);
         md_render_frame_t fjr = fj;
-        fjr.options = MD_RENDER_NO_OCCLUSION_CULLING | MD_RENDER_NO_COMPUTE_RASTER;
+        md_render_debug_view(rj, MD_RENDER_DEBUG_NO_OCCLUSION | MD_RENDER_DEBUG_NO_COMPUTE_RASTER, 0.0f);
         for (int k = 0; k < 5; ++k) {
             ASSERT_TRUE(md_render_view_draw(fx.gfx, vj, &fj, NULL));
             ASSERT_TRUE(md_render_view_draw(fx.gfx, rj, &fjr, NULL));
@@ -3045,98 +3041,6 @@ UTEST(render, culling_and_compute_raster_change_nothing) {
     free(m); free(sel);
     md_render_view_destroy(fx.gfx, ref);
     md_render_debug_occlusion_auto(true);
-    f_close(&fx);
-}
-
-/* The compute raster's shapes by their projection (md_render_debug_small_approx,
-   an experiment): a sheet of small spheres and capsules, a few pixels each,
-   drawn by rays and by projection. The coverage agrees but at a few edge
-   pixels (5893 by both, 10 by one of them, here), the nearest element at
-   98% of them, the depths to under 1% (relative; 0.13% on average). The
-   first takes missed: a circle where off the centre of view the image is an
-   ellipse (4% of the coverage, at the corners 25% short across), and a
-   capsule's tilt against z where it is against the eye's direction (2% in
-   depth, 4 radii, end-on off the centre). Every 7th sphere has a capsule
-   seen end-on, toward the eye: the depth along a line under a pixel that a
-   capsule's image is too short to give went far past its ends. */
-void md_render_debug_small_approx(bool on);
-
-UTEST(render, small_by_projection_close_to_the_rays) {
-    fix_t fx;
-    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
-    md_gpu_device_info_t info;
-    md_gpu_device_info(fx.dev, &info);
-    if (!info.supports_atomic_int64) { f_close(&fx); UTEST_SKIP("no compute raster without 64-bit atomics"); }
-    const uint32_t W = 160, H = 120;
-    cam_t c = { .tan_half = 0.6f, .aspect = (float)W / H, .n = 0.1f };
-    enum { NX = 40, NY = 30, NS = NX * NY, NE = NS / 7 };   /* NE capsules seen end-on, toward the eye */
-    float* pos = malloc((NS + NE) * 12);
-    float* rad = malloc(NS * 4);
-    uint32_t* idx = malloc((NS + NE) * 8);
-    uint32_t seed = 777, nc = 0;
-    #define RND() ((seed = seed * 1664525u + 1013904223u) >> 8) / 16777216.0f
-    for (int y = 0, i = 0; y < NY; ++y) for (int x = 0; x < NX; ++x, ++i) {
-        pos[3 * i + 0] = (x - NX / 2) * 1.0f + RND() * 0.4f;
-        pos[3 * i + 1] = (y - NY / 2) * 1.0f + RND() * 0.4f;
-        pos[3 * i + 2] = -30.0f - RND() * 4.0f;
-        rad[i] = 0.2f + 0.25f * RND();
-        if (x + 1 < NX) { idx[2 * nc] = (uint32_t)i; idx[2 * nc + 1] = (uint32_t)i + 1; nc++; }
-    }
-    #undef RND
-    for (int k = 0; k < NE; ++k) {      /* from every 7th sphere 1.5 toward the eye, all but end-on: the image a disc */
-        const float* p = pos + 3 * (7 * k);
-        float l = sqrtf(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
-        for (int j = 0; j < 3; ++j) pos[3 * (NS + k) + j] = p[j] - 1.5f * p[j] / l;
-        pos[3 * (NS + k) + 0] += 0.01f * (float)(k % 5 - 2);
-        pos[3 * (NS + k) + 1] += 0.01f * (float)(k % 3 - 1);
-        idx[2 * nc] = (uint32_t)(7 * k); idx[2 * nc + 1] = (uint32_t)(NS + k); nc++;
-    }
-    md_render_batch_t b[2] = {0};
-    b[0].key = 1; b[0].kind = MD_RENDER_SPHERES; b[0].count = NS; b[0].points.count = NS;
-    b[0].points.position = f_buf(&fx, pos, (NS + NE) * 12); b[0].points.radius = f_buf(&fx, rad, NS * 4);
-    b[0].style.spheres.radius_scale = 1.0f;
-    b[1].key = 2; b[1].kind = MD_RENDER_CAPSULES; b[1].count = nc; b[1].points.count = NS + NE;
-    b[1].points.position = b[0].points.position; b[1].index = f_buf(&fx, idx, (size_t)nc * 8);
-    b[1].style.capsules.radius = 0.15f;
-    md_render_frame_t f = frame_of(W, H, make_camera(&c), b, 2);
-    f.options = MD_RENDER_NO_OCCLUSION_CULLING;
-    f.small_pixels = 6.0f;
-    md_render_view_t vr = md_render_view_create(fx.r, "rays"), vp = md_render_view_create(fx.r, "projection");
-    ASSERT_TRUE(md_render_view_draw(fx.gfx, vr, &f, NULL));
-    md_gpu_stream_sync(fx.gfx);
-    md_render_stats_t st;
-    ASSERT_TRUE(md_render_view_stats(vr, &st));
-    EXPECT_GT(st.compute[0], (uint32_t)(NS + nc) * 9 / 10);
-    md_render_debug_small_approx(true);
-    ASSERT_TRUE(md_render_view_draw(fx.gfx, vp, &f, NULL));
-    md_gpu_stream_sync(fx.gfx);
-    md_render_debug_small_approx(false);
-    uint32_t* ir = malloc(W * H * 8); uint32_t* ip = malloc(W * H * 8);
-    float* dr = malloc(W * H * 4); float* dpj = malloc(W * H * 4);
-    md_render_targets_t tr = md_render_view_targets(vr), tp = md_render_view_targets(vp);
-    ASSERT_TRUE(f_read(&fx, tr.id, ir, W * H * 8) && f_read(&fx, tp.id, ip, W * H * 8));
-    ASSERT_TRUE(f_read(&fx, tr.depth, dr, W * H * 4) && f_read(&fx, tp.depth, dpj, W * H * 4));
-    int cov_r = 0, cov_p = 0, only = 0, other = 0, same = 0;
-    double dmax = 0.0, dsum = 0.0;
-    for (uint32_t i = 0; i < W * H; ++i) {
-        bool hr = ir[2 * i + 1] != 0, hp = ip[2 * i + 1] != 0;
-        cov_r += hr; cov_p += hp;
-        if (hr != hp) { only++; continue; }
-        if (!hr) continue;
-        if (ir[2 * i] != ip[2 * i] || ir[2 * i + 1] != ip[2 * i + 1]) { other++; continue; }
-        same++;
-        double dd = fabs((double)dr[i] - (double)dpj[i]) / (double)dr[i];   /* relative: 1/z under reverse Z */
-        dsum += dd; if (dd > dmax) dmax = dd;
-    }
-    printf("    covered: %d by rays, %d by projection, %d by one of them; the same element at %d, another at %d; depth off by %.2g on average, %.2g at most (relative)\n",
-           cov_r, cov_p, only, same, other, same ? dsum / same : 0.0, dmax);
-    EXPECT_GT(cov_r, (int)(W * H / 4));
-    EXPECT_LT(only * 100, cov_r);
-    EXPECT_LT(other * 20, cov_r);
-    EXPECT_LT(dmax, 0.015);
-    free(ir); free(ip); free(dr); free(dpj); free(pos); free(rad); free(idx);
-    md_render_view_destroy(fx.gfx, vr);
-    md_render_view_destroy(fx.gfx, vp);
     f_close(&fx);
 }
 
@@ -3183,16 +3087,17 @@ UTEST(render, occlusion_off_where_it_culls_little) {
     bd.points.position = f_buf(&fx, dp, (size_t)ND * 12);
     bd.style.spheres.radius_add = 0.8f;
     md_render_frame_t fsp = frame_of(W, H, make_camera(&c), &bs, 1), fde = frame_of(W, H, make_camera(&c), &bd, 1);
-    fsp.options = fde.options = MD_RENDER_NO_COMPUTE_RASTER;
     md_render_frame_t rsp = fsp, rde = fde;
-    rsp.options = rde.options = MD_RENDER_NO_COMPUTE_RASTER | MD_RENDER_NO_OCCLUSION_CULLING;
     md_render_view_t ref_s = md_render_view_create(fx.r, "sparse, no occlusion"), ref_d = md_render_view_create(fx.r, "dense, no occlusion");
+    md_render_debug_view(ref_s, MD_RENDER_DEBUG_NO_COMPUTE_RASTER | MD_RENDER_DEBUG_NO_OCCLUSION, 0.0f);
+    md_render_debug_view(ref_d, MD_RENDER_DEBUG_NO_COMPUTE_RASTER | MD_RENDER_DEBUG_NO_OCCLUSION, 0.0f);
     ASSERT_TRUE(md_render_view_draw(fx.gfx, ref_s, &rsp, NULL));
     ASSERT_TRUE(md_render_view_draw(fx.gfx, ref_d, &rde, NULL));
 
     int hiz = 0, covered = 0;
     md_render_debug_pass_hook(count_hiz, &hiz);
     md_render_view_t v = md_render_view_create(fx.r, "occlusion as it pays");
+    md_render_debug_view(v, MD_RENDER_DEBUG_NO_COMPUTE_RASTER, 0.0f);
     /* sparse: the first raster builds the pyramid, the second tests it and
        culls nothing, the ones after go without */
     EXPECT_EQ(1, raster_with_hiz(&fx, v, &fsp, &hiz));
@@ -3218,6 +3123,7 @@ UTEST(render, occlusion_off_where_it_culls_little) {
     /* the switch off: every raster culls, however little */
     md_render_debug_occlusion_auto(false);
     md_render_view_t va = md_render_view_create(fx.r, "occlusion always");
+    md_render_debug_view(va, MD_RENDER_DEBUG_NO_COMPUTE_RASTER, 0.0f);
     for (int k = 0; k < 4; ++k) EXPECT_EQ(1, raster_with_hiz(&fx, va, &fsp, &hiz));
     md_render_debug_occlusion_auto(true);
     md_render_debug_pass_hook(NULL, NULL);
@@ -4548,7 +4454,7 @@ UTEST(render, mol_clusters_follow_the_solvent) {
     cam.view[12] = -20.0f; cam.view[13] = -20.0f; cam.view[14] = -85.0f;
     md_render_view_t ref = md_render_view_create(fx.r, "reference");
     md_render_frame_t fr = frame_of(W, H, cam, plain, 2);
-    fr.options = MD_RENDER_NO_OCCLUSION_CULLING | MD_RENDER_NO_COMPUTE_RASTER;
+    md_render_debug_view(ref, MD_RENDER_DEBUG_NO_OCCLUSION | MD_RENDER_DEBUG_NO_COMPUTE_RASTER, 0.0f);
     ASSERT_TRUE(md_render_view_draw(fx.gfx, ref, &fr, NULL));
     md_render_frame_t f = frame_of(W, H, cam, batches, nbat);
     memcpy(f.content, content, sizeof(content));
@@ -4668,7 +4574,6 @@ static float half_to_float(uint32_t h) {
    atoms resident (the residue, every third water, the oxygen of every
    fifth): only those are quantized, uploaded, regrouped and drawn. */
 /* in md_render_mol.c, not in its header: the frames' gather from at most `groups` groups */
-void md_render_mol_debug_frame_groups(uint32_t groups);
 
 static void frames_case(int* utest_result, bool partial) {
     fix_t fx;
@@ -4990,7 +4895,7 @@ UTEST(render, mol_resident_set_draws_what_hiding_draws) {
     cam.view[12] = -20.0f; cam.view[13] = -20.0f; cam.view[14] = -85.0f;
     md_render_view_t ref = md_render_view_create(fx.r, "reference");
     md_render_frame_t fr = frame_of(W, H, cam, plain, 2);
-    fr.options = MD_RENDER_NO_OCCLUSION_CULLING | MD_RENDER_NO_COMPUTE_RASTER;
+    md_render_debug_view(ref, MD_RENDER_DEBUG_NO_OCCLUSION | MD_RENDER_DEBUG_NO_COMPUTE_RASTER, 0.0f);
     ASSERT_TRUE(md_render_view_draw(fx.gfx, ref, &fr, NULL));
     md_render_frame_t f = frame_of(W, H, cam, batches, nbat);
     ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
@@ -6740,7 +6645,6 @@ UTEST(render, mol_ribbons) {
    as the tests' frames are); the lines it prints say where an ordering is
    missing: a flush (a submission boundary, no wait) or a sync after one pass
    alone that repairs the frame names the boundary. */
-void md_render_debug_pass_hook(void (*hook)(void* user, const char* pass), void* user);
 
 typedef struct order_probe_t {
     md_gpu_stream_t s;

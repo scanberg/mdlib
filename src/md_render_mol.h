@@ -54,7 +54,7 @@ lifetime:
 
   * What md_render draws is a copy of the atoms in cluster order, in the
     per-frame block: float4 (position, w) and the velocity per point,
-    gathered by every md_render_mol_update. w is the point's type and flags
+    gathered by every md_render_mol_update. w is the point's type
     (topo.point_type), or its radius when the caller gives radii per atom. Read through the cluster order
     instead, the caller's arrays in file order cost a scattered fetch in
     every pass over the elements; the copy costs one per position change.
@@ -217,9 +217,9 @@ typedef struct md_render_mol_topo_t {
        cluster per grid cell (grid_cells of them, some empty) for the small
        molecules. Point p (of the per-frame copy) is atom atom_order[p]. */
     md_gpu_addr_t point_type;              /* uint32 [point_count]: the point's particle
-                                              type (low 16 bits; the radius table's
-                                              index) and flags (high 16: none yet)      */
-    md_gpu_addr_t atom_order;              /* uint32 [point_count + derived_count]:
+                                              type (the radius table's index)           */
+    md_gpu_addr_t atom_order;              /* uint32 [point_count + derived_count +
+                                              residue_point_count]:
                                               point -> atom (the other way: invert it; a
                                               map kept from atom to point would cost every
                                               regroup a write scattered over all of it);
