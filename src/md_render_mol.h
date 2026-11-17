@@ -133,23 +133,18 @@ struct md_unitcell_t;
 extern "C" {
 #endif
 
-/* Bonds are drawn by class. The classes follow md_bond_kind_t, so a
-   representation chooses which kinds it draws with a mask of classes. */
-typedef enum md_render_mol_bond_class_t {
-    MD_RENDER_MOL_BOND_COVALENT = 0,
-    MD_RENDER_MOL_BOND_COORDINATE,
-    MD_RENDER_MOL_BOND_ELASTIC,
-    MD_RENDER_MOL_BOND_METALLIC,
-    MD_RENDER_MOL_BOND_INTERACTION,
-    MD_RENDER_MOL_BOND_HYDROGEN,
-    MD_RENDER_MOL_BOND_CLASS_COUNT,
-} md_render_mol_bond_class_t;
-
-#define MD_RENDER_MOL_BONDS(c) (1u << (c))
-#define MD_RENDER_MOL_BONDS_ALL ((1u << MD_RENDER_MOL_BOND_CLASS_COUNT) - 1u)
+/* Bonds are drawn by kind (md_bond_kind_t), each kind on its own: the
+   topology's bonds are grouped by MD_RENDER_MOL_BOND_KIND(kind), the three
+   bits of the kind (two of the eight values are no kind, and stay empty),
+   and a representation chooses which kinds it draws with a mask of them:
+   MD_RENDER_MOL_BONDS(MD_BOND_KIND_HYDROGEN). */
+#define MD_RENDER_MOL_BOND_KIND(kind)   ((uint32_t)(kind) >> 5)
+#define MD_RENDER_MOL_BOND_KIND_COUNT   8
+#define MD_RENDER_MOL_BONDS(kind)       (1u << MD_RENDER_MOL_BOND_KIND(kind))
+#define MD_RENDER_MOL_BONDS_ALL         ((1u << MD_RENDER_MOL_BOND_KIND_COUNT) - 1u)
 
 /* Which bonds the sticks draw dashed (md_render's dashed capsules), each in
-   the style of its class, so that the classes are told apart and the
+   the style of its kind, so that the kinds are told apart and the
    stronger reads as the stronger: the thicker, the more of its length
    covered, the longer its dashes (md_gl's BOND DASHES). Relative to the
    radius r of the representation's sticks:
@@ -227,18 +222,19 @@ typedef struct md_render_mol_topo_t {
     uint32_t      atom_cluster_count;
     md_gpu_addr_t atom_cluster_offset;     /* uint32 [atom_cluster_count + 1]          */
 
-    /* Bonds, grouped by class: class c is bond_pairs[class_offset[c] ..
-       class_offset[c + 1]), in cluster order: with the cluster of their
-       first atom's (64 at most per cluster); the covalent bonds within small
-       molecules last, by grid cell. Between points, not atoms (atom_order
-       maps back); the order within a class changes with every regroup. */
+    /* Bonds, grouped by kind: kind k (MD_RENDER_MOL_BOND_KIND) is
+       bond_pairs[kind_offset[k] .. kind_offset[k + 1]), in cluster order:
+       with the cluster of their first atom's (64 at most per cluster); the
+       covalent bonds within small molecules last, by grid cell. Between
+       points, not atoms (atom_order maps back); the order within a kind
+       changes with every regroup. The covalent bonds come first. */
     uint32_t      bond_count;
-    uint32_t      bond_class_offset[MD_RENDER_MOL_BOND_CLASS_COUNT + 1];
+    uint32_t      bond_kind_offset[MD_RENDER_MOL_BOND_KIND_COUNT + 1];
     md_gpu_addr_t bond_pairs;              /* uint32 [2 * bond_count]: two points      */
     md_gpu_addr_t bond_ids;                /* uint32 [bond_count]: index in sys->bond  */
-    uint32_t      bond_cluster_count[MD_RENDER_MOL_BOND_CLASS_COUNT];
-    md_gpu_addr_t bond_cluster_offset[MD_RENDER_MOL_BOND_CLASS_COUNT];  /* uint32 [count + 1],
-                                                       relative to the class's first bond */
+    uint32_t      bond_cluster_count[MD_RENDER_MOL_BOND_KIND_COUNT];
+    md_gpu_addr_t bond_cluster_offset[MD_RENDER_MOL_BOND_KIND_COUNT];   /* uint32 [count + 1],
+                                                       relative to the kind's first bond */
 
     /* The protein backbone, for the cartoon: a control point per residue
        whose CA, C and O are resident (not in a small molecule), in the order
@@ -298,14 +294,14 @@ typedef struct md_render_mol_topo_t {
        the doubles first. Between points, each with its index in sys->bond.
        A double's plane is that of its sp2 centres: the atoms by its ends
        that give it (md_gl's), its side (md_render's) the update's.
-       bond_single: per bond of the covalent class 0 for those drawn as
+       bond_single: per covalent bond (the first kind), 0 for those drawn as
        multiple bonds, else 1 (the sticks' radius_scale); 0 without any. */
     uint32_t      order_count[2];          /* doubles, triples                         */
     md_gpu_addr_t order_points;            /* uint32 [2 * (order_count[0] + order_count[1])] */
     md_gpu_addr_t order_bond;              /* uint32 per bond: index in sys->bond       */
     md_gpu_addr_t order_ref;               /* internal: uint32 [4] per double, the points
                                               of two atoms by either end (UINT32_MAX none) */
-    md_gpu_addr_t bond_single;             /* float per bond of the covalent class      */
+    md_gpu_addr_t bond_single;             /* float per covalent bond                   */
 
     /* The circles of the aromatic rings, for the bond orders: the rings of
        sys->ring with MD_RING_FLAG_AROMATIC, every atom static and each
@@ -401,7 +397,7 @@ typedef struct md_render_mol_topo_t {
     /* The small molecules, regrouped by md_render_mol_update */
     uint32_t      small_molecule_count;
     uint32_t      small_atom_count;        /* the tail of atom_order                    */
-    uint32_t      small_bond_count;        /* the tail of the covalent class            */
+    uint32_t      small_bond_count;        /* the tail of the covalent bonds            */
     uint32_t      grid_cells;              /* the last clusters of the atoms (and of the
                                               covalent bonds, when small_bond_count)    */
     uint32_t      mixed_bond_count;        /* other bonds touching small molecules:
@@ -730,10 +726,10 @@ typedef struct md_render_mol_rep_t {
         } cartoon;
     } params;
 
-    /* Which bond classes the sticks draw: MD_RENDER_MOL_BONDS(...) mask.
+    /* Which bond kinds the sticks draw: MD_RENDER_MOL_BONDS(...) mask.
        0 takes the type's default (covalent and coordinate; BONDS: all).
        Which of them dashed: md_render_mol_dashes_t. */
-    uint32_t                 bond_classes;
+    uint32_t                 bond_kinds;
     md_render_mol_dashes_t   dashes;
 
     /* Dashed lines over the breaks of the chains (md_gl's chain gaps):
@@ -782,7 +778,7 @@ typedef struct md_render_mol_rep_t {
 /* What emit writes, as the low byte of batch keys */
 enum {
     MD_RENDER_MOL_PART_ATOMS    = 0,
-    MD_RENDER_MOL_PART_BONDS    = 1,    /* + bond class */
+    MD_RENDER_MOL_PART_BONDS    = 1,    /* + MD_RENDER_MOL_BOND_KIND */
     MD_RENDER_MOL_PART_BACKBONE = 16,   /* the cartoon: the protein's */
     MD_RENDER_MOL_PART_NUCLEIC  = 17,   /* the nucleic acids' band */
     MD_RENDER_MOL_PART_RINGS    = 18,   /* + corners - 3: their rings */

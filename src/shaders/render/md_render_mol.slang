@@ -80,9 +80,9 @@ struct Args {
     uint* mixed_point;          // the topology's: atom -> point, for the static atoms and the atoms of
                                 // molecules with mixed bonds (sol_mixed's)
     uint* atom_cluster_offset;  // the topology's: from static_atom_clusters on
-    uint* bond_pairs;           // the topology's (the covalent class first): from static_bonds on
+    uint* bond_pairs;           // the topology's (the covalent bonds first): from static_bonds on
     uint* bond_ids;
-    uint* bond_cluster_offset;  // the covalent class's: from static_bond_clusters on
+    uint* bond_cluster_offset;  // the covalent bonds': from static_bond_clusters on
     uint* point_type;           // the topology's: per point its type, in point order
     uint* frame0;               // frames: the slots combined
     uint* frame1;

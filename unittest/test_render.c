@@ -3649,7 +3649,7 @@ UTEST(render, mol_licorice_emit_and_pick) {
     md_temp_end(temp);
     EXPECT_EQ(sys.topology_version, topo.topology_version);
     EXPECT_EQ(8u, topo.bond_count);
-    EXPECT_EQ(8u, topo.bond_class_offset[1]);   /* all covalent */
+    EXPECT_EQ(8u, topo.bond_kind_offset[1]);   /* all covalent */
 
     /* The caller's atom arrays */
     md_gpu_addr_t P = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, 9 * 12).gpu;
@@ -3824,9 +3824,9 @@ static int check_topo_image(const md_system_t* sys, const md_render_mol_topo_t* 
         bool expect = a < n && b < n && RES(a) && RES(b);
         if (expect != (bool)seen[i]) { FAIL("bond %u (%u-%u): %s", i, a, b, expect ? "missing" : "kept with an end not resident"); }
     }
-    for (uint32_t c = 0; c < MD_RENDER_MOL_BOND_CLASS_COUNT; ++c) {
+    for (uint32_t c = 0; c < MD_RENDER_MOL_BOND_KIND_COUNT; ++c) {
         const uint32_t* bo = (const uint32_t*)(img + T->bond_cluster_offset[c]);
-        uint32_t size = T->bond_class_offset[c + 1] - T->bond_class_offset[c], cc = T->bond_cluster_count[c];
+        uint32_t size = T->bond_kind_offset[c + 1] - T->bond_kind_offset[c], cc = T->bond_cluster_count[c];
         if (bo[0] != 0 || bo[cc] != size) FAIL("class %u: clusters span %u..%u of %u", c, bo[0], bo[cc], size);
         uint32_t n_grid = (c == 0 && T->small_bond_count) ? T->grid_cells : 0;
         for (uint32_t k = 0; k < cc; ++k) {
@@ -3883,7 +3883,7 @@ UTEST(render, mol_plan_clusters) {
             md_render_mol_topo_t rel = topo;
             rel.atom_order -= topo.base; rel.mixed_point -= topo.base; rel.atom_cluster_offset -= topo.base;
             rel.bond_pairs -= topo.base; rel.bond_ids -= topo.base;
-            for (int c = 0; c < MD_RENDER_MOL_BOND_CLASS_COUNT; ++c) rel.bond_cluster_offset[c] -= topo.base;
+            for (int c = 0; c < MD_RENDER_MOL_BOND_KIND_COUNT; ++c) rel.bond_cluster_offset[c] -= topo.base;
             /* twice: the second from the first's records (the other buffer),
                mixed bonds and all */
             for (int rg = 0; rg < 2; ++rg) {
@@ -4373,7 +4373,7 @@ UTEST(render, mol_clusters_follow_the_solvent) {
     /* the block's own image: rebase the addresses to offsets */
     md_render_mol_topo_t rel = topo;
     rel.atom_order -= topo.base; rel.mixed_point -= topo.base; rel.atom_cluster_offset -= topo.base; rel.bond_pairs -= topo.base; rel.bond_ids -= topo.base;
-    for (int c = 0; c < MD_RENDER_MOL_BOND_CLASS_COUNT; ++c) rel.bond_cluster_offset[c] -= topo.base;
+    for (int c = 0; c < MD_RENDER_MOL_BOND_KIND_COUNT; ++c) rel.bond_cluster_offset[c] -= topo.base;
     EXPECT_EQ(0, check_topo_image(&sys, &rel, after, NULL));
     double e0 = grid_cluster_extent(&rel, before, xyz), e1 = grid_cluster_extent(&rel, after, xyz);
     printf("    grid clusters: mean extent %.1f A in molecule order, %.1f A after the update\n", e0, e1);
@@ -4428,7 +4428,7 @@ UTEST(render, mol_clusters_follow_the_solvent) {
     rep.key  = 7;
     rep.type = MD_RENDER_MOL_REP_LICORICE;
     rep.params.licorice.radius = 0.3f;
-    rep.bond_classes = MD_RENDER_MOL_BONDS_ALL;
+    rep.bond_kinds = MD_RENDER_MOL_BONDS_ALL;
     md_render_batch_t batches[8];
     uint32_t nbat = md_render_mol_emit(&topo, dyn, &atoms, &rep, batches, 8);
     ASSERT_GE(nbat, 2u);
@@ -4782,7 +4782,7 @@ static void frames_case(int* utest_result, bool partial) {
     uint8_t* img = read_block(&fx, topo.base, topo.size);
     md_render_mol_topo_t rel = topo;
     rel.atom_order -= topo.base; rel.mixed_point -= topo.base; rel.atom_cluster_offset -= topo.base; rel.bond_pairs -= topo.base; rel.bond_ids -= topo.base;
-    for (int c = 0; c < MD_RENDER_MOL_BOND_CLASS_COUNT; ++c) rel.bond_cluster_offset[c] -= topo.base;
+    for (int c = 0; c < MD_RENDER_MOL_BOND_KIND_COUNT; ++c) rel.bond_cluster_offset[c] -= topo.base;
     EXPECT_EQ(0, check_topo_image(&sys, &rel, img, resident));
     /* refused: a regroup in the update, a slot without a frame, a cell with a
        not along x (the minimum image is GROMACS's, for that form) */
@@ -4856,7 +4856,7 @@ UTEST(render, mol_resident_set_draws_what_hiding_draws) {
     rep.key  = 7;
     rep.type = MD_RENDER_MOL_REP_LICORICE;
     rep.params.licorice.radius = 0.3f;
-    rep.bond_classes = MD_RENDER_MOL_BONDS_ALL;
+    rep.bond_kinds = MD_RENDER_MOL_BONDS_ALL;
     md_render_batch_t batches[8];
     uint32_t nbat = md_render_mol_emit(&topo, dyn, &atoms, &rep, batches, 8);
     ASSERT_GE(nbat, 2u);
@@ -5591,7 +5591,7 @@ UTEST(render, mol_bonds_dashed_by_kind) {
     md_render_mol_topo_t topo;
     ASSERT_TRUE(md_render_mol_write(fx.gfx, &topo, &plan, md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, plan.size).gpu, content));
     md_temp_end(temp);
-    const uint32_t ncoord = topo.bond_class_offset[MD_RENDER_MOL_BOND_COORDINATE + 1] - topo.bond_class_offset[MD_RENDER_MOL_BOND_COORDINATE];
+    const uint32_t ncoord = topo.bond_kind_offset[MD_RENDER_MOL_BOND_KIND(MD_BOND_KIND_COORDINATE) + 1] - topo.bond_kind_offset[MD_RENDER_MOL_BOND_KIND(MD_BOND_KIND_COORDINATE)];
     ASSERT_GT(ncoord, 0u);
     md_render_mol_ctx_t kernels = md_render_mol_create(fx.dev, NULL);
     ASSERT_TRUE(kernels != NULL);
@@ -5609,7 +5609,7 @@ UTEST(render, mol_bonds_dashed_by_kind) {
     ASSERT_EQ(3u, md_render_mol_emit(&topo, dyn, &atoms, &rep, bt, 8));     /* covalent, coordinate, atoms */
     const md_render_capsule_style_t* cv = &bt[0].style.capsules;
     const md_render_capsule_style_t* cd = &bt[1].style.capsules;
-    EXPECT_EQ((uint64_t)(5 << 8 | (MD_RENDER_MOL_PART_BONDS + MD_RENDER_MOL_BOND_COORDINATE)), bt[1].key);
+    EXPECT_EQ((uint64_t)(5 << 8 | (MD_RENDER_MOL_PART_BONDS + MD_RENDER_MOL_BOND_KIND(MD_BOND_KIND_COORDINATE))), bt[1].key);
     EXPECT_EQ(0.0f, cv->dash_length);
     EXPECT_NEAR(0.70f * r, cd->radius, 1e-6f);
     EXPECT_NEAR(2.0f * r, cd->dash_length, 1e-6f);
@@ -5998,7 +5998,7 @@ UTEST(render, mol_bond_orders) {
     }
     /* the sticks of the covalent class leave them out */
     {
-        const uint32_t beg = L->bond_class_offset[MD_RENDER_MOL_BOND_COVALENT], cnt = L->bond_class_offset[MD_RENDER_MOL_BOND_COVALENT + 1] - beg;
+        const uint32_t beg = L->bond_kind_offset[MD_RENDER_MOL_BOND_KIND(MD_BOND_KIND_COVALENT)], cnt = L->bond_kind_offset[MD_RENDER_MOL_BOND_KIND(MD_BOND_KIND_COVALENT) + 1] - beg;
         const uint32_t* ids = (const uint32_t*)(img + L->bond_ids);
         const float*    one = (const float*)(img + L->bond_single);
         ASSERT_TRUE(L->bond_single != 0);
