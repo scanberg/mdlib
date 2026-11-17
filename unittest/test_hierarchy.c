@@ -22,7 +22,7 @@
 #include "system_invariants.h"
 #include "system_util.h"
 
-// What md_system_infer gives the system of its parts (MD_SYSTEM_INFER_PART_BIT)
+// What md_system_infer gives the system of its parts
 static bool test_infer_parts(md_system_t* sys) {
     md_part_data_t parts = {0};
     const bool ok = md_part_infer(&parts, sys, sys->alloc);
@@ -266,7 +266,7 @@ UTEST(hierarchy, coordinated_metals_are_molecules_of_their_own) {
         md_system_state_t state = {.alloc = alloc};
         ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), NULL));
         ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
-        ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+        ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
         size_t num_mg = 0;
         for (size_t i = 0; i < sys.atom.count; ++i) {
             if (md_atom_atomic_number(&sys.atom, i) != MD_Z_Mg) continue;
@@ -287,7 +287,7 @@ UTEST(hierarchy, coordinated_metals_are_molecules_of_their_own) {
         md_system_state_t state = {.alloc = alloc};
         ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif"), NULL));
         ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
-        ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+        ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
         int32_t mg = -1;
         for (size_t i = 0; i < sys.atom.count && mg < 0; ++i) if (md_atom_atomic_number(&sys.atom, i) == MD_Z_Mg) mg = (int32_t)i;
         ASSERT_GE(mg, 0);
@@ -324,7 +324,7 @@ UTEST(hierarchy, molecules_hold_residues_and_chains) {
         md_system_state_t state = {.alloc = alloc};
         ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif"), NULL));
         ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
-        ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+        ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
         size_t breaks = 0;
         for (size_t i = 0; i < sys.residue.count; ++i) breaks += (md_system_residue_flags(&sys, i) & MD_RESIDUE_FLAG_BREAK_AFTER) != 0;
         EXPECT_GT(breaks, 0u);
@@ -384,7 +384,7 @@ UTEST(hierarchy, molecules_hold_residues_and_chains) {
         md_system_state_t state = {.alloc = alloc};
         ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(pdb), NULL));
         ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
-        ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+        ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
         ASSERT_EQ(sys.atom.count, 34u);
         EXPECT_EQ(md_system_instance_count(&sys), 1u);
         EXPECT_EQ(md_system_part_count(&sys), 2u);
@@ -410,7 +410,7 @@ UTEST(hierarchy, molecules_hold_residues_and_chains) {
         md_system_state_t state = {.alloc = alloc};
         ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(pdb), NULL));
         ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
-        ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+        ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
         EXPECT_EQ(md_system_bond_count(&sys), 0u);
         EXPECT_EQ(md_system_molecule_count(&sys), 3u);
         check_molecule_invariants(utest_result, &sys);
@@ -440,7 +440,7 @@ UTEST(hierarchy, branched_molecule_is_one_instance) {
     md_system_state_t state = {.alloc = alloc};
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(pdb), NULL));
     ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
-    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
     ASSERT_EQ(5u, md_system_residue_count(&sys));
     // The branch: the third bonded to the first
     EXPECT_TRUE(md_bond_find(&sys.bond, 0, 4) >= 0 || md_bond_find(&sys.bond, 1, 4) >= 0);
@@ -627,7 +627,7 @@ UTEST(hierarchy, part_type_derived) {
         md_system_state_t sys_state = { .alloc = alloc };
         ASSERT_TRUE(md_gro_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"), NULL));
         ASSERT_TRUE(test_infer_as_loaded(&sys, &sys_state));
-        md_system_infer(&sys, &sys_state, MD_SYSTEM_INFER_ALL, NULL);
+        md_system_infer(&sys, &sys_state, NULL);
         EXPECT_EQ(md_system_instance_count(&sys), 0);
 
         ASSERT_EQ(md_system_part_type_count(&sys), 6);
@@ -653,7 +653,7 @@ UTEST(hierarchy, part_type_derived) {
         md_system_state_t sys_state = { .alloc = alloc };
         ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif"), NULL));
         ASSERT_TRUE(test_infer_as_loaded(&sys, &sys_state));
-        md_system_infer(&sys, &sys_state, MD_SYSTEM_INFER_ALL, NULL);
+        md_system_infer(&sys, &sys_state, NULL);
 
         // Each asym is one part, of the entity of the file
         ASSERT_GT(md_system_part_type_count(&sys), 0);
@@ -691,7 +691,7 @@ UTEST(hierarchy, part_type_instance_mmcif) {
             EXPECT_EQ(md_part_type_flags_kind(given->flags[i]), types[i].kind);
             EXPECT_TRUE(md_str_eq(given->description[i], md_str_from_cstr(types[i].desc)));
         }
-        md_system_infer(&sys, &sys_state, MD_SYSTEM_INFER_PART_BIT, NULL);
+        md_system_infer(&sys, &sys_state, NULL);
         ASSERT_GE(md_system_part_type_count(&sys), MD_COUNTOF(types));
         for (size_t i = 0; i < MD_COUNTOF(types); ++i) {
             EXPECT_EQ(md_system_part_type_kind(&sys, i), types[i].kind);
@@ -720,7 +720,7 @@ UTEST(hierarchy, part_type_instance_mmcif) {
         md_system_state_t sys_state = { .alloc = alloc };
         ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif"), NULL));
         ASSERT_TRUE(test_infer_as_loaded(&sys, &sys_state));
-        md_system_infer(&sys, &sys_state, MD_SYSTEM_INFER_ALL, NULL);
+        md_system_infer(&sys, &sys_state, NULL);
         ASSERT_GE(md_system_part_type_count(&sys), 5);
         EXPECT_EQ(md_system_part_type_kind(&sys, 2), MD_PART_KIND_RNA);
         EXPECT_EQ(md_system_part_type_kind(&sys, 3), MD_PART_KIND_RNA);
@@ -839,7 +839,7 @@ UTEST(hierarchy, hypermodified_nucleotide) {
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, md_str_from_cstr(text), NULL));
     ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
-    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
     ASSERT_EQ((size_t)3, md_system_residue_count(&sys));
     EXPECT_TRUE(md_str_eq(md_system_residue_name(&sys, 1), MD_STR_LIT("YYG")));
     for (size_t c = 0; c < 3; ++c) {
@@ -927,7 +927,7 @@ UTEST(hierarchy, chains) {
         md_system_t sys = {.alloc = alloc};
         md_system_state_t sys_state = { .alloc = alloc };
         ASSERT_TRUE(init_system(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro")));
-        ASSERT_TRUE(md_system_infer(&sys, &sys_state, MD_SYSTEM_INFER_ALL, NULL));
+        ASSERT_TRUE(md_system_infer(&sys, &sys_state, NULL));
         EXPECT_EQ(0, (int)md_system_chain_count(&sys));
         size_t polymers = 0;
         for (size_t p = 0; p < md_system_part_count(&sys); ++p) {
@@ -950,7 +950,7 @@ UTEST(hierarchy, chains) {
         md_system_t sys = {.alloc = alloc};
         md_system_state_t sys_state = { .alloc = alloc };
         ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/peptide_tip4p.tpr"), NULL));
-        ASSERT_TRUE(md_system_infer(&sys, &sys_state, MD_SYSTEM_INFER_ALL & ~MD_SYSTEM_INFER_BOND_BIT, NULL));
+        ASSERT_TRUE(md_system_infer(&sys, &sys_state, NULL));
         EXPECT_EQ(0, (int)md_system_chain_count(&sys));
         EXPECT_EQ(MD_PART_KIND_PEPTIDE, md_system_part_kind(&sys, 0));
         EXPECT_EQ(MD_PART_KIND_WATER, md_system_part_kind(&sys, 1));
@@ -962,7 +962,7 @@ UTEST(hierarchy, chains) {
         md_system_t sys = {.alloc = alloc};
         md_system_state_t sys_state = { .alloc = alloc };
         ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini2_dna.tpr"), NULL));
-        ASSERT_TRUE(md_system_infer(&sys, &sys_state, MD_SYSTEM_INFER_ALL & ~MD_SYSTEM_INFER_BOND_BIT, NULL));
+        ASSERT_TRUE(md_system_infer(&sys, &sys_state, NULL));
         EXPECT_EQ(0, (int)md_system_chain_count(&sys));
         const md_urange_t duplex = md_system_instance_residue_range(&sys, 0);
         EXPECT_EQ(24u, duplex.end - duplex.beg);
@@ -978,7 +978,7 @@ UTEST(hierarchy, chains) {
         md_system_state_t gro_state = { .alloc = alloc };
         ASSERT_TRUE(md_gro_system_init_from_file(&gro, &gro_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini2_dna.gro"), NULL));
         ASSERT_TRUE(test_infer_as_loaded(&gro, &gro_state));
-        ASSERT_TRUE(md_system_infer(&gro, &gro_state, MD_SYSTEM_INFER_ALL, NULL));
+        ASSERT_TRUE(md_system_infer(&gro, &gro_state, NULL));
         for (size_t p = 0; p < 2; ++p) {
             const md_urange_t a = md_system_part_atom_range(&sys, p), b = md_system_part_atom_range(&gro, p);
             EXPECT_EQ(a.end - a.beg, b.end - b.beg);
@@ -996,7 +996,7 @@ UTEST(hierarchy, topology_molecules_are_whole) {
     md_system_t sys = {.alloc = alloc};
     md_system_state_t sys_state = { .alloc = alloc };
     ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/peptide_tip3p.tpr"), NULL));
-    ASSERT_TRUE(md_system_infer(&sys, &sys_state, MD_SYSTEM_INFER_ALL & ~MD_SYSTEM_INFER_BOND_BIT, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &sys_state, NULL));
     const size_t num_inst = md_system_instance_count(&sys);
     EXPECT_EQ(num_inst, md_system_molecule_count(&sys));
     const md_molecule_type_idx_t water = md_system_instance_molecule_type_idx(&sys, 1);
@@ -1052,7 +1052,7 @@ UTEST(hierarchy, molecule_type_topology) {
         EXPECT_EQ(md_system_instance_residue_count(&sys, 0), 2);
 
         // Inference leaves the topology's own alone: every molecule is of its type, and the parts are classified
-        ASSERT_TRUE(md_system_infer(&sys, &sys_state, MD_SYSTEM_INFER_ALL & ~MD_SYSTEM_INFER_BOND_BIT, NULL));
+        ASSERT_TRUE(md_system_infer(&sys, &sys_state, NULL));
         EXPECT_EQ(md_system_molecule_type_count(&sys), MD_COUNTOF(types));
         EXPECT_EQ(md_system_instance_count(&sys), inst);
         ASSERT_EQ(md_system_molecule_count(&sys), inst);
@@ -1075,7 +1075,7 @@ UTEST(hierarchy, molecule_type_topology) {
         // The peptide, two lipids, four ions and 583 waters, as the structures are
         ASSERT_EQ(sys.instance.mol_type.count, 5);
         EXPECT_EQ(md_system_instance_count(&sys), 1 + 2 + 4 + 583);
-        ASSERT_TRUE(md_system_infer(&sys, &sys_state, MD_SYSTEM_INFER_ALL & ~MD_SYSTEM_INFER_BOND_BIT, NULL));
+        ASSERT_TRUE(md_system_infer(&sys, &sys_state, NULL));
         EXPECT_EQ(md_system_part_kind(&sys, (size_t)md_system_part_find_by_residue_idx(&sys, md_system_instance_residue_range(&sys, 0).beg)), MD_PART_KIND_PEPTIDE);
         EXPECT_EQ(md_system_part_kind(&sys, (size_t)md_system_part_find_by_residue_idx(&sys, md_system_instance_residue_range(&sys, 1).beg)), MD_PART_KIND_NON_POLYMER);
         EXPECT_EQ(md_system_part_kind(&sys, md_system_part_count(&sys) - 1), MD_PART_KIND_WATER);
@@ -1095,7 +1095,7 @@ UTEST(hierarchy, molecule_type_topology) {
         ASSERT_EQ(md_system_instance_count(&sys), md_system_residue_count(&sys));
         EXPECT_EQ(md_system_instance_molecule_type_idx(&sys, 0), 0);
         EXPECT_EQ(md_system_instance_molecule_type_idx(&sys, md_system_instance_count(&sys) - 1), 1);
-        ASSERT_TRUE(test_infer_parts(&sys));
+        ASSERT_TRUE(md_system_infer(&sys, &sys_state, NULL));
         EXPECT_EQ(md_system_part_kind(&sys, 0), MD_PART_KIND_NON_POLYMER);
         EXPECT_EQ(md_system_part_kind(&sys, md_system_part_count(&sys) - 1), MD_PART_KIND_WATER);
     }
@@ -1113,7 +1113,7 @@ UTEST(hierarchy, molecule_type_inferred) {
         md_system_state_t state = { .alloc = alloc };
         ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif"), NULL));
         ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
-        ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+        ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
         EXPECT_VALID_SYSTEM(&sys);
         // The two chains of the hydrolase, the Mg, the WO4 and the waters
         const size_t num_types = md_system_molecule_type_count(&sys);
@@ -1128,7 +1128,7 @@ UTEST(hierarchy, molecule_type_inferred) {
         const md_molecule_type_idx_t w = md_system_molecule_type_idx(&sys, md_system_molecule_count(&sys) - 1);
         EXPECT_TRUE(md_str_eq(md_system_molecule_type_name(&sys, (size_t)w), MD_STR_LIT("water")));
 
-        ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+        ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
         EXPECT_EQ(md_system_molecule_type_count(&sys), num_types);
         EXPECT_VALID_SYSTEM(&sys);
     }
@@ -1138,7 +1138,7 @@ UTEST(hierarchy, molecule_type_inferred) {
         md_system_t sys = {.alloc = alloc};
         md_system_state_t state = { .alloc = alloc };
         ASSERT_TRUE(md_xyz_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/C60-Ih.xyz"), NULL));
-        ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+        ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
         ASSERT_EQ(md_system_molecule_count(&sys), 1u);
         ASSERT_EQ(md_system_molecule_type_count(&sys), 1u);
         EXPECT_TRUE(md_str_eq(md_system_molecule_type_name(&sys, 0), MD_STR_LIT("C60")));
@@ -1159,14 +1159,14 @@ UTEST(hierarchy, topology_version) {
     const uint64_t loaded = sys.topology_version;
     EXPECT_NE(loaded, 0u);
 
-    ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
     const uint64_t inferred = sys.topology_version;
     EXPECT_NE(inferred, loaded);
 
     // Inferring again derives the backbones from scratch rather than appending to them
     const size_t num_protein = sys.protein_backbone.segment.count, num_protein_ranges = sys.protein_backbone.range.count;
     const size_t num_nucleic = sys.nucleic_backbone.segment.count, num_nucleic_ranges = sys.nucleic_backbone.range.count;
-    ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
     EXPECT_NE(sys.topology_version, inferred);
     EXPECT_EQ(sys.protein_backbone.segment.count, num_protein);
     EXPECT_EQ(sys.protein_backbone.range.count, num_protein_ranges);
@@ -1176,10 +1176,11 @@ UTEST(hierarchy, topology_version) {
 
     // Bonds added and removed by hand
     const uint64_t before_insert = sys.topology_version;
-    md_system_bond_insert(&sys, 0, 100, md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_USER));
+    EXPECT_TRUE(md_system_bond_insert(&sys, 0, 100, md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_USER)));
     EXPECT_NE(sys.topology_version, before_insert);
+    ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
     const uint64_t before_remove = sys.topology_version;
-    md_system_bond_remove(&sys, (md_bond_idx_t)(sys.bond.count - 1));
+    EXPECT_TRUE(md_system_bond_remove(&sys, md_system_bond_find(&sys, 0, 100)));
     EXPECT_NE(sys.topology_version, before_remove);
 
     // Read only operations leave it alone
@@ -1207,7 +1208,7 @@ UTEST(hierarchy, molecule_structures) {
     md_system_t sys = {.alloc = alloc};
     md_system_state_t st = {.alloc = alloc};
     ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL));
-    ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
 
     const md_molecule_data_t* mol = &sys.molecule;
     ASSERT_TRUE(mol->structure_idx != NULL);
@@ -1244,10 +1245,15 @@ UTEST(hierarchy, molecule_structures) {
     EXPECT_TRUE(md_system_molecule_structures_valid(&sys));
     EXPECT_EQ(0, memcmp(flags, sys.bond.flags, sizeof(md_bond_flags_t) * B));
 
-    // A topology changed and changed back: valid again, from what they were found from
-    md_system_bond_insert(&sys, 0, 100, md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_USER));
+    // The bonds changed and changed back by hand (as code which changes the arrays itself may): valid again, from what
+    // they were found from
+    md_bond_insert(&sys.bond, 0, 100, md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_USER), md_system_derived_alloc(&sys));
+    md_system_bond_build_connectivity(&sys);
+    md_system_topology_changed(&sys);
     EXPECT_FALSE(md_system_molecule_structures_valid(&sys));
-    md_system_bond_remove(&sys, (md_bond_idx_t)(sys.bond.count - 1));
+    md_bond_remove(&sys.bond, md_bond_find(&sys.bond, 0, 100));
+    md_system_bond_build_connectivity(&sys);
+    md_system_topology_changed(&sys);
     EXPECT_TRUE(md_system_molecule_structures_valid(&sys));
 
     md_system_free(&sys);
@@ -1319,7 +1325,7 @@ UTEST(hierarchy, structures_edge_cases) {
         md_system_t sys = { .alloc = alloc };
         md_system_state_t st = { .alloc = alloc };
         ASSERT_TRUE(md_xyz_system_init_from_str(&sys, &st, (md_str_t){ buf, (size_t)len }, NULL));
-        ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
+        ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
         EXPECT_EQ(sys.bond.count, (size_t)(4 * n * n * n * 12 / 2));
         EXPECT_EQ(md_system_molecule_count(&sys), sys.atom.count);
         EXPECT_EQ(sys.molecule.structure_count, 1u);
@@ -1354,7 +1360,7 @@ UTEST(hierarchy, structures_of_test_data) {
         EXPECT_TRUE_MSG(ok, path);
         if (!ok) { md_vm_arena_destroy(alloc); continue; }
         for (int pass = 0; pass < 2; ++pass) {
-            ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
+            ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
             check_molecule_invariants(utest_result, &sys);
             check_structure_invariants(utest_result, &sys, 512);
         }
@@ -1380,7 +1386,7 @@ UTEST(hierarchy, find_by_index) {
     md_system_state_t sys_state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"), NULL));
     ASSERT_TRUE(test_infer_as_loaded(&sys, &sys_state));
-    md_system_infer(&sys, &sys_state, MD_SYSTEM_INFER_ALL, NULL);
+    md_system_infer(&sys, &sys_state, NULL);
     for (size_t c = 0; c < sys.residue.count; ++c) {
         const md_urange_t range = md_system_residue_atom_range(&sys, c);
         EXPECT_EQ(md_system_residue_find_by_atom_idx(&sys, range.beg), (int)c);

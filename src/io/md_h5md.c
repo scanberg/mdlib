@@ -1078,12 +1078,13 @@ static bool h5md_system_from_core(md_system_t* sys, md_system_state_t* state, hi
     md_array(md_atom_pair_t) bonds = 0;
     h5md_read_bonds(&bonds, file, p, scratch);
     for (size_t i = 0; i < md_array_size(bonds); ++i) {
-        md_array_push(sys->bond.pairs, bonds[i], md_system_derived_alloc(sys));
-        md_array_push(sys->bond.flags, md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_TOPOLOGY), md_system_derived_alloc(sys));
+        md_array_push(sys->given_bond.pairs, bonds[i], sys->alloc);
+        md_array_push(sys->given_bond.flags, md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_TOPOLOGY), sys->alloc);
     }
-    sys->bond.count = md_array_size(bonds);
-    if (sys->bond.count) {
-        md_bond_build_connectivity(&sys->bond, N, md_system_derived_alloc(sys));
+    sys->given_bond.count = md_array_size(bonds);
+    // The connectivity of the topology, of every atom; without it (a file of coordinates alone) the bonds are inferred
+    if (sys->given_bond.count) {
+        md_system_set_bonds_complete(sys);
     }
 
     float* charge = md_alloc(scratch, N * sizeof(float));

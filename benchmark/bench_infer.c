@@ -14,7 +14,7 @@
 // Without files it runs a default set from test_data (default_files).
 //
 // .gro, .pdb, .cif and .tpr files are loaded once, then each run infers into a copy of the system as loaded
-// (md_system_infer with MD_SYSTEM_INFER_ALL; the copy is not timed), or its bonds alone (--bonds). Each line is a thread
+// (md_system_infer; the copy is not timed), or its bonds alone (--bonds). Each line is a thread
 // count: the best and median wall time of a run, the speedup over one thread and the page faults of the best run. What a
 // run infers is summarized by a hash of the bonds, the chemistry, the molecules and their structures, the rings and the
 // fragments (of the bonds alone with --bonds), which every count must agree on ('!' marks one that does not). The header
@@ -43,7 +43,7 @@
 #include <string.h>
 
 // The benchmark's own revision: bumped with every change of it, so that a result names the build it came from
-#define MD_INFER_BENCH_REV "R3"
+#define MD_INFER_BENCH_REV "R4"
 
 #define MAX_COUNTS 32
 
@@ -230,7 +230,7 @@ int main(int argc, char** argv) {
     md_log_unregister(default_logger);
     md_log_register(&logger);
 
-    printf("md_infer_bench %s: %s over threads\n", MD_INFER_BENCH_REV, bonds_only ? "md_bond_infer" : "md_system_infer (MD_SYSTEM_INFER_ALL)");
+    printf("md_infer_bench %s: %s over threads\n", MD_INFER_BENCH_REV, bonds_only ? "md_bond_infer" : "md_system_infer");
     printf("mdlib %s\n", MD_BENCH_SOURCE_REV);
     printf("CPU %d logical cores | %d timed run%s per count | %s\n\n", cores, reps, reps == 1 ? "" : "s",
            reuse ? "into the same memory (faulted in once)" : "into fresh memory each run");
@@ -276,7 +276,7 @@ int main(int argc, char** argv) {
                 if (profile) mdi_infer_profile = &prof;
                 const uint64_t f0 = page_faults();
                 const md_tick_t t0 = md_tick_now();
-                if (ok) ok = bonds_only ? md_bond_infer(&bonds, &base, &st, alloc, ex) : md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, ex);
+                if (ok) ok = bonds_only ? md_bond_infer(&bonds, &base, &st, alloc, ex) : md_system_infer(&sys, &st, ex);
                 const md_tick_t t1 = md_tick_now();
                 const uint64_t f1 = page_faults();
                 mdi_infer_profile = NULL;

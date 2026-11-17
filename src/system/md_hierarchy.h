@@ -436,7 +436,7 @@ md_molecule_type_idx_t md_molecule_type_data_push(md_molecule_type_data_t* type,
 // system is given the result by md_system_infer, or by the caller (the *_data_free of the old, assign).
 
 // The chains of the system (md_chain_data_t) from the author ids of its instances: one per id. A system without ids
-// has no chains. md_system_infer gives them the system (MD_SYSTEM_INFER_PART_BIT), and so do the loaders which give
+// has no chains. md_system_infer gives them the system, and so do the loaders which give
 // the ids; whatever changes the instances after infers them again.
 bool md_chain_infer(md_chain_data_t* out, const struct md_system_t* sys, md_allocator_i* alloc);
 
@@ -449,7 +449,7 @@ bool md_chain_infer(md_chain_data_t* out, const struct md_system_t* sys, md_allo
 // (MD_PART_TYPE_FLAG_INFERRED), one per kind and sequence of residue names, after the types the system was given (those of the last inference are not
 // carried over).
 // A given type of unknown kind is classified from its first part. md_system_infer gives them the system
-// (MD_SYSTEM_INFER_PART_BIT, after the bonds); whatever changes the instances, the bonds or the kinds infers them again.
+// (after the bonds); whatever changes the instances, the bonds or the kinds infers them again.
 bool md_part_infer(md_part_data_t* out, const struct md_system_t* sys, md_allocator_i* alloc);
 
 // The molecules of the system (md_molecule_data_t), see there for what holds one together.

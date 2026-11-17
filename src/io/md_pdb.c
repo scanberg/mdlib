@@ -441,16 +441,17 @@ static void pdb_conect_bonds(md_system_t* sys, const int32_t* atom_serial, const
     }
 
     const md_bond_flags_t file = md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_FILE);
-    md_array_ensure(sys->bond.pairs, sys->bond.count + num_bonds, md_system_derived_alloc(sys));
-    md_array_ensure(sys->bond.flags, sys->bond.count + num_bonds, md_system_derived_alloc(sys));
+    md_bond_data_t* given = &sys->given_bond;
+    MD_ASSERT(given->noncovalent_count == 0);
+    md_array_ensure(given->pairs, given->count + num_bonds, sys->alloc);
+    md_array_ensure(given->flags, given->count + num_bonds, sys->alloc);
     for (size_t i = 0; i < num_keys; ++i) {
         if (!keep[i]) continue;
         const md_atom_pair_t pair = {{ (md_atom_idx_t)(key[i] >> 32), (md_atom_idx_t)(key[i] & 0xFFFFFFFF) }};
-        md_array_push_no_grow(sys->bond.pairs, pair);
-        md_array_push_no_grow(sys->bond.flags, file);
+        md_array_push_no_grow(given->pairs, pair);
+        md_array_push_no_grow(given->flags, file);
     }
-    sys->bond.count += num_bonds;
-    md_bond_build_connectivity(&sys->bond, sys->atom.count, md_system_derived_alloc(sys));
+    given->count += num_bonds;
 }
 
 // What follows the atoms and residues: the cell, the bonds of the CONECT records (by the serials of the atoms loaded),
@@ -460,7 +461,7 @@ static void pdb_system_finish(md_system_t* sys, md_system_state_t* state, const 
         state->unitcell = x->cell;
     }
 
-    // The bonds of the CONECT records, of origin MD_BOND_ORIGIN_FILE: inference keeps them and adds the bonds they leave
+    // The bonds of the CONECT records, given, of origin MD_BOND_ORIGIN_FILE: inference keeps them and adds the bonds they leave
     // out (CONECT records usually cover the ligands only, in a coarse grained structure from martinize2 all of it).
     // Their serials name atoms of the first model; alternate locations other than the first are not loaded.
     const size_t num_conect = md_array_size(x->conect) / 2;

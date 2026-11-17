@@ -692,17 +692,18 @@ static void xyz_tinker_bonds(md_system_t* sys, const md_xyz_data_t* data, size_t
     uint32_t* order = md_alloc(temp, num_keys * sizeof(uint32_t));
     md_argsort_radix_u64(order, keys, num_keys);
     const md_bond_flags_t file = md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_FILE);
-    md_array_ensure(sys->bond.pairs, num_keys, md_system_derived_alloc(sys));
-    md_array_ensure(sys->bond.flags, num_keys, md_system_derived_alloc(sys));
+    md_bond_data_t* given = &sys->given_bond;
+    MD_ASSERT(given->noncovalent_count == 0);
+    md_array_ensure(given->pairs, num_keys, sys->alloc);
+    md_array_ensure(given->flags, num_keys, sys->alloc);
     for (size_t i = 0; i < num_keys; ++i) {
         const uint64_t key = keys[order[i]];
         if (i > 0 && key == keys[order[i - 1]]) continue;
         const md_atom_pair_t pair = {{ (md_atom_idx_t)(key >> 32), (md_atom_idx_t)(key & 0xFFFFFFFF) }};
-        md_array_push(sys->bond.pairs, pair, md_system_derived_alloc(sys));
-        md_array_push(sys->bond.flags, file, md_system_derived_alloc(sys));
-        sys->bond.count += 1;
+        md_array_push(given->pairs, pair, sys->alloc);
+        md_array_push(given->flags, file, sys->alloc);
+        given->count += 1;
     }
-    md_bond_build_connectivity(&sys->bond, sys->atom.count, md_system_derived_alloc(sys));
 }
 
 // What makes a system of the atoms of a model, one atom at a time

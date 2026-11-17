@@ -17,7 +17,7 @@
 
 #include <string.h>
 
-// What md_system_infer gives the system of its molecules (MD_SYSTEM_INFER_MOLECULE_BIT)
+// What md_system_infer gives the system of its molecules
 static inline bool test_infer_molecules(md_system_t* sys) {
     md_molecule_data_t molecules = {0};
     const bool ok = md_molecule_infer(&molecules, sys, sys->alloc);
@@ -37,7 +37,7 @@ static inline bool test_infer_chains(md_system_t* sys) {
 // What a structure file's loader gave before it gave only the core (md_gro, md_pdb, md_mmcif): the bonds, what the
 // residues are by them, and the chains. The tests below were written against that.
 static inline bool test_infer_as_loaded(md_system_t* sys, md_system_state_t* state) {
-    return md_system_infer(sys, state, MD_SYSTEM_INFER_BOND_BIT | MD_SYSTEM_INFER_RESIDUE_BIT, NULL) && test_infer_chains(sys);
+    return md_system_infer(sys, state, NULL) && test_infer_chains(sys);
 }
 
 // The tests lay out coordinates per axis, which reads well; a state holds them packed.
@@ -202,22 +202,22 @@ static inline void reference_systems_load(reference_systems_t* ref) {
     md_system_state_t mol_ala_state = { .alloc = alloc };
     md_pdb_system_init_from_file(&ref->mol_ala, &mol_ala_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL);
     md_pdb_system_publish_run(&ref->mol_ala, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), MD_STR_LIT("run/ala"), MD_RUN_FLAG_DISABLE_CACHE_WRITE);
-    md_system_infer(&ref->mol_ala, &mol_ala_state, MD_SYSTEM_INFER_ALL, NULL);
+    md_system_infer(&ref->mol_ala, &mol_ala_state, NULL);
 
     ref->mol_pftaa.alloc = alloc;
     md_system_state_t mol_pftaa_state = { .alloc = alloc };
     md_gro_system_init_from_file(&ref->mol_pftaa, &mol_pftaa_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/pftaa.gro"), NULL);
-    md_system_infer(&ref->mol_pftaa, &mol_pftaa_state, MD_SYSTEM_INFER_ALL, NULL);
+    md_system_infer(&ref->mol_pftaa, &mol_pftaa_state, NULL);
 
     ref->mol_nucleotides.alloc = alloc;
     md_system_state_t mol_nucleotides_state = { .alloc = alloc };
     md_gro_system_init_from_file(&ref->mol_nucleotides, &mol_nucleotides_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/nucleotides.gro"), NULL);
-    md_system_infer(&ref->mol_nucleotides, &mol_nucleotides_state, MD_SYSTEM_INFER_ALL, NULL);
+    md_system_infer(&ref->mol_nucleotides, &mol_nucleotides_state, NULL);
 
     ref->mol_centered.alloc = alloc;
     md_system_state_t mol_centered_state = { .alloc = alloc };
     md_gro_system_init_from_file(&ref->mol_centered, &mol_centered_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL);
-    md_system_infer(&ref->mol_centered, &mol_centered_state, MD_SYSTEM_INFER_ALL, NULL);
+    md_system_infer(&ref->mol_centered, &mol_centered_state, NULL);
 }
 
 static inline void reference_systems_free(reference_systems_t* ref) {

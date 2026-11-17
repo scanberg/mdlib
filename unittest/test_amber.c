@@ -485,7 +485,7 @@ UTEST(amber_prmtop, builds_a_system_without_coordinates) {
     EXPECT_EQ(6, sys.atom.type.z[sys.atom.type_idx[0]]);
     EXPECT_EQ(8, sys.atom.type.z[sys.atom.type_idx[6]]);
     EXPECT_EQ(MD_PARTICLE_VIRTUAL_SITE, md_atom_particle_kind(&sys.atom, 9));
-    EXPECT_EQ(8u, sys.bond.count);
+    EXPECT_EQ(8u, sys.given_bond.count);
     EXPECT_TRUE(md_str_eq_cstr(md_label16_str(&sys.atom.type.ff_type[sys.atom.type_idx[0]]), "CT"));
 
     const md_attribute_t* charge = md_attributes_find(&sys.attributes, MD_STR_LIT("atom/charge"));

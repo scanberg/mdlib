@@ -35,7 +35,7 @@ static void check_file(int* utest_result, sys_load_fn load, md_str_t path) {
         return;
     }
 
-    md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL);
+    md_system_infer(&sys, &state, NULL);
     expect_valid_system(utest_result, __FILE__, __LINE__, &sys);
 
     md_system_free(&sys);
@@ -96,8 +96,8 @@ UTEST(system_invariants, copy) {
     EXPECT_NE((void*)sys.atom.type_idx, (void*)core.atom.type_idx);
     md_system_state_t core_state = { .alloc = a2 };
     md_system_state_copy(&core_state, &state);
-    ASSERT_TRUE(md_system_infer(&core, &core_state, MD_SYSTEM_INFER_ALL, NULL));
-    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&core, &core_state, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
     expect_valid_system(utest_result, __FILE__, __LINE__, &core);
     EXPECT_EQ(sys.bond.count, core.bond.count);
     EXPECT_EQ(0, memcmp(sys.bond.pairs, core.bond.pairs, sys.bond.count * sizeof(md_atom_pair_t)));
@@ -193,13 +193,13 @@ static void check_infer_write_set(int* utest_result, sys_load_fn load, md_str_t 
         const char* name = (const char*)path.ptr;
         // The colors of the types first, as a viewer has them to show the system with: of the types, which the work
         // does not publish (md_system_infer_run)
-        md_system_infer(&sys, &state, MD_SYSTEM_INFER_COLOR_BIT, NULL);
+        md_system_infer_type_colors(&sys);
         md_system_t snap = { .alloc = a_snap };
         md_system_copy(&snap, &sys);
 
         md_system_infer_work_t work;
         EXPECT_TRUE(md_system_infer_prepare(&work, &sys, &state, a_work));
-        EXPECT_TRUE(md_system_infer_run(&work, MD_SYSTEM_INFER_ALL, NULL));
+        EXPECT_TRUE(md_system_infer_run(&work, NULL));
 
         // Nothing of the system was written: not through what the work shares of it
         expect_same_core(utest_result, __FILE__, __LINE__, name, &sys, &snap);
@@ -211,8 +211,8 @@ static void check_infer_write_set(int* utest_result, sys_load_fn load, md_str_t 
         md_system_t ref = { .alloc = a_ref };
         md_system_state_t ref_state = { .alloc = a_ref };
         ASSERT_TRUE(load(&ref, &ref_state, path));
-        md_system_infer(&ref, &ref_state, MD_SYSTEM_INFER_COLOR_BIT, NULL);
-        md_system_infer(&ref, &ref_state, MD_SYSTEM_INFER_ALL & ~MD_SYSTEM_INFER_COLOR_BIT, NULL);
+        md_system_infer_type_colors(&ref);
+        md_system_infer(&ref, &ref_state, NULL);
 
         EXPECT_TRUE(md_system_infer_publish(&sys, &work));
         expect_valid_system(utest_result, __FILE__, __LINE__, &sys);
@@ -387,14 +387,14 @@ static void check_derived_alloc(int* utest_result, sys_load_fn load, md_str_t pa
     EXPECT_TRUE(sys.derived_alloc == &t.alloc);     // Kept by the loader
     expect_derived_owned(utest_result, what, &sys, &t);
 
-    md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL);
+    md_system_infer(&sys, &state, NULL);
     expect_valid_system(utest_result, __FILE__, __LINE__, &sys);
     expect_derived_owned(utest_result, what, &sys, &t);
     const size_t pos  = md_vm_arena_get_pos(core);
     const size_t live = t.live;
 
     // Inferred again: the same, replaced
-    md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL);
+    md_system_infer(&sys, &state, NULL);
     expect_derived_owned(utest_result, what, &sys, &t);
     EXPECT_EQ(pos, md_vm_arena_get_pos(core));
     EXPECT_EQ(live, t.live);
@@ -409,7 +409,7 @@ static void check_derived_alloc(int* utest_result, sys_load_fn load, md_str_t pa
             md_allocator_i* a_work = md_vm_arena_create(MD_GIGABYTES(4));
             md_system_infer_work_t work;
             EXPECT_TRUE(md_system_infer_prepare(&work, &sys, &state, a_work));
-            EXPECT_TRUE(md_system_infer_run(&work, MD_SYSTEM_INFER_ALL, NULL));
+            EXPECT_TRUE(md_system_infer_run(&work, NULL));
             EXPECT_TRUE(md_system_infer_publish(&sys, &work));
             md_vm_arena_destroy(a_work);
             expect_derived_owned(utest_result, what, &sys, &t);
@@ -423,25 +423,25 @@ static void check_derived_alloc(int* utest_result, sys_load_fn load, md_str_t pa
         md_allocator_i* a_work = md_vm_arena_create(MD_GIGABYTES(4));
         md_system_infer_work_t work;
         EXPECT_TRUE(md_system_infer_prepare(&work, &sys, &state, a_work));
-        EXPECT_TRUE(md_system_infer_run(&work, MD_SYSTEM_INFER_ALL, NULL));
+        EXPECT_TRUE(md_system_infer_run(&work, NULL));
         md_system_infer_discard(&work);
         md_vm_arena_destroy(a_work);
         EXPECT_EQ(live_published, t.live);
     }
 
-    // A bond added by hand between the first and the last atom, and removed: the molecules, rings and fragments with it
+    // A bond added by hand between the first and the last atom, and removed: the molecules, rings and fragments with it.
+    // The bond is of the core (given_bond), which grows by it; the derived is inferred anew.
     if (sys.atom.count > 1) {
         const md_atom_idx_t a = 0, b = (md_atom_idx_t)(sys.atom.count - 1);
         if (md_system_bond_find(&sys, a, b) == -1) {
-            md_system_bond_insert(&sys, a, b, md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_USER));
-            md_system_bond_build_connectivity(&sys);
-            md_system_infer(&sys, &state, MD_SYSTEM_INFER_MOLECULE_BIT | MD_SYSTEM_INFER_FRAGMENT_BIT, NULL);
+            EXPECT_TRUE(md_system_bond_insert(&sys, a, b, md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_USER)));
+            md_system_infer(&sys, &state, NULL);
             expect_derived_owned(utest_result, what, &sys, &t);
-            md_system_bond_remove(&sys, md_system_bond_find(&sys, a, b));
-            md_system_bond_build_connectivity(&sys);
-            md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL);
+            EXPECT_NE(-1, md_system_bond_find(&sys, a, b));
+            EXPECT_TRUE(md_system_bond_remove(&sys, md_system_bond_find(&sys, a, b)));
+            md_system_infer(&sys, &state, NULL);
             expect_derived_owned(utest_result, what, &sys, &t);
-            EXPECT_EQ(pos, md_vm_arena_get_pos(core));
+            EXPECT_EQ(-1, md_system_bond_find(&sys, a, b));
             // As much alive as before, give or take the capacity the bond arrays grew to
             EXPECT_LE(t.live, live + live / 8);
         }

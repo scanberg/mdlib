@@ -796,27 +796,27 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
         num_topology_bonds += md_array_size(mol->bonds) + md_array_size(mol->elastic_bonds);
     }
 
-    // ## Bonds
-    // Laid out as [kept] [kept topology] [new topology] [user defined]. Re-inference keeps every bond which was not
-    // inferred wherever it sits, so the order is for readability, not a contract.
+    // ## Bonds given: those the topology gives, of the atoms of the molecules it covers, which have these and no others
+    // (bonds_complete). Laid out as [kept] [kept topology] [new topology] [user defined] [non-covalent]: what is given
+    // between two covered atoms is replaced, but for the bonds of the user and the non-covalent ones.
     {
-        const size_t old_count = sys->bond.count;
-        const size_t cap = old_count + num_topology_bonds;
-        md_atom_pair_t*  pairs = md_temp_alloc_array(temp, md_atom_pair_t,  cap);
-        md_bond_flags_t* flags = md_temp_alloc_array(temp, md_bond_flags_t, cap);
-        size_t count = 0;
+        const md_bond_data_t* old = &sys->given_bond;
+        const size_t old_count = old->count;
+        const size_t num_noncovalent = old->noncovalent_count;
+        md_bond_data_t given = {0};
+        md_array_ensure(given.pairs, old_count + num_topology_bonds + num_noncovalent, sys->alloc);
+        md_array_ensure(given.flags, old_count + num_topology_bonds + num_noncovalent, sys->alloc);
 
         for (int pass = 0; pass < 2; ++pass) {
             for (size_t i = 0; i < old_count; ++i) {
-                const md_atom_pair_t  pair = sys->bond.pairs[i];
-                const md_bond_origin_t origin = md_bond_origin(sys->bond.flags[i]);
+                const md_atom_pair_t  pair = old->pairs[i];
+                const md_bond_origin_t origin = md_bond_origin(old->flags[i]);
                 if (origin == MD_BOND_ORIGIN_USER) continue;
                 if ((origin == MD_BOND_ORIGIN_TOPOLOGY) != (pass == 1)) continue;
                 const bool valid = pair.idx[0] >= 0 && pair.idx[1] >= 0 && (size_t)pair.idx[0] < atom_count && (size_t)pair.idx[1] < atom_count;
                 if (valid && covered[pair.idx[0]] && covered[pair.idx[1]]) continue;  // Replaced by the topology
-                pairs[count] = pair;
-                flags[count] = sys->bond.flags[i];
-                count += 1;
+                md_array_push_no_grow(given.pairs, pair);
+                md_array_push_no_grow(given.flags, old->flags[i]);
             }
         }
 
@@ -824,63 +824,39 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
             const md_itp_moleculetype_t* mol = &data->moleculetypes[instances[k].type];
             const md_atom_idx_t off = (md_atom_idx_t)instances[k].atom_offset;
             for (size_t b = 0; b < md_array_size(mol->bonds); ++b) {
-                pairs[count].idx[0] = off + mol->bonds[b].idx[0];
-                pairs[count].idx[1] = off + mol->bonds[b].idx[1];
-                flags[count] = md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_TOPOLOGY);
-                count += 1;
+                const md_atom_pair_t pair = {{ off + mol->bonds[b].idx[0], off + mol->bonds[b].idx[1] }};
+                md_array_push_no_grow(given.pairs, pair);
+                md_array_push_no_grow(given.flags, md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_TOPOLOGY));
             }
             for (size_t b = 0; b < md_array_size(mol->elastic_bonds); ++b) {
-                pairs[count].idx[0] = off + mol->elastic_bonds[b].idx[0];
-                pairs[count].idx[1] = off + mol->elastic_bonds[b].idx[1];
-                flags[count] = md_bond_flags_set_origin((md_bond_flags_t)MD_BOND_KIND_ELASTIC, MD_BOND_ORIGIN_TOPOLOGY);
-                count += 1;
+                const md_atom_pair_t pair = {{ off + mol->elastic_bonds[b].idx[0], off + mol->elastic_bonds[b].idx[1] }};
+                md_array_push_no_grow(given.pairs, pair);
+                md_array_push_no_grow(given.flags, md_bond_flags_set_origin((md_bond_flags_t)MD_BOND_KIND_ELASTIC, MD_BOND_ORIGIN_TOPOLOGY));
             }
         }
 
-        size_t num_user = 0;
         for (size_t i = 0; i < old_count; ++i) {
-            if (md_bond_origin(sys->bond.flags[i]) == MD_BOND_ORIGIN_USER) num_user += 1;
+            if (md_bond_origin(old->flags[i]) != MD_BOND_ORIGIN_USER) continue;
+            md_array_push_no_grow(given.pairs, old->pairs[i]);
+            md_array_push_no_grow(given.flags, old->flags[i]);
         }
-        md_atom_pair_t*  user_pairs = md_temp_alloc_array(temp, md_atom_pair_t,  num_user + 1);
-        md_bond_flags_t* user_flags = md_temp_alloc_array(temp, md_bond_flags_t, num_user + 1);
-        for (size_t i = 0, u = 0; i < old_count; ++i) {
-            if (md_bond_origin(sys->bond.flags[i]) == MD_BOND_ORIGIN_USER) {
-                user_pairs[u] = sys->bond.pairs[i];
-                user_flags[u] = sys->bond.flags[i];
-                u += 1;
-            }
-        }
+        given.count = md_array_size(given.pairs);
 
         // The non-covalent bonds are not the topology's: kept as they are, after the graph (md_bond_data_t)
-        const size_t num_noncovalent = sys->bond.noncovalent_count;
-        md_atom_pair_t*  nc_pairs = md_temp_alloc_array(temp, md_atom_pair_t,  num_noncovalent + 1);
-        md_bond_flags_t* nc_flags = md_temp_alloc_array(temp, md_bond_flags_t, num_noncovalent + 1);
-        if (num_noncovalent) {
-            md_memcpy(nc_pairs, sys->bond.pairs + old_count, sizeof(md_atom_pair_t)  * num_noncovalent);
-            md_memcpy(nc_flags, sys->bond.flags + old_count, sizeof(md_bond_flags_t) * num_noncovalent);
+        for (size_t i = old_count; i < old_count + num_noncovalent; ++i) {
+            md_array_push_no_grow(given.pairs, old->pairs[i]);
+            md_array_push_no_grow(given.flags, old->flags[i]);
         }
+        given.noncovalent_count = num_noncovalent;
 
-        md_bond_data_clear(&sys->bond);
-        md_array_resize(sys->bond.pairs, count + num_user + num_noncovalent, md_system_derived_alloc(sys));
-        md_array_resize(sys->bond.flags, count + num_user + num_noncovalent, md_system_derived_alloc(sys));
-        if (count) {
-            md_memcpy(sys->bond.pairs, pairs, sizeof(md_atom_pair_t) * count);
-            md_memcpy(sys->bond.flags, flags, sizeof(md_bond_flags_t) * count);
+        md_bond_data_free(&sys->given_bond, sys->alloc);
+        sys->given_bond = given;
+
+        if (md_array_size(sys->atom.bonds_complete) != atom_count) {
+            md_array_resize(sys->atom.bonds_complete, atom_count, sys->alloc);
+            md_memset(sys->atom.bonds_complete, 0, atom_count);
         }
-        if (num_user) {
-            md_memcpy(sys->bond.pairs + count, user_pairs, sizeof(md_atom_pair_t) * num_user);
-            md_memcpy(sys->bond.flags + count, user_flags, sizeof(md_bond_flags_t) * num_user);
-        }
-        if (num_noncovalent) {
-            md_memcpy(sys->bond.pairs + count + num_user, nc_pairs, sizeof(md_atom_pair_t)  * num_noncovalent);
-            md_memcpy(sys->bond.flags + count + num_user, nc_flags, sizeof(md_bond_flags_t) * num_noncovalent);
-        }
-        sys->bond.count = count + num_user;
-        sys->bond.noncovalent_count = num_noncovalent;
-        md_bond_build_connectivity(&sys->bond, atom_count, md_system_derived_alloc(sys));
-        md_system_infer_coordination(sys);
-        // An elastic network written as plain bonds (bond type 1)
-        md_system_infer_elastic_bonds(sys);
+        for (size_t i = 0; i < atom_count; ++i) sys->atom.bonds_complete[i] |= covered[i];
         md_system_topology_changed(sys);
     }
 
@@ -1042,9 +1018,8 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
         }
     }
 
-    // ## Derived topology: the parts (and the chains) from the units and the bonds, the molecules and the rings, and the
-    // backbones, which name their parts, from the coordinates the system was inferred from
-    md_system_infer(sys, &sys->reference, MD_SYSTEM_INFER_PART_BIT | MD_SYSTEM_INFER_MOLECULE_BIT | MD_SYSTEM_INFER_BACKBONE_BIT | MD_SYSTEM_INFER_LIPID_BIT, NULL);
+    // ## Derived topology: inferred again, from the coordinates the system was inferred from
+    md_system_infer(sys, &sys->reference, NULL);
 
     MD_LOG_INFO("Topology applied: %zu molecules covering %zu of %zu atoms, %zu bonds, %zu structures",
         num_instances, num_covered, atom_count, num_topology_bonds, md_system_molecule_count(sys));

@@ -142,24 +142,25 @@ bool md_topology_system_init(md_system_t* sys, md_system_state_t* state, const m
     // ## Bonds
     {
         const md_bond_flags_t flags = md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_TOPOLOGY);
-        md_array_resize(sys->bond.pairs, d.num_bonds, md_system_derived_alloc(sys));
-        md_array_resize(sys->bond.flags, d.num_bonds, md_system_derived_alloc(sys));
+        md_bond_data_t* given = &sys->given_bond;
+        md_array_resize(given->pairs, d.num_bonds, alloc);
+        md_array_resize(given->flags, d.num_bonds, alloc);
         size_t kept = 0;
         for (size_t b = 0; b < d.num_bonds; ++b) {
             const md_atom_pair_t pair = d.bonds[b];
             if (topology_is_virtual(&d, (size_t)pair.idx[0], z[pair.idx[0]]) || topology_is_virtual(&d, (size_t)pair.idx[1], z[pair.idx[1]])) continue;
-            sys->bond.pairs[kept] = pair;
-            sys->bond.flags[kept] = flags;
+            given->pairs[kept] = pair;
+            given->flags[kept] = flags;
             kept += 1;
         }
-        md_array_shrink(sys->bond.pairs, kept);
-        md_array_shrink(sys->bond.flags, kept);
-        sys->bond.count = kept;
-        md_bond_build_connectivity(&sys->bond, N, md_system_derived_alloc(sys));
+        md_array_shrink(given->pairs, kept);
+        md_array_shrink(given->flags, kept);
+        given->count = kept;
+        // Of every atom: they have the topology's bonds and no others
+        md_system_set_bonds_complete(sys);
     }
 
     md_system_augment_particle_types(sys);
-    md_system_infer_residue_flags(sys, state);
 
     // ## Chains, as ParmEd keeps them from the structure the topology was made from
     if (d.res_chain) {
@@ -238,47 +239,33 @@ bool md_topology_system_supplement(md_system_t* sys, const md_topology_desc_t* d
         }
     }
 
-    // ## Bonds: the topology's replace all but the user's, which are kept, as are the non-covalent ones
+    // ## Bonds: the topology's, of every atom, replace all those given but the user's, which are kept, as are the
+    // non-covalent ones
     {
-        const size_t old_count = sys->bond.count;
-        const size_t num_noncovalent = sys->bond.noncovalent_count;
-        size_t num_user = 0;
-        for (size_t i = 0; i < old_count; ++i) num_user += md_bond_origin(sys->bond.flags[i]) == MD_BOND_ORIGIN_USER;
-
-        const size_t cap = d.num_bonds + num_user + num_noncovalent + 1;
-        md_atom_pair_t*  pairs = md_temp_alloc_array(temp, md_atom_pair_t, cap);
-        md_bond_flags_t* flags = md_temp_alloc_array(temp, md_bond_flags_t, cap);
-        size_t count = 0;
+        const md_bond_data_t* old = &sys->given_bond;
+        const size_t old_count = old->count;
+        const size_t num_noncovalent = old->noncovalent_count;
+        md_bond_data_t given = {0};
+        md_array_ensure(given.pairs, d.num_bonds + old_count + num_noncovalent, sys->alloc);
+        md_array_ensure(given.flags, d.num_bonds + old_count + num_noncovalent, sys->alloc);
         for (size_t b = 0; b < d.num_bonds; ++b) {
             const md_atom_pair_t pair = d.bonds[b];
             if (md_atom_particle_kind(&sys->atom, (size_t)pair.idx[0]) == MD_PARTICLE_VIRTUAL_SITE ||
                 md_atom_particle_kind(&sys->atom, (size_t)pair.idx[1]) == MD_PARTICLE_VIRTUAL_SITE) continue;
-            pairs[count] = pair;
-            flags[count] = md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_TOPOLOGY);
-            count += 1;
+            md_array_push_no_grow(given.pairs, pair);
+            md_array_push_no_grow(given.flags, md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_TOPOLOGY));
         }
-        const size_t num_topology = count;
-        for (size_t i = 0; i < old_count; ++i) {
-            if (md_bond_origin(sys->bond.flags[i]) != MD_BOND_ORIGIN_USER) continue;
-            pairs[count] = sys->bond.pairs[i];
-            flags[count] = sys->bond.flags[i];
-            count += 1;
+        const size_t num_topology = md_array_size(given.pairs);
+        for (size_t i = 0; i < old_count + num_noncovalent; ++i) {
+            if (i < old_count && md_bond_origin(old->flags[i]) != MD_BOND_ORIGIN_USER) continue;
+            md_array_push_no_grow(given.pairs, old->pairs[i]);
+            md_array_push_no_grow(given.flags, old->flags[i]);
         }
-        if (num_noncovalent) {
-            md_memcpy(pairs + count, sys->bond.pairs + old_count, num_noncovalent * sizeof(md_atom_pair_t));
-            md_memcpy(flags + count, sys->bond.flags + old_count, num_noncovalent * sizeof(md_bond_flags_t));
-        }
-        md_bond_data_clear(&sys->bond);
-        md_array_resize(sys->bond.pairs, count + num_noncovalent, md_system_derived_alloc(sys));
-        md_array_resize(sys->bond.flags, count + num_noncovalent, md_system_derived_alloc(sys));
-        if (count + num_noncovalent) {
-            md_memcpy(sys->bond.pairs, pairs, (count + num_noncovalent) * sizeof(md_atom_pair_t));
-            md_memcpy(sys->bond.flags, flags, (count + num_noncovalent) * sizeof(md_bond_flags_t));
-        }
-        sys->bond.count = count;
-        sys->bond.noncovalent_count = num_noncovalent;
-        md_bond_build_connectivity(&sys->bond, N, md_system_derived_alloc(sys));
-        md_system_infer_coordination(sys);
+        given.noncovalent_count = num_noncovalent;
+        given.count = md_array_size(given.pairs) - num_noncovalent;
+        md_bond_data_free(&sys->given_bond, sys->alloc);
+        sys->given_bond = given;
+        md_system_set_bonds_complete(sys);
         md_system_topology_changed(sys);
         TOPO_LOG_INFO(d.format, "%zu bonds of the topology replace those inferred", num_topology);
     }
@@ -299,7 +286,7 @@ bool md_topology_system_supplement(md_system_t* sys, const md_topology_desc_t* d
     }
 
     // ## Derived topology, from the new bonds and the coordinates the system was inferred from
-    md_system_infer(sys, &sys->reference, MD_SYSTEM_INFER_PART_BIT | MD_SYSTEM_INFER_MOLECULE_BIT | MD_SYSTEM_INFER_BACKBONE_BIT | MD_SYSTEM_INFER_LIPID_BIT, NULL);
+    md_system_infer(sys, &sys->reference, NULL);
     result = true;
 
 done:

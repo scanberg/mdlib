@@ -57,8 +57,13 @@ static size_t slice_f64(double* dst, size_t cap, const md_attributes_t* table, c
     return a ? md_attribute_extract_f64(dst, cap, table, a, slice, md_unit_none()) : 0;
 }
 
+// A bond given between two atoms (md_system_t::given_bond: what the loader gives, which has no connectivity)
 static bool has_bond(const md_system_t* sys, int a, int b) {
-    return md_bond_find(&sys->bond, a, b) != -1;
+    for (size_t i = 0; i < sys->given_bond.count + sys->given_bond.noncovalent_count; ++i) {
+        const md_atom_pair_t p = sys->given_bond.pairs[i];
+        if ((p.idx[0] == a && p.idx[1] == b) || (p.idx[0] == b && p.idx[1] == a)) return true;
+    }
+    return false;
 }
 
 // ### GROMACS ###
@@ -136,16 +141,18 @@ static void compare_with_tpr(int* utest_result, const char* h5md_path, const cha
     // GROMACS writes the chemical bonds, constraints and SETTLE, and nothing for a virtual site: the site
     // is tied to its molecule by its construction, not by a bond. The tpr reader gives the same bonds.
     size_t missing = 0;
-    for (size_t b = 0; b < h.sys.bond.count; ++b) {
-        EXPECT_EQ(MD_BOND_ORIGIN_TOPOLOGY, md_bond_origin(h.sys.bond.flags[b]));
-        missing += md_bond_find(&tpr.bond, h.sys.bond.pairs[b].idx[0], h.sys.bond.pairs[b].idx[1]) == -1;
+    for (size_t b = 0; b < h.sys.given_bond.count; ++b) {
+        EXPECT_EQ(MD_BOND_ORIGIN_TOPOLOGY, md_bond_origin(h.sys.given_bond.flags[b]));
+        missing += !has_bond(&tpr, h.sys.given_bond.pairs[b].idx[0], h.sys.given_bond.pairs[b].idx[1]);
     }
     EXPECT_EQ(0u, missing);
-    EXPECT_EQ(tpr.bond.count, h.sys.bond.count);
+    EXPECT_EQ(tpr.given_bond.count, h.sys.given_bond.count);
+    // The topology's connectivity is of every atom
+    for (size_t i = 0; i < h.sys.atom.count; ++i) EXPECT_TRUE(md_atom_bonds_complete(&h.sys.atom, i));
 
     size_t site_bonds = 0;
-    for (size_t b = 0; b < h.sys.bond.count; ++b) {
-        const md_atom_pair_t p = h.sys.bond.pairs[b];
+    for (size_t b = 0; b < h.sys.given_bond.count; ++b) {
+        const md_atom_pair_t p = h.sys.given_bond.pairs[b];
         site_bonds += md_atom_particle_kind(&h.sys.atom, p.idx[0]) == MD_PARTICLE_VIRTUAL_SITE || md_atom_particle_kind(&h.sys.atom, p.idx[1]) == MD_PARTICLE_VIRTUAL_SITE;
     }
     EXPECT_EQ(0u, site_bonds);
@@ -280,7 +287,7 @@ UTEST(h5md, spec_system) {
 
     // Pairs name particles by id. The fill value, a pair naming no particle, pairs of the other
     // group and triples are not bonds
-    EXPECT_EQ(3u, t.sys.bond.count);
+    EXPECT_EQ(3u, t.sys.given_bond.count);
     EXPECT_TRUE(has_bond(&t.sys, 0, 1));
     EXPECT_TRUE(has_bond(&t.sys, 1, 2));
     EXPECT_TRUE(has_bond(&t.sys, 1, 3));
@@ -403,7 +410,8 @@ UTEST(h5md, spec_bare) {
     EXPECT_TRUE(md_str_eq_cstr(md_atom_name(&t.sys.atom, 2), "8"));
     EXPECT_EQ(8, md_atom_atomic_number(&t.sys.atom, 2));    // from its mass
     EXPECT_EQ(1, md_atom_atomic_number(&t.sys.atom, 3));
-    EXPECT_EQ(0u, t.sys.bond.count);
+    EXPECT_EQ(0u, t.sys.given_bond.count);
+    EXPECT_EQ(NULL, t.sys.atom.bonds_complete);
     // Without a unit, a length is Angstrom
     EXPECT_NEAR(spec_position(0, 3, 2), t.state.xyz[3].z, 1.0e-6);
     EXPECT_TRUE(md_unitcell_is_triclinic(&t.state.unitcell));

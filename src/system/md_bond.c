@@ -1161,7 +1161,7 @@ bool md_bond_infer(md_bond_data_t* out, const md_system_t* sys, const md_system_
     return true;
 }
 
-void md_bond_merge(md_bond_data_t* out, const md_bond_data_t* given, const md_bond_data_t* inferred, size_t atom_count, md_allocator_i* alloc) {
+void md_bond_merge(md_bond_data_t* out, const md_bond_data_t* given, const md_bond_data_t* inferred, const uint8_t* complete, size_t atom_count, md_allocator_i* alloc) {
     MD_ASSERT(out);
     MD_ASSERT(given);
     MD_ASSERT(inferred);
@@ -1170,86 +1170,52 @@ void md_bond_merge(md_bond_data_t* out, const md_bond_data_t* given, const md_bo
     md_bond_data_clear(out);
 
     md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
-    md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
 
-    // Every given bond which was not inferred is kept, in its order, after the inferred ones
-    md_array(md_atom_pair_t)  bond_pairs = 0;
-    md_array(md_bond_flags_t) bond_flags = 0;
-    for (size_t i = 0; i < given->count; ++i) {
-        if (md_bond_origin(given->flags[i]) != MD_BOND_ORIGIN_INFERRED) {
-            md_array_push(bond_pairs, given->pairs[i], temp_arena);
-            md_array_push(bond_flags, given->flags[i], temp_arena);
-        }
-    }
-    // The non-covalent bonds are not inferred: they are kept as they are, after the graph (md_bond_data_t)
-    const size_t num_noncovalent = given->noncovalent_count;
-    const md_atom_pair_t*  noncovalent_pairs = given->pairs + given->count;
-    const md_bond_flags_t* noncovalent_flags = given->flags + given->count;
-
+    // The inferred bonds first, but for those between two atoms whose bonds are given complete, and those which name
+    // a pair given a bond of the molecule (non-covalent ones included: a pair has one bond, and that one was given)
     md_bond_data_t* bond = out;
     if (inferred->count) {
         md_array_push_array(bond->pairs, inferred->pairs, inferred->count, alloc);
         md_array_push_array(bond->flags, inferred->flags, inferred->count, alloc);
         bond->count = inferred->count;
     }
-
-    // Reconcile the fresh inferred bonds with the kept ones:
-    // - an inferred bond naming a pair that is already kept is a duplicate, the kept one wins
-    // - where a topology (md_itp) defines the connectivity it is authoritative, so inferred bonds between two
-    //   atoms it covers are dropped, or re-inferring would add the distance guesses back on top of it
-    // - a pair with a non-covalent bond keeps it: an atom pair has one bond, and that one was given
-    {
-        const size_t num_kept  = md_array_size(bond_pairs);
-        const size_t num_saved = num_kept + num_noncovalent;
-        if (num_saved > 0 && bond->count > 0) {
-            const size_t num_atoms = atom_count;
-            uint64_t* covered = make_bitfield(num_atoms, temp_arena);
-
-            // An elastic bond is no bond of the molecule: it neither stands in for an inferred bond nor says that a
-            // topology covers its atoms
-            md_atom_pair_t* saved_sorted = md_temp_alloc_array(temp_scope, md_atom_pair_t, num_saved);
-            size_t num_sorted = 0;
-            for (size_t i = 0; i < num_saved; ++i) {
-                const md_bond_flags_t f = i < num_kept ? bond_flags[i] : noncovalent_flags[i - num_kept];
-                if (md_bond_kind(f) == MD_BOND_KIND_ELASTIC) continue;
-                md_atom_pair_t pair = i < num_kept ? bond_pairs[i] : noncovalent_pairs[i - num_kept];
-                if (pair.idx[0] > pair.idx[1]) { md_atom_idx_t t = pair.idx[0]; pair.idx[0] = pair.idx[1]; pair.idx[1] = t; }
-                saved_sorted[num_sorted++] = pair;
-                if (i < num_kept && md_bond_origin(f) == MD_BOND_ORIGIN_TOPOLOGY) {
-                    for (int k = 0; k < 2; ++k) {
-                        if (pair.idx[k] >= 0 && (size_t)pair.idx[k] < num_atoms) bitfield_set_bit(covered, pair.idx[k]);
-                    }
-                }
-            }
-            qsort(saved_sorted, num_sorted, sizeof(md_atom_pair_t), compare_atom_pair);
-
-            size_t w = 0;
-            for (size_t i = 0; i < bond->count; ++i) {
-                const md_atom_pair_t pair = bond->pairs[i];
-                if (bitfield_test_bit(covered, pair.idx[0]) && bitfield_test_bit(covered, pair.idx[1])) continue;
-                md_atom_pair_t key = pair;
-                if (key.idx[0] > key.idx[1]) { md_atom_idx_t t = key.idx[0]; key.idx[0] = key.idx[1]; key.idx[1] = t; }
-                if (num_sorted && bsearch(&key, saved_sorted, num_sorted, sizeof(md_atom_pair_t), compare_atom_pair)) continue;
-                bond->pairs[w] = pair;
-                bond->flags[w] = bond->flags[i];
-                w += 1;
-            }
-            bond->count = w;
-            md_array_shrink(bond->pairs, w);
-            md_array_shrink(bond->flags, w);
+    const size_t num_given = given->count + given->noncovalent_count;
+    if (bond->count > 0 && (num_given > 0 || complete)) {
+        // An elastic bond is no bond of the molecule: it does not stand in for an inferred bond
+        md_atom_pair_t* given_sorted = md_temp_alloc_array(temp_scope, md_atom_pair_t, num_given + 1);
+        size_t num_sorted = 0;
+        for (size_t i = 0; i < num_given; ++i) {
+            if (md_bond_kind(given->flags[i]) == MD_BOND_KIND_ELASTIC) continue;
+            md_atom_pair_t pair = given->pairs[i];
+            if (pair.idx[0] > pair.idx[1]) { md_atom_idx_t t = pair.idx[0]; pair.idx[0] = pair.idx[1]; pair.idx[1] = t; }
+            given_sorted[num_sorted++] = pair;
         }
+        qsort(given_sorted, num_sorted, sizeof(md_atom_pair_t), compare_atom_pair);
+
+        size_t w = 0;
+        for (size_t i = 0; i < bond->count; ++i) {
+            const md_atom_pair_t pair = bond->pairs[i];
+            if (complete && (size_t)pair.idx[0] < atom_count && (size_t)pair.idx[1] < atom_count &&
+                complete[pair.idx[0]] && complete[pair.idx[1]]) continue;
+            md_atom_pair_t key = pair;
+            if (key.idx[0] > key.idx[1]) { md_atom_idx_t t = key.idx[0]; key.idx[0] = key.idx[1]; key.idx[1] = t; }
+            if (num_sorted && bsearch(&key, given_sorted, num_sorted, sizeof(md_atom_pair_t), compare_atom_pair)) continue;
+            bond->pairs[w] = pair;
+            bond->flags[w] = bond->flags[i];
+            w += 1;
+        }
+        bond->count = w;
+        md_array_shrink(bond->pairs, w);
+        md_array_shrink(bond->flags, w);
     }
 
-    for (size_t i = 0; i < md_array_size(bond_pairs); ++i) {
-        md_array_push(bond->pairs, bond_pairs[i], alloc);
-        md_array_push(bond->flags, bond_flags[i], alloc);
-        bond->count += 1;
+    // Then those given, in their order: the bonds of the graph, then the non-covalent bonds (md_bond_data_t)
+    if (num_given) {
+        md_array_push_array(bond->pairs, given->pairs, num_given, alloc);
+        md_array_push_array(bond->flags, given->flags, num_given, alloc);
     }
-    for (size_t i = 0; i < num_noncovalent; ++i) {
-        md_array_push(bond->pairs, noncovalent_pairs[i], alloc);
-        md_array_push(bond->flags, noncovalent_flags[i], alloc);
-    }
-    bond->noncovalent_count = num_noncovalent;
+    bond->count += given->count;
+    bond->noncovalent_count = given->noncovalent_count;
     md_bond_build_connectivity(bond, atom_count, alloc);
 
     md_temp_end(temp_scope);

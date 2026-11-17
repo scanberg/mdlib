@@ -727,11 +727,11 @@ UTEST(xyz, tinker_names_and_bonds) {
         EXPECT_EQ(MD_Z_O, md_atom_atomic_number(&sys.atom, 0));
         EXPECT_EQ(MD_Z_H, md_atom_atomic_number(&sys.atom, 1));
         EXPECT_EQ(MD_Z_H, md_atom_atomic_number(&sys.atom, 2));
-        ASSERT_EQ(2u, sys.bond.count);
-        EXPECT_EQ(0u, sys.bond.pairs[0].idx[0]);
-        EXPECT_EQ(1u, sys.bond.pairs[0].idx[1]);
-        EXPECT_EQ(0u, sys.bond.pairs[1].idx[0]);
-        EXPECT_EQ(2u, sys.bond.pairs[1].idx[1]);
+        ASSERT_EQ(2u, sys.given_bond.count);
+        EXPECT_EQ(0u, sys.given_bond.pairs[0].idx[0]);
+        EXPECT_EQ(1u, sys.given_bond.pairs[0].idx[1]);
+        EXPECT_EQ(0u, sys.given_bond.pairs[1].idx[0]);
+        EXPECT_EQ(2u, sys.given_bond.pairs[1].idx[1]);
     }
 
     md_xyz_data_t data = {0};

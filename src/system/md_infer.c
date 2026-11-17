@@ -86,11 +86,36 @@ void mdi_infer_profile_step(int64_t* t, const char* name) {
 // The step which ended now, since the one before it
 #define PROFILE_STEP(name) do { if (mdi_infer_profile) { const md_tick_t t_ = md_tick_now(); profile_record(name, md_tick_to_milliseconds(t_ - prof_t)); prof_t = t_; } } while (0)
 
-// Try to fill in missing fields for molecule struct
-// (Coordinates & Elements) -> Covalent Bonds
-// (residues & Bonds)       -> Chains
-// (Chains)                 -> Backbone
-bool md_system_infer(md_system_t* sys, const md_system_state_t* state, md_infer_flags_t flags, const md_executor_t* executor) {
+void md_system_infer_type_colors(md_system_t* sys) {
+    MD_ASSERT(sys);
+    if (!sys->atom.type.color) return;
+    // @Note: The 0'th type is a sentinel type for representing invalid or unset atoms.
+    // Hence it's skipped here
+    const size_t num_particle_types = md_system_particle_type_count(sys);
+    for (size_t i = 1; i < num_particle_types; ++i) {
+        uint32_t color = sys->atom.type.color[i];
+        md_atomic_number_t z = sys->atom.type.z[i];
+        if (color == 0) {
+            // Try to assign a color based on element if available
+            if (z != 0) {
+                color = md_atomic_number_cpk_color(z);
+                sys->atom.type.color[i] = color;
+            } else {
+                // Assign a random color for the type
+                float hue = (float)(i * 97 % 360) / 360.0f;
+                float chroma = 0.8f;
+                float light  = 1.0f;
+                float alpha  = 1.0f;
+                md_float3_t rgb = hcl_to_rgb(hue, chroma, light);
+                // Pack into 0xAARRGGBB
+                color = (uint32_t)(uint8_t)(alpha * 255) << 24 | (uint32_t)(uint8_t)(rgb.x * 255) << 16 | (uint32_t)(uint8_t)(rgb.y * 255) << 8 | (uint32_t)(uint8_t)(rgb.z * 255);
+                sys->atom.type.color[i] = color;
+            }
+        }
+    }
+}
+
+bool md_system_infer(md_system_t* sys, const md_system_state_t* state, const md_executor_t* executor) {
     MD_ASSERT(sys);
 
     if (sys->atom.count == 0) return false;
@@ -101,86 +126,63 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, md_infer_
     md_tick_t prof_t = mdi_infer_profile ? md_tick_now() : 0;
     md_system_topology_changed(sys);
 
-    // What is written is of the derived (md_system_t, ALLOCATORS): everything below but the colors of the types
+    // What is written is of the derived (md_system_t, ALLOCATORS)
     md_allocator_i* alloc = md_system_derived_alloc(sys);
 
     const bool cg = md_system_is_coarse_grained(sys);
-    size_t num_particle_types = md_system_particle_type_count(sys);
+    const size_t N = sys->atom.count;
 
+    // The flags of the atoms: what the typing of the particles at load gave them (the roles of Martini beads, kept
+    // here as the kinds it gave the residues are), and what the steps below find
     if (!sys->atom.flags) {
-        md_array_resize(sys->atom.flags, sys->atom.count, alloc);
+        md_array_resize(sys->atom.flags, N, alloc);
         md_memset(sys->atom.flags, 0, md_array_bytes(sys->atom.flags));
     }
-
-    if (flags & MD_SYSTEM_INFER_COLOR_BIT) {
-        if (sys->atom.type.color) {
-            // @Note: The 0'th type is a sentinel type for representing invalid or unset atoms.
-            // Hence it's skipped here
-            for (size_t i = 1; i < num_particle_types; ++i) {
-                uint32_t color = sys->atom.type.color[i];
-                md_atomic_number_t z = sys->atom.type.z[i];
-                if (color == 0) {
-                    // Try to assign a color based on element if available
-                    if (z != 0) {
-                        color = md_atomic_number_cpk_color(z);
-                        sys->atom.type.color[i] = color;
-                    } else {
-                        // Assign a random color for the type
-                        float hue = (float)(i * 97 % 360) / 360.0f;
-                        float chroma = 0.8f;
-                        float light  = 1.0f;
-                        float alpha  = 1.0f;
-                        md_float3_t rgb = hcl_to_rgb(hue, chroma, light);
-                        // Pack into 0xAARRGGBB
-                        color = (uint32_t)(uint8_t)(alpha * 255) << 24 | (uint32_t)(uint8_t)(rgb.x * 255) << 16 | (uint32_t)(uint8_t)(rgb.y * 255) << 8 | (uint32_t)(uint8_t)(rgb.z * 255);
-                        sys->atom.type.color[i] = color;
-                    }
-                }
-            }
-        }
-    }
-   
     PROFILE_STEP("setup");
 
-    if (flags & MD_SYSTEM_INFER_BOND_BIT) {
-        // Setting the bit means "derive this", unconditionally. A format which supplies its own
-        // bonds (LAMMPS, PSF) is respected by the caller not setting the bit, not by a guard here.
-        // Beads too: a coarse grained system gets the bonds of its model's topologies (mdi_infer_coarse_grained_bonds).
-        // The bonds inferred, in place of those inferred before: those given (by a file, a topology, a user) stay. Without
-        // any (most structure files) the inferred are the bonds, and nothing is merged.
-        bool given = sys->bond.noncovalent_count > 0;
-        for (size_t i = 0; i < sys->bond.count && !given; ++i) given = md_bond_origin(sys->bond.flags[i]) != MD_BOND_ORIGIN_INFERRED;
+    // The bonds: those given, and those inferred between the atoms whose bonds are not all given (bonds_complete). A
+    // system a topology describes whole (a TPR, a prmtop) has its bonds, and none is inferred: a metal ion its force
+    // field leaves without bonds has none. Beads are bonded too: a coarse grained system gets the bonds of its model's
+    // topologies (mdi_infer_coarse_grained_bonds). Without bonds given (most structure files) the inferred are the
+    // bonds, and nothing is merged.
+    {
+        size_t num_complete = 0;
+        if (sys->atom.bonds_complete) {
+            for (size_t i = 0; i < N; ++i) num_complete += sys->atom.bonds_complete[i] != 0;
+        }
+        const size_t num_given = sys->given_bond.count + sys->given_bond.noncovalent_count;
         md_bond_data_t bonds = {0};
-        if (given) {
+        if (num_given == 0 && num_complete == 0) {
+            md_bond_infer(&bonds, sys, state, alloc, executor);
+        } else {
             md_temp_scope_t temp = md_temp_begin_avoid(alloc);
             md_bond_data_t inferred = {0};
-            md_bond_infer(&inferred, sys, state, md_temp_allocator(temp), executor);
-            md_bond_merge(&bonds, &sys->bond, &inferred, sys->atom.count, alloc);
+            if (num_complete < N) md_bond_infer(&inferred, sys, state, md_temp_allocator(temp), executor);
+            md_bond_merge(&bonds, &sys->given_bond, &inferred, num_complete ? sys->atom.bonds_complete : NULL, N, alloc);
             md_temp_end(temp);
-        } else {
-            md_bond_infer(&bonds, sys, state, alloc, executor);
         }
         md_bond_data_free(&sys->bond, alloc);
         sys->bond = bonds;
-        md_system_topology_changed(sys);
         PROFILE_STEP("bonds");
     }
 
     // Whatever the bonds came from (inferred, a topology, a file, by hand): those between a metal and a non-metal are
-    // coordination. Cheap, and every reader of the flags relies on it, so not behind a bit.
+    // coordination
     md_system_infer_coordination(sys);
     PROFILE_STEP("coordination");
 
     // What the residues are (amino acids, nucleotides, waters, ions) and the roles of their atoms: by their names and by
     // the bonds, so after them. What a loader gives is the atoms and their names; everything below reads these.
-    if (flags & MD_SYSTEM_INFER_RESIDUE_BIT) {
-        md_system_infer_residue_flags(sys, state);
-        PROFILE_STEP("residue flags");
-    }
+    md_system_infer_residue_flags(sys, state);
+    // An elastic network given as plain bonds, which most Martini proteins have (the bonds between the residues of
+    // a coarse grained chain which do not link it), elastic, now that the residues know what they are; and what they
+    // are again, by the bonds of their molecules alone
+    if (md_system_infer_elastic_bonds(sys)) md_system_infer_residue_flags(sys, state);
+    PROFILE_STEP("residue flags");
 
     // The parts before the molecules: a molecule holds its polymer strands whole (synthesize_molecule_links). They are
     // found from the instances the data gives, the bonds and the classified residues, which the molecules do not change.
-    if (flags & MD_SYSTEM_INFER_PART_BIT) {
+    {
         md_chain_data_t chains = {0};
         md_chain_infer(&chains, sys, alloc);
         md_chain_data_free(&sys->chain, alloc);
@@ -202,11 +204,11 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, md_infer_
         // The chemistry finds the rings it needs where there are none.
         infer_branches_t br = {
             .sys       = sys,
-            .molecules = (flags & MD_SYSTEM_INFER_MOLECULE_BIT) && (sys->bond.count || cg || sys->residue.count),
-            .rings     = sys->bond.count && ((flags & MD_SYSTEM_INFER_MOLECULE_BIT) || ((flags & MD_SYSTEM_INFER_CHEMISTRY_BIT) && md_ring_data_count(&sys->ring) == 0)),
-            .backbone  = (flags & MD_SYSTEM_INFER_BACKBONE_BIT) != 0,
+            .molecules = sys->bond.count || cg || sys->residue.count,
+            .rings     = sys->bond.count > 0,
+            .backbone  = true,
         };
-        const bool chemistry = (flags & MD_SYSTEM_INFER_CHEMISTRY_BIT) && sys->bond.count;
+        const bool chemistry = sys->bond.count > 0;
         if ((br.rings || br.molecules || chemistry) && sys->bond.count && !sys->bond.conn.offset) md_bond_build_connectivity(&sys->bond, sys->atom.count, alloc);
         PROFILE_STEP("connectivity");
 
@@ -291,7 +293,7 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, md_infer_
         PROFILE_STEP("write");
     }
 
-    if (flags & MD_SYSTEM_INFER_LIPID_BIT) {
+    {
         // After the bonds, the rings (a sterol is told by its fused rings) and the classification of the residues
         md_lipid_data_t lipids = {0};
         md_lipid_infer(&lipids, sys, alloc);
@@ -306,7 +308,7 @@ bool md_system_infer(md_system_t* sys, const md_system_state_t* state, md_infer_
     md_system_infer_residue_types(sys);
     PROFILE_STEP("residue types");
 
-    if (flags & MD_SYSTEM_INFER_FRAGMENT_BIT) {
+    {
         // Last: made of the molecules, the rings, the chemistry, the roles of the atoms and the lipid tails
         md_system_infer_fragments(sys);
         PROFILE_STEP("fragments");
@@ -407,12 +409,9 @@ bool md_system_infer_prepare(md_system_infer_work_t* work, const md_system_t* sy
 #undef INFER_COPY_STRINGS
 #undef INFER_COPY_DERIVED
 
-bool md_system_infer_run(md_system_infer_work_t* work, md_infer_flags_t flags, const md_executor_t* executor) {
+bool md_system_infer_run(md_system_infer_work_t* work, const md_executor_t* executor) {
     MD_ASSERT(work);
-    // The colors are of the types of the atoms, which stay the system's: given them before, which is what they are
-    // shown with meanwhile
-    flags &= ~MD_SYSTEM_INFER_COLOR_BIT;
-    return md_system_infer(&work->sys, &work->sys.reference, flags, executor);
+    return md_system_infer(&work->sys, &work->sys.reference, executor);
 }
 
 bool md_system_infer_publish(md_system_t* sys, md_system_infer_work_t* work) {

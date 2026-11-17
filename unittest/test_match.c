@@ -58,7 +58,7 @@ static md_system_t* get_sys(sys_id_t id) {
         case SYS_TIP4P:    md_gro_system_init_from_file(s, st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/peptide_tip4p.gro"), NULL); break;
         default: break;
         }
-        md_system_infer(s, st, MD_SYSTEM_INFER_ALL, NULL);
+        md_system_infer(s, st, NULL);
         loaded[id] = true;
     }
     return &sys_data[id];
@@ -1390,7 +1390,7 @@ UTEST(match, topology_changes) {
     md_system_t sys = {.alloc = alloc};
     md_system_state_t st = {.alloc = alloc};
     ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL));
-    ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
     ASSERT_GT(sys.residue.count, 5u);
 
     // The CB of the first residue and of the sixth: not bonded
@@ -1410,9 +1410,9 @@ UTEST(match, topology_changes) {
                                   .hydrogens = MD_MATCH_RESOLVE_NEVER, .bond_orders = MD_MATCH_RESOLVE_NEVER, .charges = MD_MATCH_RESOLVE_NEVER};
     EXPECT_EQ(0, (int)count_matches(&desc, &sys, NULL, NULL));
 
-    // The connectivity is not kept up to date by an insertion (md_bond_find): built again, as code which inserts does
+    // A bond given is of the bonds once the system is inferred again
     md_system_bond_insert(&sys, cb[0], cb[1], MD_BOND_FLAG_NONE);
-    md_bond_build_connectivity(&sys.bond, sys.atom.count, alloc);
+    ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
     EXPECT_EQ(1, (int)count_matches(&desc, &sys, NULL, NULL));
 
     const md_bond_idx_t b = md_system_bond_find(&sys, cb[0], cb[1]);

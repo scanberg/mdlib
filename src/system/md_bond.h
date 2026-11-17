@@ -439,21 +439,19 @@ static inline bool md_atom_is_connected_to_atomic_numbers(const md_atom_data_t* 
 // same whatever the threads. False, and out empty, when state has no coordinates.
 bool md_bond_infer(md_bond_data_t* out, const struct md_system_t* sys, const struct md_system_state_t* state, md_allocator_i* alloc, const struct md_executor_t* executor);
 
-// The bonds given (those a system has) with the inferred ones (md_bond_infer) in place of those inferred before, with
-// their connectivity over atom_count atoms. Every bond of given not of origin MD_BOND_ORIGIN_INFERRED is kept, in its
-// order and after the inferred ones, and so are the non-covalent bonds. An inferred bond is left out where it would
-// duplicate a pair of given (a non-covalent bond included: a pair has one bond, and that one was given), and between two
-// atoms a topology covers (bonds of origin MD_BOND_ORIGIN_TOPOLOGY, which is authoritative where it has bonds). An
-// elastic bond does neither: it is no bond of the molecule. out is neither given nor inferred.
-void md_bond_merge(md_bond_data_t* out, const md_bond_data_t* given, const md_bond_data_t* inferred, size_t atom_count, md_allocator_i* alloc);
+// The bonds given (md_system_t::given_bond) with those inferred (md_bond_infer), with their connectivity over
+// atom_count atoms: the inferred first, then every bond given, in its order (the bonds of the graph, then the
+// non-covalent ones). An inferred bond is left out between two atoms of complete (md_atom_data_t::bonds_complete;
+// NULL: of none), and where it would duplicate a pair given a bond (a non-covalent bond included: a pair has one bond,
+// and that one was given), but for an elastic bond, which is no bond of the molecule. out is neither given nor inferred.
+void md_bond_merge(md_bond_data_t* out, const md_bond_data_t* given, const md_bond_data_t* inferred, const uint8_t* complete, size_t atom_count, md_allocator_i* alloc);
 
 // The atoms of the metallic phases: those of the metallic bonds (MD_BOND_KIND_METALLIC, METALLIC PHASES in md_bond.c).
 // out[i] is 1 for such an atom and 0 for any other, of atom_count atoms. Returns how many there are.
 size_t md_bond_metallic_atoms(uint8_t* out, const md_bond_data_t* bond, size_t atom_count);
 
 // Marks every bond between a metal and a non-metal MD_BOND_KIND_COORDINATE, whatever its origin, unless its kind was
-// given (MD_BOND_FLAG_KIND_GIVEN), and returns how many it marked. md_system_infer does it for each system; a bond
-// added afterwards (by hand) wants it too.
+// given (MD_BOND_FLAG_KIND_GIVEN), and returns how many it marked. md_system_infer does it for each system.
 size_t md_system_infer_coordination(struct md_system_t* sys);
 
 // Marks the bonds of a coarse grained topology which hold a protein or nucleic acid in shape without being bonds of it
@@ -464,7 +462,8 @@ size_t md_system_infer_coordination(struct md_system_t* sys);
 // disulfide (the SC1 of two cysteines), and the bond which closes a cyclic chain; every other bond between beads of
 // two residues of a chain is elastic. Bonds within a residue, and to anything other than amino acids and nucleotides,
 // are left as they are. Needs the kinds of the residues and the backbone beads (md_system_infer_residue_flags),
-// and rebuilds the connectivity when it marks any. The topology readers (md_tpr, md_itp) call it.
+// and rebuilds the connectivity when it marks any. md_system_infer does it for each system, after the kinds of the
+// residues.
 size_t md_system_infer_elastic_bonds(struct md_system_t* sys);
 
 // Grows mask by the bonds (their connectivity, over atom_count atoms) up to extent bonds from the atoms it holds (at

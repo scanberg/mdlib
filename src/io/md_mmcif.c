@@ -1633,8 +1633,7 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
         out_state->unitcell = md_unitcell_from_extent_and_angles(cell.a, cell.b, cell.c, cell.alpha, cell.beta, cell.gamma);
     }
 
-    // The bonds, what the residues are by them and the chains are md_system_infer's (MD_SYSTEM_INFER_BOND_BIT,
-    // _RESIDUE_BIT, _PART_BIT): the loader gives what the file says.
+    // The bonds, what the residues are by them and the chains are md_system_infer's: the loader gives what the file says.
 
     // The assemblies name the instances by their asym ids
     mmcif_assemblies(sys, assembly_gen, opers, temp_arena);

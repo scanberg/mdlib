@@ -133,6 +133,11 @@ typedef struct md_atom_data_t {
     // has no QM region (NULL). Of the core: what the data gives. Selected in scripts by 'qm' and 'environment'.
     uint8_t* qm;                // [count] 1 in the QM region, 0 not; NULL: no QM region
 
+    // The atoms whose bonds the data gives all of: those a topology describes (a TPR, a prmtop, a PSF, the molecules
+    // of an ITP). No bond is inferred between two of them (md_system_infer): their bonds are those given
+    // (md_system_t::given_bond), and a metal ion a non-bonded force field leaves without any has none. Of the core.
+    uint8_t* bonds_complete;    // [count] 1 its bonds are given complete, 0 not; NULL: of no atom
+
     // Chemistry of each atom, as given by the file or perceived by md_chem_perceive. NULL when unknown. Per atom
     // and not per type, as particle types are shared by name (the OD1 of Asp and of Asn).
     int8_t*  formal_charge;     // [count]
@@ -148,6 +153,11 @@ extern "C" {
 // Whether the atom is in the QM region of the calculation the system was loaded from (md_atom_data_t::qm)
 static inline bool md_atom_is_qm(const md_atom_data_t* atom, size_t atom_idx) {
     return atom && atom->qm && atom_idx < atom->count && atom->qm[atom_idx];
+}
+
+// Whether the data gives all of the bonds of the atom (md_atom_data_t::bonds_complete)
+static inline bool md_atom_bonds_complete(const md_atom_data_t* atom, size_t atom_idx) {
+    return atom && atom->bonds_complete && atom_idx < atom->count && atom->bonds_complete[atom_idx];
 }
 
 // Particle type table helper functions

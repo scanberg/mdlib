@@ -50,7 +50,7 @@ UTEST(psf, builds_a_system_without_coordinates) {
     ASSERT_TRUE(md_psf_system_init_from_file(&sys, &state, path, NULL));
     EXPECT_EQ(4u, sys.atom.count);
     EXPECT_EQ(2u, sys.residue.count);
-    EXPECT_EQ(3u, sys.bond.count);
+    EXPECT_EQ(3u, sys.given_bond.count);
     EXPECT_FALSE(md_system_state_has_coords(&state));
     EXPECT_EQ(8,  sys.atom.type.z[sys.atom.type_idx[0]]);
     EXPECT_EQ(1,  sys.atom.type.z[sys.atom.type_idx[1]]);
@@ -149,7 +149,7 @@ UTEST(psf, blank_segment_ids) {
         const md_attribute_t* charge = md_attributes_find(&sys.attributes, MD_STR_LIT("atom/charge"));
         ASSERT_TRUE(charge != NULL);
         EXPECT_NEAR(0.21f, ((const float*)charge->data)[1], 1e-5f);
-        EXPECT_EQ(1u, sys.bond.count);
+        EXPECT_EQ(1u, sys.given_bond.count);
         md_system_free(&sys);
     }
     remove(path.ptr);

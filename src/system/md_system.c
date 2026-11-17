@@ -532,6 +532,10 @@ void md_system_free(md_system_t* sys) {
     // ATOM
     md_array_free(sys->atom.type_idx, alloc);
     md_array_free(sys->atom.qm, alloc);
+    md_array_free(sys->atom.bonds_complete, alloc);
+
+    // BONDS GIVEN
+    md_bond_data_free(&sys->given_bond, alloc);
 
     // PARTICLE TYPE
     md_array_free(sys->atom.type.name, alloc);
@@ -749,6 +753,55 @@ void md_system_reset(md_system_t* sys) {
 void md_system_bond_build_connectivity(md_system_t* sys) {
     MD_ASSERT(sys);
     md_bond_build_connectivity(&sys->bond, sys->atom.count, md_system_derived_alloc(sys));
+}
+
+void md_system_set_bonds_complete(md_system_t* sys) {
+    MD_ASSERT(sys);
+    MD_ASSERT(sys->alloc);
+    md_array_resize(sys->atom.bonds_complete, sys->atom.count, sys->alloc);
+    if (sys->atom.count) md_memset(sys->atom.bonds_complete, 1, sys->atom.count);
+}
+
+// The bond of given between the two atoms in the range of a bond of flags (the graph, or the non-covalent bonds), or
+// -1. An elastic bond is not found by a bond of another kind, nor finds one: it stands in for no bond of the molecule.
+static md_bond_idx_t given_bond_find(const md_bond_data_t* given, md_atom_idx_t a, md_atom_idx_t b, md_bond_flags_t flags) {
+    const bool noncovalent = md_bond_is_noncovalent(flags);
+    const bool elastic = md_bond_kind(flags) == MD_BOND_KIND_ELASTIC;
+    const size_t beg = noncovalent ? given->count : 0;
+    const size_t end = noncovalent ? given->count + given->noncovalent_count : given->count;
+    for (size_t i = beg; i < end; ++i) {
+        const md_atom_pair_t p = given->pairs[i];
+        if (!((p.idx[0] == a && p.idx[1] == b) || (p.idx[0] == b && p.idx[1] == a))) continue;
+        if ((md_bond_kind(given->flags[i]) == MD_BOND_KIND_ELASTIC) != elastic) continue;
+        return (md_bond_idx_t)i;
+    }
+    return -1;
+}
+
+bool md_system_bond_insert(md_system_t* sys, md_atom_idx_t atom_idx_a, md_atom_idx_t atom_idx_b, md_bond_flags_t flags) {
+    MD_ASSERT(sys);
+    MD_ASSERT(sys->alloc);
+    if (atom_idx_a < 0 || atom_idx_b < 0 || atom_idx_a == atom_idx_b || (size_t)atom_idx_a >= sys->atom.count || (size_t)atom_idx_b >= sys->atom.count) return false;
+    // A pair has one bond at most, of the graph or not
+    const md_bond_flags_t graph = md_bond_flags_set_kind(MD_BOND_FLAG_NONE, md_bond_kind(flags) == MD_BOND_KIND_ELASTIC ? MD_BOND_KIND_ELASTIC : MD_BOND_KIND_COVALENT);
+    const md_bond_flags_t noncovalent = md_bond_flags_set_kind(MD_BOND_FLAG_KIND_GIVEN, MD_BOND_KIND_INTERACTION);
+    if (given_bond_find(&sys->given_bond, atom_idx_a, atom_idx_b, graph) != -1) return false;
+    if (md_bond_kind(flags) != MD_BOND_KIND_ELASTIC && given_bond_find(&sys->given_bond, atom_idx_a, atom_idx_b, noncovalent) != -1) return false;
+    // md_bond_insert finds a bond of the graph by the connectivity, which the bonds given have none of: none is found
+    md_bond_insert(&sys->given_bond, atom_idx_a, atom_idx_b, flags, sys->alloc);
+    md_system_topology_changed(sys);
+    return true;
+}
+
+bool md_system_bond_remove(md_system_t* sys, md_bond_idx_t bond_idx) {
+    MD_ASSERT(sys);
+    if (bond_idx < 0 || (size_t)bond_idx >= sys->bond.count + sys->bond.noncovalent_count) return false;
+    const md_atom_pair_t pair = sys->bond.pairs[bond_idx];
+    const md_bond_idx_t given_idx = given_bond_find(&sys->given_bond, pair.idx[0], pair.idx[1], sys->bond.flags[bond_idx]);
+    if (given_idx < 0) return false;
+    md_bond_remove(&sys->given_bond, given_idx);
+    md_system_topology_changed(sys);
+    return true;
 }
 
 
