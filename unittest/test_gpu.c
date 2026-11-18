@@ -4,6 +4,7 @@
 #include <core/md_gpu_pieces.h>
 #include <core/md_allocator.h>
 #include <core/md_os.h>
+#include <core/md_log.h>
 
 #include <stdint.h>
 #include <stdio.h>
@@ -127,6 +128,13 @@ static void gpu_close(gpu_fixture_t* f) {
                               &f->k_bump, &f->k_layout, &f->k_tex_probe, &f->k_sample, &f->k_spin };
     for (size_t i = 0; i < sizeof(ks) / sizeof(ks[0]); ++i) md_gpu_kernel_destroy(*ks[i]);
     md_gpu_device_destroy(f->dev);
+}
+
+/* Debug memory gives every allocation memory of its own and never reuses
+   it, so tests of reuse and sharing have nothing to test there. */
+static bool gpu_debug_memory(md_gpu_device_t dev) {
+    md_gpu_device_info_t info;
+    return md_gpu_device_info(dev, &info) && info.debug_memory;
 }
 
 /* Device-local allocation. */
@@ -745,6 +753,7 @@ static md_gpu_memory_stats_t gpu_stats(md_gpu_device_t dev, md_gpu_mem_kind_t ki
 UTEST(gpu, heap_stats_and_same_stream_reuse) {
     gpu_fixture_t f;
     if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
+    if (gpu_debug_memory(f.dev)) { gpu_close(&f); UTEST_SKIP("debug memory reuses nothing"); }
 
     const md_gpu_memory_stats_t base = gpu_stats(f.dev, MD_GPU_MEM_DEVICE);
     enum { N = 1024 };
@@ -791,6 +800,7 @@ UTEST(gpu, heap_stats_and_same_stream_reuse) {
 UTEST(gpu, small_allocations_share_chunks) {
     gpu_fixture_t f;
     if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
+    if (gpu_debug_memory(f.dev)) { gpu_close(&f); UTEST_SKIP("debug memory reuses nothing"); }
 
     enum { N = 5000 };
     md_gpu_addr_t* a = (md_gpu_addr_t*)malloc(N * sizeof(md_gpu_addr_t));
@@ -1253,6 +1263,7 @@ UTEST(gpu, explicit_chain_with_a_barrier_between_each) {
 UTEST(gpu, explicit_region_reuses_freed_memory_safely) {
     gpu_fixture_t f;
     if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
+    if (gpu_debug_memory(f.dev)) { gpu_close(&f); UTEST_SKIP("debug memory reuses nothing"); }
 
     enum { N = 1 << 16 };
     const size_t bytes = N * sizeof(uint32_t);
@@ -2011,6 +2022,137 @@ UTEST(gpu, max_textures_bounds_the_bindless_heap) {
     t[0] = md_gpu_texture_create(s, &td);
     EXPECT_TRUE(t[0] != NULL);
 #endif
+    md_gpu_device_destroy(dev);
+}
+
+/* What the device reports above the floor is in the log of every run, so a CI
+   or hardware log shows what a kernel may use there. */
+UTEST(gpu, device_info_reports_capabilities) {
+    md_gpu_device_desc_t dd = {0};
+    dd.max_textures = 100;
+    md_gpu_device_t dev = md_gpu_device_create(&dd);
+    if (!dev) UTEST_SKIP(gpu_no_device_reason());
+    md_gpu_device_info_t info;
+    ASSERT_TRUE(md_gpu_device_info(dev, &info));
+    MD_LOG_INFO("md_gpu capabilities of '%s': shared %u B, textures %u, subgroup arith %d shuffle %d, "
+                "f16 %d f64 %d i64 %d, atomics i64 %d f32 add %d f32 min/max %d, timestamps %d, debug memory %d",
+                info.name, info.max_shared_memory, info.max_textures, info.subgroup_arithmetic, info.subgroup_shuffle,
+                info.float16, info.float64, info.int64, info.atomic_int64, info.atomic_float_add,
+                info.atomic_float_min_max, info.timestamps, info.debug_memory);
+    EXPECT_GE(info.max_shared_memory, 16384u);
+    EXPECT_TRUE(!info.atomic_int64 || info.int64);
+#if MD_GPU_BACKEND_VULKAN
+    EXPECT_EQ(100u, info.max_textures);
+#endif
+    md_gpu_device_destroy(dev);
+}
+
+/* A kernel that uses an optional feature works wherever the device reports
+   it: md_gpu enables what the device has. */
+UTEST(gpu, float_atomics_where_reported) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
+    md_gpu_device_info_t info;
+    ASSERT_TRUE(md_gpu_device_info(f.dev, &info));
+    if (!info.atomic_float_add) { gpu_close(&f); UTEST_SKIP("the device has no float atomic add"); }
+
+    enum { N = 1000 };
+    float src[N];
+    for (int i = 0; i < N; ++i) src[i] = 0.25f;
+    md_gpu_addr_t s = gpu_alloc(&f, f.compute, sizeof(src));
+    md_gpu_addr_t d = gpu_alloc(&f, f.compute, sizeof(float));
+    ASSERT_TRUE(s && d);
+    ASSERT_TRUE(md_gpu_upload(f.compute, s, src, sizeof(src)));
+    ASSERT_TRUE(md_gpu_memset(f.compute, d, 0, sizeof(float)));
+
+    md_gpu_kernel_desc_t kd = md_shader_gpu_test_atomic_float_sum_kernel();
+    md_gpu_kernel_t k = md_gpu_kernel_create(f.dev, &kd);
+    ASSERT_TRUE(k != NULL);
+    typedef struct { uint32_t n, pad0, pad1, pad2; md_gpu_addr_t src, dst; } atomic_float_args_t;
+    atomic_float_args_t a = {N, 0, 0, 0, s, d};
+    ASSERT_TRUE(MD_GPU_LAUNCH(f.compute, k, grid1(k, N), a));
+    float sum = 0.0f;
+    ASSERT_TRUE(gpu_read(&f, f.compute, &sum, d, sizeof(sum)));
+    EXPECT_EQ(250.0f, sum);    /* exact: every partial sum is a multiple of 1/4 below 2^22 */
+
+    md_gpu_kernel_destroy(k);
+    md_gpu_free(f.compute, s);
+    md_gpu_free(f.compute, d);
+    gpu_close(&f);
+}
+
+/* Debug memory: each allocation has memory of its own, exactly its size, that
+   goes back to the driver once freed and the GPU is past the free. Everything
+   else works as usual, placed textures included. */
+UTEST(gpu, debug_memory_gives_each_allocation_its_own_memory) {
+    md_gpu_device_desc_t dd = {0};
+    dd.enable_validation = true;
+    dd.debug_memory      = true;
+    dd.label             = "md_gpu unittest (debug memory)";
+    md_gpu_device_t dev = md_gpu_device_create(&dd);
+    if (!dev) UTEST_SKIP(gpu_no_device_reason());
+    md_gpu_device_info_t info;
+    ASSERT_TRUE(md_gpu_device_info(dev, &info));
+    EXPECT_TRUE(info.debug_memory);
+    md_gpu_stream_t s = md_gpu_stream_default(dev, MD_GPU_STREAM_COMPUTE);
+    md_gpu_kernel_desc_t kd = md_shader_gpu_test_fill_kernel();
+    md_gpu_kernel_t fill = md_gpu_kernel_create(dev, &kd);
+    ASSERT_TRUE(fill != NULL);
+
+    md_gpu_memory_stats_t st0, st1, st2;
+    ASSERT_TRUE(md_gpu_memory_stats(dev, MD_GPU_MEM_DEVICE, &st0));
+    const size_t sizes[3] = {4, 100, 4096};
+    md_gpu_addr_t a[3];
+    for (int i = 0; i < 3; ++i) {
+        a[i] = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizes[i]).gpu;
+        ASSERT_TRUE(a[i] != 0);
+        EXPECT_EQ(0u, (unsigned)(a[i] % 256));
+    }
+    ASSERT_TRUE(md_gpu_memory_stats(dev, MD_GPU_MEM_DEVICE, &st1));
+    EXPECT_EQ(st0.chunks + 3, st1.chunks);
+    EXPECT_EQ(st0.bytes_reserved + 4 + 100 + 4096, st1.bytes_reserved);
+    EXPECT_EQ(st0.bytes_in_use + 4 + 100 + 4096, st1.bytes_in_use);
+
+    /* Kernels and copies on exactly-sized allocations. */
+    enum { N = 25 };
+    fill_args_t fa = {N, 7, 0, 0, a[1]};
+    ASSERT_TRUE(MD_GPU_LAUNCH(s, fill, md_gpu_grid_for(fill, N, 1, 1), fa));
+    md_gpu_mem_t rb = md_gpu_malloc(s, MD_GPU_MEM_HOST_READ, N * sizeof(uint32_t));
+    ASSERT_TRUE(rb.cpu != NULL);
+    ASSERT_TRUE(md_gpu_copy(s, rb.gpu, a[1], N * sizeof(uint32_t)));
+    md_gpu_stream_sync(s);
+    for (int i = 0; i < N; ++i) EXPECT_EQ((uint32_t)(7 + i), ((const uint32_t*)rb.cpu)[i]);
+    /* A copy one byte past the end is refused on the host side already. */
+    EXPECT_FALSE(md_gpu_copy(s, rb.gpu, a[1], N * sizeof(uint32_t) + 1));
+
+    /* Temp allocations, each its own too. */
+    md_gpu_temp_t scope = md_gpu_temp_begin(s);
+    md_gpu_mem_t t0 = md_gpu_temp_alloc(scope, MD_GPU_MEM_HOST_WRITE, 12);
+    md_gpu_mem_t t1 = md_gpu_temp_alloc(scope, MD_GPU_MEM_HOST_WRITE, 12);
+    ASSERT_TRUE(t0.cpu && t1.cpu);
+    EXPECT_TRUE(t0.gpu + 12 != t1.gpu);
+    md_gpu_temp_end(scope);
+
+    /* A texture placed in debug memory. */
+    md_gpu_texture_desc_t td = gpu_volume_desc(4, "debug placed");
+    const uint64_t psize = md_gpu_texture_placement_size(dev, &td);
+    md_gpu_addr_t pm = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, psize).gpu;
+    ASSERT_TRUE(pm != 0);
+    md_gpu_texture_t tex = md_gpu_texture_create_at(s, &td, pm);
+    ASSERT_TRUE(tex != NULL);
+    md_gpu_texture_destroy(tex);
+
+    md_gpu_free(s, pm);
+    md_gpu_free(s, rb.gpu);
+    for (int i = 0; i < 3; ++i) md_gpu_free(s, a[i]);
+    md_gpu_stream_sync(s);
+    md_gpu_device_poll(dev);
+    ASSERT_TRUE(md_gpu_memory_stats(dev, MD_GPU_MEM_DEVICE, &st2));
+    EXPECT_EQ(st0.chunks, st2.chunks);
+    EXPECT_EQ(st0.bytes_reserved, st2.bytes_reserved);
+    EXPECT_EQ(st0.bytes_in_use, st2.bytes_in_use);
+
+    md_gpu_kernel_destroy(fill);
     md_gpu_device_destroy(dev);
 }
 

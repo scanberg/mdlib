@@ -118,6 +118,7 @@ written on one and read on another needs no queue-family ownership transfer.
 #define MD_VK_HEAP_CHUNK_MAX    (64ull << 20)       /* chunks grow by doubling up to this    */
 #define MD_VK_HEAP_LARGE_ALIGN  (64ull << 10)       /* granularity of oversized chunks       */
 #define MD_VK_HEAP_CACHE_DEFAULT (256ull << 20)
+#define MD_VK_DEBUG_GUARD        (64ull << 10)     /* each side of a debug memory allocation */
 #define MD_VK_TEMP_CHUNK_MIN     (4ull << 20)
 #define MD_VK_TEMP_KINDS            2u              /* DEVICE, HOST_WRITE                    */
 #define MD_VK_ERROR_BUF           2560u   /* room for an adapter list with missing features */
@@ -245,7 +246,8 @@ static void md_vk_vec_free(md_vk_vec_t* v, struct md_allocator_i* alloc) {
 typedef struct md_vk_chunk_t {
     VkBuffer          buffer;
     VkDeviceMemory    memory;
-    uint32_t          memory_type;   /* of `memory`, which the buffer covers from 0 */
+    uint32_t          memory_type;   /* of `memory`                             */
+    uint64_t          memory_offset; /* of the buffer in `memory`               */
     uint64_t          address;
     uint8_t*          host;          /* mapped pointer, or NULL                 */
     uint64_t          size;
@@ -268,6 +270,7 @@ typedef struct md_vk_range_t {
     md_vk_chunk_t*    chunk;
     uint64_t          chunk_offset;  /* of `address` within chunk->buffer       */
     md_tlsf_node_t*   node;          /* heap allocation; NULL for a temp chunk  */
+    md_vk_chunk_t*    own;           /* debug memory: the allocation's own chunk */
     md_gpu_mem_kind_t kind;
 } md_vk_range_t;
 
@@ -293,7 +296,8 @@ typedef struct md_vk_heap_t {
 
 /* A heap allocation freed at a point its stream has not yet reached. */
 typedef struct md_vk_pending_free_t {
-    md_tlsf_node_t*   node;
+    md_tlsf_node_t*   node;          /* a heap allocation, or               */
+    struct md_vk_chunk_t* own;       /* a debug memory allocation's chunk   */
     md_gpu_mem_kind_t kind;
     md_gpu_stream_t   stream;
     uint64_t          value;
@@ -554,6 +558,15 @@ typedef struct md_vk_dev_caps_t {
     bool shader_int64;
     bool storage_read_without_format;    /* device-wide; otherwise per format */
     bool storage_write_without_format;
+    /* Above the floor, enabled where present and reported in md_gpu_device_info_t. */
+    bool float16;                        /* shaderFloat16 + storageBuffer16BitAccess */
+    bool float64;
+    bool int64_atomics;                  /* buffer; shared ones too where present */
+    bool int64_shared_atomics;
+    bool float_atomics;                  /* VK_EXT_shader_atomic_float           */
+    VkPhysicalDeviceShaderAtomicFloatFeaturesEXT  atomic_float;
+    bool float_atomics2;                 /* VK_EXT_shader_atomic_float2          */
+    VkPhysicalDeviceShaderAtomicFloat2FeaturesEXT atomic_float2;
 } md_vk_dev_caps_t;
 
 typedef struct md_gpu_device {
@@ -565,6 +578,7 @@ typedef struct md_gpu_device {
     VkPhysicalDeviceMemoryProperties mem_props;
     VkPhysicalDeviceProperties       props;
     uint32_t                         subgroup_size;
+    VkSubgroupFeatureFlags           subgroup_ops;     /* in compute kernels */
     char                             driver_desc[256];
 
     uint32_t compute_family, transfer_family, graphics_family;   /* graphics: UINT32_MAX if none */
@@ -640,6 +654,7 @@ typedef struct md_gpu_device {
     uint32_t        adapter_index;
     uint64_t        warned_storage_read;   /* md_gpu_format_t bits already warned about */
     bool            validation;
+    bool            debug_memory;          /* md_gpu_device_desc_t.debug_memory */
     bool            debug_utils;        /* VK_EXT_debug_utils enabled: object names and labels for GPU tools */
     bool            supports_graphics;
     bool            supports_present;   /* surface + swapchain extensions enabled */
@@ -659,6 +674,7 @@ static void     md_vk_kernel_free(md_gpu_device_t dev, md_gpu_kernel_t k);
 static void     md_vk_pipeline_free(md_gpu_device_t dev, md_gpu_pipeline_t p);
 static void     md_vk_swapchain_free(md_gpu_device_t dev, md_vk_swapchain_t* sc);
 static void     md_vk_heap_release_node_locked(md_gpu_device_t dev, md_gpu_mem_kind_t kind, md_tlsf_node_t* node);
+static void     md_vk_release_free_locked(md_gpu_device_t dev, const md_vk_pending_free_t* pf);
 static void     md_vk_temp_free_all(md_gpu_stream_t s);
 static void     md_vk_abandon_pass(md_gpu_stream_t s);
 
@@ -836,9 +852,24 @@ static void md_vk_init_device_types(md_gpu_device_t dev) {
     dev->device_buffer_types = md_vk_memory_types(dev, both, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, 0, types) ? both : buf;
 }
 
-static bool md_vk_create_raw_buffer_ex(md_gpu_device_t dev, uint64_t size, md_gpu_mem_kind_t kind, bool staging,
-                                       VkBuffer* out_buf, VkDeviceMemory* out_mem, uint64_t* out_addr, void** out_host,
-                                       uint32_t* out_type) {
+/* A VkBuffer with VkDeviceMemory of its own. */
+typedef struct md_vk_raw_t {
+    VkBuffer       buffer;
+    VkDeviceMemory memory;
+    uint32_t       memory_type;
+    uint64_t       memory_offset;   /* of the buffer in `memory`  */
+    uint64_t       address;
+    uint8_t*       host;            /* of the buffer, or NULL     */
+} md_vk_raw_t;
+
+enum {
+    MD_VK_RAW_STAGING = 1u << 0,    /* host memory, not device local, preferred for a host visible kind
+                                       (what a copy reads once) */
+    MD_VK_RAW_GUARDED = 1u << 1,    /* MD_VK_DEBUG_GUARD bytes of memory no buffer covers on each side */
+};
+
+static bool md_vk_raw_create(md_gpu_device_t dev, uint64_t size, md_gpu_mem_kind_t kind, uint32_t flags, md_vk_raw_t* out) {
+    const bool staging = (flags & MD_VK_RAW_STAGING) != 0;
     VkBufferCreateInfo bci = md_vk_buffer_info(dev, size);
     VkBuffer buf = VK_NULL_HANDLE;
     if (!md_vk_check(vkCreateBuffer(dev->device, &bci, NULL, &buf), "vkCreateBuffer")) return false;
@@ -874,16 +905,20 @@ static bool md_vk_create_raw_buffer_ex(md_gpu_device_t dev, uint64_t size, md_gp
     VkMemoryAllocateFlagsInfo fi = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO};
     fi.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
 
+    /* Guarded: the buffer sits between two stretches of its memory that no
+       buffer covers, so that GPU-assisted validation, which checks pointer
+       accesses against buffer ranges, sees an access past either end. */
+    const uint64_t guard = (flags & MD_VK_RAW_GUARDED) ? md_vk_align_up(MD_VK_DEBUG_GUARD, req.alignment) : 0;
     VkMemoryAllocateInfo mai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
     mai.pNext           = &fi;
-    mai.allocationSize  = req.size;
+    mai.allocationSize  = guard ? guard + md_vk_align_up(req.size, req.alignment) + guard : req.size;
 
     /* the first type whose heap has room */
     VkDeviceMemory mem = VK_NULL_HANDLE;
     VkResult res = VK_ERROR_OUT_OF_DEVICE_MEMORY;
     for (uint32_t t = 0; t < num_types && mem == VK_NULL_HANDLE; ++t) {
         mai.memoryTypeIndex = types[t];
-        if (out_type) *out_type = types[t];
+        out->memory_type    = types[t];
         res = vkAllocateMemory(dev->device, &mai, NULL, &mem);
         if (res != VK_SUCCESS) mem = VK_NULL_HANDLE;
         if (res != VK_SUCCESS && res != VK_ERROR_OUT_OF_DEVICE_MEMORY && res != VK_ERROR_OUT_OF_HOST_MEMORY) break;
@@ -893,7 +928,7 @@ static bool md_vk_create_raw_buffer_ex(md_gpu_device_t dev, uint64_t size, md_gp
         md_vk_check(res, "vkAllocateMemory");
         return md_vk_fail("could not allocate %llu bytes (kind %d) from any of %u memory types", (unsigned long long)size, (int)kind, num_types);
     }
-    if (!md_vk_check(vkBindBufferMemory(dev->device, buf, mem, 0), "vkBindBufferMemory")) {
+    if (!md_vk_check(vkBindBufferMemory(dev->device, buf, mem, guard), "vkBindBufferMemory")) {
         vkFreeMemory(dev->device, mem, NULL);
         vkDestroyBuffer(dev->device, buf, NULL);
         return false;
@@ -910,12 +945,13 @@ static bool md_vk_create_raw_buffer_ex(md_gpu_device_t dev, uint64_t size, md_gp
 
     VkBufferDeviceAddressInfo bdai = {VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
     bdai.buffer = buf;
-    uint64_t addr = vkGetBufferDeviceAddress(dev->device, &bdai);
-
-    *out_buf = buf; *out_mem = mem; *out_addr = addr; *out_host = host;
+    out->buffer        = buf;
+    out->memory        = mem;
+    out->memory_offset = guard;
+    out->address       = vkGetBufferDeviceAddress(dev->device, &bdai);
+    out->host          = host ? (uint8_t*)host + guard : NULL;
     return true;
 }
-
 
 static void md_vk_destroy_raw_buffer(md_gpu_device_t dev, VkBuffer buf, VkDeviceMemory mem) {
     if (buf) vkDestroyBuffer(dev->device, buf, NULL);
@@ -927,12 +963,15 @@ static md_vk_page_t* md_vk_page_create(md_gpu_device_t dev, uint64_t size, bool 
     if (!p) return NULL;
     memset(p, 0, sizeof(*p));
     p->dedicated = dedicated;
-    void* host = NULL;
-    if (!md_vk_create_raw_buffer_ex(dev, size, MD_GPU_MEM_HOST_WRITE, dedicated, &p->buffer, &p->memory, &p->address, &host, NULL)) {
+    md_vk_raw_t raw;
+    if (!md_vk_raw_create(dev, size, MD_GPU_MEM_HOST_WRITE, dedicated ? MD_VK_RAW_STAGING : 0, &raw)) {
         md_free(dev->alloc, p, sizeof(md_vk_page_t));
         return NULL;
     }
-    p->host     = (uint8_t*)host;
+    p->buffer   = raw.buffer;
+    p->memory   = raw.memory;
+    p->address  = raw.address;
+    p->host     = raw.host;
     p->capacity = size;
     return p;
 }
@@ -1127,7 +1166,7 @@ static void md_vk_forget_stream_locked(md_gpu_device_t dev, md_gpu_stream_t s) {
         md_vk_pending_free_t pf = MD_VK_VEC_AT(dev->pending_frees, md_vk_pending_free_t, i);
         if (pf.stream == s) {
             md_vk_vec_remove(&dev->pending_frees, i);
-            md_vk_heap_release_node_locked(dev, pf.kind, pf.node);
+            md_vk_release_free_locked(dev, &pf);
         } else {
             ++i;
         }
@@ -1263,10 +1302,11 @@ static bool md_vk_probe_device(VkPhysicalDevice pd, struct md_allocator_i* alloc
     /* The 1.2 / 1.3 feature structs may only be chained on devices of that version. */
     VkPhysicalDeviceVulkan13Features f13 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
     VkPhysicalDeviceVulkan12Features f12 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+    VkPhysicalDeviceVulkan11Features f11 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
     VkPhysicalDeviceFeatures2        f2  = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     const bool has12 = props.apiVersion >= VK_API_VERSION_1_2;
     const bool has13 = props.apiVersion >= VK_API_VERSION_1_3;
-    if (has12) { f2.pNext = &f12; if (has13) f12.pNext = &f13; }
+    if (has12) { f2.pNext = &f11; f11.pNext = &f12; if (has13) f12.pNext = &f13; }
     vkGetPhysicalDeviceFeatures2(pd, &f2);
 
     if (has12) {
@@ -1325,6 +1365,29 @@ static bool md_vk_probe_device(VkPhysicalDevice pd, struct md_allocator_i* alloc
     out_caps->dynamic_storage_image       = f2.features.shaderStorageImageArrayDynamicIndexing;
     out_caps->dynamic_sampled_image       = f2.features.shaderSampledImageArrayDynamicIndexing;
     out_caps->shader_int64                = f2.features.shaderInt64;
+
+    /* Above the floor: optional, enabled where present. */
+    out_caps->float16              = f12.shaderFloat16 && f11.storageBuffer16BitAccess;
+    out_caps->float64              = f2.features.shaderFloat64;
+    out_caps->int64_atomics        = f2.features.shaderInt64 && f12.shaderBufferInt64Atomics;
+    out_caps->int64_shared_atomics = out_caps->int64_atomics && f12.shaderSharedInt64Atomics;
+    if (md_vk_device_ext_available(pd, VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME)) {
+        VkPhysicalDeviceShaderAtomicFloatFeaturesEXT af = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT};
+        VkPhysicalDeviceFeatures2 q = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &af};
+        vkGetPhysicalDeviceFeatures2(pd, &q);
+        af.pNext = NULL;
+        out_caps->atomic_float  = af;
+        out_caps->float_atomics = af.shaderBufferFloat32Atomics || af.shaderBufferFloat32AtomicAdd ||
+                                  af.shaderSharedFloat32Atomics || af.shaderSharedFloat32AtomicAdd;
+    }
+    if (md_vk_device_ext_available(pd, VK_EXT_SHADER_ATOMIC_FLOAT_2_EXTENSION_NAME)) {
+        VkPhysicalDeviceShaderAtomicFloat2FeaturesEXT af = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_2_FEATURES_EXT};
+        VkPhysicalDeviceFeatures2 q = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &af};
+        vkGetPhysicalDeviceFeatures2(pd, &q);
+        af.pNext = NULL;
+        out_caps->atomic_float2  = af;
+        out_caps->float_atomics2 = af.shaderBufferFloat32AtomicMinMax || af.shaderSharedFloat32AtomicMinMax;
+    }
     return true;
 }
 
@@ -1443,6 +1506,10 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
     memset(dev, 0, sizeof(*dev));
     dev->alloc = alloc;
     dev->validation = desc && desc->enable_validation;
+    {
+        const char* env = getenv("MD_GPU_DEBUG_MEMORY");
+        dev->debug_memory = (desc && desc->debug_memory) || (env && env[0] && strcmp(env, "0") != 0);
+    }
 
     md_vk_vec_init(&dev->registry, sizeof(md_vk_range_t*));
     md_vk_vec_init(&dev->pending_frees, sizeof(md_vk_pending_free_t));
@@ -1569,6 +1636,7 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
         VkPhysicalDeviceProperties2 p2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &sgp};
         vkGetPhysicalDeviceProperties2(dev->phys, &p2);
         dev->subgroup_size = sgp.subgroupSize ? sgp.subgroupSize : 32;
+        dev->subgroup_ops  = (sgp.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT) ? sgp.supportedOperations : 0;
         md_vk_driver_string(dev->phys, &dev->props, dev->driver_desc, sizeof(dev->driver_desc));
     }
 
@@ -1684,10 +1752,14 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
     f12.descriptorBindingUpdateUnusedWhilePending = caps.update_unused_while_pending ? VK_TRUE : VK_FALSE;
     f12.shaderStorageImageArrayNonUniformIndexing = caps.nonuniform_storage_image    ? VK_TRUE : VK_FALSE;
     f12.shaderSampledImageArrayNonUniformIndexing = caps.nonuniform_sampled_image    ? VK_TRUE : VK_FALSE;
+    f12.shaderFloat16                             = caps.float16                     ? VK_TRUE : VK_FALSE;
+    f12.shaderBufferInt64Atomics                  = caps.int64_atomics               ? VK_TRUE : VK_FALSE;
+    f12.shaderSharedInt64Atomics                  = caps.int64_shared_atomics        ? VK_TRUE : VK_FALSE;
 
     VkPhysicalDeviceVulkan11Features f11 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
     f11.pNext = &f12;
-    f11.shaderDrawParameters = caps.graphics ? VK_TRUE : VK_FALSE;
+    f11.shaderDrawParameters     = caps.graphics ? VK_TRUE : VK_FALSE;
+    f11.storageBuffer16BitAccess = caps.float16  ? VK_TRUE : VK_FALSE;
 
     VkPhysicalDeviceFeatures2 f2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     f2.pNext = &f11;
@@ -1702,11 +1774,23 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
     f2.features.shaderStorageImageArrayDynamicIndexing = caps.dynamic_storage_image ? VK_TRUE : VK_FALSE;
     f2.features.shaderSampledImageArrayDynamicIndexing = caps.dynamic_sampled_image ? VK_TRUE : VK_FALSE;
     f2.features.shaderInt64                            = caps.shader_int64          ? VK_TRUE : VK_FALSE;
+    f2.features.shaderFloat64                          = caps.float64               ? VK_TRUE : VK_FALSE;
 
     /* Swapchains, when the instance can make surfaces and the device can
        present through a graphics queue. */
-    const char* dev_exts[2];
+    const char* dev_exts[4];
     uint32_t    dev_ext_count = 0;
+    /* Float atomics, exactly as the probe found them. */
+    if (caps.float_atomics) {
+        dev_exts[dev_ext_count++] = VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME;
+        caps.atomic_float.pNext = f13.pNext;
+        f13.pNext = &caps.atomic_float;
+    }
+    if (caps.float_atomics2) {
+        dev_exts[dev_ext_count++] = VK_EXT_SHADER_ATOMIC_FLOAT_2_EXTENSION_NAME;
+        caps.atomic_float2.pNext = f13.pNext;
+        f13.pNext = &caps.atomic_float2;
+    }
     if (caps.graphics && surface_ext_count > 0 && md_vk_device_ext_available(dev->phys, VK_KHR_SWAPCHAIN_EXTENSION_NAME)) {
         dev_exts[dev_ext_count++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
         dev->supports_present = true;
@@ -1719,7 +1803,7 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
         q2.pNext = &fpe;
         vkGetPhysicalDeviceFeatures2(dev->phys, &q2);
         if (fpe.pipelineExecutableInfo) {
-            fpe.pNext = NULL;
+            fpe.pNext = f13.pNext;
             f13.pNext = &fpe;
             dev_exts[dev_ext_count++] = VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME;
             dev->pipeline_stats = true;
@@ -1734,6 +1818,8 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
     dci.ppEnabledExtensionNames  = dev_exts;
 
     if (!md_vk_check(vkCreateDevice(dev->phys, &dci, NULL, &dev->device), "vkCreateDevice")) goto fail_instance;
+    caps.atomic_float.pNext  = NULL;
+    caps.atomic_float2.pNext = NULL;
     dev->caps = caps;
     dev->supports_graphics = dev->graphics_family != UINT32_MAX;
     dev->depth_bias_clamp  = caps.depth_bias_clamp;
@@ -1844,6 +1930,21 @@ bool md_gpu_device_info(md_gpu_device_t dev, md_gpu_device_info_t* info) {
     info->adapter_index            = dev->adapter_index;
     md_snprintf(info->driver, sizeof(info->driver), "%s", dev->driver_desc);
     md_snprintf(info->name, sizeof(info->name), "%s", dev->props.deviceName);
+
+    const VkSubgroupFeatureFlags arith = VK_SUBGROUP_FEATURE_BASIC_BIT | VK_SUBGROUP_FEATURE_ARITHMETIC_BIT |
+                                         VK_SUBGROUP_FEATURE_BALLOT_BIT;
+    info->max_shared_memory    = dev->props.limits.maxComputeSharedMemorySize;
+    info->max_textures         = dev->tex_slot_count - 1;
+    info->subgroup_arithmetic  = (dev->subgroup_ops & arith) == arith;
+    info->subgroup_shuffle     = (dev->subgroup_ops & VK_SUBGROUP_FEATURE_SHUFFLE_BIT) != 0;
+    info->float16              = dev->caps.float16;
+    info->float64              = dev->caps.float64;
+    info->int64                = dev->caps.shader_int64;
+    info->atomic_int64         = dev->caps.int64_atomics;
+    info->atomic_float_add     = dev->caps.atomic_float.shaderBufferFloat32AtomicAdd;
+    info->atomic_float_min_max = dev->caps.atomic_float2.shaderBufferFloat32AtomicMinMax;
+    info->timestamps           = dev->ts_bits_compute > 0;
+    info->debug_memory         = dev->debug_memory;
     return true;
 }
 
@@ -2675,18 +2776,25 @@ static uint64_t md_vk_heap_chunk_size(const md_vk_heap_t* h, uint64_t need) {
     return size;
 }
 
+/* A chunk of `size` bytes. In debug memory it is one allocation's own,
+   exactly `size` and guarded. */
 static md_vk_chunk_t* md_vk_chunk_create(md_gpu_device_t dev, md_gpu_mem_kind_t kind, uint64_t size) {
     md_vk_chunk_t* c = (md_vk_chunk_t*)md_alloc(dev->alloc, sizeof(md_vk_chunk_t));
     if (!c) { md_vk_fail("out of memory"); return NULL; }
     memset(c, 0, sizeof(*c));
-    void* host = NULL;
-    if (!md_vk_create_raw_buffer_ex(dev, size, kind, false, &c->buffer, &c->memory, &c->address, &host, &c->memory_type)) {
+    md_vk_raw_t raw;
+    if (!md_vk_raw_create(dev, size, kind, dev->debug_memory ? MD_VK_RAW_GUARDED : 0, &raw)) {
         md_free(dev->alloc, c, sizeof(*c));
         return NULL;
     }
-    c->host = (uint8_t*)host;
-    c->size = size;
-    c->kind = kind;
+    c->buffer        = raw.buffer;
+    c->memory        = raw.memory;
+    c->memory_type   = raw.memory_type;
+    c->memory_offset = raw.memory_offset;
+    c->address       = raw.address;
+    c->host          = raw.host;
+    c->size          = size;
+    c->kind          = kind;
     return c;
 }
 
@@ -2714,13 +2822,28 @@ static void md_vk_heap_release_node_locked(md_gpu_device_t dev, md_gpu_mem_kind_
     }
 }
 
+/* Give a debug memory allocation's chunk back to the driver: the GPU is
+   done with it. Caller holds device_mutex. */
+static void md_vk_own_release_locked(md_gpu_device_t dev, md_gpu_mem_kind_t kind, md_vk_chunk_t* c) {
+    md_vk_heap_t* h = &dev->heaps[kind];
+    md_vk_vec_remove_ptr(&h->chunks, c);
+    h->reserved -= c->size;
+    md_vk_chunk_destroy(dev, c);
+}
+
+/* Caller holds device_mutex. */
+static void md_vk_release_free_locked(md_gpu_device_t dev, const md_vk_pending_free_t* pf) {
+    if (pf->own) md_vk_own_release_locked(dev, pf->kind, pf->own);
+    else         md_vk_heap_release_node_locked(dev, pf->kind, pf->node);
+}
+
 /* Release pending frees whose point has been reached. Caller holds device_mutex. */
 static void md_vk_process_pending_frees_locked(md_gpu_device_t dev) {
     for (size_t i = 0; i < dev->pending_frees.count;) {
         md_vk_pending_free_t pf = MD_VK_VEC_AT(dev->pending_frees, md_vk_pending_free_t, i);
         if (md_vk_stream_completed(pf.stream) >= pf.value) {
             md_vk_vec_remove(&dev->pending_frees, i);
-            md_vk_heap_release_node_locked(dev, pf.kind, pf.node);
+            md_vk_release_free_locked(dev, &pf);
         } else {
             ++i;
         }
@@ -2740,7 +2863,7 @@ static md_tlsf_node_t* md_vk_heap_alloc_locked(md_gpu_device_t dev, md_gpu_strea
     if (kind == MD_GPU_MEM_DEVICE && !s->in_pass) {
         for (size_t i = 0; i < dev->pending_frees.count; ++i) {
             md_vk_pending_free_t* pf = &MD_VK_VEC_AT(dev->pending_frees, md_vk_pending_free_t, i);
-            if (pf->stream != s || pf->kind != kind) continue;
+            if (pf->stream != s || pf->kind != kind || pf->own) continue;
             if (pf->node->size < need || pf->node->size > need + need / 4 + MD_VK_HEAP_ALIGN) continue;
             node = pf->node;
             md_vk_vec_remove(&dev->pending_frees, i);
@@ -2787,34 +2910,47 @@ md_gpu_mem_t md_gpu_malloc(md_gpu_stream_t stream, md_gpu_mem_kind_t kind, size_
 
     md_mutex_lock(&dev->device_mutex);
     md_vk_process_pending_frees_locked(dev);
-    md_tlsf_node_t* node = md_vk_heap_alloc_locked(dev, stream, kind, need);
-    if (!node) {
+    md_vk_heap_t* h = &dev->heaps[kind];
+    md_tlsf_node_t* node = NULL;
+    md_vk_chunk_t* c = NULL;
+    if (dev->debug_memory) {
+        /* Memory of its own, exactly `size`, guarded, never reused. */
+        c = md_vk_chunk_create(dev, kind, size);
+        md_vk_chunk_t** slot = c ? (md_vk_chunk_t**)md_vk_vec_push(&h->chunks, dev->alloc) : NULL;
+        if (slot) { *slot = c; h->reserved += size; }
+        else if (c) { md_vk_chunk_destroy(dev, c); c = NULL; md_vk_fail("out of memory"); }
+    } else {
+        node = md_vk_heap_alloc_locked(dev, stream, kind, need);
+        c = node ? (md_vk_chunk_t*)node->region : NULL;
+    }
+    if (!c) {
         md_mutex_unlock(&dev->device_mutex);
         md_free(dev->alloc, r, sizeof(*r));
         return out;
     }
-    md_vk_chunk_t* c = (md_vk_chunk_t*)node->region;
-    r->address      = c->address + node->offset;
+    const uint64_t offset = node ? node->offset : 0;
+    r->address      = c->address + offset;
     r->size         = size;
     r->chunk        = c;
-    r->chunk_offset = node->offset;
+    r->chunk_offset = offset;
     r->node         = node;
+    r->own          = node ? NULL : c;
     r->kind         = kind;
     if (!md_vk_registry_insert_locked(dev, r)) {
-        md_vk_heap_release_node_locked(dev, kind, node);
+        if (node) md_vk_heap_release_node_locked(dev, kind, node);
+        else      md_vk_own_release_locked(dev, kind, c);
         md_mutex_unlock(&dev->device_mutex);
         md_free(dev->alloc, r, sizeof(*r));
         md_vk_fail("out of memory");
         return out;
     }
-    md_vk_heap_t* h = &dev->heaps[kind];
-    h->in_use += node->size;
+    h->in_use += node ? node->size : size;
     if (h->in_use > h->peak_in_use) h->peak_in_use = h->in_use;
     h->allocations++;
     md_mutex_unlock(&dev->device_mutex);
 
     out.gpu = r->address;
-    out.cpu = c->host ? c->host + node->offset : NULL;
+    out.cpu = c->host ? c->host + offset : NULL;
     return out;
 }
 
@@ -2825,33 +2961,30 @@ void md_gpu_free(md_gpu_stream_t stream, md_gpu_addr_t addr) {
 
     md_mutex_lock(&dev->device_mutex);
     md_vk_range_t* r = md_vk_registry_find_locked(dev, addr);
-    if (!r || !r->node || r->address != addr) {
+    if (!r || !(r->node || r->own) || r->address != addr) {
         md_mutex_unlock(&dev->device_mutex);
         md_vk_fail("md_gpu_free: 0x%llx is not the start of a live md_gpu_malloc allocation", (unsigned long long)addr);
         return;
     }
     md_vk_registry_remove_locked(dev, r);
     md_vk_heap_t* h = &dev->heaps[r->kind];
-    h->in_use -= r->node->size;
+    const uint64_t bytes = r->node ? r->node->size : r->size;
+    h->in_use -= bytes;
     h->allocations--;
 
-    const uint64_t at = md_vk_stream_position(stream);
+    const md_vk_pending_free_t free_ = {r->node, r->own, r->kind, stream, md_vk_stream_position(stream)};
     bool queued = false;
-    if (at != 0 && md_vk_stream_completed(stream) < at) {
+    if (free_.value != 0 && md_vk_stream_completed(stream) < free_.value) {
         md_vk_pending_free_t* pf = (md_vk_pending_free_t*)md_vk_vec_push(&dev->pending_frees, dev->alloc);
         if (pf) {
-            pf->node   = r->node;
-            pf->kind   = r->kind;
-            pf->stream = stream;
-            pf->value  = at;
-            queued = true;
+            *pf = free_;
         } else {
-            /* Cannot remember it: leak the node rather than free it under the GPU. */
-            md_vk_fail("out of memory recording a free; %llu bytes leaked", (unsigned long long)r->node->size);
-            queued = true;
+            /* Cannot remember it: leak the memory rather than free it under the GPU. */
+            md_vk_fail("out of memory recording a free; %llu bytes leaked", (unsigned long long)bytes);
         }
+        queued = true;
     }
-    if (!queued) md_vk_heap_release_node_locked(dev, r->kind, r->node);
+    if (!queued) md_vk_release_free_locked(dev, &free_);
     md_mutex_unlock(&dev->device_mutex);
     md_free(dev->alloc, r, sizeof(*r));
 }
@@ -2894,7 +3027,18 @@ static md_vk_chunk_t* md_vk_temp_acquire(md_gpu_stream_t s, md_gpu_mem_kind_t ki
           constants) thus share a chunk instead of taking one each.
        3. A new chunk. */
     md_vk_chunk_t* c = NULL;
-    for (size_t i = 0; i < a->spare.count && !c; ++i) {
+    if (dev->debug_memory) {
+        /* Debug memory: a chunk per allocation, exactly `need`, never reused;
+           those the GPU is done with go back to the driver. */
+        md_mutex_lock(&dev->device_mutex);
+        for (size_t i = 0; i < a->spare.count;) {
+            md_vk_chunk_t* sp = MD_VK_VEC_AT(a->spare, md_vk_chunk_t*, i);
+            if (sp->retire_value <= done) { md_vk_vec_remove(&a->spare, i); md_vk_temp_chunk_destroy_locked(dev, sp); }
+            else ++i;
+        }
+        md_mutex_unlock(&dev->device_mutex);
+    }
+    for (size_t i = 0; i < a->spare.count && !c && !dev->debug_memory; ++i) {
         md_vk_chunk_t* sp = MD_VK_VEC_AT(a->spare, md_vk_chunk_t*, i);
         if (sp->retire_value <= done && sp->size >= need) {
             c = sp;
@@ -2902,7 +3046,7 @@ static md_vk_chunk_t* md_vk_temp_acquire(md_gpu_stream_t s, md_gpu_mem_kind_t ki
             md_vk_vec_remove(&a->spare, i);
         }
     }
-    for (size_t i = a->spare.count; i-- > 0 && !c;) {
+    for (size_t i = a->spare.count; i-- > 0 && !c && !dev->debug_memory;) {
         md_vk_chunk_t* sp = MD_VK_VEC_AT(a->spare, md_vk_chunk_t*, i);
         if (sp->cursor + need <= sp->size) {
             c = sp;
@@ -2910,7 +3054,8 @@ static md_vk_chunk_t* md_vk_temp_acquire(md_gpu_stream_t s, md_gpu_mem_kind_t ki
         }
     }
     if (!c) {
-        const uint64_t size = need > MD_VK_TEMP_CHUNK_MIN ? md_vk_align_up(need, MD_VK_HEAP_LARGE_ALIGN) : MD_VK_TEMP_CHUNK_MIN;
+        const uint64_t size = dev->debug_memory ? need
+                            : need > MD_VK_TEMP_CHUNK_MIN ? md_vk_align_up(need, MD_VK_HEAP_LARGE_ALIGN) : MD_VK_TEMP_CHUNK_MIN;
         c = md_vk_chunk_create(dev, kind, size);
         if (!c) return NULL;
         md_vk_range_t* r = (md_vk_range_t*)md_alloc(dev->alloc, sizeof(md_vk_range_t));
@@ -2963,11 +3108,13 @@ md_gpu_mem_t md_gpu_temp_alloc(md_gpu_temp_t scope, md_gpu_mem_kind_t kind, size
     const int ti = md_vk_temp_index(kind);
     if (ti < 0) { md_vk_fail("md_gpu_temp_alloc: only MD_GPU_MEM_DEVICE and MD_GPU_MEM_HOST_WRITE memory is temporary"); return out; }
     if (size == 0) return out;
-    const uint64_t need = md_vk_align_up(size, MD_VK_HEAP_ALIGN);
+    /* Debug memory: every allocation takes a chunk of exactly its size. */
+    const bool own = s->device->debug_memory;
+    const uint64_t need = own ? size : md_vk_align_up(size, MD_VK_HEAP_ALIGN);
 
     md_vk_temp_arena_t* a = &s->temp[ti];
     md_vk_chunk_t* c = a->active.count ? MD_VK_VEC_AT(a->active, md_vk_chunk_t*, a->active.count - 1) : NULL;
-    if (!c || c->cursor + need > c->size) {
+    if (!c || c->cursor + need > c->size || own) {
         c = md_vk_temp_acquire(s, kind, need);
         if (!c) return out;
     }
@@ -3490,9 +3637,7 @@ static md_gpu_texture_t md_vk_texture_create(md_gpu_stream_t s, const md_gpu_tex
                 md_vk_fail("%s '%s': this device cannot place %s textures in MD_GPU_MEM_DEVICE memory", what, label, fi.name);
                 goto fail;
             }
-            /* The chunk's buffer is bound at offset 0 of its memory, so a
-               buffer offset is a memory offset. */
-            const uint64_t off = md_vk_align_up(sp.offset, pl.align);
+            const uint64_t off = md_vk_align_up(sp.chunk->memory_offset + sp.offset, pl.align);
             if (!md_vk_check(vkBindImageMemory(dev->device, t->image, sp.chunk->memory, off), "vkBindImageMemory (placed)")) goto fail;
             t->placed = true;
         }

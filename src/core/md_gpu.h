@@ -352,6 +352,20 @@ typedef struct md_gpu_device_desc_t {
        returning them to the driver. 0 selects 256 MiB. */
     uint64_t heap_cache_limit;
 
+    /* Debug memory, for finding out-of-bounds and use-after-free accesses in
+       kernels: every md_gpu_malloc and md_gpu_temp_alloc allocation gets
+       memory of its own, exactly its size, and freed memory is never reused.
+       On Vulkan each allocation is a buffer of its own with 64 KiB of memory
+       no buffer covers on either side, so GPU-assisted validation (enable_validation
+       plus GPU-AV, e.g. VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_GPU_ASSISTED_EXT
+       or vkconfig) reports a pointer access that leaves its allocation. On
+       Metal each allocation is an MTLBuffer of its own, for Metal shader
+       validation (MTL_SHADER_VALIDATION=1). Slow, and each allocation counts
+       against the driver's allocation limit (4096 on some drivers): for
+       debugging only. The environment variable MD_GPU_DEBUG_MEMORY=1 turns it
+       on as well. */
+    bool debug_memory;
+
     /* Texture handles the device can hold at once: a texture takes one if it
        is SAMPLED and one per mip level if it is STORAGE. 0 selects 4095.
        Clamped to what the device can bind (the clamp is logged); Metal has no
@@ -375,6 +389,33 @@ typedef struct md_gpu_device_info_t {
     uint32_t adapter_index;              /* index in md_gpu_enumerate_adapters */
     char     name[256];
     char     driver[256];                /* driver name and version, for logs */
+
+    /* ---- Capabilities beyond the floor -----------------------------------
+       The floor is what every device md_gpu creates has: Vulkan 1.3 with
+       buffer device addresses, descriptor indexing and timeline semaphores
+       (Pascal, Intel Gen9, RDNA, ...), or Metal 3 (Apple silicon, recent Intel
+       and AMD Macs). What lies above it is reported here, and enabled
+       wherever the device has it; a kernel that uses what its device lacks
+       fails to create. Each says only that the operation exists, not that it
+       is fast (Pascal and Intel do float64 at a small fraction of float32). */
+    uint32_t max_shared_memory;          /* bytes of groupshared memory per group */
+    uint32_t max_textures;               /* texture handles held at once
+                                            (md_gpu_device_desc_t.max_textures as
+                                            granted); UINT32_MAX without a limit */
+    bool     subgroup_arithmetic;        /* WaveActiveSum/Min/Max, WavePrefixSum, ...
+                                            in kernels                              */
+    bool     subgroup_shuffle;           /* WaveReadLaneAt with any lane            */
+    bool     float16;                    /* half arithmetic, and half in device memory */
+    bool     float64;                    /* double arithmetic                       */
+    bool     int64;                      /* 64-bit integer arithmetic               */
+    bool     atomic_int64;               /* every 64-bit integer atomic on device
+                                            memory, add and compare-exchange included */
+    bool     atomic_float_add;           /* InterlockedAdd on float in device memory */
+    bool     atomic_float_min_max;       /* InterlockedMin/Max on float in device memory */
+    bool     timestamps;                 /* md_gpu_sync_gpu_seconds measures work on
+                                            COMPUTE streams                          */
+    bool     debug_memory;               /* md_gpu_device_desc_t.debug_memory, or
+                                            MD_GPU_DEBUG_MEMORY, is in effect          */
 } md_gpu_device_info_t;
 
 /* `desc` may be NULL for defaults. Returns NULL on failure; see

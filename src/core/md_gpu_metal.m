@@ -255,6 +255,7 @@ typedef struct md_mtl_range_t {
     md_mtl_chunk_t*   chunk;
     uint64_t          chunk_offset;
     md_tlsf_node_t*   node;          /* NULL for a temp chunk */
+    md_mtl_chunk_t*   own;           /* debug memory: the allocation's own chunk */
     md_gpu_mem_kind_t kind;
 } md_mtl_range_t;
 
@@ -277,7 +278,8 @@ typedef struct md_mtl_heap_t {
 } md_mtl_heap_t;
 
 typedef struct md_mtl_pending_free_t {
-    md_tlsf_node_t*   node;
+    md_tlsf_node_t*   node;          /* a heap allocation, or             */
+    md_mtl_chunk_t*   own;           /* a debug memory allocation's chunk */
     md_gpu_mem_kind_t kind;
     md_gpu_stream_t   stream;
     uint64_t          value;
@@ -475,6 +477,7 @@ typedef struct md_gpu_device {
     md_mtl_heap_t heaps[MD_GPU_MEM_KIND_COUNT];
     md_mtl_vec_t pending_frees;   /* md_mtl_pending_free_t */
     uint64_t     heap_cache_limit;
+    bool         debug_memory;       /* md_gpu_device_desc_t.debug_memory */
     md_mtl_vec_t textures;   /* md_gpu_texture_t, live */
     uint64_t     texture_bytes;
     md_mtl_vec_t kernels;    /* md_gpu_kernel_t */
@@ -509,6 +512,7 @@ static bool     md_mtl_stream_submit(md_gpu_stream_t s);
 static bool     md_mtl_byte_op(md_gpu_stream_t s, uint64_t dst, uint64_t src, uint64_t size, uint8_t value);
 static uint64_t md_mtl_stream_completed(md_gpu_stream_t s);
 static void     md_mtl_heap_release_node_locked(md_gpu_device_t dev, md_gpu_mem_kind_t kind, md_tlsf_node_t* node);
+static void     md_mtl_release_free_locked(md_gpu_device_t dev, const md_mtl_pending_free_t* pf);
 static void     md_mtl_temp_free_all(md_gpu_stream_t s);
 static void     md_mtl_texture_free(md_gpu_device_t dev, md_gpu_texture_t t);
 static void     md_mtl_abandon_pass(md_gpu_stream_t s);
@@ -839,7 +843,7 @@ static void md_mtl_forget_stream_locked(md_gpu_device_t dev, md_gpu_stream_t s) 
         md_mtl_pending_free_t pf = MD_MTL_VEC_AT(dev->pending_frees, md_mtl_pending_free_t, i);
         if (pf.stream == s) {
             md_mtl_vec_remove(&dev->pending_frees, i);
-            md_mtl_heap_release_node_locked(dev, pf.kind, pf.node);
+            md_mtl_release_free_locked(dev, &pf);
         } else {
             ++i;
         }
@@ -1357,13 +1361,28 @@ static void md_mtl_heap_release_node_locked(md_gpu_device_t dev, md_gpu_mem_kind
     }
 }
 
+/* Give a debug memory allocation's chunk back: the GPU is done with it.
+   Caller holds device_mutex. */
+static void md_mtl_own_release_locked(md_gpu_device_t dev, md_gpu_mem_kind_t kind, md_mtl_chunk_t* c) {
+    md_mtl_heap_t* h = &dev->heaps[kind];
+    md_mtl_vec_remove_ptr(&h->chunks, c);
+    h->reserved -= c->size;
+    md_mtl_chunk_destroy_locked(dev, c);
+}
+
+/* Caller holds device_mutex. */
+static void md_mtl_release_free_locked(md_gpu_device_t dev, const md_mtl_pending_free_t* pf) {
+    if (pf->own) md_mtl_own_release_locked(dev, pf->kind, pf->own);
+    else         md_mtl_heap_release_node_locked(dev, pf->kind, pf->node);
+}
+
 /* Caller holds device_mutex. */
 static void md_mtl_process_pending_frees_locked(md_gpu_device_t dev) {
     for (size_t i = 0; i < dev->pending_frees.count;) {
         md_mtl_pending_free_t pf = MD_MTL_VEC_AT(dev->pending_frees, md_mtl_pending_free_t, i);
         if (md_mtl_stream_completed(pf.stream) >= pf.value) {
             md_mtl_vec_remove(&dev->pending_frees, i);
-            md_mtl_heap_release_node_locked(dev, pf.kind, pf.node);
+            md_mtl_release_free_locked(dev, &pf);
         } else {
             ++i;
         }
@@ -1378,7 +1397,7 @@ static md_tlsf_node_t* md_mtl_heap_alloc_locked(md_gpu_device_t dev, md_gpu_stre
     if (kind == MD_GPU_MEM_DEVICE) {
         for (size_t i = 0; i < dev->pending_frees.count; ++i) {
             md_mtl_pending_free_t* pf = &MD_MTL_VEC_AT(dev->pending_frees, md_mtl_pending_free_t, i);
-            if (pf->stream != s || pf->kind != kind) continue;
+            if (pf->stream != s || pf->kind != kind || pf->own) continue;
             if (pf->node->size < need || pf->node->size > need + need / 4 + MD_MTL_HEAP_ALIGN) continue;
             node = pf->node;
             md_mtl_vec_remove(&dev->pending_frees, i);
@@ -1425,34 +1444,47 @@ md_gpu_mem_t md_gpu_malloc(md_gpu_stream_t stream, md_gpu_mem_kind_t kind, size_
 
     md_mutex_lock(&dev->device_mutex);
     md_mtl_process_pending_frees_locked(dev);
-    md_tlsf_node_t* node = md_mtl_heap_alloc_locked(dev, stream, kind, need);
-    if (!node) {
+    md_mtl_heap_t* h = &dev->heaps[kind];
+    md_tlsf_node_t* node = NULL;
+    md_mtl_chunk_t* c = NULL;
+    if (dev->debug_memory) {
+        /* A buffer of its own, exactly `size`, never reused. */
+        c = md_mtl_chunk_create_locked(dev, kind, size);
+        md_mtl_chunk_t** slot = c ? (md_mtl_chunk_t**)md_mtl_vec_push(&h->chunks, dev->alloc) : NULL;
+        if (slot) { *slot = c; h->reserved += size; }
+        else if (c) { md_mtl_chunk_destroy_locked(dev, c); c = NULL; md_mtl_fail("out of memory"); }
+    } else {
+        node = md_mtl_heap_alloc_locked(dev, stream, kind, need);
+        c = node ? (md_mtl_chunk_t*)node->region : NULL;
+    }
+    if (!c) {
         md_mutex_unlock(&dev->device_mutex);
         md_free(dev->alloc, r, sizeof(*r));
         return out;
     }
-    md_mtl_chunk_t* c = (md_mtl_chunk_t*)node->region;
-    r->address      = c->address + node->offset;
+    const uint64_t offset = node ? node->offset : 0;
+    r->address      = c->address + offset;
     r->size         = size;
     r->chunk        = c;
-    r->chunk_offset = node->offset;
+    r->chunk_offset = offset;
     r->node         = node;
+    r->own          = node ? NULL : c;
     r->kind         = kind;
     if (!md_mtl_registry_insert_locked(dev, r)) {
-        md_mtl_heap_release_node_locked(dev, kind, node);
+        if (node) md_mtl_heap_release_node_locked(dev, kind, node);
+        else      md_mtl_own_release_locked(dev, kind, c);
         md_mutex_unlock(&dev->device_mutex);
         md_free(dev->alloc, r, sizeof(*r));
         md_mtl_fail("out of memory");
         return out;
     }
-    md_mtl_heap_t* h = &dev->heaps[kind];
-    h->in_use += node->size;
+    h->in_use += node ? node->size : size;
     if (h->in_use > h->peak_in_use) h->peak_in_use = h->in_use;
     h->allocations++;
     md_mutex_unlock(&dev->device_mutex);
 
     out.gpu = r->address;
-    out.cpu = c->host ? c->host + node->offset : NULL;
+    out.cpu = c->host ? c->host + offset : NULL;
     return out;
 }
 
@@ -1463,31 +1495,26 @@ void md_gpu_free(md_gpu_stream_t stream, md_gpu_addr_t addr) {
 
     md_mutex_lock(&dev->device_mutex);
     md_mtl_range_t* r = md_mtl_registry_find_locked(dev, addr);
-    if (!r || !r->node || r->address != addr) {
+    if (!r || !(r->node || r->own) || r->address != addr) {
         md_mutex_unlock(&dev->device_mutex);
         md_mtl_fail("md_gpu_free: 0x%llx is not the start of a live md_gpu_malloc allocation", (unsigned long long)addr);
         return;
     }
     md_mtl_registry_remove_locked(dev, r);
     md_mtl_heap_t* h = &dev->heaps[r->kind];
-    h->in_use -= r->node->size;
+    const uint64_t bytes = r->node ? r->node->size : r->size;
+    h->in_use -= bytes;
     h->allocations--;
 
-    const uint64_t at = md_mtl_stream_position(stream);
+    const md_mtl_pending_free_t free_ = {r->node, r->own, r->kind, stream, md_mtl_stream_position(stream)};
     bool queued = false;
-    if (at != 0 && md_mtl_stream_completed(stream) < at) {
+    if (free_.value != 0 && md_mtl_stream_completed(stream) < free_.value) {
         md_mtl_pending_free_t* pf = (md_mtl_pending_free_t*)md_mtl_vec_push(&dev->pending_frees, dev->alloc);
-        if (pf) {
-            pf->node   = r->node;
-            pf->kind   = r->kind;
-            pf->stream = stream;
-            pf->value  = at;
-        } else {
-            md_mtl_fail("out of memory recording a free; %llu bytes leaked", (unsigned long long)r->node->size);
-        }
+        if (pf) *pf = free_;
+        else    md_mtl_fail("out of memory recording a free; %llu bytes leaked", (unsigned long long)bytes);
         queued = true;
     }
-    if (!queued) md_mtl_heap_release_node_locked(dev, r->kind, r->node);
+    if (!queued) md_mtl_release_free_locked(dev, &free_);
     md_mutex_unlock(&dev->device_mutex);
     md_free(dev->alloc, r, sizeof(*r));
 }
@@ -1517,7 +1544,18 @@ static md_mtl_chunk_t* md_mtl_temp_acquire(md_gpu_stream_t s, md_gpu_mem_kind_t 
     const uint64_t done = md_mtl_stream_completed(s);
 
     md_mtl_chunk_t* c = NULL;
-    for (size_t i = 0; i < a->spare.count && !c; ++i) {
+    if (dev->debug_memory) {
+        /* Debug memory: a chunk per allocation, exactly `need`, never reused;
+           those the GPU is done with are released. */
+        md_mutex_lock(&dev->device_mutex);
+        for (size_t i = 0; i < a->spare.count;) {
+            md_mtl_chunk_t* sp = MD_MTL_VEC_AT(a->spare, md_mtl_chunk_t*, i);
+            if (sp->retire_value <= done) { md_mtl_vec_remove(&a->spare, i); md_mtl_temp_chunk_destroy_locked(dev, sp); }
+            else ++i;
+        }
+        md_mutex_unlock(&dev->device_mutex);
+    }
+    for (size_t i = 0; i < a->spare.count && !c && !dev->debug_memory; ++i) {
         md_mtl_chunk_t* sp = MD_MTL_VEC_AT(a->spare, md_mtl_chunk_t*, i);
         if (sp->retire_value <= done && sp->size >= need) {
             c = sp;
@@ -1525,7 +1563,7 @@ static md_mtl_chunk_t* md_mtl_temp_acquire(md_gpu_stream_t s, md_gpu_mem_kind_t 
             md_mtl_vec_remove(&a->spare, i);
         }
     }
-    for (size_t i = a->spare.count; i-- > 0 && !c;) {
+    for (size_t i = a->spare.count; i-- > 0 && !c && !dev->debug_memory;) {
         md_mtl_chunk_t* sp = MD_MTL_VEC_AT(a->spare, md_mtl_chunk_t*, i);
         if (sp->cursor + need <= sp->size) {
             c = sp;
@@ -1533,7 +1571,8 @@ static md_mtl_chunk_t* md_mtl_temp_acquire(md_gpu_stream_t s, md_gpu_mem_kind_t 
         }
     }
     if (!c) {
-        const uint64_t size = need > MD_MTL_TEMP_CHUNK_MIN ? md_mtl_align_up(need, MD_MTL_HEAP_LARGE_ALIGN) : MD_MTL_TEMP_CHUNK_MIN;
+        const uint64_t size = dev->debug_memory ? need
+                            : need > MD_MTL_TEMP_CHUNK_MIN ? md_mtl_align_up(need, MD_MTL_HEAP_LARGE_ALIGN) : MD_MTL_TEMP_CHUNK_MIN;
         md_mtl_range_t* r = (md_mtl_range_t*)md_alloc(dev->alloc, sizeof(md_mtl_range_t));
         if (!r) { md_mtl_fail("out of memory"); return NULL; }
         md_mutex_lock(&dev->device_mutex);
@@ -1589,11 +1628,13 @@ md_gpu_mem_t md_gpu_temp_alloc(md_gpu_temp_t scope, md_gpu_mem_kind_t kind, size
     const int ti = md_mtl_temp_index(kind);
     if (ti < 0) { md_mtl_fail("md_gpu_temp_alloc: only MD_GPU_MEM_DEVICE and MD_GPU_MEM_HOST_WRITE memory is temporary"); return out; }
     if (size == 0) return out;
-    const uint64_t need = md_mtl_align_up(size, MD_MTL_HEAP_ALIGN);
+    /* Debug memory: every allocation takes a chunk of exactly its size. */
+    const bool own = s->device->debug_memory;
+    const uint64_t need = own ? size : md_mtl_align_up(size, MD_MTL_HEAP_ALIGN);
 
     md_mtl_temp_arena_t* a = &s->temp[ti];
     md_mtl_chunk_t* c = a->active.count ? MD_MTL_VEC_AT(a->active, md_mtl_chunk_t*, a->active.count - 1) : NULL;
-    if (!c || c->cursor + need > c->size) {
+    if (!c || c->cursor + need > c->size || own) {
         c = md_mtl_temp_acquire(s, kind, need);
         if (!c) return out;
     }
@@ -3841,6 +3882,10 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
         md_mtl_vec_init(&dev->heaps[k].chunks, sizeof(md_mtl_chunk_t*));
     }
     dev->heap_cache_limit = (desc && desc->heap_cache_limit) ? desc->heap_cache_limit : MD_MTL_HEAP_CACHE_DEFAULT;
+    {
+        const char* env = getenv("MD_GPU_DEBUG_MEMORY");
+        dev->debug_memory = (desc && desc->debug_memory) || (env && env[0] && strcmp(env, "0") != 0);
+    }
     md_mtl_vec_init(&dev->kernels,  sizeof(md_gpu_kernel_t));
     md_mtl_vec_init(&dev->pipelines, sizeof(md_gpu_pipeline_t));
     md_mtl_vec_init(&dev->surfaces, sizeof(md_gpu_surface_t));
@@ -3943,6 +3988,27 @@ bool md_gpu_device_info(md_gpu_device_t dev, md_gpu_device_info_t* info) {
     info->adapter_index            = dev->adapter_index;
     md_snprintf(info->driver, sizeof(info->driver), "Metal, %s",
              [[[NSProcessInfo processInfo] operatingSystemVersionString] UTF8String]);
+
+    /* From Apple's Metal feature set tables. Where a Mac2 (Intel or AMD) GPU's
+       support is not stated there, it is reported absent. */
+    id<MTLDevice> d = dev->device;
+    const bool apple6 = [d supportsFamily:MTLGPUFamilyApple6];
+    const bool apple7 = [d supportsFamily:MTLGPUFamilyApple7];
+    const bool mac2   = [d supportsFamily:MTLGPUFamilyMac2];
+    info->max_shared_memory    = (uint32_t)d.maxThreadgroupMemoryLength;
+    info->max_textures         = UINT32_MAX;                 /* no heap of md_gpu's */
+    info->subgroup_arithmetic  = apple7 || mac2;             /* SIMD-scoped reductions */
+    info->subgroup_shuffle     = apple6 || mac2;             /* SIMD-scoped permutes   */
+    info->float16              = true;
+    info->float64              = false;                      /* no double on Metal GPUs */
+    info->int64                = true;
+    /* Apple9 (MTLGPUFamilyApple9, by value: older SDKs lack the name); Apple8
+       has 64-bit min/max only. */
+    info->atomic_int64         = [d supportsFamily:(MTLGPUFamily)1009];
+    info->atomic_float_add     = apple7;
+    info->atomic_float_min_max = false;                      /* add and exchange only */
+    info->timestamps           = true;                       /* command buffer GPU times */
+    info->debug_memory         = dev->debug_memory;
     return true;
 }
 

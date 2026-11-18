@@ -320,3 +320,27 @@ void spec_const(uint3 tid : SV_DispatchThreadID) {
     if (SPEC_INVERT) v = ~v;
     a.dst[tid.x] = v;
 }
+
+// ---------------------------------------------------------------------------
+// atomic_float_sum: *dst += src[i] for every i, by float atomics -- only where
+// md_gpu_device_info_t.atomic_float_add says the device has them.
+// ---------------------------------------------------------------------------
+struct AtomicFloatArgs {
+    uint   n;
+    uint   _pad0;
+    uint   _pad1;
+    uint   _pad2;
+    float* src;
+    float* dst;
+};
+
+struct AtomicFloatRoot { AtomicFloatArgs* args; };
+[[vk::push_constant]] ConstantBuffer<AtomicFloatRoot> atomic_float_root;
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void atomic_float_sum(uint3 tid : SV_DispatchThreadID) {
+    AtomicFloatArgs a = *atomic_float_root.args;
+    if (tid.x >= a.n) return;
+    InterlockedAdd(a.dst[0], a.src[tid.x]);
+}

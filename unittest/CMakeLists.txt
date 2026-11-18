@@ -102,7 +102,7 @@ if (MD_ENABLE_GPU AND (MD_GPU_BACKEND STREQUAL "VULKAN" OR MD_GPU_BACKEND STREQU
     TARGET    md_unittest
     NAMESPACE md_shader
     SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/gpu_test.slang
-    ENTRIES   fill scale_add sum_reduce tex_write tex_read bump layout_probe tex_probe sample_read spin spec_const
+    ENTRIES   fill scale_add sum_reduce tex_write tex_read bump layout_probe tex_probe sample_read spin spec_const atomic_float_sum
   )
   compile_gpu_shaders(gpu_render_test_shaders.inl
     TARGET    md_unittest
