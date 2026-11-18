@@ -77,6 +77,18 @@ relax). mol.h5 at cell 0.15, protein.h5 at 0.2. A wide GEMM of fewer columns tha
 | N 512, w192 (3) vs y256 (2)   | M4 Pro | 0.857       | 0.851       |
 | N 1024, w128 (8) vs y256 (4)  | M4 Pro | 0.889       | 0.886       |
 | N 1024, w192 (6) vs y256 (4)  | M4 Pro | 0.855       | 0.852       |
+| N 96, tiled 64 vs w128        | 1060   | 0.986       | 0.979       |
+| N 96, w128 vs y256            | 1060   | 1.495       | 1.644       |
+| N 128, w128 vs y256           | 1060   | 1.502       | 1.643       |
+| N 160, w192 vs y256           | 1060   | 1.159       | 1.186       |
+| N 192, w192 vs y256           | 1060   | 1.160       | 1.187       |
+| N 160, w128 (2 passes) vs w192 | 1060  | 0.750       | 0.719       |
+| N 192, w128 (2 passes) vs w192 | 1060  | 0.739       | 0.709       |
+| N 256, w128 (2) vs y256       | 1060   | 0.855       | 0.842       |
+| N 256, w192 (2) vs y256       | 1060   | 0.644       | 0.615       |
+
+(The 1060 lost the device at N 512 with w128 in four passes: md_gto_iso_gpu_extract made the corners one launch,
+over Windows' 2 s watchdog. Isosurface r43 chunks by the GEMMs' columns, the blocking extraction too.)
 
 ## Decided (one GPU more than 5% ahead keeps a variant)
 
