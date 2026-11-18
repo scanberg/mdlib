@@ -637,8 +637,9 @@ void ao_main(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
 // accumulators), this one was within 11% of the fastest on an M4 Pro, an RTX 3080 and a UHD 770 alike;
 // that was with 272 columns (9 groups of 32), before the Hessian remainders over the cube itself left.
 //
-// REGISTERS: keep gemm_main at 128 or fewer (on the core: 115 on an RTX 3080; the GTX 1060 is the one to check).
-// An NVIDIA SM has 65536 registers, so a 256-thread group fits twice at <= 128 per thread and once above. With 9 column groups (72 accumulators) the GTX 1060 compiled it
+// REGISTERS: keep gemm_main at 128 or fewer. On the core it takes 115 on an RTX 3080; its own loop took 127 there and
+// 128 on a GTX 1060 (Pascal, without Turing's uniform registers, one more), so about 116 is expected on the 1060 (not
+// measured). An NVIDIA SM has 65536 registers, so a 256-thread group fits twice at <= 128 per thread and once above. With 9 column groups (72 accumulators) the GTX 1060 compiled it
 // to 165 (one group per SM, 8 warps); with 8 (64 accumulators) to exactly 128 (two, 16 warps), and the
 // GEMM took 38% less time on a 72-atom system (4913 -> 3029 ms; per batch -40%), far more than the 11%
 // fewer columns. It sits at the limit: one register more, from any change here or a ninth column group,
