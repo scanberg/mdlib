@@ -130,7 +130,7 @@ bool md_ndx_system_supplement(md_system_t* sys, const md_ndx_data_t* data) {
     for (size_t i = 0; i < data->num_groups; ++i) {
         const md_ndx_group_t* g = &data->groups[i];
         md_bitset_t atoms = md_bitset_from_indices(g->atom_idx, g->count, heap);
-        md_system_group_add(sys, g->name, atoms, 0);
+        md_system_group_add(sys, g->name, atoms);
         md_bitset_free(&atoms, heap);
     }
     MD_LOG_INFO("NDX: %zu groups", data->num_groups);

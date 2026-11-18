@@ -2767,13 +2767,14 @@ UTEST(vial_ir, attr_draws_groups) {
     md_system_state_t st = {.alloc = alloc};
     ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/inside-md-pullout.gro"), NULL));
     ASSERT_GE(sys.atom.count, 1000u);
-    md_system_group_add(&sys, MD_STR_LIT("CA"),      md_bitset_range(0, 10), 0);
-    md_system_group_add(&sys, MD_STR_LIT("Protein"), md_bitset_range(10, 300), 0);
-    md_system_group_add(&sys, MD_STR_LIT("AIN"),     md_bitset_range(300, 400), 0);
-    md_system_group_add(&sys, MD_STR_LIT("SOL"),     md_bitset_range(400, 900), 0);
+    md_system_group_add(&sys, MD_STR_LIT("CA"),      md_bitset_range(0, 10));
+    md_system_group_add(&sys, MD_STR_LIT("Protein"), md_bitset_range(10, 300));
+    md_system_group_add(&sys, MD_STR_LIT("AIN"),     md_bitset_range(300, 400));
+    md_system_group_add(&sys, MD_STR_LIT("SOL"),     md_bitset_range(400, 900));
     ASSERT_TRUE(md_edr_system_supplement_from_file(&sys, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/inside-md-pullout.edr"), &(md_load_desc_t){ .run = MD_STR_LIT("run/md") }));
-    const md_urange_t er = md_system_group_role_range(&sys.group, MD_GROUP_ROLE_ENERGY);
-    ASSERT_EQ(5u, er.end - er.beg);
+    size_t er_n;
+    md_system_group_role_order(&sys.group, MD_GROUP_ROLE_ENERGY, &er_n);
+    ASSERT_EQ(5u, er_n);
 
     const char* src = "p = attr('edr/coul_sr_ca_protein')\nall = attr('edr/coul_sr_*')\nself = attr('edr/lj_sr_sol_sol')\nu = attr('edr/potential')\n";
     const md_vial_compile_desc_t cd = {.sys = &sys, .run = MD_STR_LIT("run/md")};

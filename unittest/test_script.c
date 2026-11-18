@@ -2713,8 +2713,8 @@ UTEST(script, attr_visualizes_groups) {
     ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.gro"), NULL));
     ASSERT_TRUE(md_trr_system_publish_run(&sys, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.trr"), MD_STR_LIT("run/t"), MD_RUN_FLAG_DISABLE_CACHE_WRITE));
     ASSERT_GE(sys.atom.count, 12u);
-    const uint32_t ga = (uint32_t)md_system_group_add(&sys, MD_STR_LIT("A"), md_bitset_range(0, 4), 0);
-    const uint32_t gb = (uint32_t)md_system_group_add(&sys, MD_STR_LIT("B-H"), md_bitset_range(4, 10), 0);
+    const uint32_t ga = (uint32_t)md_system_group_add(&sys, MD_STR_LIT("A"), md_bitset_range(0, 4));
+    const uint32_t gb = (uint32_t)md_system_group_add(&sys, MD_STR_LIT("B-H"), md_bitset_range(4, 10));
     const uint32_t eg[] = {ga, gb};
     md_system_group_set_role(&sys, MD_GROUP_ROLE_ENERGY, eg, 2);
 

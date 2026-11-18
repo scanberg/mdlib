@@ -1138,11 +1138,12 @@ bool md_edr_system_supplement_from_file(md_system_t* sys, md_str_t filename, con
 
 // The group named name: of the role's (*pos its place in the role's order), else any of the name (*pos EDR_NO_GROUP)
 static uint32_t edr_find_group(uint32_t* pos, const md_group_data_t* g, md_group_role_t role, md_str_t name) {
-    const md_urange_t r = md_system_group_role_range(g, role);
-    for (uint32_t i = r.beg; i < r.end; ++i) {
-        if (md_str_eq(g->name[g->role_group[i]], name)) {
-            *pos = i - r.beg;
-            return g->role_group[i];
+    size_t n;
+    const uint32_t* order = md_system_group_role_order(g, role, &n);
+    for (size_t i = 0; i < n; ++i) {
+        if (md_str_eq(g->name[order[i]], name)) {
+            *pos = (uint32_t)i;
+            return order[i];
         }
     }
     *pos = EDR_NO_GROUP;
@@ -1296,8 +1297,8 @@ static bool edr_infer_role(md_system_t* sys, md_group_role_t role, const md_str_
     }
     if (ok) {
         for (size_t i = 0; i < n; ++i) {
-            if (i == rest)      idx[i] = (uint32_t)md_system_group_add(sys, MD_STR_LIT("rest"), rest_atoms, 0);
-            else if (owned[i])  idx[i] = (uint32_t)md_system_group_add(sys, names[i], atoms[i], 0);
+            if (i == rest)      idx[i] = (uint32_t)md_system_group_add(sys, MD_STR_LIT("rest"), rest_atoms);
+            else if (owned[i])  idx[i] = (uint32_t)md_system_group_add(sys, names[i], atoms[i]);
         }
         md_system_group_set_role(sys, role, idx, n);
         MD_LOG_INFO("EDR: %zu %s groups of the system, as the energy file names them", n, what);
@@ -1327,11 +1328,11 @@ size_t md_edr_system_infer_group_roles(md_system_t* sys, const md_str_t* term_na
         }
     }
     if (!fits) return 0;
-    size_t num_set = 0;
-    const md_urange_t er = md_system_group_role_range(&sys->group, MD_GROUP_ROLE_ENERGY);
-    if (num_energy > 1 && er.beg == er.end) num_set += edr_infer_role(sys, MD_GROUP_ROLE_ENERGY, energy, num_energy);
-    const md_urange_t tr = md_system_group_role_range(&sys->group, MD_GROUP_ROLE_TC);
-    if (num_tc > 0 && tr.beg == tr.end) num_set += edr_infer_role(sys, MD_GROUP_ROLE_TC, tc, num_tc);
+    size_t num_set = 0, num_has;
+    md_system_group_role_order(&sys->group, MD_GROUP_ROLE_ENERGY, &num_has);
+    if (num_energy > 1 && num_has == 0) num_set += edr_infer_role(sys, MD_GROUP_ROLE_ENERGY, energy, num_energy);
+    md_system_group_role_order(&sys->group, MD_GROUP_ROLE_TC, &num_has);
+    if (num_tc > 0 && num_has == 0) num_set += edr_infer_role(sys, MD_GROUP_ROLE_TC, tc, num_tc);
     return num_set;
 }
 

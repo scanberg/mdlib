@@ -136,18 +136,20 @@ UTEST(ndx, energy_file_names_default_groups) {
     ASSERT_EQ(0u, sys.group.count);
     ASSERT_TRUE(md_edr_system_supplement_from_file(&sys, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/inside-md-pullout.edr"), &(md_load_desc_t){ .run = MD_STR_LIT("run/md") }));
 
-    const md_urange_t er = md_system_group_role_range(&sys.group, MD_GROUP_ROLE_ENERGY);
-    ASSERT_EQ(5u, er.end - er.beg);
+    size_t er_n;
+    const uint32_t* er = md_system_group_role_order(&sys.group, MD_GROUP_ROLE_ENERGY, &er_n);
+    ASSERT_EQ(5u, er_n);
     const char* order[] = { "CA", "Protein", "AIN", "SOL", "rest" };
     const uint64_t counts[] = { 1, 1189, 20, 49302, 3 };
     for (uint32_t i = 0; i < 5; ++i) {
-        const uint32_t g = sys.group.role_group[er.beg + i];
+        const uint32_t g = er[i];
         EXPECT_TRUE(md_str_eq(md_str_from_cstr(order[i]), sys.group.name[g]));
         EXPECT_EQ(counts[i], md_bitset_count(sys.group.atoms[g]));
     }
-    const md_urange_t tr = md_system_group_role_range(&sys.group, MD_GROUP_ROLE_TC);
-    ASSERT_EQ(1u, tr.end - tr.beg);
-    const uint32_t system = sys.group.role_group[tr.beg];
+    size_t tr_n;
+    const uint32_t* tr = md_system_group_role_order(&sys.group, MD_GROUP_ROLE_TC, &tr_n);
+    ASSERT_EQ(1u, tr_n);
+    const uint32_t system = tr[0];
     EXPECT_TRUE(md_str_eq(MD_STR_LIT("System"), sys.group.name[system]));
     EXPECT_EQ(50515u, md_bitset_count(sys.group.atoms[system]));
 
