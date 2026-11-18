@@ -238,6 +238,30 @@ typedef struct md_topo_gto_info_t {
 
 bool md_topo_compute_extremum_graph_gto(md_topo_extremum_graph_t* out_graph, md_topo_gto_info_t* out_info, const md_topo_gto_desc_t* desc);
 
+// THE REACH OF THE SEARCH'S SCREENING, from its setup alone (no sweep): which pairs of the density matrix it
+// reads. Shells s and t share a cube's, a GPU batch's or a separatrix's local AO list only where
+//     |A_s - A_t| <= radius_local[s] + radius_local[t] + region_margin,
+// and a polish's point list (CP positions as if nothing were left out) only where
+//     |A_s - A_t| <= radius_far[s] + radius_far[t].
+// Every other pair enters only through the tail bounds, which take |D| over whole rows in setup. The GPU sweep's
+// D tiles are made with radius_far + region_margin today (a superset of both). For measurements: what a stored
+// sparse density matrix must hold for the search to read only what it holds (benchmark/bench_dmat_census.c).
+typedef struct md_topo_gto_reach_t {
+    uint32_t num_shells;
+    double*  radius_local;       // [num_shells] bohr: the local radius (the rung chosen in setup)
+    double*  radius_far;         // [num_shells] bohr: where the AO and its derivatives (order <= 2) fall below tau
+    double   region_margin;      // bohr: twice the largest half-diagonal of a screened region (a GPU batch's)
+    double   region_margin_cpu;  // the same for the CPU sweep's regions alone (its cubes' 1.5x enclosures)
+    double   tau;                // the far radius' tail threshold
+    uint32_t screening_rung;     // as md_topo_gto_info_t
+    double   ms_setup;
+} md_topo_gto_reach_t;
+
+// desc as for md_topo_compute_extremum_graph_gto (the density matrix is read: tau depends on it). The arrays are
+// allocated from alloc; release with md_topo_gto_reach_free.
+bool md_topo_gto_reach(md_topo_gto_reach_t* out, const md_topo_gto_desc_t* desc, struct md_allocator_i* alloc);
+void md_topo_gto_reach_free(md_topo_gto_reach_t* reach, struct md_allocator_i* alloc);
+
 #if MD_ENABLE_GPU
 // The same search with the octree sweep on the GPU, in fp32 with rigorous rounding margins (every bound
 // the tests use carries the rounding error of its own computation), so the guarantee is unchanged. The
