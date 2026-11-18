@@ -1136,7 +1136,8 @@ bool md_edr_system_supplement_from_file(md_system_t* sys, md_str_t filename, con
 
 #define EDR_NO_GROUP UINT32_MAX
 
-// The group named name: of the role's (*pos its place in the role's order), else any of the name (*pos EDR_NO_GROUP)
+// The group named name: of the role's (*pos its place in the role's order), else any of the name (*pos EDR_NO_GROUP).
+// 'rest' is the role's own alone: the 'rest' of another role, or of an index file, is other atoms.
 static uint32_t edr_find_group(uint32_t* pos, const md_group_data_t* g, md_group_role_t role, md_str_t name) {
     size_t n;
     const uint32_t* order = md_system_group_role_order(g, role, &n);
@@ -1147,6 +1148,7 @@ static uint32_t edr_find_group(uint32_t* pos, const md_group_data_t* g, md_group
         }
     }
     *pos = EDR_NO_GROUP;
+    if (md_str_eq(name, MD_STR_LIT("rest"))) return EDR_NO_GROUP;
     for (size_t i = 0; i < g->count; ++i) {
         if (md_str_eq(g->name[i], name)) return (uint32_t)i;
     }
@@ -1246,8 +1248,10 @@ static bool edr_names_add(md_str_t* names, size_t* n, md_str_t name) {
 
 // Sets the role from its names in order: false, and nothing set or added, where a name is not found or the groups
 // overlap. A name the system has no group of is GROMACS' default group of it (md_ndx_default_group), made a group of the
-// system only once the role is known to hold.
+// system only once the role is known to hold. 'rest' alone is the role the mdp did not name groups for, every atom in
+// one: a role a system does not have (md_group_data_t), as a tpr gives none, so false and nothing set.
 static bool edr_infer_role(md_system_t* sys, md_group_role_t role, const md_str_t* names, size_t n) {
+    if (n == 1 && md_str_eq(names[0], MD_STR_LIT("rest"))) return false;
     const uint32_t N = (uint32_t)sys->atom.count;
     const char* what = role == MD_GROUP_ROLE_ENERGY ? "energy" : "T-coupling";
     md_allocator_i* heap = md_get_heap_allocator();

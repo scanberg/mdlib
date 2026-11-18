@@ -461,6 +461,36 @@ UTEST(edr, infer_group_roles_dashes_and_tc) {
     md_system_free(&sys);
 }
 
+// T-rest alone is an mdp which named no tc-grps: every atom in one 'rest', a role a system does not have (as a tpr
+// gives none). Nor is a term of 'rest' the 'rest' of another role, which is other atoms.
+UTEST(edr, infer_group_roles_rest_alone) {
+    md_allocator_i* alloc = md_get_heap_allocator();
+    md_system_t sys = { .alloc = alloc };
+    sys.atom.count = 100;
+    md_system_group_add(&sys, MD_STR_LIT("Protein"), md_bitset_range(0, 30));
+    const md_str_t terms[] = {
+        MD_STR_LIT("Coul-SR:Protein-Protein"), MD_STR_LIT("Coul-SR:Protein-rest"), MD_STR_LIT("Coul-SR:rest-rest"),
+        MD_STR_LIT("T-rest"), MD_STR_LIT("Lamb-rest"),
+    };
+    EXPECT_EQ(1u, md_edr_system_infer_group_roles(&sys, terms, MD_COUNTOF(terms)));
+    size_t n;
+    md_system_group_role_order(&sys.group, MD_GROUP_ROLE_TC, &n);
+    EXPECT_EQ(0u, n);
+    const uint32_t* er = md_system_group_role_order(&sys.group, MD_GROUP_ROLE_ENERGY, &n);
+    ASSERT_EQ(2u, n);
+    EXPECT_TRUE(md_bitset_equal(md_bitset_range(30, 100), sys.group.atoms[er[1]]));
+    EXPECT_EQ(2u, sys.group.count);
+    for (size_t i = 0; i < sys.group.count; ++i) EXPECT_EQ(0u, sys.group.roles[i] & (1u << MD_GROUP_ROLE_TC));
+
+    // T-rest is of no group, not the energy groups' 'rest'; Coul-SR:Protein-rest is
+    md_edr_term_groups_t tg;
+    EXPECT_FALSE(md_edr_term_groups(&tg, &sys, MD_STR_LIT("T-rest")));
+    EXPECT_FALSE(md_edr_term_groups(&tg, &sys, MD_STR_LIT("Lamb-rest")));
+    ASSERT_TRUE(md_edr_term_groups(&tg, &sys, MD_STR_LIT("Coul-SR:Protein-rest")));
+    EXPECT_EQ(er[1], tg.group[1]);
+    md_system_free(&sys);
+}
+
 // The energy file after an index file: md_edr_system_supplement sets the roles itself
 UTEST(edr, supplement_infers_group_roles) {
     md_allocator_i* alloc = md_get_heap_allocator();
