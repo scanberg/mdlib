@@ -5028,6 +5028,8 @@ UTEST(gto_iso_gpu_lib, large_density) {
     ASSERT_TRUE(qm_test_basis(&basis, &t));
     const size_t nao = md_gto_basis_num_ao(&basis);
     printf("  %s: %zu atoms, %zu AOs; loaded in %.2f s\n", file, num_atoms, nao, md_tick_to_seconds(md_tick_now() - t0));
+    printf("  isosurface GEMMs: %s | " MD_GTO_GPU_GEMM_CORE_REVISION "\n",
+           (getenv("MD_GTO_ISO_GEMM") && strcmp(getenv("MD_GTO_ISO_GEMM"), "own") == 0) ? "their own loops (MD_GTO_ISO_GEMM=own)" : "on the GEMM core");
 
     // what viamd does: the field from the occupied orbitals (md_qm_density_orbitals), or with
     // GTO_ISO_LARGE_MATRIX=1 from the matrix (factorized again)
