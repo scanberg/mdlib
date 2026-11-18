@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <math.h>
 
 #if MD_ENABLE_GPU
 
@@ -354,36 +355,45 @@ UTEST(gpu, sync_gpu_seconds) {
     double sec = -1.0;
     EXPECT_FALSE(md_gpu_sync_gpu_seconds(md_gpu_sync_none(), &sec));
 
-    enum { N = 1 << 16 };
+    enum { N = 1 << 18, STEPS = 256, REPS = 5 };
     md_gpu_addr_t a = gpu_alloc(&f, f.compute, N * sizeof(uint32_t));
     md_gpu_addr_t b = gpu_alloc(&f, f.compute, N * sizeof(uint32_t));
     ASSERT_TRUE(a && b);
 
-    // one launch, then 64: the second submission does more
-    fill_args_t fa = {0};
-    fa.n = N; fa.base = 0; fa.dst = a;
-    ASSERT_TRUE(MD_GPU_LAUNCH(f.compute, f.k_fill, grid1(f.k_fill, N), fa));
-    const md_gpu_sync_t small = md_gpu_stream_record(f.compute);
-    md_gpu_addr_t src = a, dst = b;
-    for (int step = 0; step < 64; ++step) {
-        scale_args_t sa = {0};
-        sa.n = N; sa.mul = 1; sa.add = 1; sa.src = src; sa.dst = dst;
-        ASSERT_TRUE(MD_GPU_LAUNCH(f.compute, f.k_scale, grid1(f.k_scale, N), sa));
-        md_gpu_addr_t tmp = src; src = dst; dst = tmp;
-    }
-    const md_gpu_sync_t large = md_gpu_stream_record(f.compute);
+    // one launch, then STEPS: the second submission does far more. Each REPS times, the least kept: the first use
+    // of a kernel and of the buffers costs more than the work (seen on a CI Mac's virtual GPU: one launch 1.5 ms,
+    // 64 after it 0.7 ms), and a shared GPU is noisy.
+    double s_small = 1.0e30, s_large = 1.0e30;
+    md_gpu_sync_t first_small = md_gpu_sync_none();
+    for (int rep = 0; rep < REPS; ++rep) {
+        fill_args_t fa = {0};
+        fa.n = N; fa.base = 0; fa.dst = a;
+        ASSERT_TRUE(MD_GPU_LAUNCH(f.compute, f.k_fill, grid1(f.k_fill, N), fa));
+        const md_gpu_sync_t small = md_gpu_stream_record(f.compute);
+        if (rep == 0) first_small = small;
+        md_gpu_addr_t src = a, dst = b;
+        for (int step = 0; step < STEPS; ++step) {
+            scale_args_t sa = {0};
+            sa.n = N; sa.mul = 1; sa.add = 1; sa.src = src; sa.dst = dst;
+            ASSERT_TRUE(MD_GPU_LAUNCH(f.compute, f.k_scale, grid1(f.k_scale, N), sa));
+            md_gpu_addr_t tmp = src; src = dst; dst = tmp;
+        }
+        const md_gpu_sync_t large = md_gpu_stream_record(f.compute);
 
-    double s_small = 0.0, s_large = 0.0;
-    if (!gpu_seconds_wait(small, &s_small)) {
-        md_gpu_stream_sync(f.compute);
-        md_gpu_free(f.compute, a);
-        md_gpu_free(f.compute, b);
-        gpu_close(&f);
-        UTEST_SKIP("the compute queue does not time its submissions");
+        double ss = 0.0, sl = 0.0;
+        if (!gpu_seconds_wait(small, &ss)) {
+            md_gpu_stream_sync(f.compute);
+            md_gpu_free(f.compute, a);
+            md_gpu_free(f.compute, b);
+            gpu_close(&f);
+            UTEST_SKIP("the compute queue does not time its submissions");
+        }
+        ASSERT_TRUE(gpu_seconds_wait(large, &sl));
+        EXPECT_GT(ss, 0.0);
+        s_small = fmin(s_small, ss);
+        s_large = fmin(s_large, sl);
     }
-    ASSERT_TRUE(gpu_seconds_wait(large, &s_large));
-    printf("  one launch %.3f ms, 64 launches %.3f ms (GPU time)\n", s_small * 1e3, s_large * 1e3);
-    EXPECT_GT(s_small, 0.0);
+    printf("  one launch %.3f ms, %d launches %.3f ms (GPU time, the least of %d)\n", s_small * 1e3, (int)STEPS, s_large * 1e3, (int)REPS);
     EXPECT_GT(s_large, s_small);
     EXPECT_LT(s_large, 10.0);
 
@@ -393,7 +403,7 @@ UTEST(gpu, sync_gpu_seconds) {
         md_gpu_stream_record(f.compute);
     }
     md_gpu_stream_sync(f.compute);
-    EXPECT_FALSE(md_gpu_sync_gpu_seconds(small, &sec));
+    EXPECT_FALSE(md_gpu_sync_gpu_seconds(first_small, &sec));
 
     md_gpu_free(f.compute, a);
     md_gpu_free(f.compute, b);
