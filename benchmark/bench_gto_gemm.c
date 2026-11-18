@@ -42,7 +42,8 @@
 //                                   and ELF's GEMM paths, the orbitals' shell kernel at 1 and 8 orbitals, their GEMM at 32
 //                      AO tile:     32 against 64 with 32 for blocks of <= 32 AOs (the vendor's choice is one of the
 //                                   two: Apple 32, else 64): the density, ELF
-//                    and on the volume, orbitals: the shell kernel (8 a pass) against the GEMM path at 2, 4 and 8.
+//                    and on the volume, orbitals: the shell kernel (8 a pass) against the GEMM path at 2, 4, 8, 16,
+//                    24 and 32 (where the default's crossover belongs: GEMM past 8 today).
 //
 // A file is a path relative to <data>/vlx or an existing file. Without any: mol.h5, then protein.h5 if present.
 
@@ -68,7 +69,7 @@
 #include <string.h>
 
 // Bumped with every change to this program's measurement or output
-#define MD_GTO_GEMM_BENCH_REV "gemm-bench r5 (--variants)"
+#define MD_GTO_GEMM_BENCH_REV "gemm-bench r6 (--variants; r6: the orbitals' crossover to 32)"
 
 #define ANGSTROM_TO_BOHR 1.8897261246257702
 #define MAX_REPS 32
@@ -454,7 +455,7 @@ static void variants_grid(md_gpu_stream_t st, const src_t* s, const md_grid_t* g
     }
 
     // the orbitals: the block shape of the shell kernel (1 and 8 a pass) and of the GEMM path; on the volume, the shell
-    // kernel against the GEMM path at 2, 4 and 8
+    // kernel against the GEMM path at 2 to 32
     if (s->num_mo > 0 && gpu_init(&g, st, s, grid, cutoff_density, 0, true)) {
         const size_t nmo[3] = { 1, MD_MIN((size_t)8, s->num_mo), s->num_mo };
         const int algos[3] = { MD_GTO_GPU_ORBITAL_ALGO_SHELL, MD_GTO_GPU_ORBITAL_ALGO_SHELL, MD_GTO_GPU_ORBITAL_ALGO_GEMM };
@@ -466,11 +467,12 @@ static void variants_grid(md_gpu_stream_t st, const src_t* s, const md_grid_t* g
             variants_pair(&g, "block shape", &va, &vb, rounds, 0, oa, ob);
         }
         if (volume) {
-            const size_t cross[3] = { 2, 4, 8 };
-            for (int i = 0; i < 3; ++i) {
+            const size_t cross[6] = { 2, 4, 8, 16, 24, 32 };
+            for (int i = 0; i < 6; ++i) {
                 if (cross[i] > s->num_mo) continue;
                 char na[64], nb[64];
                 snprintf(na, sizeof(na), "%zu orb, shell (8 a pass)", cross[i]);
+                if (cross[i] > 8) snprintf(na, sizeof(na), "%zu orb, shell (%zu passes)", cross[i], (cross[i] + 7) / 8);
                 snprintf(nb, sizeof(nb), "%zu orb, gemm", cross[i]);
                 const variant_t va = { na, KIND_ORBITALS, MD_GTO_GPU_ORBITAL_ALGO_SHELL, cross[i], shape };
                 const variant_t vb = { nb, KIND_ORBITALS, MD_GTO_GPU_ORBITAL_ALGO_GEMM, cross[i], shape };

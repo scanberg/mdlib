@@ -3886,7 +3886,9 @@ UTEST(gto_iso_gpu_lib, benchmark) {
 // (corners, project, relax) per round, their medians and the totals' range.
 //   tiled: N = 8 and 16, 16 against 32 columns; N = 24 and 32, 32 against 64 (mol.h5)
 //   wide:  N = 96, the tiled GEMM (64) against the wide one of 128; N = 96 and 128, 128 against 256; N = 160 and 192,
-//          192 against 256 (protein.h5, else tq.scf.results.h5: the first with as many occupied orbitals)
+//          192 against 256 and 128 (two passes) against 192; N = 256, 512 and 1024 (passes of each), 128 and 192
+//          against 256 (protein.h5, else tq.scf.results.h5: the first with as many occupied orbitals). The wide
+//          kernels take the canonical sets of 65 to 1024 functions (more: the D form).
 // GTO_ISO_VARIANTS_H: the cell size (default 0.15; 0.2 on the protein), GTO_ISO_VARIANTS_ONLY: tiled or wide,
 // GTO_ISO_VARIANTS_FILE: the wide cases' file instead (one with fewer occupied orbitals than N: the lowest N orbitals,
 // the virtual ones weighted 0.5 - a check of the kernels on a small system, not a measurement).
@@ -3926,6 +3928,14 @@ UTEST(gto_iso_gpu_lib, variants) {
         {"wide",  128, 0, 128, 0, 256, true},
         {"wide",  160, 0, 192, 0, 256, true},
         {"wide",  192, 0, 192, 0, 256, true},
+        {"wide",  160, 0, 128, 0, 192, true},
+        {"wide",  192, 0, 128, 0, 192, true},
+        {"wide",  256, 0, 128, 0, 256, true},
+        {"wide",  256, 0, 192, 0, 256, true},
+        {"wide",  512, 0, 128, 0, 256, true},
+        {"wide",  512, 0, 192, 0, 256, true},
+        {"wide", 1024, 0, 128, 0, 256, true},
+        {"wide", 1024, 0, 192, 0, 256, true},
     };
     printf("\n  device: %s, %s | %s | isosurface GEMMs: %s\n", info.name, info.driver, md_gto_iso_gpu_variant(), MD_GTO_GPU_GEMM_CORE_REVISION);
     printf("  variants: %d rounds, the order alternating; B/A per round, median (min-max); gemm stages: corners + project + relax\n", rounds);
@@ -3938,35 +3948,33 @@ UTEST(gto_iso_gpu_lib, variants) {
         if (forced) big_files[0] = forced;
         const char* const* files = big ? big_files : small_files;
         const int nfiles = big ? (forced ? 1 : 2) : 1;
-        uint32_t need = 0;
-        for (size_t ci = 0; ci < sizeof(cases) / sizeof(cases[0]); ++ci) if (cases[ci].big == (big != 0)) need = MD_MAX(need, cases[ci].n);
+        // the first file that loads (a case with more orbitals than it has occupied - than it has, forced - is left out)
         iso_dens_src_t s;
         bool loaded = false;
         const char* file = NULL;
         for (int fi = 0; fi < nfiles && !loaded; ++fi) {
             if (!iso_dens_src_load_ex(&s, files[fi], false)) { iso_dens_src_free(&s); continue; }
-            size_t nocc = 0;
-            for (size_t m = 0; m < s.num_mo; ++m) nocc += s.occ[m] > 0.5 ? 1 : 0;
-            if (nocc < need && !(forced && s.num_mo >= need)) { iso_dens_src_free(&s); continue; }
             loaded = true;
             file = files[fi];
         }
-        if (!loaded) { printf("  -- %s: no file with %u occupied orbitals\n", big ? "wide" : "tiled", need); continue; }
+        if (!loaded) { printf("  -- %s: no file\n", big ? "wide" : "tiled"); continue; }
         size_t homo = 0;
         for (size_t m = 0; m < s.num_mo; ++m) if (s.occ[m] > 0.5) homo = m;
+        const size_t avail = forced ? s.num_mo : homo + 1;
         const double h = hs ? atof(hs) : (s.num_atoms > 500 ? 0.2 : 0.15);
         printf("  -- %s: %zu atoms, %zu AOs, %zu MOs (HOMO %zu), cell %.3g\n", file, s.num_atoms, s.num_ao, s.num_mo, homo, h);
 
         for (size_t ci = 0; ci < sizeof(cases) / sizeof(cases[0]); ++ci) {
             const iso_variant_case_t* c = &cases[ci];
             if (c->big != (big != 0)) continue;
+            if (c->n > avail) { printf("  %-6s N %4u (%zu orbitals to take from)\n", c->group, c->n, avail); continue; }
             const size_t first = homo + 1 >= c->n ? homo + 1 - c->n : 0;
             double* w = (double*)malloc(sizeof(double) * c->n);
             for (uint32_t k = 0; k < c->n; ++k) w[k] = s.occ[first + k] > 0.5 ? s.occ[first + k] : 0.5;
             md_gto_iso_field_t* f = md_gto_iso_field_create_products(&s.basis, s.xyz, 0, s.C + first * s.num_ao, NULL, w, c->n, md_get_heap_allocator());
             free(w);
             md_gto_iso_gpu_set_t* set = f ? md_gto_iso_gpu_set_create(g.s, &s.basis, s.xyz, 0, (const md_gto_iso_field_t* const*)&f, 1, md_get_heap_allocator()) : NULL;
-            if (!set) { printf("  %-6s N %3u (could not make the set)\n", c->group, c->n); if (f) md_gto_iso_field_destroy(f); continue; }
+            if (!set) { printf("  %-6s N %4u (could not make the set)\n", c->group, c->n); if (f) md_gto_iso_field_destroy(f); continue; }
             md_gto_iso_gpu_switches_t sa = base, sb = base;
             sa.tiled_cols = c->a_tiled; sa.wide_cols = c->a_wide;
             sb.tiled_cols = c->b_tiled; sb.wide_cols = c->b_wide;
@@ -4001,10 +4009,10 @@ UTEST(gto_iso_gpu_lib, variants) {
             ISO_VAR_NAME(bn, c->b_tiled, c->b_wide);
             #undef ISO_VAR_NAME
             if (!ok) {
-                printf("  %-6s N %3u  A %-9s B %-9s (an extraction failed)\n", c->group, c->n, an, bn);
+                printf("  %-6s N %4u  A %-9s B %-9s (an extraction failed)\n", c->group, c->n, an, bn);
             } else {
                 const double ra_lo = iso_percentile(r, rounds, 0.0), ra_hi = iso_percentile(r, rounds, 1.0);
-                printf("  %-6s N %3u  A %-9s %9.2f ms (gemm %8.2f) | B %-9s %9.2f ms (gemm %8.2f) | B/A %.3f (%.3f-%.3f), gemm %.3f | vertices %u %s %u\n",
+                printf("  %-6s N %4u  A %-9s %9.2f ms (gemm %8.2f) | B %-9s %9.2f ms (gemm %8.2f) | B/A %.3f (%.3f-%.3f), gemm %.3f | vertices %u %s %u\n",
                        c->group, c->n, an, iso_median(ta, rounds), iso_median(ga, rounds), bn, iso_median(tb, rounds), iso_median(gb, rounds),
                        iso_median(r, rounds), ra_lo, ra_hi, iso_median(rg, rounds), va, va == vb ? "=" : "vs", vb);
             }
