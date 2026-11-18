@@ -3,7 +3,6 @@
 //
 //   gto_dmat.density_matches_packed   h2o and mol: the volume through a dmat (from the orbitals, and from
 //                                     the matrix) against the packed matrix, every algorithm
-//   gto_dmat.density_core_matches_gemm  the density's GEMM on the shared core against gemm2: a cube and a plane
 //   gto_dmat.pattern_follows_motion   the pattern holds within margin / 2 and not beyond
 //   gto_dmat.density_job_matches_launch  mol: md_gto_gpu_density_job_begin, polled, bitwise the launch (the dmat
 //                                     and the packed matrix, every algorithm); a job ended before it is
@@ -209,48 +208,6 @@ UTEST(gto_dmat, density_matches_packed) {
         free(out); free(ref);
         md_gto_gpu_dmat_destroy(g.s, dm);
         dm_gpu_free(&g);
-        dm_free(&s);
-    }
-}
-
-// The density's GEMM on the shared core (MD_GTO_GPU_DENSITY_ALGO_GEMM_CORE) against its own loop (gemm2): the same
-// product in the same order, so the same bits are expected; a cube and a plane (the 2D kernels), packed and dmat
-UTEST(gto_dmat, density_core_matches_gemm) {
-    static const char* files[] = {"h2o.h5", "mol.h5"};
-    for (int fi = 0; fi < 2; ++fi) {
-        dm_src_t s;
-        ASSERT_TRUE(dm_load(&s, files[fi]));
-        for (int plane = 0; plane < 2; ++plane) {
-            md_grid_t grid = dm_grid(&s, 37, 0.3f);
-            if (plane) {
-                // through the centre (the cube's middle layer), wider
-                const float h = grid.spacing.x;
-                grid.origin = md_float3_set(grid.origin.x + 0.5f * h * (37 - 90), grid.origin.y + 0.5f * h * (37 - 70), grid.origin.z + 0.5f * h * 37);
-                grid.dim[0] = 90; grid.dim[1] = 70; grid.dim[2] = 1;
-            }
-            dm_gpu_t g;
-            if (!dm_gpu_init(&g, &s, &grid)) { dm_gpu_free(&g); dm_free(&s); UTEST_SKIP("no GPU device"); }
-            md_gto_gpu_dmat_t dm = md_gto_gpu_dmat_create(g.s, &(md_gto_gpu_dmat_desc_t){ .basis = &s.basis, .atom_xyz = s.xyz, .cutoff = 1.0e-6 });
-            ASSERT_TRUE(dm != NULL);
-            ASSERT_TRUE(md_gto_gpu_dmat_set_matrix(g.s, dm, s.D));
-            float* ref = (float*)malloc(sizeof(float) * g.num_vox);
-            float* out = (float*)malloc(sizeof(float) * g.num_vox);
-            for (int with_dmat = 0; with_dmat < 2; ++with_dmat) {
-                dm_eval(&g, with_dmat ? dm : NULL, MD_GTO_GPU_DENSITY_ALGO_GEMM, ref);
-                dm_eval(&g, with_dmat ? dm : NULL, MD_GTO_GPU_DENSITY_ALGO_GEMM_CORE, out);
-                size_t differ = 0;
-                for (size_t i = 0; i < g.num_vox; ++i) differ += memcmp(&out[i], &ref[i], sizeof(float)) != 0;
-                double ref_max = 0.0;
-                const double rel = dm_rel_diff(out, ref, g.num_vox, &ref_max);
-                printf("  %s %s %s: %zu of %zu voxels differ from gemm2, max |diff| / max |rho| = %.2e (max %.3g) (" MD_GTO_GPU_GEMM_CORE_REVISION ")\n",
-                       files[fi], plane ? "plane" : "cube ", with_dmat ? "dmat  " : "packed", differ, g.num_vox, rel, ref_max);
-                EXPECT_LT(rel, 1.0e-6);
-                EXPECT_GT(ref_max, 0.01);   // something there (a plane need not pass through a nucleus)
-            }
-            free(out); free(ref);
-            md_gto_gpu_dmat_destroy(g.s, dm);
-            dm_gpu_free(&g);
-        }
         dm_free(&s);
     }
 }

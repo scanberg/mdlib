@@ -1,7 +1,8 @@
 // gto_gemm_args.slang
-// Argument block shared by every entry point of the two-pass (Phi + GEMM) path: eval_gto_density_gemm.slang, the
-// eval_gto_density_gemm2_*.slang kernels, and the kernels on the GEMM core (gto_gemm_core.slang): the density's
-// (eval_gto_density_core*.slang) and ELF's and LOL's (eval_gto_localization_core*.slang).
+// Argument block shared by every entry point of the two-pass (Phi + GEMM) path: eval_gto_density_gemm.slang (the
+// counts, Phi, D_b) and the GEMM passes on the GEMM core (gto_gemm_core.slang): the density's
+// (eval_gto_density_core*.slang), ELF's and LOL's (eval_gto_localization_core*.slang), the orbitals'
+// (eval_gto_mo_gemm*.slang).
 // Mirrored in C by gto_density_gemm_args_t in md_gto.c.
 
 #ifndef GTO_GEMM_ARGS_SLANG

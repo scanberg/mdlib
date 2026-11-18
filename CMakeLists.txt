@@ -364,19 +364,15 @@ set(GTO_SLANG_FILES
   src/shaders/gto/eval_gto_density.slang
   src/shaders/gto/eval_gto_localization.slang
   src/shaders/gto/eval_gto_mo.slang
-  src/shaders/gto/eval_gto_density_gemm2_128x32.slang
-  src/shaders/gto/eval_gto_density_gemm2_128x64.slang
   src/shaders/gto/eval_gto_mo_shell_v4_m1.slang
   src/shaders/gto/eval_gto_mo_shell_v4_m8.slang
   src/shaders/gto/eval_gto_mo_gemm_128x32.slang
   # the same for a grid of one layer (the image of a plane): blocks of 32x16x1 voxels
   src/shaders/gto/eval_gto_localization_2d.slang
-  src/shaders/gto/eval_gto_density_gemm2_128x32_2d.slang
-  src/shaders/gto/eval_gto_density_gemm2_128x64_2d.slang
   src/shaders/gto/eval_gto_mo_shell_v4_m1_2d.slang
   src/shaders/gto/eval_gto_mo_shell_v4_m8_2d.slang
   src/shaders/gto/eval_gto_mo_gemm_128x32_2d.slang
-  # the density's GEMM pass on the GEMM core (gto_gemm_core.slang), beside eval_gto_density_gemm2 to compare
+  # the density's GEMM pass on the GEMM core (gto_gemm_core.slang); the orbitals' (eval_gto_mo_gemm) is on it too
   src/shaders/gto/eval_gto_density_core_128x32.slang
   src/shaders/gto/eval_gto_density_core_128x64.slang
   src/shaders/gto/eval_gto_density_core_128x32_2d.slang
@@ -709,7 +705,7 @@ set(SHADER_FILES ${GL_SHADER_FILES} ${TOPO_SLANG_FILES} ${TOPO_GTO_SLANG_FILE} $
     src/shaders/gto/gto_gemm_core.slang src/shaders/gto/eval_gto_density_core.slang src/shaders/gto/eval_gto_localization_core.slang
     src/shaders/gto/gto_common.slang src/shaders/gto/gto_gemm_args.slang
     src/shaders/gto/gto_dmat_common.slang src/shaders/gto/gto_dmat.slang src/shaders/gto/gto_screen.slang
-    src/shaders/gto/eval_gto_density_gemm.slang src/shaders/gto/eval_gto_density_gemm2.slang
+    src/shaders/gto/eval_gto_density_gemm.slang
     src/shaders/gto/eval_gto_mo_shell.slang src/shaders/gto/eval_gto_mo_gemm.slang
     src/shaders/gto/eval_gto_int_potential.slang src/shaders/gto/gto_int_hermite.slang
     src/shaders/gto/eval_gto_int_potential_xyz.slang src/shaders/gto/gto_int_potential_common.slang
@@ -777,7 +773,6 @@ if (MD_ENABLE_GPU)
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_dmat_common.slang
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_screen.slang
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_gemm_args.slang
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_density_gemm2.slang
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_mo_shell.slang
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_mo_gemm.slang
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_localization.slang

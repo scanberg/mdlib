@@ -1,11 +1,16 @@
 // md_gto_gemm_bench
 //
-// The shared GEMM core (gto_gemm_core.slang) measured against what it replaces, on the GPU, on VeloxChem files:
+// The evaluations on the shared GEMM core (gto_gemm_core.slang) against their reference kernels, on the GPU, on
+// VeloxChem files:
 //
-//   density   MD_GTO_GPU_DENSITY_ALGO_REFERENCE, _GEMM (its own GEMM loop, gemm2), _GEMM_CORE (the same product
-//             through the core: what the core's abstraction costs, if anything)
+//   density   MD_GTO_GPU_DENSITY_ALGO_REFERENCE, _GEMM (Phi, then a symmetric GEMM on the core)
 //   ELF, LOL  MD_GTO_GPU_LOCALIZATION_ALGO_REFERENCE (a loop over the AO pairs per voxel), _GEMM (Phi with
 //             gradients, a symmetric GEMM of four rows a voxel per spin on the core, then the finish)
+//   orbitals  the sum of psi^2 of the --orbitals highest occupied: MD_GTO_GPU_ORBITAL_ALGO_REFERENCE, _SHELL (8 a
+//             pass), _GEMM (Phi, then Phi x C on the core)
+//
+// MD_GTO_GEMM_PROFILE=1 (with --verbose) splits each GEMM run into its passes (count+plan, phi+dgather, gemm), each
+// waited for: the totals are then not the normal ones.
 //
 // as viamd evaluates them: through a dmat (md_gto_gpu_dmat, margin 1 bohr), ELF and LOL with rho_min 0 and
 // MD_QM_ELF_D_MIN, the density's basis at 1e-6 and ELF's at 1e-7 (viamd's ES_LOCALIZATION_CUTOFF). Each
@@ -19,7 +24,8 @@
 //   --margin <bohr>  the grid's reach past the atoms (default 4)
 //   --plane          also a grid of one layer through the centre (the 2D kernels, as viamd's slices)
 //   --spins 2        ELF and LOL from two spins (D/2 each: the same values, the open-shell path's cost)
-//   --only <kind>    density, elf or lol (repeatable; default all three)
+//   --only <kind>    density, elf, lol or orbitals (repeatable; default all four)
+//   --orbitals <n>   orbitals of the orbitals' run (default 32)
 //   --no-reference   skip the reference algorithms (slow on large systems)
 //   --reps <n>       timed runs per configuration, min and median shown (default 3)
 //   --cutoff-density <c>, --cutoff-elf <c>
@@ -51,7 +57,7 @@
 #include <string.h>
 
 // Bumped with every change to this program's measurement or output
-#define MD_GTO_GEMM_BENCH_REV "gemm-bench r1"
+#define MD_GTO_GEMM_BENCH_REV "gemm-bench r2"
 
 #define ANGSTROM_TO_BOHR 1.8897261246257702
 #define MAX_REPS 32
@@ -62,6 +68,8 @@ typedef struct src_t {
     float*          xyz;        // bohr
     size_t          num_atoms, num_ao;
     double*         D;          // total density [num_ao][num_ao]
+    double*         mo;         // the orbitals' run: num_mo rows of num_ao coefficients, the highest occupied
+    size_t          num_mo;
     md_float3_t     lo, hi;     // the atoms' bounds
 } src_t;
 
@@ -70,7 +78,7 @@ static void src_free(src_t* s) {
     memset(s, 0, sizeof(*s));
 }
 
-static bool src_load(src_t* s, const char* path) {
+static bool src_load(src_t* s, const char* path, size_t want_mo) {
     memset(s, 0, sizeof(*s));
     s->arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(64));
     md_system_t sys = { .alloc = s->arena };
@@ -103,6 +111,22 @@ static bool src_load(src_t* s, const char* path) {
     s->D = md_arena_allocator_push(s->arena, sizeof(double) * s->num_ao * s->num_ao);
     md_attribute_extract_f64(s->D, s->num_ao * s->num_ao, &sys.attributes, d, md_attribute_slice_all(), md_unit_none());
     if (scale != 1.0) for (size_t i = 0; i < s->num_ao * s->num_ao; ++i) s->D[i] *= scale;
+
+    // the orbitals' run: the want_mo highest occupied (alpha) orbitals
+    const md_attribute_t* mo  = md_attributes_find(&sys.attributes, MD_STR_LIT("orbital/alpha/coefficient"));
+    const md_attribute_t* occ = md_attributes_find(&sys.attributes, MD_STR_LIT("orbital/alpha/occupation"));
+    if (mo && occ && want_mo > 0) {
+        const size_t n_occ = md_attribute_value_count(&occ->format);
+        double* o = md_arena_allocator_push(s->arena, sizeof(double) * n_occ);
+        md_attribute_extract_f64(o, n_occ, &sys.attributes, occ, md_attribute_slice_all(), md_unit_none());
+        size_t homo = 0;
+        for (size_t i = n_occ; i-- > 0;) if (o[i] > 0.0) { homo = i; break; }
+        s->num_mo = want_mo < homo + 1 ? want_mo : homo + 1;
+        s->mo = md_arena_allocator_push(s->arena, sizeof(double) * s->num_mo * s->num_ao);
+        for (size_t k = 0; k < s->num_mo; ++k) {
+            md_attribute_extract_f64(s->mo + k * s->num_ao, s->num_ao, &sys.attributes, mo, md_attribute_slice_1((uint32_t)(homo + 1 - s->num_mo + k)), md_unit_none());
+        }
+    }
     return true;
 }
 
@@ -112,6 +136,7 @@ typedef struct gpu_t {
     md_gto_gpu_basis_t basis;
     md_gpu_addr_t      atoms;
     md_gto_gpu_dmat_t  dmat[2];
+    md_gpu_addr_t      coeff;       // the orbitals' run
     md_gpu_texture_t   tex;
     md_gpu_mem_t       rb;
     md_grid_t          grid;
@@ -121,6 +146,7 @@ typedef struct gpu_t {
 static void gpu_free(gpu_t* g) {
     if (!g->st) return;
     for (int k = 0; k < 2; ++k) if (g->dmat[k]) md_gto_gpu_dmat_destroy(g->st, g->dmat[k]);
+    if (g->coeff) md_gpu_free(g->st, g->coeff);
     if (g->tex) md_gpu_texture_destroy(g->tex);
     if (g->rb.gpu) md_gpu_free(g->st, g->rb.gpu);
     if (g->atoms) md_gpu_free(g->st, g->atoms);
@@ -129,7 +155,7 @@ static void gpu_free(gpu_t* g) {
     memset(g, 0, sizeof(*g));
 }
 
-static bool gpu_init(gpu_t* g, md_gpu_stream_t st, const src_t* s, const md_grid_t* grid, double cutoff, int spins) {
+static bool gpu_init(gpu_t* g, md_gpu_stream_t st, const src_t* s, const md_grid_t* grid, double cutoff, int spins, bool orbitals) {
     memset(g, 0, sizeof(*g));
     g->st = st;
     g->grid = *grid;
@@ -140,6 +166,18 @@ static bool gpu_init(gpu_t* g, md_gpu_stream_t st, const src_t* s, const md_grid
     float* p = (float*)md_gpu_upload_begin(st, g->atoms, md_gto_gpu_atom_buffer_size(s->num_atoms));
     md_gto_gpu_atom_pack(p, s->xyz, 0, s->num_atoms);
     md_gpu_upload_end(st);
+    if (orbitals) {
+        const size_t nc = md_gto_gpu_basis_num_cgtos(g->basis);
+        g->coeff = md_gpu_malloc(st, MD_GPU_MEM_DEVICE, md_gto_gpu_coeff_size_mo(s->num_mo, nc)).gpu;
+        if (!g->coeff || !s->num_mo) return false;
+        const double** rows = (const double**)malloc(sizeof(double*) * s->num_mo);
+        for (size_t k = 0; k < s->num_mo; ++k) rows[k] = s->mo + k * s->num_ao;
+        float* c = (float*)md_gpu_upload_begin(st, g->coeff, md_gto_gpu_coeff_size_mo(s->num_mo, nc));
+        md_gto_gpu_coeff_pack_mo(c, rows, NULL, s->num_mo, nc);
+        md_gpu_upload_end(st);
+        free(rows);
+        spins = 0;      // no matrices
+    }
     double* Dk = NULL;
     if (spins == 2) {
         Dk = (double*)malloc(sizeof(double) * s->num_ao * s->num_ao);
@@ -159,12 +197,20 @@ static bool gpu_init(gpu_t* g, md_gpu_stream_t st, const src_t* s, const md_grid
     return g->tex && g->rb.cpu;
 }
 
-typedef enum { KIND_DENSITY, KIND_ELF, KIND_LOL, KIND_COUNT } kind_t;
-static const char* kind_name[KIND_COUNT] = { "density", "ELF", "LOL" };
+typedef enum { KIND_DENSITY, KIND_ELF, KIND_LOL, KIND_ORBITALS, KIND_COUNT } kind_t;
+static const char* kind_name[KIND_COUNT] = { "density", "ELF", "LOL", "orbitals" };
 
-// One evaluation of kind with algorithm (density: md_gto_gpu_density_algo_t, else md_gto_gpu_localization_algo_t)
-static void run_once(gpu_t* g, kind_t kind, int algo, int spins) {
-    if (kind == KIND_DENSITY) {
+// One evaluation of kind with algorithm (density: md_gto_gpu_density_algo_t, orbitals: md_gto_gpu_orbital_algo_t, else
+// md_gto_gpu_localization_algo_t)
+static void run_once(gpu_t* g, kind_t kind, int algo, int spins, size_t num_mo) {
+    if (kind == KIND_ORBITALS) {
+        md_gto_gpu_orbital_desc_t desc = {
+            .basis = g->basis, .atom_xyz = g->atoms, .coeff = g->coeff, .out_tex = g->tex, .grid = &g->grid,
+            .sample_offset = {0.5f, 0.5f, 0.5f}, .num_orbitals = num_mo, .eval_mode = MD_GTO_EVAL_MODE_PSI_SQUARED,
+            .op = MD_GTO_OP_SET, .algorithm = (md_gto_gpu_orbital_algo_t)algo,
+        };
+        md_gto_gpu_orbital_launch(g->st, &desc);
+    } else if (kind == KIND_DENSITY) {
         md_gto_gpu_density_desc_t desc = {
             .basis = g->basis, .atom_xyz = g->atoms, .dmat = g->dmat[0], .out_tex = g->tex, .grid = &g->grid,
             .sample_offset = {0.5f, 0.5f, 0.5f}, .op = MD_GTO_OP_SET, .algorithm = (md_gto_gpu_density_algo_t)algo,
@@ -209,27 +255,31 @@ static void bench_grid(md_gpu_stream_t st, const src_t* s, const md_grid_t* grid
         if (!kinds[kind]) continue;
         const int sp = kind == KIND_DENSITY ? 1 : spins;
         gpu_t g;
-        if (!gpu_init(&g, st, s, grid, kind == KIND_DENSITY ? cutoff_density : cutoff_elf, sp)) {
+        if (kind == KIND_ORBITALS && !s->num_mo) continue;
+        if (!gpu_init(&g, st, s, grid, (kind == KIND_DENSITY || kind == KIND_ORBITALS) ? cutoff_density : cutoff_elf, sp, kind == KIND_ORBITALS)) {
             fprintf(stderr, "    %s: could not set up the evaluation\n", kind_name[kind]);
             gpu_free(&g);
             continue;
         }
-        static const int density_algos[] = { MD_GTO_GPU_DENSITY_ALGO_REFERENCE, MD_GTO_GPU_DENSITY_ALGO_GEMM, MD_GTO_GPU_DENSITY_ALGO_GEMM_CORE };
-        static const char* density_names[] = { "reference", "gemm (gemm2)", "gemm (core)" };
+        static const int density_algos[] = { MD_GTO_GPU_DENSITY_ALGO_REFERENCE, MD_GTO_GPU_DENSITY_ALGO_GEMM };
+        static const char* density_names[] = { "reference", "gemm (core)" };
         static const int loc_algos[] = { MD_GTO_GPU_LOCALIZATION_ALGO_REFERENCE, MD_GTO_GPU_LOCALIZATION_ALGO_GEMM };
         static const char* loc_names[] = { "reference", "gemm (core)" };
-        const int* algos = kind == KIND_DENSITY ? density_algos : loc_algos;
-        const char** names = kind == KIND_DENSITY ? density_names : loc_names;
-        const int num_algos = kind == KIND_DENSITY ? 3 : 2;
+        static const int mo_algos[] = { MD_GTO_GPU_ORBITAL_ALGO_REFERENCE, MD_GTO_GPU_ORBITAL_ALGO_SHELL, MD_GTO_GPU_ORBITAL_ALGO_GEMM };
+        static const char* mo_names[] = { "reference", "shell", "gemm (core)" };
+        const int* algos = kind == KIND_DENSITY ? density_algos : kind == KIND_ORBITALS ? mo_algos : loc_algos;
+        const char** names = kind == KIND_DENSITY ? density_names : kind == KIND_ORBITALS ? mo_names : loc_names;
+        const int num_algos = kind == KIND_ORBITALS ? 3 : 2;
+        if (kind == KIND_ORBITALS) printf("    (orbitals: the sum of psi^2 of the %zu highest occupied)\n", s->num_mo);
         double base_ms = 0.0;
         bool have_first = false;
         for (int ai = reference ? 0 : 1; ai < num_algos; ++ai) {
-            run_once(&g, (kind_t)kind, algos[ai], sp);      // untimed: kernels, the driver's compilation
+            run_once(&g, (kind_t)kind, algos[ai], sp, s->num_mo);      // untimed: kernels, the driver's compilation
             md_gpu_stream_sync(st);
             double ms[MAX_REPS];
             for (int r = 0; r < reps; ++r) {
                 const md_tick_t t0 = md_tick_now();
-                run_once(&g, (kind_t)kind, algos[ai], sp);
+                run_once(&g, (kind_t)kind, algos[ai], sp, s->num_mo);
                 md_gpu_stream_sync(st);
                 ms[r] = md_tick_to_milliseconds(md_tick_now() - t0);
             }
@@ -247,7 +297,7 @@ static void bench_grid(md_gpu_stream_t st, const src_t* s, const md_grid_t* grid
                     dmax = fmax(dmax, fabs((double)out[i] - (double)first[i]));
                     fmax_ = fmax(fmax_, fabs((double)first[i]));
                 }
-                if (kind == KIND_DENSITY) snprintf(cmp, sizeof(cmp), "max |diff| / max %.2e", fmax_ > 0 ? dmax / fmax_ : dmax);
+                if (kind == KIND_DENSITY || kind == KIND_ORBITALS) snprintf(cmp, sizeof(cmp), "max |diff| / max %.2e", fmax_ > 0 ? dmax / fmax_ : dmax);
                 else snprintf(cmp, sizeof(cmp), "max |diff| %.2e", dmax);
                 if (bad) snprintf(cmp + strlen(cmp), sizeof(cmp) - strlen(cmp), ", %zu NaN", bad);
             } else {
@@ -267,6 +317,7 @@ static void bench_grid(md_gpu_stream_t st, const src_t* s, const md_grid_t* grid
 int main(int argc, char** argv) {
     double h = 0.25, margin = 4.0, cutoff_density = 1.0e-6, cutoff_elf = 1.0e-7;
     int reps = 3, spins = 1;
+    size_t want_mo = 32;
     bool plane = false, reference = true, verbose = false, list_devices = false;
     bool kinds[KIND_COUNT] = { false, false, false };
     bool any_kind = false;
@@ -280,6 +331,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(a, "--margin") && i + 1 < argc) margin = atof(argv[++i]);
         else if (!strcmp(a, "--reps") && i + 1 < argc) reps = atoi(argv[++i]);
         else if (!strcmp(a, "--spins") && i + 1 < argc) spins = atoi(argv[++i]) == 2 ? 2 : 1;
+        else if (!strcmp(a, "--orbitals") && i + 1 < argc) want_mo = (size_t)atoi(argv[++i]);
         else if (!strcmp(a, "--cutoff-density") && i + 1 < argc) cutoff_density = atof(argv[++i]);
         else if (!strcmp(a, "--cutoff-elf") && i + 1 < argc) cutoff_elf = atof(argv[++i]);
         else if (!strcmp(a, "--plane")) plane = true;
@@ -289,7 +341,8 @@ int main(int argc, char** argv) {
             if      (!strcmp(k, "density")) kinds[KIND_DENSITY] = true;
             else if (!strcmp(k, "elf"))     kinds[KIND_ELF] = true;
             else if (!strcmp(k, "lol"))     kinds[KIND_LOL] = true;
-            else { fprintf(stderr, "--only %s: density, elf or lol\n", k); return 1; }
+            else if (!strcmp(k, "orbitals")) kinds[KIND_ORBITALS] = true;
+            else { fprintf(stderr, "--only %s: density, elf, lol or orbitals\n", k); return 1; }
             any_kind = true;
         }
         else if (!strcmp(a, "--device") && i + 1 < argc) device_sel = argv[++i];
@@ -297,7 +350,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(a, "--data") && i + 1 < argc) data_dir = argv[++i];
         else if (!strcmp(a, "--verbose")) verbose = true;
         else if (!strcmp(a, "-h") || !strcmp(a, "--help")) {
-            printf("usage: %s [--h bohr] [--margin bohr] [--plane] [--spins 1|2] [--only density|elf|lol]... [--no-reference] [--reps n] "
+            printf("usage: %s [--h bohr] [--margin bohr] [--plane] [--spins 1|2] [--only density|elf|lol|orbitals]... [--orbitals n] [--no-reference] [--reps n] "
                    "[--cutoff-density c] [--cutoff-elf c] [--device sel] [--list-devices] [--data dir] [--verbose] [file ...]\n", argv[0]);
             return 0;
         }
@@ -336,7 +389,8 @@ int main(int argc, char** argv) {
     printf("  %s\n  %s\n  %s\n  ELF/LOL reference %s\n", MD_GTO_GPU_GEMM_CORE_REVISION, MD_GTO_GPU_GEMM_PIECES_REVISION, MD_GTO_GPU_PLANE_REVISION, MD_GTO_GPU_LOCALIZATION_REVISION);
     printf("build %s | GPU %s%s (driver %s)%s\n", build, di.name, di.is_discrete ? "" : " (integrated)", di.driver,
            di.type == MD_GPU_DEVICE_TYPE_CPU ? " -- a CPU emulation: correctness only, these times mean nothing" : "");
-    printf("cutoffs: density %.0e, ELF/LOL %.0e | ELF/LOL rho_min 0, d_min %.0e, %d spin%s | dmat, margin 1 bohr | %d timed runs after one untimed, min and median\n\n",
+    if (getenv("MD_GTO_GEMM_PROFILE")) printf("MD_GTO_GEMM_PROFILE is set: every GEMM pass is waited for, so the GEMM totals are slower than normal\n");
+    printf("cutoffs: density and orbitals %.0e, ELF/LOL %.0e | ELF/LOL rho_min 0, d_min %.0e, %d spin%s | dmat, margin 1 bohr | %d timed runs after one untimed, min and median\n\n",
            cutoff_density, cutoff_elf, MD_QM_ELF_D_MIN, spins, spins == 2 ? "s (D/2 each)" : " (closed shell)", reps);
 
     static const char* defaults[] = { "mol.h5", "protein.h5" };
@@ -351,7 +405,7 @@ int main(int argc, char** argv) {
             continue;
         }
         src_t s;
-        if (!src_load(&s, path)) { src_free(&s); continue; }
+        if (!src_load(&s, path, want_mo)) { src_free(&s); continue; }
         printf("%s: %zu atoms, %zu AOs\n", names[fi], s.num_atoms, s.num_ao);
         const md_float3_t lo = md_float3_sub1(s.lo, (float)margin), hi = md_float3_add1(s.hi, (float)margin);
         const md_grid_t cube = {

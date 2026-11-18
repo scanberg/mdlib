@@ -19,8 +19,9 @@
 //   dgather_main: one group per block in a batch, gathers D_b once.
 //   phi_grad_main: as phi_main with the AOs' gradients too (ELF, LOL: four rows of Phi per AO).
 //
-// The GEMM pass itself, X = Phi * (w o D_b) with the rho epilogue fused, is in
-// eval_gto_density_gemm2.slang (one build per tile configuration).
+// The GEMM passes are on the GEMM core (gto_gemm_core.slang): the density's (eval_gto_density_core.slang),
+// ELF's and LOL's (eval_gto_localization_core.slang), the orbitals' (eval_gto_mo_gemm.slang), one build per tile
+// configuration.
 
 #include "gto_gemm_args.slang"
 

@@ -427,7 +427,7 @@ typedef enum md_gto_gpu_density_algo_t {
     // The recommended algorithm, currently MD_GTO_GPU_DENSITY_ALGO_GEMM, which
     // blocks the calling thread (see below). Pick REFERENCE explicitly where a fully
     // asynchronous launch matters more than speed. MD_GTO_GPU_DENSITY_ALGO (set in the
-    // environment to reference, gemm or core) overrides what DEFAULT means, to compare.
+    // environment to reference or gemm) overrides what DEFAULT means, to compare.
     MD_GTO_GPU_DENSITY_ALGO_DEFAULT = 0,
 
     // Original kernel (eval_gto_density.slang): per-AO tiles of 16, the radial part
@@ -436,21 +436,18 @@ typedef enum md_gto_gpu_density_algo_t {
 
     // Two-pass: Phi (voxels x AOs) per 8^3 block into scratch memory, the block's
     // sub-matrix D_b gathered once, then a tiled GEMM with the
-    // rho = sum(Phi o (Phi D_b)) reduction fused into it (eval_gto_density_gemm.slang).
+    // rho = sum(Phi o (Phi D_b)) reduction fused into it, on the GEMM core shared with
+    // ELF, LOL and the orbitals (gto_gemm_core.slang, MD_GTO_GPU_GEMM_CORE_REVISION).
     // Reads per-block counts back to plan batches, so this BLOCKS the calling thread
-    // until the counting pass has completed.
+    // until the counting pass has completed (a job does not: md_gto_gpu_density_job_begin).
     MD_GTO_GPU_DENSITY_ALGO_GEMM,
-
-    // GEMM with its GEMM pass on the GEMM core (gto_gemm_core.slang, the loop ELF and LOL are
-    // evaluated with too, MD_GTO_GPU_LOCALIZATION_ALGO_GEMM) instead of a loop of its own: the same
-    // product in the same order. To measure what the shared core costs against the density's own.
-    MD_GTO_GPU_DENSITY_ALGO_GEMM_CORE,
 
     MD_GTO_GPU_DENSITY_ALGO_COUNT
 } md_gto_gpu_density_algo_t;
 
-// The revision of the GEMM core (gto_gemm_core.slang) and of what is evaluated on it, for measurements
-#define MD_GTO_GPU_GEMM_CORE_REVISION "gemm-core r1 (density: the gemm2 product as the core's; ELF/LOL: [phi; grad phi] (32 voxels x 4 rows) x w o D_s, symmetric, 4 terms per row, then finish)"
+// The revision of the GEMM core (gto_gemm_core.slang) and of what is evaluated on it, for measurements. r1: the
+// density's own loop (gemm2) beside the core, the same bits and time (RTX 3080); r2: gemm2 gone, the orbitals on the core.
+#define MD_GTO_GPU_GEMM_CORE_REVISION "gemm-core r2 (density, orbitals, ELF/LOL on one core; ELF/LOL: [phi; grad phi] (32 voxels x 4 rows) x w o D_s, symmetric, 4 terms per row, then finish)"
 
 // Unified descriptor struct for density evaluation.
 typedef struct md_gto_gpu_density_desc_t {
@@ -535,8 +532,9 @@ typedef enum md_gto_gpu_localization_t {
 } md_gto_gpu_localization_t;
 
 typedef enum md_gto_gpu_localization_algo_t {
-    // REFERENCE for now, until GEMM is measured on real hardware. MD_GTO_GPU_LOCALIZATION_ALGO (set in the
-    // environment to reference or gemm) overrides what DEFAULT means, to compare.
+    // GEMM: 5.7x the reference's speed on a protein of 1152 atoms (RTX 3080, 14.6 M voxels at 0.25 bohr), and closer
+    // to the values in double. MD_GTO_GPU_LOCALIZATION_ALGO (set in the environment to reference or gemm) overrides
+    // what DEFAULT means, to compare.
     MD_GTO_GPU_LOCALIZATION_ALGO_DEFAULT = 0,
 
     // One kernel per group of 8^3 voxels (eval_gto_localization.slang): per voxel, the pairs of the AOs that reach
@@ -611,7 +609,7 @@ typedef enum md_gto_gpu_orbital_algo_t {
     MD_GTO_GPU_ORBITAL_ALGO_SHELL,
 
     // Two-pass: Phi per 8^3 block into scratch (as for the density), then
-    // Psi = Phi * C as a GEMM with the psi / psi^2 sum fused (eval_gto_mo_gemm.slang).
+    // Psi = Phi * C as a GEMM with the psi / psi^2 sum fused (eval_gto_mo_gemm.slang, on the GEMM core).
     // Every AO is evaluated once whatever the number of orbitals. Reads per-block
     // counts back, so this BLOCKS the calling thread like MD_GTO_GPU_DENSITY_ALGO_GEMM.
     MD_GTO_GPU_ORBITAL_ALGO_GEMM,

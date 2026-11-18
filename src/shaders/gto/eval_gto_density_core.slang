@@ -1,13 +1,14 @@
 // eval_gto_density_core.slang
 //
-// The density's GEMM pass on the GEMM core (gto_gemm_core.slang): what eval_gto_density_gemm2.slang does in a loop of
-// its own, here as the core specialised by the density's operands and epilogue. The same product, in the same order:
+// The density's GEMM pass (MD_GTO_GPU_DENSITY_ALGO_GEMM) on the GEMM core (gto_gemm_core.slang):
 //
 //   X = Phi_b (GP voxels x n) * (w o D_b) (n x n, symmetric: m <= k),   rho_p = sum_m Phi[p][m] X[p][m]
 //
-// MD_GTO_GPU_DENSITY_ALGO_GEMM_CORE: for comparing the core with the loop it replaces, kernel for kernel.
+// The loop it replaced (eval_gto_density_gemm2.slang, gemm-core r1) gave the same bits, and the same time on an
+// RTX 3080 (protein, 14.6 M voxels: the GEMM pass 43.4-44.6 ms on the core, 45.0 ms on its own loop).
 //
 // Compile-time configuration (the eval_gto_density_core_*.slang wrappers): GP voxels per group, GM columns per tile.
+// A: the block's Phi (AO-major, the group's GP voxels from p0); B: w o D_b, gathered (d_mode 1) or from D
 
 #include "gto_gemm_args.slang"
 
@@ -73,7 +74,7 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_G
     epi.p0      = pt * GP;
     [ForceUnroll] for (int i = 0; i < RP; ++i) epi.rho[i] = 0.0f;
 
-    gemm_core<DensityOperands, RhoEpilogue>(ops, epi, n, true, tid, gtid.x, gtid.y);
+    gemm_core<DensityOperands, RhoEpilogue>(ops, epi, n, n, true, tid, gtid.x, gtid.y);
 
     float rho;
     gemm_row_sums(epi.rho, tid, gtid.x, gtid.y, rho);

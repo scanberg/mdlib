@@ -106,7 +106,7 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_G
     epi.p0      = pt * LC_VOX;
     [ForceUnroll] for (int i = 0; i < RP; ++i) [ForceUnroll] for (int q = 0; q < 4; ++q) epi.acc[i][q] = 0.0f;
 
-    gemm_core<LocalizationOperands, LocalizationEpilogue>(ops, epi, n, true, tid, gtid.x, gtid.y);
+    gemm_core<LocalizationOperands, LocalizationEpilogue>(ops, epi, n, n, true, tid, gtid.x, gtid.y);
 
     // the rows' sums, four of each, then the voxels' terms of them
     float s[4];

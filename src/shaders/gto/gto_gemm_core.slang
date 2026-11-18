@@ -3,7 +3,7 @@
 // THE GEMM CORE of the two-pass grid evaluations (count + Phi passes, eval_gto_density_gemm.slang): one main loop,
 // specialised at compile time by what it multiplies and what is made of the product.
 //
-//   X[r][m] = sum_k A[r][k] B[k][m]     r: the GP rows of a group, m: the columns, k: the block's n AOs
+//   X[r][m] = sum_k A[r][k] B[k][m]     r: the GP rows of a group, m < ncols the columns, k < nk (the block's AOs)
 //
 // The product goes through the columns in tiles of GM, and for each tile through k in chunks of GK held in groupshared
 // memory, the next chunk loaded into registers while the current one is multiplied. 16 x 16 threads; thread (tx, ty)
@@ -12,8 +12,12 @@
 //
 //   OPERANDS   IGemmOperands: A[r][k] and B[k][m] as the loads read them (consecutive threads read consecutive rows of
 //              A and consecutive columns of B: both streams coalesced where the operands are laid out so). The core
-//              keeps the loads in range (k < n, m < n) and, for a symmetric product, to k >= m only.
+//              keeps the loads in range (k < nk, m < ncols) and, for a symmetric product, to k >= m only.
 //   EPILOGUE   IGemmEpilogue: the part of X of each column tile.
+//
+// What uses it: the density (eval_gto_density_core.slang: symmetric, ncols = nk), ELF and LOL
+// (eval_gto_localization_core.slang: symmetric, four rows a voxel), the orbitals (eval_gto_mo_gemm.slang: B the
+// orbitals' coefficients, ncols the orbitals).
 //
 // A SYMMETRIC product (B = w o D of a symmetric D, w 1 on the diagonal and 2 off it, k >= m only) sums
 // sum_{m <= k} w D[k][m] A[r][k] - half the multiply-adds - and is exact for a quadratic form a^T D a = sum_m a[m] X[m]
@@ -30,7 +34,7 @@
 #define GTO_GEMM_CORE_SLANG
 
 // For measurements: bumped with every change to the core's loop
-#define GTO_GEMM_CORE_REVISION 1
+#define GTO_GEMM_CORE_REVISION 2
 
 #define GK   16                 // k per chunk
 #define TPX  16                 // threads along the columns
@@ -47,21 +51,21 @@
 groupshared float gc_smem[GK * GP + GK * GM];
 
 interface IGemmOperands {
-    // A[row][k], row < GP, k < n
+    // A[row][k], row < GP, k < nk
     float a(uint row, uint k);
-    // B[k][m], k, m < n (symmetric: k >= m, weighted)
+    // B[k][m], k < nk, m < ncols (symmetric: k >= m, weighted)
     float b(uint k, uint m);
 };
 
 interface IGemmEpilogue {
     // The part of X of the columns [m0, m0 + GM): X[i][j] at row ty * RP + i, column m0 + tx * RM + j (only those
-    // below n are of the product)
-    [mutating] void take(uint m0, uint n, uint tx, uint ty, float X[RP][RM]);
+    // below ncols are of the product)
+    [mutating] void take(uint m0, uint ncols, uint tx, uint ty, float X[RP][RM]);
 };
 
 [ForceInline]
-void gemm_core<O : IGemmOperands, E : IGemmEpilogue>(O ops, inout E epi, uint n, bool symmetric, uint tid, uint tx, uint ty) {
-    for (uint m0 = 0u; m0 < n; m0 += GM) {
+void gemm_core<O : IGemmOperands, E : IGemmEpilogue>(O ops, inout E epi, uint nk, uint ncols, bool symmetric, uint tid, uint tx, uint ty) {
+    for (uint m0 = 0u; m0 < ncols; m0 += GM) {
         float X[RP][RM];
         [ForceUnroll] for (int i = 0; i < RP; ++i)
             [ForceUnroll] for (int j = 0; j < RM; ++j) X[i][j] = 0.0f;
@@ -76,30 +80,32 @@ void gemm_core<O : IGemmOperands, E : IGemmEpilogue>(O ops, inout E epi, uint n,
             [ForceUnroll] for (int r = 0; r < PF_A; ++r) {                                          \
                 uint idx = tid + uint(r) * NT;                                                      \
                 uint k   = (k0_) + idx / GP;                                                        \
-                float v  = ops.a(idx % GP, min(k, n - 1u));                                         \
-                pf_a[r]  = (k < n) ? v : 0.0f;                                                      \
+                float v  = ops.a(idx % GP, min(k, nk - 1u));                                        \
+                pf_a[r]  = (k < nk) ? v : 0.0f;                                                     \
             }                                                                                       \
             [ForceUnroll] for (int r = 0; r < PF_B; ++r) {                                          \
                 uint idx = tid + uint(r) * NT;                                                      \
                 uint k   = (k0_) + idx / GM;                                                        \
                 uint m   = m0 + idx % GM;                                                           \
                 float v  = 0.0f;                                                                    \
-                if (k < n && m < n && (!symmetric || k >= m)) v = ops.b(k, m);                      \
+                if (k < nk && m < ncols && (!symmetric || k >= m)) v = ops.b(k, m);                 \
                 pf_b[r] = v;                                                                        \
             }                                                                                       \
         }
 
         // a symmetric product starts at the tile's own rows of B: the ones above are zero
         const uint k_first = symmetric ? m0 : 0u;
-        GC_LOAD_CHUNK(k_first);
+        if (k_first < nk) {                      // nk 0 (an empty block of the orbitals): nothing to load
+            GC_LOAD_CHUNK(k_first);
+        }
 
-        for (uint k0 = k_first; k0 < n; k0 += GK) {
+        for (uint k0 = k_first; k0 < nk; k0 += GK) {
             GroupMemoryBarrierWithGroupSync();   // the previous chunk consumed
             [ForceUnroll] for (int r = 0; r < PF_A; ++r) gc_smem[tid + uint(r) * NT] = pf_a[r];
             [ForceUnroll] for (int r = 0; r < PF_B; ++r) gc_smem[GK * GP + tid + uint(r) * NT] = pf_b[r];
             GroupMemoryBarrierWithGroupSync();
 
-            if (k0 + GK < n) {
+            if (k0 + GK < nk) {
                 GC_LOAD_CHUNK(k0 + GK);           // in flight while this chunk is multiplied
             }
 
@@ -115,7 +121,7 @@ void gemm_core<O : IGemmOperands, E : IGemmEpilogue>(O ops, inout E epi, uint n,
         }
         #undef GC_LOAD_CHUNK
 
-        epi.take(m0, n, tx, ty, X);
+        epi.take(m0, ncols, tx, ty, X);
     }
 }
 

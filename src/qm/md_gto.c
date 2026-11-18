@@ -1052,7 +1052,6 @@ static inline int gto_shape_of_dim(uint32_t dim_z) { return dim_z == 1 && !md_os
 static md_gpu_kernel_t gto_k_density_gemm_count[GTO_SHAPE_COUNT]   = {0};
 static md_gpu_kernel_t gto_k_density_gemm_phi[GTO_SHAPE_COUNT]     = {0};
 static md_gpu_kernel_t gto_k_density_gemm_dgather[GTO_SHAPE_COUNT] = {0};
-static md_gpu_kernel_t gto_k_density_gemm2[GTO_SHAPE_COUNT][2] = {{0}};   // [32, 64 AO tile], 128 voxels per group
 static md_gpu_kernel_t gto_k_mo_shell[GTO_SHAPE_COUNT][2]      = {{0}};   // [1, 8 orbitals per pass], 4 voxels per thread
 static md_gpu_kernel_t gto_k_mo_gemm[GTO_SHAPE_COUNT]          = {0};     // 32 orbitals per tile
 static md_gpu_kernel_t gto_k_dmat_tiles       = NULL;  // md_gto_gpu_dmat_build
@@ -1101,7 +1100,6 @@ void md_gto_gpu_shutdown(void) {
         destroy_kernel(&gto_k_density_gemm_phi_grad[sh]);
         destroy_kernel(&gto_k_loc_core_finish[sh]);
         for (int i = 0; i < 2; ++i) {
-            destroy_kernel(&gto_k_density_gemm2[sh][i]);
             destroy_kernel(&gto_k_mo_shell[sh][i]);
             destroy_kernel(&gto_k_density_core[sh][i]);
             destroy_kernel(&gto_k_loc_core[sh][i]);
@@ -1126,7 +1124,7 @@ static bool gto_density_gemm_kernels(int sh) {
     return gto_k_density_gemm_count[sh] && gto_k_density_gemm_phi[sh] && gto_k_density_gemm_dgather[sh];
 }
 
-// The density's GEMM pass on the GEMM core, as gto_density_gemm2_kernel
+// The density's GEMM pass (on the GEMM core), 128 voxels per group, with a 32- or 64-wide AO tile
 static md_gpu_kernel_t gto_density_core_kernel(uint32_t gm, int sh) {
     const int im = gm == 32 ? 0 : gm == 64 ? 1 : -1;
     if (im < 0 || !gto_gpu_device) return NULL;
@@ -1163,21 +1161,6 @@ static bool gto_loc_core_aux_kernels(int sh) {
     ensure_kernel(gto_gpu_device, &gto_k_density_gemm_phi_grad[sh], sh == GTO_SHAPE_2D ? md_shader_eval_gto_density_gemm_2d_phi_grad_main_kernel()
                                                                                        : md_shader_eval_gto_density_gemm_phi_grad_main_kernel());
     return gto_k_loc_core_finish[sh] && gto_k_density_gemm_phi_grad[sh];
-}
-
-// The GEMM pass, 128 voxels per group, with a 32- or 64-wide AO tile.
-static md_gpu_kernel_t gto_density_gemm2_kernel(uint32_t gm, int sh) {
-    const int im = gm == 32 ? 0 : gm == 64 ? 1 : -1;
-    if (im < 0 || !gto_gpu_device) return NULL;
-    md_gpu_kernel_t* slot = &gto_k_density_gemm2[sh][im];
-    if (!*slot) {
-        md_gpu_kernel_desc_t d = sh == GTO_SHAPE_2D ? (im == 0 ? md_shader_eval_gto_density_gemm2_128x32_2d_main_kernel()
-                                                               : md_shader_eval_gto_density_gemm2_128x64_2d_main_kernel())
-                                                    : (im == 0 ? md_shader_eval_gto_density_gemm2_128x32_main_kernel()
-                                                               : md_shader_eval_gto_density_gemm2_128x64_main_kernel());
-        ensure_kernel(gto_gpu_device, slot, d);
-    }
-    return *slot;
 }
 
 /* Argument structs, mirroring the kernels in src/shaders/gto/. Both lead with two
@@ -2111,7 +2094,7 @@ static void gto_loc_plan_log(const gto_loc_plan_t* P) {
 static md_gto_gpu_localization_algo_t gto_loc_algo(const md_gto_gpu_localization_desc_t* desc) {
     md_gto_gpu_localization_algo_t algo = desc ? desc->algorithm : MD_GTO_GPU_LOCALIZATION_ALGO_DEFAULT;
     if (algo == MD_GTO_GPU_LOCALIZATION_ALGO_DEFAULT) {
-        algo = MD_GTO_GPU_LOCALIZATION_ALGO_REFERENCE;
+        algo = MD_GTO_GPU_LOCALIZATION_ALGO_GEMM;   // 5.7x the reference's speed on a protein (RTX 3080), closer to the exact values
         const char* env = getenv("MD_GTO_GPU_LOCALIZATION_ALGO");
         if (env) {
             if      (strcmp(env, "reference") == 0) algo = MD_GTO_GPU_LOCALIZATION_ALGO_REFERENCE;
@@ -2179,18 +2162,14 @@ static void gto_gemm_auto_config(uint32_t* gm, int32_t* small_n) {
     }
 }
 
-/* Which GEMM pass: the density's own loop (gemm2), the density on the GEMM core, or ELF's and LOL's on it */
-typedef enum { GTO_GEMM_PASS_DENSITY, GTO_GEMM_PASS_DENSITY_CORE, GTO_GEMM_PASS_LOC_CORE } gto_gemm_pass_t;
+/* Which GEMM pass on the GEMM core: the density's, or ELF's and LOL's (the orbitals' is configured by their own launch) */
+typedef enum { GTO_GEMM_PASS_DENSITY, GTO_GEMM_PASS_LOC } gto_gemm_pass_t;
 
 /* Voxels per group of the ELF and LOL GEMM pass: 128 rows of four channels */
 #define GTO_LOC_CORE_GROUP_VOXELS 32u
 
 static md_gpu_kernel_t gto_gemm_pass_kernel(gto_gemm_pass_t pass, uint32_t gm, int sh) {
-    switch (pass) {
-    case GTO_GEMM_PASS_DENSITY_CORE: return gto_density_core_kernel(gm, sh);
-    case GTO_GEMM_PASS_LOC_CORE:     return gto_loc_core_kernel(gm, sh);
-    default:                         return gto_density_gemm2_kernel(gm, sh);
-    }
+    return pass == GTO_GEMM_PASS_LOC ? gto_loc_core_kernel(gm, sh) : gto_density_core_kernel(gm, sh);
 }
 
 static bool gto_gemm_config_pass(gto_gemm_cfg_t* cfg, gto_gemm_pass_t pass, uint32_t gm, int32_t sn, int sh) {
@@ -2201,8 +2180,8 @@ static bool gto_gemm_config_pass(gto_gemm_cfg_t* cfg, gto_gemm_pass_t pass, uint
     if (sn == 0) sn = asn;
     if (gm == 32) sn = -1;   // already the small tile
 
-    const uint32_t gp = pass == GTO_GEMM_PASS_LOC_CORE ? GTO_LOC_CORE_GROUP_VOXELS : GTO_GEMM_GROUP_VOXELS;
-    const char* what = pass == GTO_GEMM_PASS_DENSITY_CORE ? "core " : pass == GTO_GEMM_PASS_LOC_CORE ? "core, 4 rows a voxel, " : "";
+    const uint32_t gp = pass == GTO_GEMM_PASS_LOC ? GTO_LOC_CORE_GROUP_VOXELS : GTO_GEMM_GROUP_VOXELS;
+    const char* what = pass == GTO_GEMM_PASS_LOC ? "4 rows a voxel, " : "";
     cfg->large    = gto_gemm_pass_kernel(pass, gm, sh);
     cfg->large_gp = gp;
     if (!cfg->large) {
@@ -2220,8 +2199,8 @@ static bool gto_gemm_config_pass(gto_gemm_cfg_t* cfg, gto_gemm_pass_t pass, uint
     return true;
 }
 
-static bool gto_gemm_config(gto_gemm_cfg_t* cfg, const md_gto_gpu_density_desc_t* desc, bool core) {
-    return gto_gemm_config_pass(cfg, core ? GTO_GEMM_PASS_DENSITY_CORE : GTO_GEMM_PASS_DENSITY, desc->gemm_tile, desc->gemm_small_block,
+static bool gto_gemm_config(gto_gemm_cfg_t* cfg, const md_gto_gpu_density_desc_t* desc) {
+    return gto_gemm_config_pass(cfg, GTO_GEMM_PASS_DENSITY, desc->gemm_tile, desc->gemm_small_block,
                                 gto_shape_of_dim((uint32_t)desc->grid->dim[2]));
 }
 
@@ -2707,7 +2686,7 @@ static int gto_loc_gemm_count(gto_gemm_pending_t* p, md_gpu_stream_t stream, con
         return -1;
     }
     gto_gemm_cfg_t cfg;
-    if (!gto_gemm_config_pass(&cfg, GTO_GEMM_PASS_LOC_CORE, 0, 0, sh)) return -1;
+    if (!gto_gemm_config_pass(&cfg, GTO_GEMM_PASS_LOC, 0, 0, sh)) return -1;
 
     gto_density_gemm_args_t a;
     gto_gemm_args_init(&a, desc->grid, desc->sample_offset, desc->basis, desc->atom_xyz, MD_GTO_OP_SET, out);
@@ -2759,12 +2738,12 @@ static bool gto_loc_launch_gemm(md_gpu_stream_t stream, const md_gto_gpu_localiz
     return true;
 }
 
-static bool gto_density_gemm_setup(gto_density_gemm_args_t* a, gto_gemm_cfg_t* cfg, const md_gto_gpu_density_desc_t* desc, md_gpu_storage_tex_t out, bool core) {
+static bool gto_density_gemm_setup(gto_density_gemm_args_t* a, gto_gemm_cfg_t* cfg, const md_gto_gpu_density_desc_t* desc, md_gpu_storage_tex_t out) {
     if (!gto_density_gemm_kernels(gto_shape_of_dim((uint32_t)desc->grid->dim[2]))) {
         MD_LOG_ERROR("md_gto_gpu_density_launch: GEMM kernels not available (md_gto_gpu_initialize not called?)");
         return false;
     }
-    if (!gto_gemm_config(cfg, desc, core)) return false;
+    if (!gto_gemm_config(cfg, desc)) return false;
     gto_gemm_args_init(a, desc->grid, desc->sample_offset, desc->basis, desc->atom_xyz, desc->op, out);
     a->D_matrix = desc->dmat ? desc->dmat->tiles : desc->coeff;
     if (desc->dmat) {
@@ -2776,10 +2755,10 @@ static bool gto_density_gemm_setup(gto_density_gemm_args_t* a, gto_gemm_cfg_t* c
     return true;
 }
 
-static void gto_density_launch_gemm(md_gpu_stream_t stream, const md_gto_gpu_density_desc_t* desc, md_gpu_storage_tex_t out, bool core) {
+static void gto_density_launch_gemm(md_gpu_stream_t stream, const md_gto_gpu_density_desc_t* desc, md_gpu_storage_tex_t out) {
     gto_gemm_cfg_t cfg;
     gto_density_gemm_args_t a;
-    if (!gto_density_gemm_setup(&a, &cfg, desc, out, core)) return;
+    if (!gto_density_gemm_setup(&a, &cfg, desc, out)) return;
     /* D_b is gathered once per block before the GEMM pass (d_mode 1), so the GEMM
        streams it with coalesced loads instead of gathering from the packed triangle. */
     gto_gemm_execute(stream, &a, desc->scratch_bytes, true, &cfg, desc->piece_work);
@@ -2808,11 +2787,10 @@ static bool gto_density_check(md_gpu_storage_tex_t* out, md_gto_gpu_density_algo
         if (env) {
             if      (strcmp(env, "reference") == 0) *algo = MD_GTO_GPU_DENSITY_ALGO_REFERENCE;
             else if (strcmp(env, "gemm") == 0)      *algo = MD_GTO_GPU_DENSITY_ALGO_GEMM;
-            else if (strcmp(env, "core") == 0)      *algo = MD_GTO_GPU_DENSITY_ALGO_GEMM_CORE;
-            else MD_LOG_ERROR("MD_GTO_GPU_DENSITY_ALGO: '%s' is none of reference, gemm, core; the default is taken", env);
+            else MD_LOG_ERROR("MD_GTO_GPU_DENSITY_ALGO: '%s' is neither reference nor gemm; the default is taken", env);
         }
     }
-    if (*algo != MD_GTO_GPU_DENSITY_ALGO_REFERENCE && *algo != MD_GTO_GPU_DENSITY_ALGO_GEMM && *algo != MD_GTO_GPU_DENSITY_ALGO_GEMM_CORE) {
+    if (*algo != MD_GTO_GPU_DENSITY_ALGO_REFERENCE && *algo != MD_GTO_GPU_DENSITY_ALGO_GEMM) {
         MD_LOG_ERROR("md_gto_gpu_density_launch: unknown algorithm %d", (int)*algo);
         return false;
     }
@@ -2826,7 +2804,7 @@ void md_gto_gpu_density_launch(md_gpu_stream_t stream, const md_gto_gpu_density_
     if (algo == MD_GTO_GPU_DENSITY_ALGO_REFERENCE) {
         gto_density_launch_reference(stream, desc, out);
     } else {
-        gto_density_launch_gemm(stream, desc, out, algo == MD_GTO_GPU_DENSITY_ALGO_GEMM_CORE);
+        gto_density_launch_gemm(stream, desc, out);
     }
 }
 
@@ -2892,7 +2870,7 @@ md_gto_gpu_job_t* md_gto_gpu_density_job_begin(md_gpu_stream_t stream, const md_
     gto_gemm_cfg_t cfg;
     gto_density_gemm_args_t a;
     // nothing to evaluate, or what could not be issued (logged): done, as the launch would be
-    job->counting = gto_density_gemm_setup(&a, &cfg, desc, out, algo == MD_GTO_GPU_DENSITY_ALGO_GEMM_CORE) &&
+    job->counting = gto_density_gemm_setup(&a, &cfg, desc, out) &&
                     gto_gemm_count(&job->p, stream, &a, desc->scratch_bytes, true, &cfg);
     job->p.piece_work = desc->piece_work;
     job->issued = !job->counting;
