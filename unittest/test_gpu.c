@@ -1,6 +1,7 @@
 #include "utest.h"
 
 #include <core/md_gpu.h>
+#include <core/md_gpu_pieces.h>
 #include <core/md_allocator.h>
 #include <core/md_os.h>
 
@@ -394,6 +395,72 @@ UTEST(gpu, sync_gpu_seconds) {
     md_gpu_stream_sync(f.compute);
     EXPECT_FALSE(md_gpu_sync_gpu_seconds(small, &sec));
 
+    md_gpu_free(f.compute, a);
+    md_gpu_free(f.compute, b);
+    gpu_close(&f);
+}
+
+/* PIECES (md_gpu_pieces.h): an evaluation over N elements issued as ranges, each its
+   own submission, a few ahead; the result as one launch would make it, the progress
+   from 0 to 1, more than one piece. Then the same issued all at once (ahead < 0)
+   and waited for. */
+static void pieces_scale(md_gpu_stream_t s, md_gpu_kernel_t k, md_gpu_addr_t src, md_gpu_addr_t dst, uint64_t first, uint64_t n) {
+    scale_args_t sa = {0};
+    sa.n = (uint32_t)n; sa.mul = 3; sa.add = 7;
+    sa.src = src + first * sizeof(uint32_t);
+    sa.dst = dst + first * sizeof(uint32_t);
+    MD_GPU_LAUNCH(s, k, md_gpu_grid_for(k, (uint32_t)n, 1, 1), sa);
+}
+
+UTEST(gpu, pieces_cover_the_work) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
+
+    enum { N = 1 << 20 };
+    md_gpu_addr_t a = gpu_alloc(&f, f.compute, N * sizeof(uint32_t));
+    md_gpu_addr_t b = gpu_alloc(&f, f.compute, N * sizeof(uint32_t));
+    ASSERT_TRUE(a && b);
+    fill_args_t fa = {0};
+    fa.n = N; fa.base = 5; fa.dst = a;
+    ASSERT_TRUE(MD_GPU_LAUNCH(f.compute, f.k_fill, grid1(f.k_fill, N), fa));
+
+    uint32_t* host = (uint32_t*)malloc(sizeof(uint32_t) * N);
+    ASSERT_TRUE(host != NULL);
+    for (int mode = 0; mode < 2; ++mode) {
+        ASSERT_TRUE(md_gpu_memset(f.compute, b, 0, N * sizeof(uint32_t)));
+        md_gpu_pieces_policy_t pol = {0};
+        pol.ahead_ms = mode == 0 ? 0.0 : -1.0;      // bounded, then everything at once
+        md_gpu_pieces_t p;
+        md_gpu_pieces_init(&p, f.compute, N, 4096, 64, 1 << 18, &pol);
+        float last = 0.0f;
+        int polls = 0;
+        while (!md_gpu_pieces_poll(&p)) {
+            const float prog = md_gpu_pieces_progress(&p);
+            EXPECT_GE(prog, last);
+            last = prog;
+            bool issued = false;
+            for (uint64_t n; (n = md_gpu_pieces_next(&p)) > 0;) {
+                EXPECT_TRUE(n % 64 == 0 || p.issued + n == N);
+                EXPECT_LE(n, (uint64_t)(1 << 18));
+                pieces_scale(f.compute, f.k_scale, a, b, p.issued, n);
+                ASSERT_TRUE(md_gpu_pieces_end(&p, n));
+                issued = true;
+            }
+            if (!issued) md_gpu_pieces_wait(&p);
+            ASSERT_LT(++polls, 1000000);
+        }
+        EXPECT_EQ(1.0f, md_gpu_pieces_progress(&p));
+        EXPECT_EQ((uint64_t)N, p.issued);
+        EXPECT_GT(p.num_pieces, 1u);
+        char buf[256];
+        md_gpu_pieces_describe(&p, buf, sizeof(buf));
+        printf("  %s: %s\n", mode == 0 ? "bounded" : "at once", buf);
+        ASSERT_TRUE(gpu_read(&f, f.compute, host, b, sizeof(uint32_t) * N));
+        int bad = 0;
+        for (int i = 0; i < N; ++i) bad += host[i] != (uint32_t)(5 + i) * 3u + 7u;
+        EXPECT_EQ(0, bad);
+    }
+    free(host);
     md_gpu_free(f.compute, a);
     md_gpu_free(f.compute, b);
     gpu_close(&f);

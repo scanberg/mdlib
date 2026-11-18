@@ -92,6 +92,7 @@ set(MD_CORE_FILES
   src/core/md_geom.c
   src/core/md_geom.h
   src/core/md_gpu.h
+  src/core/md_gpu_pieces.h
   src/core/md_grid.c
   src/core/md_grid.h
   src/core/md_handle.c
@@ -401,6 +402,8 @@ if (MD_ENABLE_GPU)
 
   # Backend-independent sub-allocator behind md_gpu_malloc.
   list(APPEND MD_CORE_FILES src/core/md_gpu_tlsf.c)
+  # Long evaluations as bounded submissions, sized by their measured GPU time.
+  list(APPEND MD_CORE_FILES src/core/md_gpu_pieces.c)
 
   include(cmake/ResolveSlang.cmake)
   resolve_slang(VERSION 2026.8.1)
