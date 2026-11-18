@@ -1558,9 +1558,9 @@ void gemm_eval<let F : int, B : IKBuf, let VERT : int>(uint3 gid, uint tid) {
 // rows of C times the AO normalization (k_load_chunk's).
 // ------------------------------------------------------------------------------------------
 #include "../gto/gto_gemm_core.slang"
-GC_MEM(IsoGc16, 128, 16)
-GC_MEM(IsoGc32, 128, 32)
-GC_MEM(IsoGc64, 128, 64)
+GC_MEM4(IsoGc16, 128, 16)
+GC_MEM4(IsoGc32, 128, 32)
+GC_MEM4(IsoGc64, 128, 64)
 
 // k_load_chunk with the rows of C into the core's B chunk
 void k_load_chunk_gc<let F : int, Mem : IGcMem>(uint c, uint f0, uint tid, uint gs) {
@@ -2321,9 +2321,9 @@ void gemm_wide2<let F : int, B : IKBuf, let VERT : int>(uint3 gid, uint tid) {
 // (tid & 15, tid >> 4) is the core's (ty, tx): rows 4 pg .. 4 pg + 3, columns cg F / 16 .. (R = 4, M = F / 16). The AO
 // values of row 4 pg + ce (ce = cg & 3) are made by the four threads js = cg >> 2, every fourth shell of a chunk.
 // ------------------------------------------------------------------------------------------
-GC_MEM(IsoGw128, 64, 128)
-GC_MEM(IsoGw192, 64, 192)
-GC_MEM(IsoGw256, 64, 256)
+GC_MEM4(IsoGw128, 64, 128)
+GC_MEM4(IsoGw192, 64, 192)
+GC_MEM4(IsoGw256, 64, 256)
 
 // The rows of a wide group (gemm_wide's): false when the group has nothing to do (uniform)
 struct IsoWideRows {
@@ -3085,7 +3085,7 @@ void gemm_dform<let VERT : int>(uint3 gid, uint tid) {
 // AO values (row 4 pg + ce made by the threads cg >> 2 = j0 for every SP-th shell), B [kk][128] the chunk's rows of
 // D' (2 D before a column's chunk, D on its diagonal, 0 after).
 // ------------------------------------------------------------------------------------------
-GC_MEM(IsoGd, 128, 128)
+GC_MEM4(IsoGd, 128, 128)
 
 // dq_phi into the core's A chunk: row r at r * 128 + 4 pg + ce
 void dq_phi_gc<Mem : IGcMem>(uint buf, uint ns, uint j0, uint js, uint nvalid, float3 p, uint pg, uint ce, bool deriv, uint ch) {

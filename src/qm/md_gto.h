@@ -450,8 +450,10 @@ typedef enum md_gto_gpu_density_algo_t {
 // core; r3: the chunks read as float4 (slower: orbitals -13%, ELF -5%), the thread grid a kernel's own (the dmat tiles on
 // it, 16 x 4), the D_b gather over the flat triangle (2x); r4: r3 with r2's plain float chunks again (r2's rates); r5: a
 // template over the tile, the threads and the chunks' memory (the same code for r4's kernels), with a staged mode, the
-// isosurface GEMMs on it (tiled, wide, and the D form in a triangular mode) beside their own loops (MD_GTO_ISO_GEMM=own).
-#define MD_GTO_GPU_GEMM_CORE_REVISION "gemm-core r5 (a template: density, orbitals, ELF/LOL, dmat tiles; the isosurface tiled, wide and D-form GEMMs staged; plain float chunks; D_b gather r2: the flat triangle)"
+// isosurface GEMMs on it (tiled, wide, and the D form in a triangular mode) beside their own loops (MD_GTO_ISO_GEMM=own);
+// r6: the chunks' memory a kernel's choice, floats (the grid kernels, r4's code) or float4 reads (the isosurface kernels,
+// as their own loops: on r5's float reads the protein's D-form corners took 477 ms against their own loop's 341).
+#define MD_GTO_GPU_GEMM_CORE_REVISION "gemm-core r6 (a template: density, orbitals, ELF/LOL, dmat tiles on float chunks; the isosurface tiled, wide and D-form GEMMs staged, on float4 chunks; D_b gather r2: the flat triangle)"
 
 // Unified descriptor struct for density evaluation.
 typedef struct md_gto_gpu_density_desc_t {

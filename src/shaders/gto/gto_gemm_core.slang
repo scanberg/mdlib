@@ -58,22 +58,53 @@
 #define GTO_GEMM_CORE_SLANG
 
 // For measurements: bumped with every change to the core's loop
-#define GTO_GEMM_CORE_REVISION 5
+#define GTO_GEMM_CORE_REVISION 6
 
 #define GK     16               // k per chunk
 #define GC_END 0xFFFFFFFFu      // IGemmStager.stage: no more chunks
 
 // The groupshared memory of a kernel's chunks: [0, GK GP) the A chunk [kk][r], [GK GP, GK (GP + GM)) the B chunk
-// [kk][mm]; after the core, the kernel's (the epilogues' reductions)
+// [kk][mm]; after the core, the kernel's (the epilogues' reductions). Two kinds, a kernel's choice (measured per kernel,
+// RTX 3080):
+//   GC_MEM   floats, read a float at a time: the grid kernels (their GEMM pass lost 5-13% on float4 reads, gemm-core r3)
+//   GC_MEM4  a thread's rows (columns) read as float4 where R (M) is a multiple of 4: SPIR-V float4 elements (one
+//            16-byte read; a float written at a time), Metal floats (Metal may write one
+//            component of a threadgroup vector as a read-modify-write of the whole vector, and two threads writing
+//            components of one float4 would lose a write; gto_iso_gpu.slang's K_BUF): the isosurface kernels (their
+//            tiled GEMM 1.3-1.5x slower on GC_MEM's float reads at 20-30 functions, gemm-core r5)
 interface IGcMem {
-    static float ld(uint i);
-    static void  st(uint i, float v);
+    static const int kVec;              // 1: ld4 a 16-byte read (GC_MEM4), the multiply-adds read float4
+    static float  ld(uint i);
+    static float4 ld4(uint i4);
+    static void   st(uint i, float v);
 };
 #define GC_MEM(NAME, GPV, GMV)                                                                      \
     groupshared float NAME##_smem[GK * ((GPV) + (GMV))];                                            \
     struct NAME : IGcMem {                                                                          \
-        static float ld(uint i)          { return NAME##_smem[i]; }                                 \
-        static void  st(uint i, float v) { NAME##_smem[i] = v; }                                    \
+        static const int kVec = 0;                                                                  \
+        static float  ld(uint i)          { return NAME##_smem[i]; }                                \
+        static float4 ld4(uint i4)        { return float4(NAME##_smem[4u * i4], NAME##_smem[4u * i4 + 1u], \
+                                                          NAME##_smem[4u * i4 + 2u], NAME##_smem[4u * i4 + 3u]); } \
+        static void   st(uint i, float v) { NAME##_smem[i] = v; }                                   \
+    };
+#define GC_MEM4(NAME, GPV, GMV)                                                                     \
+    groupshared float4 NAME##_d4[GK * ((GPV) + (GMV)) / 4];                                         \
+    groupshared float  NAME##_d1[GK * ((GPV) + (GMV))];                                             \
+    struct NAME : IGcMem {                                                                          \
+        static const int kVec = 1;                                                                  \
+        static float ld(uint i) {                                                                   \
+            __target_switch { case spirv: return NAME##_d4[i >> 2][i & 3u];                        \
+                              default:    return NAME##_d1[i]; }                                    \
+        }                                                                                           \
+        static float4 ld4(uint i4) {                                                                \
+            __target_switch { case spirv: return NAME##_d4[i4];                                     \
+                              default:    return float4(NAME##_d1[4u * i4], NAME##_d1[4u * i4 + 1u], \
+                                                        NAME##_d1[4u * i4 + 2u], NAME##_d1[4u * i4 + 3u]); } \
+        }                                                                                           \
+        static void st(uint i, float v) {                                                           \
+            __target_switch { case spirv: NAME##_d4[i >> 2][i & 3u] = v;                           \
+                              default:    NAME##_d1[i] = v; }                                       \
+        }                                                                                           \
     };
 
 interface IGemmOperands {
@@ -117,8 +148,22 @@ void gc_fence() {
 void gc_mac<let CP : int, let CM : int, let R : int, let M : int, Mem : IGcMem>(inout float X[R][M], uint kk, uint tx, uint ty) {
     float a[R];
     float bb[M];
-    [ForceUnroll] for (int i = 0; i < R; ++i) a[i]  = Mem::ld(kk * uint(CP) + ty * uint(R) + uint(i));
-    [ForceUnroll] for (int j = 0; j < M; ++j) bb[j] = Mem::ld(uint(GK * CP) + kk * uint(CM) + tx * uint(M) + uint(j));
+    if (Mem::kVec != 0 && R % 4 == 0) {
+        [ForceUnroll] for (int q = 0; q < R / 4; ++q) {
+            const float4 v = Mem::ld4((kk * uint(CP) + ty * uint(R)) / 4u + uint(q));
+            a[4 * q] = v.x; a[4 * q + 1] = v.y; a[4 * q + 2] = v.z; a[4 * q + 3] = v.w;
+        }
+    } else {
+        [ForceUnroll] for (int i = 0; i < R; ++i) a[i] = Mem::ld(kk * uint(CP) + ty * uint(R) + uint(i));
+    }
+    if (Mem::kVec != 0 && M % 4 == 0) {
+        [ForceUnroll] for (int q = 0; q < M / 4; ++q) {
+            const float4 v = Mem::ld4((uint(GK * CP) + kk * uint(CM) + tx * uint(M)) / 4u + uint(q));
+            bb[4 * q] = v.x; bb[4 * q + 1] = v.y; bb[4 * q + 2] = v.z; bb[4 * q + 3] = v.w;
+        }
+    } else {
+        [ForceUnroll] for (int j = 0; j < M; ++j) bb[j] = Mem::ld(uint(GK * CP) + kk * uint(CM) + tx * uint(M) + uint(j));
+    }
     [ForceUnroll] for (int i = 0; i < R; ++i)
         [ForceUnroll] for (int j = 0; j < M; ++j) X[i][j] += a[i] * bb[j];
 }
