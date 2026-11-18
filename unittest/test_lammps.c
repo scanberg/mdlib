@@ -425,7 +425,7 @@ UTEST(lammps, data_comments) {
         "Atoms # full\n\n1 1 1 -0.8 1.0 1.0 1.0 # O\n2 1 2 0.4 1.9 1.0 1.0\n3 1 2 0.4 0.8 1.9 1.0\n\n"
         "Bonds\n\n1 1 1 2\n2 1 1 3\n"));
     EXPECT_EQ(3u, sys.atom.count);
-    EXPECT_EQ(2u, sys.given_bond.count);
+    EXPECT_EQ(2u, md_bond_list_count(&sys.given_bond));
     EXPECT_EQ(MD_Z_O, md_atom_atomic_number(&sys.atom, 0));
     EXPECT_EQ(MD_Z_H, md_atom_atomic_number(&sys.atom, 1));
     md_arena_allocator_destroy(arena);
@@ -459,7 +459,7 @@ UTEST(lammps, data_sparse_ids) {
     EXPECT_EQ(MD_Z_O, md_atom_atomic_number(&sys.atom, 0));
     EXPECT_EQ(1.0f, st.xyz[0].x);
     EXPECT_EQ(0.8f, st.xyz[2].x);
-    ASSERT_EQ(2u, sys.given_bond.count);
+    ASSERT_EQ(2u, md_bond_list_count(&sys.given_bond));
     EXPECT_EQ(0u, sys.given_bond.pairs[0].idx[0]);
     EXPECT_EQ(1u, sys.given_bond.pairs[0].idx[1]);
     EXPECT_EQ(0u, sys.given_bond.pairs[1].idx[0]);

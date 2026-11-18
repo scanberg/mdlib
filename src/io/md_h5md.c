@@ -1077,15 +1077,14 @@ static bool h5md_system_from_core(md_system_t* sys, md_system_state_t* state, hi
     md_array(md_atom_pair_t) bonds = 0;
     h5md_read_bonds(&bonds, file, p, scratch);
     const size_t num_bonds = md_array_size(bonds);
-    md_bond_data_t* given = &sys->given_bond;
+    md_bond_list_t* given = &sys->given_bond;
     md_array_resize(given->pairs, num_bonds, sys->alloc);
     md_array_resize(given->flags, num_bonds, sys->alloc);
     if (num_bonds) md_memcpy(given->pairs, bonds, num_bonds * sizeof(md_atom_pair_t));
     const md_bond_flags_t topology = md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_TOPOLOGY);
     for (size_t i = 0; i < num_bonds; ++i) given->flags[i] = topology;
-    given->count = num_bonds;
     // The connectivity of the topology, of every atom; without it (a file of coordinates alone) the bonds are inferred
-    if (sys->given_bond.count) {
+    if (num_bonds) {
         md_system_set_bonds_complete(sys);
     }
 

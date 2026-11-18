@@ -543,7 +543,7 @@ UTEST(ring, rings_coarse_grained) {
         ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &sys_state, md_str_from_cstr(path), NULL));
         ASSERT_TRUE(md_system_is_coarse_grained(&sys));
         // The bonds of the topology close cycles: more bonds than a forest of the molecules has
-        EXPECT_GT(sys.given_bond.count + sys.instance.count, sys.atom.count);
+        EXPECT_GT(md_bond_list_count(&sys.given_bond) + sys.instance.count, sys.atom.count);
 
         EXPECT_TRUE(md_system_infer(&sys, &sys_state, NULL));
         EXPECT_EQ(0, (int)md_ring_data_count(&sys.ring));

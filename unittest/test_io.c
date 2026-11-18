@@ -108,7 +108,7 @@ UTEST(io, format_from_contents) {
     md_system_state_t state = { .alloc = arena };
     EXPECT_TRUE(f->system_init(&sys, &state, psf, NULL));
     EXPECT_EQ(3u, sys.atom.count);
-    EXPECT_EQ(2u, sys.given_bond.count);
+    EXPECT_EQ(2u, md_bond_list_count(&sys.given_bond));
     md_arena_allocator_destroy(arena);
     remove(psf.ptr);
 }

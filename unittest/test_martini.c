@@ -31,13 +31,13 @@ UTEST(martini, infer_bonds_coarse_grained) {
     md_float3_t xyz[6];
     md_system_state_t state = { .num_atoms = 6, .xyz = pack_xyz(xyz, x, y, z, 6) };
 
-    md_bond_data_t bond = {0};
+    md_bond_list_t bond = {0};
     md_bond_infer(&bond, &sys, &state, alloc, NULL);
 
     // (0,1) (1,2) (3,4) (4,5) within residues, (0,3) between backbones. 0-2 is 6A, over the cutoff.
-    EXPECT_EQ(bond.count, 5u);
+    EXPECT_EQ(md_bond_list_count(&bond), 5u);
     bool has[6][6] = {0};
-    for (size_t i = 0; i < bond.count; ++i) {
+    for (size_t i = 0; i < md_bond_list_count(&bond); ++i) {
         const int a = bond.pairs[i].idx[0];
         const int b = bond.pairs[i].idx[1];
         EXPECT_NE(a, b);
@@ -45,7 +45,7 @@ UTEST(martini, infer_bonds_coarse_grained) {
         has[a][b] = true;
     }
     EXPECT_TRUE(has[0][1] && has[1][2] && has[3][4] && has[4][5] && has[0][3]);
-    for (size_t i = 0; i < bond.count; ++i) {
+    for (size_t i = 0; i < md_bond_list_count(&bond); ++i) {
         EXPECT_EQ((int)bond.flags[i], (int)md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_INFERRED));
     }
 

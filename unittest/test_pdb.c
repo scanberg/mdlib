@@ -27,7 +27,7 @@ UTEST(pdb, ordinary) {
     EXPECT_EQ((size_t)9084, st.num_atoms);
     // Its CRYST1 is 1 x 1 x 1 at right angles, what writers put there for a structure of no cell
     EXPECT_EQ(0u, st.unitcell.flags);
-    EXPECT_EQ((size_t)18, sys.given_bond.count);
+    EXPECT_EQ((size_t)18, md_bond_list_count(&sys.given_bond));
     md_vm_arena_destroy(alloc);
 }
 
@@ -47,7 +47,7 @@ UTEST(pdb, unmatched_model_entry) {
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/dppc64.pdb"), NULL));
     EXPECT_EQ((size_t)14738, sys.atom.count);
-    EXPECT_EQ((size_t)0, sys.given_bond.count);
+    EXPECT_EQ((size_t)0, md_bond_list_count(&sys.given_bond));
     EXPECT_NE(0u, st.unitcell.flags);
     md_vm_arena_destroy(alloc);
 }
@@ -169,7 +169,7 @@ UTEST(pdb, create_system) {
 
 // The bond given between two atoms (md_system_t::given_bond, which has no connectivity), or -1
 static md_bond_idx_t given_find(const md_system_t* sys, md_atom_idx_t a, md_atom_idx_t b) {
-    for (size_t i = 0; i < sys->given_bond.count + sys->given_bond.noncovalent_count; ++i) {
+    for (size_t i = 0; i < md_bond_list_count(&sys->given_bond); ++i) {
         const md_atom_pair_t p = sys->given_bond.pairs[i];
         if ((p.idx[0] == a && p.idx[1] == b) || (p.idx[0] == b && p.idx[1] == a)) return (md_bond_idx_t)i;
     }
@@ -233,7 +233,7 @@ UTEST(pdb, serials_which_are_not_numbers) {
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, md_str_from_cstr(pdb), NULL));
     ASSERT_EQ((size_t)5, sys.atom.count);
     EXPECT_NEAR(9.0f, st.xyz[3].x, 1e-6f);
-    EXPECT_EQ((size_t)2, sys.given_bond.count);
+    EXPECT_EQ((size_t)2, md_bond_list_count(&sys.given_bond));
     EXPECT_NE(-1, given_find(&sys, 0, 4));   // 99999 and A0000
     EXPECT_NE(-1, given_find(&sys, 0, 2));   // 18700 and 99999
     md_vm_arena_destroy(alloc);
@@ -245,7 +245,7 @@ UTEST(pdb, conect_bonds) {
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), NULL));
     // The load gives the file's bonds, and those alone
-    EXPECT_EQ((size_t)18, sys.given_bond.count);
+    EXPECT_EQ((size_t)18, md_bond_list_count(&sys.given_bond));
     ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
     EXPECT_EQ((size_t)18, count_bonds_of_origin(&sys, MD_BOND_ORIGIN_FILE));
     for (size_t i = 0; i < sys.bond.count; ++i) {
@@ -296,7 +296,7 @@ UTEST(pdb, conect_continued_and_hybrid36) {
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, text, NULL));
     ASSERT_EQ((size_t)11, sys.atom.count);
-    EXPECT_EQ((size_t)9, sys.given_bond.count);
+    EXPECT_EQ((size_t)9, md_bond_list_count(&sys.given_bond));
     for (int k = 1; k < 9; ++k) {
         EXPECT_NE(-1, given_find(&sys, 0, k));
     }
@@ -322,7 +322,7 @@ UTEST(pdb, conect_serials_out_of_order) {
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, text, NULL));
     ASSERT_EQ((size_t)4, sys.atom.count);
-    ASSERT_EQ((size_t)2, sys.given_bond.count);
+    ASSERT_EQ((size_t)2, md_bond_list_count(&sys.given_bond));
     // In the order the records first give them
     EXPECT_EQ(0, (int)sys.given_bond.pairs[0].idx[0]);
     EXPECT_EQ(1, (int)sys.given_bond.pairs[0].idx[1]);
@@ -351,7 +351,7 @@ UTEST(pdb, conect_dense) {
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, (md_str_t){buf, len}, NULL));
     ASSERT_EQ(n, sys.atom.count);
-    ASSERT_EQ(n - 1, sys.given_bond.count);
+    ASSERT_EQ(n - 1, md_bond_list_count(&sys.given_bond));
     size_t wrong = 0;
     for (size_t i = 0; i + 1 < n; ++i) {
         wrong += sys.given_bond.pairs[i].idx[0] != (md_atom_idx_t)i || sys.given_bond.pairs[i].idx[1] != (md_atom_idx_t)(i + 1);
@@ -716,7 +716,7 @@ UTEST(pdb, chain_break_numbering_runs_on) {
 
     // The backbones of atoms are found from their bonds alone: without bonds there are none, and no breaks
     // (none given, and every atom's bonds given complete: none inferred)
-    md_bond_data_clear(&sys.given_bond);
+    md_bond_list_clear(&sys.given_bond);
     md_system_set_bonds_complete(&sys);
     ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
     EXPECT_EQ(0u, sys.protein_backbone.range.count);
@@ -881,7 +881,7 @@ UTEST(pdb, blocks_and_pieces) {
     ASSERT_TRUE(md_pdb_system_init_from_str(&ref, &ref_st, str, NULL));
     EXPECT_EQ((size_t)(num_chains * (num_res + num_res / 50) * 4 + 2), ref.atom.count);
     EXPECT_EQ((size_t)(num_chains * (num_res + num_res / 50) + 2), ref.residue.count);
-    EXPECT_EQ((size_t)1, ref.given_bond.count);
+    EXPECT_EQ((size_t)1, md_bond_list_count(&ref.given_bond));
     EXPECT_EQ((size_t)(num_chains + 2), ref.instance.count);
 
     test_executor_t threads  = test_executor_threads(4);
@@ -1060,7 +1060,7 @@ UTEST(pdb, models_then_conect) {
             ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, md_str_from_cstr(path), &(md_load_desc_t){ .executor = executors[e] }));
             ASSERT_TRUE(md_pdb_system_init_from_str(&sys2, &st2, str, &(md_load_desc_t){ .executor = executors[e] }));
             EXPECT_EQ((size_t)num_atoms, sys.atom.count);
-            EXPECT_EQ((size_t)(num_atoms - 1), sys.given_bond.count);
+            EXPECT_EQ((size_t)(num_atoms - 1), md_bond_list_count(&sys.given_bond));
             EXPECT_EQ((size_t)0, load_blocks_diff(&sys, &st, &sys2, &st2));
             // Of the first model
             EXPECT_EQ(0.0f, st.xyz[num_atoms - 1].y);

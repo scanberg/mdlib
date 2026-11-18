@@ -139,7 +139,7 @@ bool md_topology_system_init(md_system_t* sys, md_system_state_t* state, const m
     // ## Bonds
     {
         const md_bond_flags_t flags = md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_TOPOLOGY);
-        md_bond_data_t* given = &sys->given_bond;
+        md_bond_list_t* given = &sys->given_bond;
         md_array_resize(given->pairs, d.num_bonds, alloc);
         md_array_resize(given->flags, d.num_bonds, alloc);
         size_t kept = 0;
@@ -152,7 +152,6 @@ bool md_topology_system_init(md_system_t* sys, md_system_state_t* state, const m
         }
         md_array_shrink(given->pairs, kept);
         md_array_shrink(given->flags, kept);
-        given->count = kept;
         // Of every atom: they have the topology's bonds and no others
         md_system_set_bonds_complete(sys);
     }
@@ -237,12 +236,13 @@ bool md_topology_system_supplement(md_system_t* sys, const md_topology_desc_t* d
     }
 
     // ## Bonds: the topology's, of every atom, replace those the data gave of the graph; its non-covalent ones are kept,
-    // and the user's are apart (md_system_t::user_bond)
+    // and the user's edits are apart (md_system_t::bond_edit)
     {
-        const md_bond_data_t* old = &sys->given_bond;
-        const size_t old_count = old->count;
-        const size_t num_noncovalent = old->noncovalent_count;
-        md_bond_data_t given = {0};
+        const md_bond_list_t* old = &sys->given_bond;
+        const size_t old_count = md_bond_list_count(old);
+        size_t num_noncovalent = 0;
+        for (size_t i = 0; i < old_count; ++i) num_noncovalent += md_bond_is_noncovalent(old->flags[i]);
+        md_bond_list_t given = {0};
         md_array_ensure(given.pairs, d.num_bonds + num_noncovalent, sys->alloc);
         md_array_ensure(given.flags, d.num_bonds + num_noncovalent, sys->alloc);
         for (size_t b = 0; b < d.num_bonds; ++b) {
@@ -253,13 +253,12 @@ bool md_topology_system_supplement(md_system_t* sys, const md_topology_desc_t* d
             md_array_push_no_grow(given.flags, md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_TOPOLOGY));
         }
         const size_t num_topology = md_array_size(given.pairs);
-        for (size_t i = old_count; i < old_count + num_noncovalent; ++i) {
+        for (size_t i = 0; i < old_count; ++i) {
+            if (!md_bond_is_noncovalent(old->flags[i])) continue;
             md_array_push_no_grow(given.pairs, old->pairs[i]);
             md_array_push_no_grow(given.flags, old->flags[i]);
         }
-        given.noncovalent_count = num_noncovalent;
-        given.count = md_array_size(given.pairs) - num_noncovalent;
-        md_bond_data_free(&sys->given_bond, sys->alloc);
+        md_bond_list_free(&sys->given_bond, sys->alloc);
         sys->given_bond = given;
         md_system_set_bonds_complete(sys);
         md_system_topology_changed(sys);

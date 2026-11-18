@@ -1988,7 +1988,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
             const md_tpr_moltype_t* mt = &data->moltypes[data->molblocks[b].moltype];
             count += (size_t)data->molblocks[b].nmol * (mt->num_bonds + mt->num_elastic_bonds);
         }
-        md_bond_data_t* given = &sys->given_bond;
+        md_bond_list_t* given = &sys->given_bond;
         md_array_resize(given->pairs, count, sys->alloc);
         md_array_resize(given->flags, count, sys->alloc);
 
@@ -2041,7 +2041,6 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         }
         md_array_shrink(given->pairs, kept);
         md_array_shrink(given->flags, kept);
-        given->count = kept;
         // The topology is of every atom: they have its bonds and no others (an elastic network written as plain bonds
         // is told by md_system_infer)
         md_system_set_bonds_complete(sys);

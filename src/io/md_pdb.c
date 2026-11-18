@@ -441,17 +441,15 @@ static void pdb_conect_bonds(md_system_t* sys, const int32_t* atom_serial, const
     }
 
     const md_bond_flags_t file = md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_FILE);
-    md_bond_data_t* given = &sys->given_bond;
-    MD_ASSERT(given->noncovalent_count == 0);
-    md_array_ensure(given->pairs, given->count + num_bonds, sys->alloc);
-    md_array_ensure(given->flags, given->count + num_bonds, sys->alloc);
+    md_bond_list_t* given = &sys->given_bond;
+    md_array_ensure(given->pairs, md_bond_list_count(given) + num_bonds, sys->alloc);
+    md_array_ensure(given->flags, md_bond_list_count(given) + num_bonds, sys->alloc);
     for (size_t i = 0; i < num_keys; ++i) {
         if (!keep[i]) continue;
         const md_atom_pair_t pair = {{ (md_atom_idx_t)(key[i] >> 32), (md_atom_idx_t)(key[i] & 0xFFFFFFFF) }};
         md_array_push_no_grow(given->pairs, pair);
         md_array_push_no_grow(given->flags, file);
     }
-    given->count += num_bonds;
 }
 
 // What follows the atoms and residues: the cell, the bonds of the CONECT records (by the serials of the atoms loaded),

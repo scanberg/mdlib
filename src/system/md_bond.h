@@ -17,8 +17,8 @@ struct md_executor_t;
 // came from (the PROVENANCE above it). Each field is one value or one bit, so every combination describes a case (bar
 // the unused values of a field). Only the low byte is part of a bond's identity when comparing structures.
 //
-//   bit   11         10               9-8     7-5    4-3        2-0
-//         KIND_GIVEN ORDER_PERCEIVED  ORIGIN  KIND   RESONANCE  ORDER
+//   bit   12        11         10               9-8     7-5    4-3        2-0
+//         INACTIVE  KIND_GIVEN ORDER_PERCEIVED  ORIGIN  KIND   RESONANCE  ORDER
 //
 // CHEMISTRY
 //   ORDER      A value in bits 0-2: read it with md_bond_order and write it with md_bond_flags_set_order. 0 is unknown
@@ -75,6 +75,9 @@ struct md_executor_t;
 //                    bond between a metal and a non-metal a user says is covalent stays covalent. The other way around
 //                    from ORDER_PERCEIVED, as a kind has no 'unknown' to tell a given one by: a bond without it has the
 //                    kind perception gives it.
+//   INACTIVE         Of an edit of the user (md_system_t::bond_edit) only: no bond, but the removal of the bond the data
+//                    gives or inference finds of its pair and range (md_bond_key), as neither is certain. Never of a bond
+//                    of the system (md_system_t::bond).
 typedef enum {
     MD_BOND_FLAG_NONE            = 0,
     MD_BOND_FLAG_ORDER_MASK      = 0x7,     // See md_bond_order
@@ -85,6 +88,7 @@ typedef enum {
     MD_BOND_FLAG_ORIGIN_MASK     = 0x300,   // See md_bond_origin
     MD_BOND_FLAG_ORDER_PERCEIVED = 0x400,   // The order and the resonance were perceived, not given
     MD_BOND_FLAG_KIND_GIVEN      = 0x800,   // The kind was given, not perceived
+    MD_BOND_FLAG_INACTIVE        = 0x1000,  // An edit which removes a bond (md_system_t::bond_edit), no bond
 } md_bond_flags_t;
 
 MD_ENUM_FLAGS(md_bond_flags_t)
@@ -210,6 +214,14 @@ typedef struct md_bond_data_t {
     md_bond_conn_data_t  conn;      // Connectivity of the graph, without the elastic bonds
 } md_bond_data_t;
 
+// A list of bonds: records of pairs and their flags, in an order of no meaning, without ranges or connectivity. What
+// the data gives of a system and the user's edits of its bonds (md_system_t::given_bond, ::bond_edit), and what
+// md_bond_infer finds: md_bond_merge makes the bonds of the system (md_bond_data_t) of them.
+typedef struct md_bond_list_t {
+    md_array(md_atom_pair_t)  pairs;
+    md_array(md_bond_flags_t) flags;    // [pairs]
+} md_bond_list_t;
+
 typedef struct md_bond_iter_t {
     const md_bond_data_t* data;
 	uint32_t i;
@@ -235,6 +247,59 @@ void md_bond_build_connectivity(md_bond_data_t* in_out_bond, size_t atom_count, 
 
 // Frees the arrays of the bond data, allocated with alloc, and empties it
 void md_bond_data_free(md_bond_data_t* bond, md_allocator_i* alloc);
+
+// ### BOND LISTS ###
+
+static inline size_t md_bond_list_count(const md_bond_list_t* list) {
+    MD_ASSERT(list);
+    return md_array_size(list->pairs);
+}
+
+static inline void md_bond_list_push(md_bond_list_t* list, md_atom_idx_t atom_idx_a, md_atom_idx_t atom_idx_b, md_bond_flags_t flags, md_allocator_i* alloc) {
+    MD_ASSERT(list);
+    MD_ASSERT(alloc);
+    const md_atom_pair_t pair = {{ atom_idx_a, atom_idx_b }};
+    md_array_push(list->pairs, pair, alloc);
+    md_array_push(list->flags, flags, alloc);
+}
+
+// The last record takes the place of the one removed
+static inline void md_bond_list_remove(md_bond_list_t* list, size_t idx) {
+    MD_ASSERT(list);
+    const size_t count = md_array_size(list->pairs);
+    MD_ASSERT(idx < count);
+    list->pairs[idx] = list->pairs[count - 1];
+    list->flags[idx] = list->flags[count - 1];
+    md_array_shrink(list->pairs, count - 1);
+    md_array_shrink(list->flags, count - 1);
+}
+
+static inline void md_bond_list_clear(md_bond_list_t* list) {
+    MD_ASSERT(list);
+    md_array_shrink(list->pairs, 0);
+    md_array_shrink(list->flags, 0);
+}
+
+static inline void md_bond_list_free(md_bond_list_t* list, md_allocator_i* alloc) {
+    MD_ASSERT(list);
+    md_array_free(list->pairs, alloc);
+    md_array_free(list->flags, alloc);
+    list->pairs = NULL;
+    list->flags = NULL;
+}
+
+// The pair and the range of a bond of flags, as one: a pair has one bond of the graph or a non-covalent one, and an
+// elastic bond besides (which stands in for no bond of the molecule). The atoms in either order.
+static inline uint64_t md_bond_key(md_atom_pair_t pair, md_bond_flags_t flags) {
+    const uint64_t range = md_bond_is_noncovalent(flags) ? 2 : md_bond_kind(flags) == MD_BOND_KIND_ELASTIC ? 1 : 0;
+    const uint32_t lo = (uint32_t)(pair.idx[0] < pair.idx[1] ? pair.idx[0] : pair.idx[1]);
+    const uint32_t hi = (uint32_t)(pair.idx[0] < pair.idx[1] ? pair.idx[1] : pair.idx[0]);
+    return (range << 62) | ((uint64_t)lo << 31) | hi;
+}
+
+// The record of the list of the pair and the range of a bond of flags (md_bond_key), active or not as flags is
+// (MD_BOND_FLAG_INACTIVE), or -1
+md_bond_idx_t md_bond_list_find(const md_bond_list_t* list, md_atom_idx_t atom_idx_a, md_atom_idx_t atom_idx_b, md_bond_flags_t flags);
 
 static inline size_t md_bond_conn_count(const md_bond_data_t* bond_data, size_t atom_idx) {
     MD_ASSERT(bond_data);
@@ -427,8 +492,7 @@ static inline bool md_atom_is_connected_to_atomic_numbers(const md_atom_data_t* 
 // (&sys->bond): md_system_infer gives the system the result, or the caller does (md_bond_data_free the old, assign).
 
 // The bonds of the atoms of the system from the coordinates of state alone, every one of origin
-// MD_BOND_ORIGIN_INFERRED, with their connectivity: the bonds the system has are not looked at (md_bond_merge puts the
-// two together). Atoms are bonded by their covalent radii (derived from the element). The atoms of a metallic phase (a
+// MD_BOND_ORIGIN_INFERRED: the bonds the system has are not looked at (md_bond_merge puts them together). Atoms are bonded by their covalent radii (derived from the element). The atoms of a metallic phase (a
 // metal in bulk, at a surface or in a particle) are bonded to the metal atoms of their first coordination shell by
 // metallic bonds and to nothing else, and a halogen bonded to a non-metal coordinates no metal (METALLIC PHASES in
 // md_bond.c). Coarse grained systems (md_system_is_coarse_grained) are bonded as their Martini topologies are: a residue
@@ -437,14 +501,17 @@ static inline bool md_atom_is_connected_to_atomic_numbers(const md_atom_data_t* 
 // the next unless the numbering starts over, and cysteines are bridged (infer_coarse_grained_bonds in md_martini.c). The
 // pairs within reach are found on the threads of the executor (NULL: the calling thread), and the bonds come out the
 // same whatever the threads. False, and out empty, when state has no coordinates.
-bool md_bond_infer(md_bond_data_t* out, const struct md_system_t* sys, const struct md_system_state_t* state, md_allocator_i* alloc, const struct md_executor_t* executor);
+bool md_bond_infer(md_bond_list_t* out, const struct md_system_t* sys, const struct md_system_state_t* state, md_allocator_i* alloc, const struct md_executor_t* executor);
 
-// The bonds given (md_system_t::given_bond) with those inferred (md_bond_infer), with their connectivity over
-// atom_count atoms: the inferred first, then every bond given, in its order (the bonds of the graph, then the
-// non-covalent ones). An inferred bond is left out between two atoms of complete (md_atom_data_t::bonds_complete;
-// NULL: of none), and where it would duplicate a pair given a bond (a non-covalent bond included: a pair has one bond,
-// and that one was given), but for an elastic bond, which is no bond of the molecule. out is neither given nor inferred.
-void md_bond_merge(md_bond_data_t* out, const md_bond_data_t* given, const md_bond_data_t* inferred, const uint8_t* complete, size_t atom_count, md_allocator_i* alloc);
+// The bonds of a system (md_bond_data_t, with their connectivity over atom_count atoms) of those the data gives, the
+// user's edits and those inferred (md_bond_infer), any of which may be NULL. In each range (md_bond_data_t) the
+// inferred come first, then those given, then the user's, each in its order. An edit which removes a bond
+// (MD_BOND_FLAG_INACTIVE) takes the bond given or inferred of its pair and range away (md_bond_key); one which adds a
+// bond is kept, and the bond given or inferred of its pair goes. An inferred bond is left out between two atoms of
+// complete (md_atom_data_t::bonds_complete; NULL: of none), and where it would duplicate a pair given a bond (a
+// non-covalent bond included: a pair has one bond, and that one was given). An elastic bond, which is no bond of the
+// molecule, takes no other bond's place.
+void md_bond_merge(md_bond_data_t* out, const md_bond_list_t* given, const md_bond_list_t* edits, const md_bond_list_t* inferred, const uint8_t* complete, size_t atom_count, md_allocator_i* alloc);
 
 // The atoms of the metallic phases: those of the metallic bonds (MD_BOND_KIND_METALLIC, METALLIC PHASES in md_bond.c).
 // out[i] is 1 for such an atom and 0 for any other, of atom_count atoms. Returns how many there are.

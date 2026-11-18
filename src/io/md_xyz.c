@@ -692,8 +692,7 @@ static void xyz_tinker_bonds(md_system_t* sys, const md_xyz_data_t* data, size_t
     uint32_t* order = md_alloc(temp, num_keys * sizeof(uint32_t));
     md_argsort_radix_u64(order, keys, num_keys);
     const md_bond_flags_t file = md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_FILE);
-    md_bond_data_t* given = &sys->given_bond;
-    MD_ASSERT(given->noncovalent_count == 0);
+    md_bond_list_t* given = &sys->given_bond;
     md_array_ensure(given->pairs, num_keys, sys->alloc);
     md_array_ensure(given->flags, num_keys, sys->alloc);
     for (size_t i = 0; i < num_keys; ++i) {
@@ -702,7 +701,6 @@ static void xyz_tinker_bonds(md_system_t* sys, const md_xyz_data_t* data, size_t
         const md_atom_pair_t pair = {{ (md_atom_idx_t)(key >> 32), (md_atom_idx_t)(key & 0xFFFFFFFF) }};
         md_array_push(given->pairs, pair, sys->alloc);
         md_array_push(given->flags, file, sys->alloc);
-        given->count += 1;
     }
 }
 

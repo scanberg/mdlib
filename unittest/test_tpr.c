@@ -144,8 +144,8 @@ UTEST(tpr, system_tip3p) {
     EXPECT_EQ(1577u, state.num_atoms);
     EXPECT_EQ(2u + 509u + 4u, sys.residue.count);
     // The topology's bonds, given, and every atom has those alone
-    EXPECT_EQ((size_t)PEPTIDE_BONDS + 509 * 2, sys.given_bond.count);
-    for (size_t i = 0; i < sys.given_bond.count; ++i) {
+    EXPECT_EQ((size_t)PEPTIDE_BONDS + 509 * 2, md_bond_list_count(&sys.given_bond));
+    for (size_t i = 0; i < md_bond_list_count(&sys.given_bond); ++i) {
         EXPECT_EQ(MD_BOND_ORIGIN_TOPOLOGY, md_bond_origin(sys.given_bond.flags[i]));
     }
     for (size_t i = 0; i < sys.atom.count; ++i) EXPECT_TRUE(md_atom_bonds_complete(&sys.atom, i));
@@ -212,7 +212,7 @@ UTEST(tpr, virtual_sites) {
     ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &state, MD_STR_LIT(TPR_DIR "peptide_tip4p.tpr"), NULL));
     EXPECT_EQ(2074u, sys.atom.count);
     // TIP4P: the two O-H bonds of the SETTLE. The charge site is not bonded, as when read from coordinates.
-    EXPECT_EQ((size_t)PEPTIDE_BONDS + 506 * 2, sys.given_bond.count);
+    EXPECT_EQ((size_t)PEPTIDE_BONDS + 506 * 2, md_bond_list_count(&sys.given_bond));
 
     // The first water: OW HW1 HW2 MW, the virtual site with no element, no radius and no bond
     const size_t ow = PEPTIDE_ATOMS;
@@ -220,7 +220,7 @@ UTEST(tpr, virtual_sites) {
     EXPECT_EQ(0, md_particle_type_atomic_number(&sys.atom.type, sys.atom.type_idx[ow + 3]));
     EXPECT_EQ(MD_PARTICLE_VIRTUAL_SITE, md_atom_particle_kind(&sys.atom, ow + 3));
     EXPECT_EQ(0.0f, md_atom_radius(&sys.atom, ow + 3));
-    for (size_t i = 0; i < sys.given_bond.count; ++i) {
+    for (size_t i = 0; i < md_bond_list_count(&sys.given_bond); ++i) {
         EXPECT_NE((md_atom_idx_t)(ow + 3), sys.given_bond.pairs[i].idx[0]);
         EXPECT_NE((md_atom_idx_t)(ow + 3), sys.given_bond.pairs[i].idx[1]);
     }
