@@ -551,6 +551,7 @@ void md_system_free(md_system_t* sys) {
     // BONDS GIVEN
     md_bond_data_free(&sys->given_bond, alloc);
     md_bond_data_free(&sys->user_bond, alloc);
+    md_bond_data_free(&sys->removed_bond, alloc);
 
     // PARTICLE TYPE
     md_array_free(sys->atom.type.name, alloc);
@@ -803,10 +804,13 @@ bool md_system_bond_insert(md_system_t* sys, md_atom_idx_t atom_idx_a, md_atom_i
     // A pair has one bond at most, of the graph or not
     const md_bond_flags_t graph = md_bond_flags_set_kind(MD_BOND_FLAG_NONE, md_bond_kind(flags) == MD_BOND_KIND_ELASTIC ? MD_BOND_KIND_ELASTIC : MD_BOND_KIND_COVALENT);
     const md_bond_flags_t noncovalent = md_bond_flags_set_kind(MD_BOND_FLAG_KIND_GIVEN, MD_BOND_KIND_INTERACTION);
-    const md_bond_data_t* sets[2] = { &sys->given_bond, &sys->user_bond };
-    for (int k = 0; k < 2; ++k) {
-        if (given_bond_find(sets[k], atom_idx_a, atom_idx_b, graph) != -1) return false;
-        if (md_bond_kind(flags) != MD_BOND_KIND_ELASTIC && given_bond_find(sets[k], atom_idx_a, atom_idx_b, noncovalent) != -1) return false;
+    // The data's bond the user removed is none
+    const md_bond_flags_t probes[2] = { graph, noncovalent };
+    const int num_probes = md_bond_kind(flags) == MD_BOND_KIND_ELASTIC ? 1 : 2;
+    for (int p = 0; p < num_probes; ++p) {
+        if (given_bond_find(&sys->user_bond, atom_idx_a, atom_idx_b, probes[p]) != -1) return false;
+        const md_bond_idx_t idx = given_bond_find(&sys->given_bond, atom_idx_a, atom_idx_b, probes[p]);
+        if (idx != -1 && given_bond_find(&sys->removed_bond, atom_idx_a, atom_idx_b, sys->given_bond.flags[idx]) == -1) return false;
     }
     // md_bond_insert finds a bond of the graph by the connectivity, which the bonds given have none of: none is found
     md_bond_insert(&sys->user_bond, atom_idx_a, atom_idx_b, flags, sys->alloc);
@@ -814,13 +818,18 @@ bool md_system_bond_insert(md_system_t* sys, md_atom_idx_t atom_idx_a, md_atom_i
     return true;
 }
 
-bool md_system_bond_remove(md_system_t* sys, md_bond_idx_t bond_idx) {
+bool md_system_bond_remove(md_system_t* sys, md_atom_idx_t atom_idx_a, md_atom_idx_t atom_idx_b, md_bond_flags_t flags) {
     MD_ASSERT(sys);
-    if (bond_idx < 0 || (size_t)bond_idx >= sys->bond.count + sys->bond.noncovalent_count) return false;
-    const md_atom_pair_t pair = sys->bond.pairs[bond_idx];
-    const md_bond_idx_t user_idx = given_bond_find(&sys->user_bond, pair.idx[0], pair.idx[1], sys->bond.flags[bond_idx]);
-    if (user_idx < 0) return false;
-    md_bond_remove(&sys->user_bond, user_idx);
+    MD_ASSERT(sys->alloc);
+    if (atom_idx_a < 0 || atom_idx_b < 0 || atom_idx_a == atom_idx_b || (size_t)atom_idx_a >= sys->atom.count || (size_t)atom_idx_b >= sys->atom.count) return false;
+    const md_bond_idx_t user_idx = given_bond_find(&sys->user_bond, atom_idx_a, atom_idx_b, flags);
+    if (user_idx != -1) {
+        md_bond_remove(&sys->user_bond, user_idx);
+    } else {
+        // Given by the data or inferred: neither is certain, and the user says there is no such bond
+        if (given_bond_find(&sys->removed_bond, atom_idx_a, atom_idx_b, flags) != -1) return false;
+        md_bond_insert(&sys->removed_bond, atom_idx_a, atom_idx_b, flags, sys->alloc);
+    }
     md_system_topology_changed(sys);
     return true;
 }

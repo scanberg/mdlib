@@ -25,6 +25,7 @@ extern "C" {
 // The bonds are those given (md_system_t::given_bond, then ::user_bond) with those inferred from the coordinates
 // between the atoms whose bonds are not given complete (md_atom_data_t::bonds_complete, md_bond_merge): of a system a
 // topology describes whole, none is inferred, and of one without bonds given (most structure files) all of them are.
+// What the user removed (md_system_t::removed_bond) is not of them, given by the data or inferred.
 //
 // The state is an explicit parameter rather than read off the system so that the recorded reference is by
 // construction the input which produced the topology. Requires coordinates for anything geometric; a state without

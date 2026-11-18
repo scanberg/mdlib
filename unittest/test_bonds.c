@@ -192,6 +192,42 @@ UTEST(bonds, reinference_keeps_user_bonds) {
     md_vm_arena_destroy(alloc);
 }
 
+// An inferred bond the user removes stays removed when the system is inferred again: inference is not certain
+UTEST(bonds, reinference_keeps_removed_bonds) {
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t st = { .alloc = alloc };
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.pdb"), NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
+    const size_t inferred = sys.bond.count;
+    ASSERT_GT(inferred, (size_t)0);
+    const md_atom_pair_t pair = sys.bond.pairs[0];
+    const md_bond_flags_t flags = sys.bond.flags[0];
+    ASSERT_EQ(MD_BOND_ORIGIN_INFERRED, md_bond_origin(flags));
+
+    EXPECT_TRUE(md_system_bond_remove(&sys, pair.idx[0], pair.idx[1], flags));
+    EXPECT_FALSE(md_system_bond_remove(&sys, pair.idx[1], pair.idx[0], flags));
+    for (int k = 0; k < 2; ++k) {
+        ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
+        EXPECT_FALSE(has_bond(&sys, pair.idx[0], pair.idx[1], NULL));
+        EXPECT_EQ(inferred - 1, sys.bond.count);
+    }
+
+    // Added again, it is the user's
+    EXPECT_TRUE(md_system_bond_insert(&sys, pair.idx[0], pair.idx[1], md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_USER)));
+    ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
+    md_bond_flags_t f = 0;
+    EXPECT_TRUE(has_bond(&sys, pair.idx[0], pair.idx[1], &f));
+    EXPECT_EQ(MD_BOND_ORIGIN_USER, md_bond_origin(f));
+    EXPECT_EQ(inferred, sys.bond.count);
+
+    // Removed again, the user's goes, and what was removed before stays removed
+    EXPECT_TRUE(md_system_bond_remove(&sys, pair.idx[0], pair.idx[1], f));
+    ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
+    EXPECT_FALSE(has_bond(&sys, pair.idx[0], pair.idx[1], NULL));
+    md_vm_arena_destroy(alloc);
+}
+
 // The persistent non-covalent bonds sit in a range of their own after the bond graph (md_bond_data_t): the graph and
 // everything derived from it never sees them, and inserting, removing and inferring bonds keeps both ranges, of the
 // bonds given and of the bonds
@@ -254,11 +290,9 @@ UTEST(bonds, noncovalent_range) {
     EXPECT_GE(md_bond_find_noncovalent(&sys.bond, 1, n - 2), 0);
     EXPECT_TRUE(has_bond(&sys, 2, n - 3, NULL));
 
-    // An inferred bond is not removed: it is not given. A pair the user marks non-covalent is not given a covalent bond
-    // by inference as well.
+    // A pair the user marks non-covalent is not given a covalent bond by inference as well
     const md_atom_pair_t covalent = sys.bond.pairs[0];
     ASSERT_EQ(MD_BOND_ORIGIN_INFERRED, md_bond_origin(sys.bond.flags[0]));
-    EXPECT_FALSE(md_system_bond_remove(&sys, 0));
     EXPECT_TRUE(md_system_bond_insert(&sys, covalent.idx[0], covalent.idx[1], hbond));
     EXPECT_EQ(3, (int)sys.user_bond.noncovalent_count);
     ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
@@ -269,7 +303,7 @@ UTEST(bonds, noncovalent_range) {
 
     // Removing keeps the ranges: the bond of the graph given (the last non-covalent one moves down), then a
     // non-covalent one
-    EXPECT_TRUE(md_system_bond_remove(&sys, md_system_bond_find(&sys, 2, n - 3)));
+    EXPECT_TRUE(md_system_bond_remove(&sys, 2, n - 3, user));
     EXPECT_EQ(0, (int)sys.user_bond.count);
     EXPECT_EQ(3, (int)sys.user_bond.noncovalent_count);
     expect_ranges(utest_result, &sys.user_bond);
@@ -277,7 +311,7 @@ UTEST(bonds, noncovalent_range) {
     EXPECT_EQ(graph - 1, sys.bond.count);
     EXPECT_EQ(3, (int)sys.bond.noncovalent_count);
     expect_ranges(utest_result, &sys.bond);
-    EXPECT_TRUE(md_system_bond_remove(&sys, md_bond_find_noncovalent(&sys.bond, 1, n - 2)));
+    EXPECT_TRUE(md_system_bond_remove(&sys, 1, n - 2, inter));
     ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
     EXPECT_EQ(2, (int)sys.bond.noncovalent_count);
     EXPECT_EQ(-1, md_bond_find_noncovalent(&sys.bond, 1, n - 2));
@@ -1029,15 +1063,28 @@ UTEST(bonds, user_bonds_apart_from_given) {
     EXPECT_TRUE(flags == sys.given_bond.flags);
     EXPECT_EQ(8u, sys.user_bond.count);
 
-    // Inferred, the bonds are those of both; only the user's are removed
+    // Inferred, the bonds are those of both. The user's bond removed is gone; the data's is removed, and stays as the
+    // data gave it
     ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
     for (int i = 0; i < 8; ++i) {
         EXPECT_GE(md_system_bond_find(&sys, i, (md_atom_idx_t)(sys.atom.count - 1 - i)), 0);
     }
-    EXPECT_FALSE(md_system_bond_remove(&sys, md_system_bond_find(&sys, g.idx[0], g.idx[1])));
-    EXPECT_TRUE(md_system_bond_remove(&sys, md_system_bond_find(&sys, 0, (md_atom_idx_t)(sys.atom.count - 1))));
+    EXPECT_TRUE(md_system_bond_remove(&sys, 0, (md_atom_idx_t)(sys.atom.count - 1), user));
     EXPECT_EQ(7u, sys.user_bond.count);
+    EXPECT_EQ(0u, sys.removed_bond.count);
+    EXPECT_TRUE(md_system_bond_remove(&sys, g.idx[0], g.idx[1], sys.given_bond.flags[0]));
+    EXPECT_FALSE(md_system_bond_remove(&sys, g.idx[1], g.idx[0], sys.given_bond.flags[0]));
+    EXPECT_EQ(1u, sys.removed_bond.count);
     EXPECT_EQ(count, sys.given_bond.count);
+    ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
+    EXPECT_EQ(-1, md_system_bond_find(&sys, g.idx[0], g.idx[1]));
+    EXPECT_EQ(-1, md_system_bond_find(&sys, 0, (md_atom_idx_t)(sys.atom.count - 1)));
+    // Of what is removed, a bond the user adds is the user's
+    EXPECT_TRUE(md_system_bond_insert(&sys, g.idx[0], g.idx[1], user));
+    ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
+    const md_bond_idx_t back = md_system_bond_find(&sys, g.idx[0], g.idx[1]);
+    ASSERT_GE(back, 0);
+    EXPECT_EQ(MD_BOND_ORIGIN_USER, md_bond_origin(md_system_bond_flags(&sys, back)));
     md_system_free(&sys);
     md_arena_allocator_destroy(alloc);
 }

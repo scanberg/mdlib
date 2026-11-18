@@ -1179,7 +1179,7 @@ UTEST(hierarchy, topology_version) {
     EXPECT_NE(sys.topology_version, before_insert);
     ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
     const uint64_t before_remove = sys.topology_version;
-    EXPECT_TRUE(md_system_bond_remove(&sys, md_system_bond_find(&sys, 0, 100)));
+    EXPECT_TRUE(md_system_bond_remove(&sys, 0, 100, md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_USER)));
     EXPECT_NE(sys.topology_version, before_remove);
 
     // Read only operations leave it alone

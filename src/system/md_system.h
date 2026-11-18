@@ -74,14 +74,17 @@ typedef struct md_system_t {
     md_nucleic_backbone_data_t  nucleic_backbone;
     md_lipid_data_t             lipid;              // The heads and tails of the lipids, see md_lipid_data_t
     
-    // The bonds the data gives (a topology, the CONECT records of a PDB file), and those the user adds
-    // (md_system_bond_insert, md_system_bond_remove), of the core: what md_system_infer makes the bonds from, with
-    // those it infers between the atoms whose bonds are not given complete (md_atom_data_t::bonds_complete). Apart, as
-    // they change apart: the data's are written once, by the loaders and the supplements, and are many (a topology's),
-    // the user's are few and edited, which leaves the data's untouched. Without connectivity (conn is never built);
-    // md_system_bond_find and the iterators are of bond.
+    // The bonds the data gives (a topology, the CONECT records of a PDB file), those the user adds and those the user
+    // removes (md_system_bond_insert, md_system_bond_remove), of the core: what md_system_infer makes the bonds from,
+    // with those it infers between the atoms whose bonds are not given complete (md_atom_data_t::bonds_complete). A
+    // bond removed is of a pair and its range (md_bond_data_t; an elastic bond apart): the bond the data gives or
+    // inference finds there is not one of the bonds, as neither is certain. Apart, as they change apart: the data's are
+    // written once, by the loaders and the supplements, and are many (a topology's), the user's are few and edited,
+    // which leaves the data's untouched. Without connectivity (conn is never built); md_system_bond_find and the
+    // iterators are of bond.
     md_bond_data_t              given_bond;
     md_bond_data_t              user_bond;
+    md_bond_data_t              removed_bond;
     // The bonds, inferred (md_system_infer): those given, and those found between the atoms whose bonds are not given
     // complete; the bond graph, then the non-covalent bonds (md_bond_data_t), with their connectivity and the orders the
     // chemistry perceives. Empty until inferred.
@@ -569,15 +572,16 @@ static inline md_bond_idx_t md_system_bond_find(const md_system_t* sys, md_atom_
 void md_system_set_bonds_complete(md_system_t* sys);
 
 // Adds a bond to the user's (md_system_t::user_bond), unless the two atoms have one there or in those the data gives
-// already (but for an elastic bond, which stands in for no bond of the molecule). An edit of the core: the bonds
-// (sys->bond) and all that follows from them are of it once the system is inferred again (md_system_infer). False when
-// nothing was added.
+// already, and not removed (but for an elastic bond, which stands in for no bond of the molecule). An edit of the core:
+// the bonds (sys->bond) and all that follows from them are of it once the system is inferred again (md_system_infer).
+// False when nothing was added.
 bool md_system_bond_insert(md_system_t* sys, md_atom_idx_t atom_idx_a, md_atom_idx_t atom_idx_b, md_bond_flags_t flags);
 
-// Removes the user's bond (md_system_t::user_bond) which bond bond_idx of sys->bond is: the bonds as they were last
-// inferred. An edit of the core, as md_system_bond_insert. A bond which is not the user's (one the data gives, an
-// inferred one) is not removed: false.
-bool md_system_bond_remove(md_system_t* sys, md_bond_idx_t bond_idx);
+// Removes the bond between the two atoms in the range of a bond of flags (the graph or the non-covalent bonds, an
+// elastic bond apart): the user's is gone (md_system_t::user_bond), and that the data gives or inference finds is
+// removed (md_system_t::removed_bond), whether there is one now or not. An edit of the core, as md_system_bond_insert.
+// False when it was removed already.
+bool md_system_bond_remove(md_system_t* sys, md_atom_idx_t atom_idx_a, md_atom_idx_t atom_idx_b, md_bond_flags_t flags);
 
 // Flags of ring ring_idx of sys->ring, NONE when they have not been inferred
 static inline md_ring_flags_t md_system_ring_flags(const md_system_t* sys, size_t ring_idx) {

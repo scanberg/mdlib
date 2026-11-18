@@ -116,6 +116,26 @@ void md_system_infer_type_colors(md_system_t* sys) {
 }
 
 // The derived of a system which has none, into its arena (md_system_derived_alloc), from its reference state
+// A bond by its pair and its range (the graph, the elastic bonds, the non-covalent bonds): what a bond the user removed
+// (md_system_t::removed_bond) stands for
+static uint64_t bond_slot_key(md_atom_pair_t pair, md_bond_flags_t flags) {
+    const uint64_t range = md_bond_is_noncovalent(flags) ? 2 : md_bond_kind(flags) == MD_BOND_KIND_ELASTIC ? 1 : 0;
+    const uint32_t lo = (uint32_t)MD_MIN(pair.idx[0], pair.idx[1]);
+    const uint32_t hi = (uint32_t)MD_MAX(pair.idx[0], pair.idx[1]);
+    return (range << 62) | ((uint64_t)lo << 31) | hi;
+}
+
+static int compare_u64(const void* a, const void* b) {
+    const uint64_t x = *(const uint64_t*)a, y = *(const uint64_t*)b;
+    return (x > y) - (x < y);
+}
+
+static bool bond_slot_removed(const uint64_t* keys, size_t num_keys, md_atom_pair_t pair, md_bond_flags_t flags) {
+    if (!num_keys) return false;
+    const uint64_t key = bond_slot_key(pair, flags);
+    return bsearch(&key, keys, num_keys, sizeof(uint64_t), compare_u64) != NULL;
+}
+
 static bool infer_layer(md_system_t* sys, const md_executor_t* executor) {
     md_tick_t prof_t = mdi_infer_profile ? md_tick_now() : 0;
     const md_system_state_t* state = &sys->reference;
@@ -152,38 +172,58 @@ static bool infer_layer(md_system_t* sys, const md_executor_t* executor) {
         }
         const md_bond_data_t* data = &sys->given_bond;
         const md_bond_data_t* user = &sys->user_bond;
-        const size_t num_given = data->count + data->noncovalent_count + user->count + user->noncovalent_count;
+        const md_bond_data_t* removed = &sys->removed_bond;
+        const size_t num_data = data->count + data->noncovalent_count;
+        const size_t num_user = user->count + user->noncovalent_count;
+        const size_t num_removed = removed->count + removed->noncovalent_count;
         md_bond_data_t bonds = {0};
-        if (num_given == 0 && num_complete == 0) {
+        if (num_data + num_user + num_removed == 0 && num_complete == 0) {
             md_bond_infer(&bonds, sys, state, alloc, executor);
         } else {
             md_temp_scope_t temp = md_temp_begin_avoid(alloc);
             md_allocator_i* temp_alloc = md_temp_allocator(temp);
-            // The data's and the user's, as one: the bonds of the graph of each, then the non-covalent bonds of each
+
+            // What the user removed, by pair and range, to look up
+            uint64_t* removed_keys = num_removed ? md_temp_alloc_array(temp, uint64_t, num_removed) : NULL;
+            for (size_t i = 0; i < num_removed; ++i) removed_keys[i] = bond_slot_key(removed->pairs[i], removed->flags[i]);
+            if (num_removed) qsort(removed_keys, num_removed, sizeof(uint64_t), compare_u64);
+
+            // The data's, but for what the user removed, and the user's, as one: the bonds of the graph of each, then
+            // the non-covalent bonds of each
             md_bond_data_t given = *data;
-            if (user->count + user->noncovalent_count) {
-                given = (md_bond_data_t){
-                    .count = data->count + user->count,
-                    .noncovalent_count = data->noncovalent_count + user->noncovalent_count,
-                };
-                md_array_resize(given.pairs, num_given, temp_alloc);
-                md_array_resize(given.flags, num_given, temp_alloc);
+            if (num_user || num_removed) {
+                given = (md_bond_data_t){0};
+                md_array_ensure(given.pairs, num_data + num_user, temp_alloc);
+                md_array_ensure(given.flags, num_data + num_user, temp_alloc);
                 const md_bond_data_t* parts[2] = { data, user };
-                size_t at = 0;
                 for (int range = 0; range < 2; ++range) {
                     for (int k = 0; k < 2; ++k) {
                         const size_t beg = range ? parts[k]->count : 0;
-                        const size_t n = range ? parts[k]->noncovalent_count : parts[k]->count;
-                        if (n) {
-                            md_memcpy(given.pairs + at, parts[k]->pairs + beg, n * sizeof(md_atom_pair_t));
-                            md_memcpy(given.flags + at, parts[k]->flags + beg, n * sizeof(md_bond_flags_t));
+                        const size_t end = range ? parts[k]->count + parts[k]->noncovalent_count : parts[k]->count;
+                        for (size_t i = beg; i < end; ++i) {
+                            if (k == 0 && bond_slot_removed(removed_keys, num_removed, parts[k]->pairs[i], parts[k]->flags[i])) continue;
+                            md_array_push_no_grow(given.pairs, parts[k]->pairs[i]);
+                            md_array_push_no_grow(given.flags, parts[k]->flags[i]);
                         }
-                        at += n;
                     }
+                    if (range == 0) given.count = md_array_size(given.pairs);
                 }
+                given.noncovalent_count = md_array_size(given.pairs) - given.count;
             }
+
             md_bond_data_t inferred = {0};
             if (num_complete < N) md_bond_infer(&inferred, sys, state, temp_alloc, executor);
+            if (num_removed && inferred.count) {
+                size_t w = 0;
+                for (size_t i = 0; i < inferred.count; ++i) {
+                    if (bond_slot_removed(removed_keys, num_removed, inferred.pairs[i], inferred.flags[i])) continue;
+                    inferred.pairs[w] = inferred.pairs[i];
+                    inferred.flags[w] = inferred.flags[i];
+                    w += 1;
+                }
+                // Of the bonds merged, but their pairs and flags: the connectivity, now of none, goes
+                inferred = (md_bond_data_t){ .count = w, .pairs = inferred.pairs, .flags = inferred.flags };
+            }
             md_bond_merge(&bonds, &given, &inferred, num_complete ? sys->atom.bonds_complete : NULL, N, alloc);
             md_temp_end(temp);
         }

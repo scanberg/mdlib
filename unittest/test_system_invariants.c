@@ -444,7 +444,7 @@ static void check_derived_arena(int* utest_result, sys_load_fn load, md_str_t pa
     EXPECT_EQ(live, t.live);
 
     // A bond added by hand between the first and the last atom, and removed: the molecules, rings and fragments with it.
-    // The bond is of the core (given_bond), which may grow by a page; the derived is inferred anew.
+    // The bond is of the core (user_bond), which may grow by a page; the derived is inferred anew.
     if (sys.atom.count > 1) {
         const md_atom_idx_t a = 0, b = (md_atom_idx_t)(sys.atom.count - 1);
         if (md_system_bond_find(&sys, a, b) == -1) {
@@ -452,7 +452,7 @@ static void check_derived_arena(int* utest_result, sys_load_fn load, md_str_t pa
             md_system_infer(&sys, &state, NULL);
             expect_derived_owned(utest_result, what, &sys, &t);
             EXPECT_NE(-1, md_system_bond_find(&sys, a, b));
-            EXPECT_TRUE(md_system_bond_remove(&sys, md_system_bond_find(&sys, a, b)));
+            EXPECT_TRUE(md_system_bond_remove(&sys, a, b, md_system_bond_flags(&sys, md_system_bond_find(&sys, a, b))));
             md_system_infer(&sys, &state, NULL);
             expect_derived_owned(utest_result, what, &sys, &t);
             EXPECT_EQ(-1, md_system_bond_find(&sys, a, b));
