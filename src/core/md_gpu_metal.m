@@ -17,10 +17,13 @@ Structural differences from Vulkan:
      ordering, so each new command buffer explicitly waits on the stream's own
      previous signal value. See md_mtl_stream_ensure_cmd.
 
-  2. EXPLICIT ordering and md_gpu_barrier are accepted and do nothing on this
-     (Metal 3) path: serial encoders already order everything, so explicit code
-     is correct here, merely not faster. A Metal 4 path with real stage barriers
-     is a separate piece of work.
+  2. EXPLICIT ordering is real for launches: inside an EXPLICIT region they go
+     into a concurrent compute encoder (MTLDispatchTypeConcurrent), so
+     independent kernels overlap, and md_gpu_barrier becomes
+     memoryBarrierWithScope: inside it. Everything else -- copies, fills, render
+     passes -- is still ordered at encoder boundaries by the fence, so explicit
+     code is correct here, at worst more ordered than it asked for. A Metal 4
+     path with real stage barriers is a separate piece of work.
 
      A render pass is one render command encoder, fenced like the others
      (updateFence:afterStages: / waitForFence:beforeStages:), so it too is
@@ -332,6 +335,9 @@ typedef struct md_gpu_stream {
     __unsafe_unretained id<MTLComputeCommandEncoder> compute_enc;
     __unsafe_unretained id<MTLBlitCommandEncoder>    blit_enc;
     __unsafe_unretained id<MTLRenderCommandEncoder>  render_enc;    /* the open pass, if any */
+    bool                                             compute_concurrent;   /* compute_enc dispatches concurrently (EXPLICIT) */
+    bool                                             force_barrier;        /* a memory barrier before the next dispatch
+                                                                              into a concurrent encoder (memory reuse) */
     /* Orders work across an encoder boundary. See md_mtl_close_encoder. */
     __unsafe_unretained id<MTLFence>                 fence;
     bool                                             fence_valid;
@@ -340,7 +346,7 @@ typedef struct md_gpu_stream {
     uint64_t          next_value;
     uint64_t          submitted_value;
     bool              has_work;
-    md_gpu_ordering_t ordering;       /* recorded; see note 2 at the top */
+    md_gpu_ordering_t ordering;       /* see note 2 at the top */
 
     md_mtl_vec_t      waits;          /* md_mtl_wait_t, encoded at the next command buffer */
 
@@ -912,21 +918,34 @@ static bool md_mtl_not_in_pass(md_gpu_stream_t s, const char* what) {
 static id<MTLComputeCommandEncoder> md_mtl_compute_encoder(md_gpu_stream_t s) {
     if (!md_mtl_not_in_pass(s, "operation")) return nil;
     if (!md_mtl_stream_ensure_cmd(s)) return nil;
-    if (s->compute_enc) return s->compute_enc;
+    const bool concurrent = s->ordering == MD_GPU_ORDER_EXPLICIT;
+    if (s->compute_enc && s->compute_concurrent == concurrent) {
+        /* Memory freed and reused within this stream: the old users may still
+           be running beside the new ones in a concurrent encoder. */
+        if (s->force_barrier && concurrent) [s->compute_enc memoryBarrierWithScope:MTLBarrierScopeBuffers | MTLBarrierScopeTextures];
+        s->force_barrier = false;
+        return s->compute_enc;
+    }
+    /* A new encoder, after the fence: ordered after everything before it. That
+       is also what orders both edges of an EXPLICIT region. */
     md_mtl_close_encoder(s, true);
+    s->force_barrier = false;
 
-    /* MTLDispatchTypeSerial -- the default, and deliberately so: it is exactly
-       md_gpu's IMPLICIT ordering, and Metal gets it right by construction.
-       memoryBarrierWithScope: is only defined on concurrent encoders; calling
-       it on a serial one corrupts execution order, which is how this backend
-       once landed 6 of 40 dependent dispatches. */
+    /* IMPLICIT: MTLDispatchTypeSerial -- the default, and exactly md_gpu's
+       program order, which Metal gets right by construction. EXPLICIT:
+       concurrent, ordered only by md_gpu_barrier. memoryBarrierWithScope: is
+       only defined on concurrent encoders; calling it on a serial one corrupts
+       execution order, which is how this backend once landed 6 of 40
+       dependent dispatches -- so md_gpu_barrier checks which this is. */
     @autoreleasepool {
-        id<MTLComputeCommandEncoder> enc = [s->cmd computeCommandEncoder];
+        id<MTLComputeCommandEncoder> enc = concurrent ? [s->cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent]
+                                                      : [s->cmd computeCommandEncoder];
         if (!enc) { md_mtl_fail("computeCommandEncoder failed"); return nil; }
         MD_MTL_RETAIN(enc);
         if (s->fence_valid) [enc waitForFence:s->fence];
-        s->compute_enc = enc;
-        s->res_gen     = 0;
+        s->compute_enc        = enc;
+        s->compute_concurrent = concurrent;
+        s->res_gen            = 0;
     }
     return s->compute_enc;
 }
@@ -978,11 +997,18 @@ md_gpu_ordering_t md_gpu_stream_ordering(md_gpu_stream_t s) {
     return s ? s->ordering : MD_GPU_ORDER_IMPLICIT;
 }
 
-/* Metal 3: serial encoders and the fence already order everything, so a stage
-   barrier has nothing to add. Code written for EXPLICIT stays correct here. */
+/* Inside a concurrent compute encoder, a memory barrier: launches after it see
+   what launches before it wrote. Anywhere else there is nothing to add -- a
+   serial encoder orders its dispatches, and the fence orders every encoder
+   boundary, which every copy, fill and pass sits on. So the stages need not be
+   told apart: a barrier whose producers or consumers are not launches is
+   honoured by the encoder change that the next copy or pass makes anyway. */
 void md_gpu_barrier(md_gpu_stream_t s, md_gpu_stage_flags_t producers, md_gpu_stage_flags_t consumers) {
     (void)producers; (void)consumers;
-    if (s && md_mtl_check_no_upload(s, "md_gpu_barrier")) md_mtl_not_in_pass(s, "md_gpu_barrier");
+    if (!s || !md_mtl_check_no_upload(s, "md_gpu_barrier") || !md_mtl_not_in_pass(s, "md_gpu_barrier")) return;
+    if (s->compute_enc && s->compute_concurrent) {
+        [s->compute_enc memoryBarrierWithScope:MTLBarrierScopeBuffers | MTLBarrierScopeTextures];
+    }
 }
 
 /* =========================================================================
@@ -1255,8 +1281,9 @@ void md_gpu_stream_destroy(md_gpu_stream_t s) {
    kind over large MTLBuffer chunks, stream-ordered frees parked on
    pending_frees until their stream passes them, DEVICE memory reusable at
    once by the freeing stream, and empty chunks kept up to heap_cache_limit.
-   Chunks are made resident like any other buffer. Metal 3 orders everything
-   within a stream, so same-stream reuse needs no extra barrier here. */
+   Chunks are made resident like any other buffer. Same-stream reuse needs a
+   barrier only inside a concurrent (EXPLICIT) compute encoder, where the old
+   users may run beside the new ones: force_barrier, as in md_gpu_vulkan.c. */
 
 static uint64_t md_mtl_heap_chunk_size(const md_mtl_heap_t* h, uint64_t need) {
     uint64_t size = MD_MTL_HEAP_CHUNK_MIN;
@@ -1335,6 +1362,7 @@ static md_tlsf_node_t* md_mtl_heap_alloc_locked(md_gpu_device_t dev, md_gpu_stre
             if (pf->node->size < need || pf->node->size > need + need / 4 + MD_MTL_HEAP_ALIGN) continue;
             node = pf->node;
             md_mtl_vec_remove(&dev->pending_frees, i);
+            s->force_barrier = true;
             break;
         }
     }

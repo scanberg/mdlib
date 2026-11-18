@@ -1211,6 +1211,77 @@ UTEST(gpu, explicit_ordering_with_stage_barriers) {
     gpu_close(&f);
 }
 
+/* A chain of dependent launches in EXPLICIT mode, a barrier between each: on
+   Metal they share one concurrent encoder, ordered only by those barriers. */
+UTEST(gpu, explicit_chain_with_a_barrier_between_each) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
+
+    enum { N = 1 << 14, STEPS = 40 };
+    md_gpu_addr_t a = gpu_alloc(&f, f.compute, N * sizeof(uint32_t));
+    md_gpu_addr_t b = gpu_alloc(&f, f.compute, N * sizeof(uint32_t));
+    ASSERT_TRUE(a && b);
+
+    md_gpu_stream_set_ordering(f.compute, MD_GPU_ORDER_EXPLICIT);
+    fill_args_t fa = {0};
+    fa.n = N; fa.base = 0; fa.dst = a;
+    ASSERT_TRUE(MD_GPU_LAUNCH(f.compute, f.k_fill, grid1(f.k_fill, N), fa));
+    md_gpu_addr_t src = a, dst = b;
+    for (int step = 0; step < STEPS; ++step) {
+        md_gpu_barrier(f.compute, MD_GPU_STAGE_COMPUTE, MD_GPU_STAGE_COMPUTE);
+        scale_args_t sa = {0};
+        sa.n = N; sa.mul = 1; sa.add = 1; sa.src = src; sa.dst = dst;
+        ASSERT_TRUE(MD_GPU_LAUNCH(f.compute, f.k_scale, grid1(f.k_scale, N), sa));
+        md_gpu_addr_t tmp = src; src = dst; dst = tmp;
+    }
+    md_gpu_stream_set_ordering(f.compute, MD_GPU_ORDER_IMPLICIT);
+
+    uint32_t* host = (uint32_t*)malloc(N * sizeof(uint32_t));
+    ASSERT_TRUE(host != NULL);
+    ASSERT_TRUE(gpu_read(&f, f.compute, host, src, N * sizeof(uint32_t)));
+    for (int i = 0; i < N; ++i) ASSERT_EQ((uint32_t)(i + STEPS), host[i]);
+
+    free(host);
+    md_gpu_free(f.compute, a);
+    md_gpu_free(f.compute, b);
+    gpu_close(&f);
+}
+
+/* Memory freed inside an EXPLICIT region and reused at once by the same stream
+   (a pending free taken over by the next malloc) must not let the old writer
+   land after the new one, though the caller placed no barrier: md_gpu does. */
+UTEST(gpu, explicit_region_reuses_freed_memory_safely) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
+
+    enum { N = 1 << 16 };
+    const size_t bytes = N * sizeof(uint32_t);
+    uint32_t* host = (uint32_t*)malloc(bytes);
+    ASSERT_TRUE(host != NULL);
+
+    md_gpu_stream_set_ordering(f.compute, MD_GPU_ORDER_EXPLICIT);
+    md_gpu_addr_t a = gpu_alloc(&f, f.compute, bytes);
+    ASSERT_TRUE(a != 0);
+    /* A slow writer of `a`, then a free that the GPU has not reached. */
+    spin_args_t sp = {0};
+    sp.n = N; sp.iters = 2000; sp.dst = a;
+    ASSERT_TRUE(MD_GPU_LAUNCH(f.compute, f.k_spin, grid1(f.k_spin, N), sp));
+    md_gpu_free(f.compute, a);
+    md_gpu_addr_t b = gpu_alloc(&f, f.compute, bytes);
+    ASSERT_EQ(a, b);              /* the test is only as good as this reuse */
+    fill_args_t fa = {0};
+    fa.n = N; fa.base = 77; fa.dst = b;
+    ASSERT_TRUE(MD_GPU_LAUNCH(f.compute, f.k_fill, grid1(f.k_fill, N), fa));
+    md_gpu_stream_set_ordering(f.compute, MD_GPU_ORDER_IMPLICIT);
+
+    ASSERT_TRUE(gpu_read(&f, f.compute, host, b, bytes));
+    for (int i = 0; i < N; ++i) ASSERT_EQ((uint32_t)(77 + i), host[i]);
+
+    free(host);
+    md_gpu_free(f.compute, b);
+    gpu_close(&f);
+}
+
 /* Switching back to IMPLICIT orders the next operation after everything in the
    explicit region, with no barrier from the caller. */
 UTEST(gpu, explicit_region_end_is_ordered) {

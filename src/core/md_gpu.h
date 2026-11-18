@@ -470,10 +470,12 @@ bool md_gpu_sync_gpu_seconds(md_gpu_sync_t sync, double* seconds);
        md_gpu_launch(s, k_consume_both, ...);
        md_gpu_stream_set_ordering(s, MD_GPU_ORDER_IMPLICIT);
 
-   Vulkan: one global VkMemoryBarrier2 with the given stage masks. Metal 3:
-   serial encoders already order everything, so md_gpu_barrier is a no-op and
-   EXPLICIT is merely slower than possible, never incorrect. Code written for
-   EXPLICIT is correct on every backend. */
+   Vulkan: one global VkMemoryBarrier2 with the given stage masks. Metal:
+   launches in an EXPLICIT region go into a concurrent compute encoder, and
+   md_gpu_barrier is a memory barrier inside it; copies, fills and passes
+   stay ordered at encoder boundaries, so there EXPLICIT is merely more
+   ordered than asked for. Code written for EXPLICIT is correct on every
+   backend. */
 
 typedef enum md_gpu_ordering_t {
     MD_GPU_ORDER_IMPLICIT,
