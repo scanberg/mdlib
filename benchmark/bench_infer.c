@@ -43,7 +43,7 @@
 #include <string.h>
 
 // The benchmark's own revision: bumped with every change of it, so that a result names the build it came from
-#define MD_INFER_BENCH_REV "R5"
+#define MD_INFER_BENCH_REV "R6"
 
 #define MAX_COUNTS 32
 
@@ -115,6 +115,17 @@ static uint64_t bonds_hash(uint64_t h, const md_bond_data_t* b) {
     if (b->count) {
         h = fnv(h, b->pairs, b->count * sizeof(md_atom_pair_t));
         h = fnv(h, b->flags, b->count * sizeof(md_bond_flags_t));
+    }
+    return h;
+}
+
+// What md_bond_infer gives: the same bytes as bonds_hash of the bonds of one range, so the hash is as it was
+static uint64_t bond_list_hash(uint64_t h, const md_bond_list_t* b) {
+    const size_t count = md_bond_list_count(b);
+    h = fnv(h, &count, sizeof(count));
+    if (count) {
+        h = fnv(h, b->pairs, count * sizeof(md_atom_pair_t));
+        h = fnv(h, b->flags, count * sizeof(md_bond_flags_t));
     }
     return h;
 }
@@ -270,7 +281,7 @@ int main(int argc, char** argv) {
                 md_allocator_i* alloc = shared ? shared : md_vm_arena_create(MD_GIGABYTES(64));
                 if (shared) md_vm_arena_reset(shared);
                 md_system_t sys = { .alloc = alloc };
-                md_bond_data_t bonds = {0};
+                md_bond_list_t bonds = {0};
                 if (!bonds_only) ok = md_system_copy(&sys, &base);
                 mdi_infer_profile_t prof = {0};
                 if (profile) mdi_infer_profile = &prof;
@@ -289,8 +300,8 @@ int main(int argc, char** argv) {
                     }
                 }
                 if (ok && r == -1) {
-                    hash = bonds_only ? bonds_hash(1469598103934665603ull, &bonds) : inferred_hash(&sys);
-                    num_bonds = bonds_only ? bonds.count : sys.bond.count;
+                    hash = bonds_only ? bond_list_hash(1469598103934665603ull, &bonds) : inferred_hash(&sys);
+                    num_bonds = bonds_only ? md_bond_list_count(&bonds) : sys.bond.count;
                 }
                 if (!shared) md_vm_arena_destroy(alloc);
             }
