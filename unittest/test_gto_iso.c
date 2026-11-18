@@ -3667,63 +3667,6 @@ typedef struct iso_bench_field_t {
     double      iso;
 } iso_bench_field_t;
 
-// A/B of the isosurface GEMMs in one process (GTO_ISO_BENCH_AB, GTO_ISO_LARGE_AB): MD_GTO_ISO_GEMM set and the kernels
-// made again, on the GEMM core (own false) or as their own loops, before the clock of the next extraction starts
-static bool iso_ab_select(md_gpu_device_t dev, bool own) {
-    md_os_env_set("MD_GTO_ISO_GEMM", own ? "own" : "core");
-    md_gto_iso_gpu_shutdown();
-    md_gto_iso_gpu_initialize(dev);
-    return isog_kernels_ready();
-}
-
-// The isosurface GEMM kernels of both variants as the driver reports them (registers, shared memory; "" where it
-// reports nothing): the occupancy behind a few percent. Leaves the own loops' kernels made.
-static void iso_ab_kernels(md_gpu_device_t dev) {
-    char st[2][ISOG_K_DEVAL - ISOG_K_GCORN_F16 + 1][96];
-    const char* name[2][ISOG_K_DEVAL - ISOG_K_GCORN_F16 + 1];
-    for (int own = 0; own < 2; ++own) {
-        if (!iso_ab_select(dev, own != 0)) return;
-        for (int k = ISOG_K_GCORN_F16; k <= ISOG_K_DEVAL; ++k) {
-            md_gpu_kernel_info_t ki;
-            const int i = k - ISOG_K_GCORN_F16;
-            st[own][i][0] = 0;
-            name[own][i] = isog_kname[k] ? isog_kname[k] : "?";
-            if (!isog_k[k] || !md_gpu_kernel_info(isog_k[k], &ki)) continue;
-            const char* r = strstr(ki.stats, "Register Count ");
-            const char* m = strstr(ki.stats, "Shared Memory Size ");
-            snprintf(st[own][i], sizeof(st[own][i]), "%d regs, %d B", r ? atoi(r + 15) : -1, m ? atoi(m + 19) : -1);
-            if (!r && !m) snprintf(st[own][i], sizeof(st[own][i]), "%.40s", ki.stats);
-        }
-    }
-    printf("  kernels (the driver's report): core | own\n");
-    for (int i = 0; i <= ISOG_K_DEVAL - ISOG_K_GCORN_F16; ++i)
-        printf("    %-34s %-22s | %-34s %s\n", name[0][i], st[0][i], name[1][i], st[1][i]);
-}
-
-// MD_GTO_ISO_GEMM as it was before the A/B (iso_ab_env_save), set again after it
-typedef struct iso_ab_env_t { bool had; char value[64]; } iso_ab_env_t;
-static iso_ab_env_t iso_ab_env_save(void) {
-    iso_ab_env_t e = {0};
-    const char* v = md_os_env_get("MD_GTO_ISO_GEMM");
-    e.had = v != NULL;
-    if (v) snprintf(e.value, sizeof(e.value), "%s", v);
-    return e;
-}
-static void iso_ab_env_restore(const iso_ab_env_t* e) { md_os_env_set("MD_GTO_ISO_GEMM", e->had ? e->value : NULL); }
-
-// Over n rounds (n <= 64) of a (the core) and b (own loops): their medians, and the median of the rounds' ratios a / b
-// with their range (a round's two runs neighbours in time)
-typedef struct iso_ab_stat_t { double a, b, q, qmin, qmax; } iso_ab_stat_t;
-static iso_ab_stat_t iso_ab_stat(const double* a, const double* b, int n) {
-    double x[64], y[64], q[64];
-    if (n > 64) n = 64;
-    for (int r = 0; r < n; ++r) { x[r] = a[r]; y[r] = b[r]; q[r] = b[r] > 0.0 ? a[r] / b[r] : 0.0; }
-    iso_ab_stat_t st = {iso_median(x, n), iso_median(y, n), iso_median(q, n), 0.0, 0.0};
-    st.qmin = q[0];          // q sorted by iso_median
-    st.qmax = q[n - 1];
-    return st;
-}
-
 static double iso_bench_dense(iso_gpu_t* g, const iso_dens_src_t* s, const md_gto_iso_field_t* const* fields, const double* iso, int nfields,
                               const double* const* orb_rows, const double* D, double h, int reps, int out_dim[3]) {
     double lo[3] = {DBL_MAX, DBL_MAX, DBL_MAX}, hi[3] = {-DBL_MAX, -DBL_MAX, -DBL_MAX};
@@ -3810,11 +3753,6 @@ UTEST(gto_iso_gpu_lib, benchmark) {
     const bool with_profile = !(getenv("GTO_ISO_BENCH_PROFILE") && getenv("GTO_ISO_BENCH_PROFILE")[0] == '0');
     // only the cases whose name contains this (e.g. "scf", "mol ")
     const char* only = getenv("GTO_ISO_BENCH_ONLY");
-    // GTO_ISO_BENCH_AB=1: per case, the isosurface GEMMs on the GEMM core against their own loops (MD_GTO_ISO_GEMM),
-    // reps rounds of both (and a warm-up), the first alternating, the kernels made again before each extraction: the
-    // corners and the projection (the vertex evaluations) stages, in place of the table's columns
-    const bool ab = getenv("GTO_ISO_BENCH_AB") && getenv("GTO_ISO_BENCH_AB")[0] == '1';
-    const iso_ab_env_t ab_env = iso_ab_env_save();
     static md_gto_iso_gpu_profile_t prof;
     static char prof_text[32768];
 
@@ -3833,21 +3771,11 @@ UTEST(gto_iso_gpu_lib, benchmark) {
         {"tq.scf.results.h5",   "tq 16 MOs",  -16,       0.05},
     };
     printf("\n  device: %s, %s | display meshes (project 8, relax 3) | median of %d\n", info.name, info.driver, reps);
-    // the isosurface GEMMs (tiled, wide, D form): on the GEMM core, or their own loops (MD_GTO_ISO_GEMM=own)
-    printf("  isosurface GEMMs: %s | " MD_GTO_GPU_GEMM_CORE_REVISION "\n",
-           ab ? "both, the GEMM core against their own loops (GTO_ISO_BENCH_AB=1)"
-              : (getenv("MD_GTO_ISO_GEMM") && strcmp(getenv("MD_GTO_ISO_GEMM"), "own") == 0) ? "their own loops (MD_GTO_ISO_GEMM=own)" : "on the GEMM core");
-    if (ab) {
-        iso_ab_kernels(g.dev);
-        printf("  A/B (GTO_ISO_BENCH_AB=1): stages in ms, medians over the rounds; core / own: the median of the rounds' ratios (range)\n");
-        printf("  %-12s %5s | %4s %7s | %8s %8s %18s | %8s %8s %18s\n", "field", "h", "fn", "verts", "corners", "own", "core / own",
-               "project", "own", "core / own");
-    } else {
-        printf("  %-12s %5s | %4s %6s %6s %7s | %8s %7s %7s %7s %7s %7s %7s | %9s %8s %13s", "field", "h", "fn", "bricks", "slots", "verts",
-            "total ms", "octree", "corners", "nets", "project", "relax", "output", "dense ms", "dense/tot", "dense grid");
-        if (with_cpu) printf(" | %8s", "CPU s");
-        printf("\n");
-    }
+    printf("  isosurface GEMMs: " MD_GTO_GPU_GEMM_CORE_REVISION "\n");
+    printf("  %-12s %5s | %4s %6s %6s %7s | %8s %7s %7s %7s %7s %7s %7s | %9s %8s %13s", "field", "h", "fn", "bricks", "slots", "verts",
+        "total ms", "octree", "corners", "nets", "project", "relax", "output", "dense ms", "dense/tot", "dense grid");
+    if (with_cpu) printf(" | %8s", "CPU s");
+    printf("\n");
 
     for (int ci = 0; ci < (int)(sizeof(cases) / sizeof(cases[0])); ++ci) {
         const iso_bench_field_t* bc = &cases[ci];
@@ -3898,32 +3826,6 @@ UTEST(gto_iso_gpu_lib, benchmark) {
             md_gto_iso_gpu_mesh_free(g.s, &gm);
             double tot[64], st[MD_GTO_ISO_GPU_STAGE_COUNT][64];
             const int nr = reps < 64 ? (reps > 0 ? reps : 1) : 64;
-            if (ab) {
-                double cs[2][64], ps[2][64];
-                uint32_t nverts[2] = {0, 0};
-                bool ab_ok = true;
-                gd.time_stages = true;
-                for (int r = -1; r < nr && ab_ok; ++r) {   // r = -1: the warm-up
-                    for (int i = 0; i < 2 && ab_ok; ++i) {
-                        const int own = (r & 1) ? 1 - i : i;
-                        ab_ok = iso_ab_select(g.dev, own != 0) && md_gto_iso_gpu_extract(g.s, set, &gd, &gm);
-                        if (!ab_ok) break;
-                        if (r >= 0) {
-                            cs[own][r] = gm.seconds[MD_GTO_ISO_GPU_STAGE_CORNERS] * 1e3;
-                            ps[own][r] = gm.seconds[MD_GTO_ISO_GPU_STAGE_PROJECT] * 1e3;
-                        }
-                        nverts[own] = gm.vertex_count;
-                        md_gto_iso_gpu_mesh_free(g.s, &gm);
-                    }
-                }
-                EXPECT_TRUE(ab_ok);
-                if (!ab_ok) { printf("  %-12s %5.3f (A/B failed)\n", bc->name, h); continue; }
-                const iso_ab_stat_t c = iso_ab_stat(cs[0], cs[1], nr), pj = iso_ab_stat(ps[0], ps[1], nr);
-                printf("  %-12s %5.3f | %4u %7u | %8.2f %8.2f %6.3f (%.2f..%.2f) | %8.2f %8.2f %6.3f (%.2f..%.2f)%s\n", bc->name, h, nfn,
-                       nverts[0], c.a, c.b, c.q, c.qmin, c.qmax, pj.a, pj.b, pj.q, pj.qmin, pj.qmax,
-                       nverts[0] == nverts[1] ? "" : " (vertex counts differ)");
-                continue;
-            }
             for (int r = 0; r < nr; ++r) {
                 md_gto_iso_gpu_extract(g.s, set, &gd, &gm);
                 tot[r] = gm.seconds_total * 1e3;
@@ -3970,7 +3872,6 @@ UTEST(gto_iso_gpu_lib, benchmark) {
         iso_dens_prod_free(&p);
         iso_dens_src_free(&s);
     }
-    if (ab) iso_ab_env_restore(&ab_env);
     md_gto_iso_gpu_shutdown();
     md_gto_gpu_shutdown();
     iso_gpu_free(&g);
@@ -4656,9 +4557,9 @@ UTEST(gto_iso_gpu_lib, flood_experiment) {
 // A large system's total density, as viamd extracts its mesh: the density matrix from the published virtual
 // attribute, the field from it, the GPU set and the extraction, each timed. GTO_ISO_LARGE=<file in test_data/vlx>
 // (a protein: 1152 atoms, 9072 AOs); GTO_ISO_LARGE_H (default 0.4), GTO_ISO_LARGE_ISO (default 0.0025);
-// GTO_ISO_LARGE_PROFILE=1 the extraction's steps; GTO_ISO_LARGE_STAGES=1 two more without the profile, one by stage;
-// GTO_ISO_LARGE_AB=n then n rounds of the isosurface GEMMs on the GEMM core against their own loops (MD_GTO_ISO_GEMM),
-// alternating in this process; GTO_ISO_LARGE_ORBITALS=n the density of n of the orbitals only.
+// GTO_ISO_LARGE_PROFILE=1 the extraction's steps (the profile's host statistics take seconds on such a system: its
+// wall time is not the extraction's); GTO_ISO_LARGE_STAGES=1 the extraction by stage, and two more without the profile;
+// GTO_ISO_LARGE_ORBITALS=n the density of n of the orbitals only (not the D form: the wide GEMM on a large system).
 #include <md_qm.h>
 // md_gto_iso_gpu_evaluate: the fields of a set at arbitrary points against md_gto_iso_field_evaluate in double,
 // through every vertex evaluator (orbitals, the tiled and the wide GEMM, the D form), from the host and on the
@@ -5128,8 +5029,7 @@ UTEST(gto_iso_gpu_lib, large_density) {
     ASSERT_TRUE(qm_test_basis(&basis, &t));
     const size_t nao = md_gto_basis_num_ao(&basis);
     printf("  %s: %zu atoms, %zu AOs; loaded in %.2f s\n", file, num_atoms, nao, md_tick_to_seconds(md_tick_now() - t0));
-    printf("  isosurface GEMMs: %s | " MD_GTO_GPU_GEMM_CORE_REVISION "\n",
-           (getenv("MD_GTO_ISO_GEMM") && strcmp(getenv("MD_GTO_ISO_GEMM"), "own") == 0) ? "their own loops (MD_GTO_ISO_GEMM=own)" : "on the GEMM core");
+    printf("  isosurface GEMMs: " MD_GTO_GPU_GEMM_CORE_REVISION "\n");
 
     // what viamd does: the field from the occupied orbitals (md_qm_density_orbitals), or with
     // GTO_ISO_LARGE_MATRIX=1 from the matrix (factorized again)
@@ -5195,10 +5095,11 @@ UTEST(gto_iso_gpu_lib, large_density) {
         const bool ok = md_gto_iso_gpu_extract(g.s, set, &gd0, &m);
         // the wall time from the call, and the job's own from its start (after the host's set-up: the kernels, the
         // set's cutoff, the root box)
-        printf("  extract (h %.2f, iso %g): %.2f s (the job %.2f s), %s: %u vertices, %u triangles\n", h, iso, md_tick_to_seconds(md_tick_now() - t0),
-               ok ? m.seconds_total : 0.0, ok ? "ok" : "FAILED", ok ? m.vertex_count : 0, ok ? m.index_count / 3 : 0);
+        printf("  extract (h %.2f, iso %g): %.2f s (the job %.2f s)%s, %s: %u vertices, %u triangles\n", h, iso, md_tick_to_seconds(md_tick_now() - t0),
+               ok ? m.seconds_total : 0.0, getenv("GTO_ISO_LARGE_PROFILE") ? " PROFILED: with the profile's host statistics" : "",
+               ok ? "ok" : "FAILED", ok ? m.vertex_count : 0, ok ? m.index_count / 3 : 0);
         if (ok && stages) {
-            printf("  the first, by stage (ms):");
+            printf("  by stage (ms):");
             for (int k = 0; k < MD_GTO_ISO_GPU_STAGE_COUNT; ++k) printf(" %s %.1f", stn[k], m.seconds[k] * 1e3);
             printf("\n");
         }
@@ -5227,51 +5128,6 @@ UTEST(gto_iso_gpu_lib, large_density) {
         EXPECT_TRUE(ok);
         if (ok) md_gto_iso_gpu_mesh_free(g.s, &m);
 
-        // GTO_ISO_LARGE_AB=n: n rounds of the isosurface GEMMs on the GEMM core against their own loops, both in each
-        // round (the first alternating), in this process after the extraction above: one GPU, one clock history, no
-        // process between them. Each: the kernels made again (MD_GTO_ISO_GEMM, before the clock starts), an extraction by
-        // stage without the profile (whose host statistics take seconds on this system: the GPU idle between its steps);
-        // the corners and the projection stages (the D form, the tiled or the wide GEMM; the vertex evaluations and their
-        // Newton steps), and the job's time from its start
-        const int ab = getenv("GTO_ISO_LARGE_AB") ? atoi(getenv("GTO_ISO_LARGE_AB")) : 0;
-        if (ab > 0 && ok) {
-            enum { AB_MAX = 64 };
-            const int rounds = ab < AB_MAX ? ab : AB_MAX;
-            static double ab_ms[2][3][AB_MAX];   // [own][corners, project, job][round]
-            const iso_ab_env_t env = iso_ab_env_save();
-            iso_ab_kernels(g.dev);
-            printf("  A/B (GTO_ISO_LARGE_AB=%d, %s; ms, by stage): round (w: a warm-up, not counted), then per variant corners |"
-                   " project | the job (vertices)\n", rounds, MD_GTO_GPU_GEMM_CORE_REVISION);
-            md_gto_iso_gpu_desc_t ad = gd;
-            ad.time_stages = true;
-            bool ab_ok = true;
-            for (int rr = -1; rr < rounds && ab_ok; ++rr) {
-                const int r = rr < 0 ? 0 : rr;   // the warm-up's overwritten by round 0
-                if (rr < 0) printf("     w"); else printf("    %2d", rr);
-                for (int i = 0; i < 2 && ab_ok; ++i) {
-                    const int own = (rr & 1) ? 1 - i : i;
-                    md_gto_iso_gpu_mesh_t mm;
-                    ab_ok = iso_ab_select(g.dev, own != 0) && md_gto_iso_gpu_extract(g.s, set, &ad, &mm);
-                    if (!ab_ok) break;
-                    ab_ms[own][0][r] = mm.seconds[MD_GTO_ISO_GPU_STAGE_CORNERS] * 1e3;
-                    ab_ms[own][1][r] = mm.seconds[MD_GTO_ISO_GPU_STAGE_PROJECT] * 1e3;
-                    ab_ms[own][2][r] = mm.seconds_total * 1e3;
-                    printf("   %s %8.2f | %7.2f | %8.2f (%u)", own ? "own " : "core", ab_ms[own][0][r], ab_ms[own][1][r], ab_ms[own][2][r], mm.vertex_count);
-                    md_gto_iso_gpu_mesh_free(g.s, &mm);
-                }
-                printf("\n");
-            }
-            EXPECT_TRUE(ab_ok);
-            if (ab_ok) {
-                static const char* what[3] = {"corners", "project", "the job"};
-                for (int w = 0; w < 3; ++w) {
-                    const iso_ab_stat_t st = iso_ab_stat(ab_ms[0][w], ab_ms[1][w], rounds);
-                    printf("  A/B %-12s median core %8.2f, own %8.2f; core / own per round: median %.3f (%.3f .. %.3f)\n", what[w],
-                           st.a, st.b, st.q, st.qmin, st.qmax);
-                }
-            }
-            iso_ab_env_restore(&env);
-        }
         md_gto_iso_gpu_set_destroy(g.s, set);
     }
     md_gto_iso_field_destroy(field);
