@@ -16,7 +16,7 @@
 #include <gto_iso_gpu_shaders.inl>
 
 // BENCHMARK (temporary, branch gto-iso-gpu-opt): which round of changes this is, in every profile report
-#define ISOG_REVISION "r38 (a set's own evaluation cutoff: md_gto_iso_gpu_set_cutoff; r37: the vertex evaluators at arbitrary points, md_gto_iso_gpu_evaluate)"
+#define ISOG_REVISION "r39 (the profile's own readbacks and statistics timed: profile.skip_ms; r38: a set's own evaluation cutoff, md_gto_iso_gpu_set_cutoff)"
 
 typedef struct isog_shell_t {        // mirrors IsoShell
     md_gpu_float4 c;
@@ -1118,7 +1118,9 @@ static void isog_mark_set(uint32_t i, uint32_t items, uint32_t aux) {
 static void isog_mark_skip(md_gpu_stream_t s) {
     if (!isog_prof) return;
     md_gpu_stream_sync(s);
-    isog_prof_tick = md_tick_now();
+    const md_tick_t now = md_tick_now();
+    isog_prof->skip_ms += md_tick_to_seconds(now - isog_prof_tick) * 1e3;
+    isog_prof_tick = now;
 }
 
 // BENCHMARK: kernel i is launched in this extraction (the profile lists the driver's statistics of it)
@@ -1129,6 +1131,7 @@ static void isog_used(int i) {
 static void isog_prof_begin(md_gpu_stream_t s) {
     if (!isog_prof) return;
     isog_prof->num_steps = 0;
+    isog_prof->skip_ms = 0.0;
     isog_prof->kernels_used = 0;
     isog_prof->brick_ao_sum = 0;
     isog_prof->brick_ao_max = 0;
@@ -1201,6 +1204,7 @@ size_t md_gto_iso_gpu_profile_print(const md_gto_iso_gpu_profile_t* p, char* buf
         ISOG_PR("    %-26s %4u %9.3f %9.3f %11llu %11llu\n", name[k], cnt[k], ms[k], w > 0.0 ? w : 0.0, (unsigned long long)items[k], (unsigned long long)aux[k]);
     }
     ISOG_PR("    %-26s %4u %9.3f %9.3f   (one empty wait: %.3f ms)\n", "all", p->num_steps, total, fmax(0.0, total - p->num_steps * p->wait_ms), p->wait_ms);
+    ISOG_PR("    %-26s %24.3f   (the profile's own readbacks and statistics, in no step)\n", "profile", p->skip_ms);
     // work: the corner GEMM's multiply-adds (points x reaching AOs x function columns), the octree's
     for (int k = 0; k < nn; ++k) {
         const double w = fmax(1e-6, ms[k] - cnt[k] * p->wait_ms);
