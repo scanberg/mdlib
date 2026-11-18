@@ -4558,7 +4558,9 @@ UTEST(gto_iso_gpu_lib, flood_experiment) {
 
 // A large system's total density, as viamd extracts its mesh: the density matrix from the published virtual
 // attribute, the field from it, the GPU set and the extraction, each timed. GTO_ISO_LARGE=<file in test_data/vlx>
-// (a protein: 1152 atoms, 9072 AOs); GTO_ISO_LARGE_H (default 0.4), GTO_ISO_LARGE_ISO (default 0.0025).
+// (a protein: 1152 atoms, 9072 AOs); GTO_ISO_LARGE_H (default 0.4), GTO_ISO_LARGE_ISO (default 0.0025);
+// GTO_ISO_LARGE_PROFILE=1 the extraction's steps; GTO_ISO_LARGE_AB=n then n rounds of the isosurface GEMMs on the
+// GEMM core against their own loops (MD_GTO_ISO_GEMM), alternating in this process.
 #include <md_qm.h>
 // md_gto_iso_gpu_evaluate: the fields of a set at arbitrary points against md_gto_iso_field_evaluate in double,
 // through every vertex evaluator (orbitals, the tiled and the wide GEMM, the D form), from the host and on the
@@ -5093,6 +5095,69 @@ UTEST(gto_iso_gpu_lib, large_density) {
         printf("  device memory: %.1f MB in use, %.1f MB peak, %.1f MB temp\n", ms.bytes_in_use / 1e6, ms.bytes_peak_in_use / 1e6, ms.bytes_temp / 1e6);
         EXPECT_TRUE(ok);
         if (ok) md_gto_iso_gpu_mesh_free(g.s, &m);
+
+        // GTO_ISO_LARGE_AB=n: n rounds of the isosurface GEMMs on the GEMM core against their own loops, both in each
+        // round (the first alternating), in this process after the extraction above: one GPU, one clock history, no
+        // process between them. Each: the kernels made again (MD_GTO_ISO_GEMM, before the clock starts), an extraction;
+        // its corner steps (the profile's "corners (...)": the D form, the tiled or the wide GEMM), its vertex
+        // evaluations and its wall time
+        const int ab = getenv("GTO_ISO_LARGE_AB") ? atoi(getenv("GTO_ISO_LARGE_AB")) : 0;
+        if (ab > 0 && ok) {
+            enum { AB_MAX = 64 };
+            const int rounds = ab < AB_MAX ? ab : AB_MAX;
+            static double ab_ms[2][3][AB_MAX];   // [own][corners, vertex eval, wall][round]
+            char saved[64] = "";
+            const bool had = md_os_env_get("MD_GTO_ISO_GEMM") != NULL;
+            if (had) snprintf(saved, sizeof(saved), "%s", md_os_env_get("MD_GTO_ISO_GEMM"));
+            printf("  A/B (GTO_ISO_LARGE_AB=%d, %s; ms): round (w: a warm-up, not counted), then per variant corners | vertex eval |"
+                   " extract (vertices)\n", rounds, MD_GTO_GPU_GEMM_CORE_REVISION);
+            bool ab_ok = true;
+            for (int rr = -1; rr < rounds && ab_ok; ++rr) {
+                const int r = rr < 0 ? 0 : rr;
+                if (rr < 0) printf("     w"); else printf("    %2d", rr);
+                for (int i = 0; i < 2 && ab_ok; ++i) {
+                    const int own = (rr & 1) ? 1 - i : i;
+                    md_os_env_set("MD_GTO_ISO_GEMM", own ? "own" : "core");
+                    md_gto_iso_gpu_shutdown();
+                    md_gto_iso_gpu_initialize(g.dev);
+                    ab_ok = isog_kernels_ready();
+                    md_gto_iso_gpu_profile_set(&prof);
+                    md_gto_iso_gpu_mesh_t mm;
+                    const md_tick_t ta = md_tick_now();
+                    ab_ok = ab_ok && md_gto_iso_gpu_extract(g.s, set, &gd, &mm);
+                    const double wall = md_tick_to_seconds(md_tick_now() - ta) * 1000.0;
+                    md_gto_iso_gpu_profile_set(NULL);
+                    double tc = 0.0, tv = 0.0;
+                    for (uint32_t k = 0; k < prof.num_steps; ++k) {
+                        if (strncmp(prof.step[k].name, "corners (", 9) == 0) tc += prof.step[k].ms;
+                        else if (strcmp(prof.step[k].name, "vertex eval") == 0) tv += prof.step[k].ms;
+                    }
+                    ab_ms[own][0][r] = tc;   // the warm-up's overwritten by round 0
+                    ab_ms[own][1][r] = tv;
+                    ab_ms[own][2][r] = wall;
+                    printf("   %s %8.2f | %7.2f | %8.2f (%u)", own ? "own " : "core", tc, tv, wall, ab_ok ? mm.vertex_count : 0u);
+                    if (ab_ok) md_gto_iso_gpu_mesh_free(g.s, &mm);
+                }
+                printf("\n");
+            }
+            EXPECT_TRUE(ab_ok);
+            if (ab_ok) {
+                // medians, and the median of the rounds' ratios core / own (a round's two runs are neighbours in time)
+                static const char* what[3] = {"corners", "vertex eval", "extract"};
+                for (int w = 0; w < 3; ++w) {
+                    double a[AB_MAX], b[AB_MAX], q[AB_MAX];
+                    for (int r = 0; r < rounds; ++r) { a[r] = ab_ms[0][w][r]; b[r] = ab_ms[1][w][r]; q[r] = b[r] > 0.0 ? a[r] / b[r] : 0.0; }
+                    double* v[3] = {a, b, q};
+                    for (int s = 0; s < 3; ++s)   // insertion sorts
+                        for (int x = 1; x < rounds; ++x)
+                            for (int y = x; y > 0 && v[s][y - 1] > v[s][y]; --y) { const double t = v[s][y]; v[s][y] = v[s][y - 1]; v[s][y - 1] = t; }
+                    const int h0 = (rounds - 1) / 2, h1 = rounds / 2;
+                    printf("  A/B %-12s median core %8.2f, own %8.2f; core / own per round: median %.3f (%.3f .. %.3f)\n", what[w],
+                           0.5 * (a[h0] + a[h1]), 0.5 * (b[h0] + b[h1]), 0.5 * (q[h0] + q[h1]), q[0], q[rounds - 1]);
+                }
+            }
+            md_os_env_set("MD_GTO_ISO_GEMM", had ? saved : NULL);
+        }
         md_gto_iso_gpu_set_destroy(g.s, set);
     }
     md_gto_iso_field_destroy(field);

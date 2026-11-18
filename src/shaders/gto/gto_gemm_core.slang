@@ -53,12 +53,13 @@
 // kernel's). Past the core, Name::ld / Name::st are the kernel's (gemm_row_sums, an epilogue's staging).
 //
 // r5: the template (r4: the same loop with the tile and the threads as each file's macros, one shape per source).
+// r6: the chunks' memory a kernel's choice (GC_MEM, GC_MEM4). r7: GC_MEM4's float4 reads indexed in float4s.
 
 #ifndef GTO_GEMM_CORE_SLANG
 #define GTO_GEMM_CORE_SLANG
 
 // For measurements: bumped with every change to the core's loop
-#define GTO_GEMM_CORE_REVISION 6
+#define GTO_GEMM_CORE_REVISION 7
 
 #define GK     16               // k per chunk
 #define GC_END 0xFFFFFFFFu      // IGemmStager.stage: no more chunks
@@ -143,14 +144,15 @@ void gc_fence() {
     }
 }
 
-// Row kk of the chunk in Mem into the thread's X
+// Row kk of the chunk in Mem into the thread's X. The float4 reads' indices in float4s (R, M, CP, CM multiples of 4): a
+// float index divided by 4 does not fold into the reads' constant offsets (unsigned wrap), r6 an add and a shift per read
 [ForceInline]
 void gc_mac<let CP : int, let CM : int, let R : int, let M : int, Mem : IGcMem>(inout float X[R][M], uint kk, uint tx, uint ty) {
     float a[R];
     float bb[M];
     if (Mem::kVec != 0 && R % 4 == 0) {
         [ForceUnroll] for (int q = 0; q < R / 4; ++q) {
-            const float4 v = Mem::ld4((kk * uint(CP) + ty * uint(R)) / 4u + uint(q));
+            const float4 v = Mem::ld4(kk * uint(CP / 4) + ty * uint(R / 4) + uint(q));
             a[4 * q] = v.x; a[4 * q + 1] = v.y; a[4 * q + 2] = v.z; a[4 * q + 3] = v.w;
         }
     } else {
@@ -158,7 +160,7 @@ void gc_mac<let CP : int, let CM : int, let R : int, let M : int, Mem : IGcMem>(
     }
     if (Mem::kVec != 0 && M % 4 == 0) {
         [ForceUnroll] for (int q = 0; q < M / 4; ++q) {
-            const float4 v = Mem::ld4((uint(GK * CP) + kk * uint(CM) + tx * uint(M)) / 4u + uint(q));
+            const float4 v = Mem::ld4(uint(GK * CP / 4) + kk * uint(CM / 4) + tx * uint(M / 4) + uint(q));
             bb[4 * q] = v.x; bb[4 * q + 1] = v.y; bb[4 * q + 2] = v.z; bb[4 * q + 3] = v.w;
         }
     } else {

@@ -452,8 +452,12 @@ typedef enum md_gto_gpu_density_algo_t {
 // template over the tile, the threads and the chunks' memory (the same code for r4's kernels), with a staged mode, the
 // isosurface GEMMs on it (tiled, wide, and the D form in a triangular mode) beside their own loops (MD_GTO_ISO_GEMM=own);
 // r6: the chunks' memory a kernel's choice, floats (the grid kernels, r4's code) or float4 reads (the isosurface kernels,
-// as their own loops: on r5's float reads the protein's D-form corners took 477 ms against their own loop's 341).
-#define MD_GTO_GPU_GEMM_CORE_REVISION "gemm-core r6 (a template: density, orbitals, ELF/LOL, dmat tiles on float chunks; the isosurface tiled, wide and D-form GEMMs staged, on float4 chunks; D_b gather r2: the flat triangle)"
+// as their own loops: on r5's float reads the protein's D-form corners took 477 ms against their own loop's 341);
+// r7: the float4 reads indexed in float4s (r6 divided a float index by 4 per read: an add and a shift each, not folded
+// into the reads' offsets), the D-form stager with dform_at's arguments as its own loop's (r6 read them from the
+// kernel's arguments in every chunk) and its diagonal's AO values read as float4 (the D form's SPIR-V then differs from
+// its own loop's in the loop's shape and the A chunk's index arithmetic).
+#define MD_GTO_GPU_GEMM_CORE_REVISION "gemm-core r7 (a template: density, orbitals, ELF/LOL, dmat tiles on float chunks; the isosurface tiled, wide and D-form GEMMs staged, on float4 chunks read as float4s; D_b gather r2: the flat triangle)"
 
 // Unified descriptor struct for density evaluation.
 typedef struct md_gto_gpu_density_desc_t {

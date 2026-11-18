@@ -3156,6 +3156,10 @@ void dq_phi_gc<Mem : IGcMem>(uint buf, uint ns, uint j0, uint js, uint nvalid, f
 struct IsoDformStager<let VERT : int, Mem : IGcMem> : IGemmStager {
     float* D;
     uint   n, A, nq;
+    uint   dsparse, dm_nt;                                 // dform_at's arguments, the kernel's as gemm_dform's (r6
+    uint*  dm_tao;                                         // read them from MD_ARGS in every chunk, after its barrier)
+    uint*  dm_map;
+    float* ao_nrm;
     float3 p;
     uint   pg, cg, ce, col;
     uint   J, q, qe, jb, ca;
@@ -3170,7 +3174,6 @@ struct IsoDformStager<let VERT : int, Mem : IGcMem> : IGemmStager {
         }
     }
     [mutating] uint stage(uint m0, uint tid) {
-        IsoArgs a = MD_ARGS;
         if (q >= qe) return GC_END;
         const uint TC = 16u * uint(NW);
         if (q == 0u) ca = dq_jao[jb + col];                // after the barrier: the tile's columns staged
@@ -3181,7 +3184,7 @@ struct IsoDformStager<let VERT : int, Mem : IGcMem> : IGemmStager {
         [ForceUnroll] for (int i = 0; i < 8; ++i) {
             uint ra = dq_rao[buf * uint(D_CH) + tid / TC + 2u * uint(i)];
             bool ok = fac != 0.0 && ra != INVALID && ca != INVALID;
-            float v = ok ? dform_at(D, a.dsparse, a.dm_tao, a.dm_map, a.dm_nt, a.ao_nrm, n, ra, ca) : 0.0;
+            float v = ok ? dform_at(D, dsparse, dm_tao, dm_map, dm_nt, ao_nrm, n, ra, ca) : 0.0;
             dv[i] = ok ? fac * v : 0.0;
         }
         if (q + 1u < qe) {
@@ -3205,8 +3208,7 @@ struct IsoDformEpilogue<let VERT : int, Mem : IGcMem> : IGemmTriEpilogue {
     [mutating] void take<let R : int, let M : int>(uint m0, uint ncols, uint tx, uint ty, float X[R][M]) {}
     [mutating] void diag<let R : int, let M : int>(uint k0, uint tx, uint ty, float X[R][M]) {
         [ForceUnroll] for (int k = 0; k < GK; ++k) {
-            float4 ph = float4(Mem::ld(uint(k) * 128u + 4u * pg), Mem::ld(uint(k) * 128u + 4u * pg + 1u),
-                               Mem::ld(uint(k) * 128u + 4u * pg + 2u), Mem::ld(uint(k) * 128u + 4u * pg + 3u));
+            float4 ph = Mem::ld4(uint(k) * 32u + pg);      // rows 4 pg .. 4 pg + 3 of row k of the A chunk
             if (VERT == 0) {
                 [ForceUnroll] for (int v = 0; v < 4; ++v) part[v] += ph[v] * X[v][k];
             } else {
@@ -3348,6 +3350,7 @@ void gemm_dform_core<let VERT : int>(uint3 gid, uint tid) {
 
             IsoDformStager<VERT, IsoGd> st;
             st.D = D; st.n = n; st.A = A; st.nq = nq; st.p = p; st.pg = pg; st.cg = cg; st.ce = ce; st.col = tid % TC;
+            st.dsparse = a.dsparse; st.dm_nt = a.dm_nt; st.dm_tao = a.dm_tao; st.dm_map = a.dm_map; st.ao_nrm = a.ao_nrm;
             st.J = 0u; st.q = 0u; st.qe = 0u; st.jb = 0u; st.ca = INVALID;
             IsoDformEpilogue<VERT, IsoGd> epi;
             epi.pg = pg;
