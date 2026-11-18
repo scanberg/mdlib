@@ -880,9 +880,10 @@ static uint32_t* group_order(vial_sys_t* s, const vial_select_t* q, uint32_t* n,
         if (f->key != VIAL_KEY_ROLE || md_array_size(f->any) != 1) continue;
         for (int r = 0; r < MD_GROUP_ROLE_COUNT; ++r) {
             if (!md_str_eq(f->any[0].s, md_str_from_cstr(md_group_role_name((md_group_role_t)r)))) continue;
-            const md_urange_t range = md_system_group_role_range(g, (md_group_role_t)r);
+            size_t num;
+            const uint32_t* role_order = md_system_group_role_order(g, (md_group_role_t)r, &num);
             uint32_t k = 0;
-            for (uint32_t j = range.beg; j < range.end && k < s->num_groups; ++j) order[k++] = g->role_group[j];
+            for (size_t j = 0; j < num && k < s->num_groups; ++j) order[k++] = role_order[j];
             *n = k;
             return order;
         }

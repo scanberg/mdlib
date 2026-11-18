@@ -15,9 +15,9 @@ struct md_bitset_t;
 //
 // A ROLE is what the simulation used groups for, an mdp option naming them: tc-grps, energygrps and so on. The groups of
 // a role are a partition of the atoms, in the order the option names them, the atoms named by none of them in a group of
-// their own named 'rest'. The order is load bearing: an energy file names the pairs of energy groups by it
-// (md_edr_term_groups). A group is stored once whatever roles it has; two groups may share a name ('rest' of two roles
-// is two sets of atoms, as two index files may give one name to two sets).
+// their own named 'rest'. The order is kept: a script takes a role's groups in it, and it tells apart the pairs of an
+// energy file whose names hold '-' (md_edr_term_groups). A group is stored once whatever roles it has; two groups may
+// share a name ('rest' of two roles is two sets of atoms, as two index files may give one name to two sets).
 typedef enum md_group_role_t {
     MD_GROUP_ROLE_TC = 0,               // tc-grps: temperature coupling
     MD_GROUP_ROLE_ENERGY,               // energygrps: energy output, the pairs of the non-bonded terms
@@ -32,28 +32,37 @@ typedef enum md_group_role_t {
     MD_GROUP_ROLE_COUNT,
 } md_group_role_t;
 
+// A consumer reads a group's name, atoms and roles: whether a group is one of a role's is a bit of its roles, and a
+// role no group has is one the data does not give. The order of a role's groups is read through
+// md_system_group_role_order; md_system_group_set_role keeps both, so they always agree.
 typedef struct md_group_data_t {
     size_t count;
     md_str_t*    name;                  // [count]
     struct md_bitset_t* atoms;          // [count] Each its own words, in the system's allocator
     uint32_t*    roles;                 // [count] Bit r: the group is one of role r's (md_group_role_t)
-    // The groups of role r, in its order: role_group[role_offset[r] .. role_offset[r + 1]]. A role the data does not
-    // give, or gives as one group of every atom it never named ('rest' of all), has none.
-    uint32_t     role_offset[MD_GROUP_ROLE_COUNT + 1];
-    uint32_t*    role_group;
+
+    // The groups of each role in its order, which md_system_group_role_order gives: the groups of role r are
+    // group[offset[r] .. offset[r + 1]]. A role the data does not give, or gives as one group of every atom it never
+    // named ('rest' of all), has none.
+    struct {
+        uint32_t  offset[MD_GROUP_ROLE_COUNT + 1];
+        uint32_t* group;
+    } role_order;
 } md_group_data_t;
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-static inline md_urange_t md_system_group_role_range(const md_group_data_t* g, md_group_role_t role) {
-    md_urange_t r = {0, 0};
-    if (g && (uint32_t)role < MD_GROUP_ROLE_COUNT) {
-        r.beg = g->role_offset[role];
-        r.end = g->role_offset[role + 1];
-    }
-    return r;
+// The groups of a role, as indices of groups in the role's order (the order of its mdp option): count receives how many,
+// 0 (and NULL returned) for a role without groups
+static inline const uint32_t* md_system_group_role_order(const md_group_data_t* g, md_group_role_t role, size_t* count) {
+    *count = 0;
+    if (!g || (uint32_t)role >= MD_GROUP_ROLE_COUNT) return NULL;
+    const uint32_t beg = g->role_order.offset[role];
+    const uint32_t end = g->role_order.offset[role + 1];
+    *count = end - beg;
+    return end > beg ? g->role_order.group + beg : NULL;
 }
 
 // The name of a role as GROMACS' mdp option has it ("energygrps"), and as a script names it ("energy"): NULL for none

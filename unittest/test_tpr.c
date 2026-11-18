@@ -738,9 +738,10 @@ UTEST(tpr, groups) {
     const md_group_data_t* g = &sys.group;
     // Only the energy groups: the types not named in the mdp add none
     ASSERT_EQ(2u, g->count);
-    const md_urange_t r = md_system_group_role_range(g, MD_GROUP_ROLE_ENERGY);
-    ASSERT_EQ(2u, r.end - r.beg);
-    const uint32_t chn = g->role_group[r.beg], sol = g->role_group[r.beg + 1];
+    size_t r_n;
+    const uint32_t* r = md_system_group_role_order(g, MD_GROUP_ROLE_ENERGY, &r_n);
+    ASSERT_EQ(2u, r_n);
+    const uint32_t chn = r[0], sol = r[1];
     EXPECT_TRUE(md_str_eq(MD_STR_LIT("CHN"), g->name[chn]));
     EXPECT_TRUE(md_str_eq(MD_STR_LIT("SOL"), g->name[sol]));
     EXPECT_TRUE(md_bitset_equal(md_bitset_range(0, 15),  g->atoms[chn]));
@@ -749,8 +750,9 @@ UTEST(tpr, groups) {
     EXPECT_EQ(1u << MD_GROUP_ROLE_ENERGY, g->roles[chn]);
     for (int role = 0; role < MD_GROUP_ROLE_COUNT; ++role) {
         if (role == MD_GROUP_ROLE_ENERGY) continue;
-        const md_urange_t rr = md_system_group_role_range(g, (md_group_role_t)role);
-        EXPECT_EQ(rr.beg, rr.end);
+        size_t rr_n;
+        md_system_group_role_order(g, (md_group_role_t)role, &rr_n);
+        EXPECT_EQ(0u, rr_n);
     }
 
     // A copy has groups of its own
@@ -760,7 +762,9 @@ UTEST(tpr, groups) {
     EXPECT_TRUE(md_str_eq(MD_STR_LIT("SOL"), copy.group.name[sol]));
     EXPECT_NE(copy.group.name[sol].ptr, g->name[sol].ptr);
     EXPECT_TRUE(md_bitset_equal(g->atoms[sol], copy.group.atoms[sol]));
-    EXPECT_EQ(2u, md_system_group_role_range(&copy.group, MD_GROUP_ROLE_ENERGY).end - md_system_group_role_range(&copy.group, MD_GROUP_ROLE_ENERGY).beg);
+    size_t copy_n;
+    md_system_group_role_order(&copy.group, MD_GROUP_ROLE_ENERGY, &copy_n);
+    EXPECT_EQ(2u, copy_n);
     md_system_free(&copy);
 
     md_tpr_data_free(&data, arena);
@@ -778,12 +782,12 @@ UTEST(system, groups_roles) {
     for (uint32_t i = 0; i < 100; ++i) odd[i] = 2 * i + 1;
     md_bitset_t odd_set = md_bitset_from_indices(odd, 100, alloc);
 
-    const size_t a = md_system_group_add(&sys, MD_STR_LIT("Protein"), md_bitset_range(0, 150), 0);
-    const size_t b = md_system_group_add(&sys, MD_STR_LIT("rest"), md_bitset_range(150, 200), 0);
-    const size_t c = md_system_group_add(&sys, MD_STR_LIT("Odd"), odd_set, 0);
-    const size_t a2 = md_system_group_add(&sys, MD_STR_LIT("Protein"), md_bitset_range(0, 150), 0);
-    const size_t d = md_system_group_add(&sys, MD_STR_LIT("rest"), md_bitset_range(0, 10), 0);     // Same name, other atoms
-    const size_t e = md_system_group_add(&sys, MD_STR_LIT("Far"), md_bitset_range(190, 400), 0);    // Cut to the atoms
+    const size_t a = md_system_group_add(&sys, MD_STR_LIT("Protein"), md_bitset_range(0, 150));
+    const size_t b = md_system_group_add(&sys, MD_STR_LIT("rest"), md_bitset_range(150, 200));
+    const size_t c = md_system_group_add(&sys, MD_STR_LIT("Odd"), odd_set);
+    const size_t a2 = md_system_group_add(&sys, MD_STR_LIT("Protein"), md_bitset_range(0, 150));
+    const size_t d = md_system_group_add(&sys, MD_STR_LIT("rest"), md_bitset_range(0, 10));     // Same name, other atoms
+    const size_t e = md_system_group_add(&sys, MD_STR_LIT("Far"), md_bitset_range(190, 400));    // Cut to the atoms
     EXPECT_EQ(a, a2);
     EXPECT_NE(b, d);
     EXPECT_EQ(5u, sys.group.count);
@@ -794,14 +798,15 @@ UTEST(system, groups_roles) {
     const uint32_t en[] = { (uint32_t)c, (uint32_t)a, (uint32_t)d };
     md_system_group_set_role(&sys, MD_GROUP_ROLE_ENERGY, en, 3);
     md_system_group_set_role(&sys, MD_GROUP_ROLE_TC, tc, 2);
-    md_urange_t r = md_system_group_role_range(&sys.group, MD_GROUP_ROLE_TC);
-    ASSERT_EQ(2u, r.end - r.beg);
-    EXPECT_EQ(a, sys.group.role_group[r.beg]);
-    EXPECT_EQ(b, sys.group.role_group[r.beg + 1]);
-    r = md_system_group_role_range(&sys.group, MD_GROUP_ROLE_ENERGY);
-    ASSERT_EQ(3u, r.end - r.beg);
-    EXPECT_EQ(c, sys.group.role_group[r.beg]);
-    EXPECT_EQ(d, sys.group.role_group[r.beg + 2]);
+    size_t r_n;
+    const uint32_t* r = md_system_group_role_order(&sys.group, MD_GROUP_ROLE_TC, &r_n);
+    ASSERT_EQ(2u, r_n);
+    EXPECT_EQ(a, r[0]);
+    EXPECT_EQ(b, r[1]);
+    r = md_system_group_role_order(&sys.group, MD_GROUP_ROLE_ENERGY, &r_n);
+    ASSERT_EQ(3u, r_n);
+    EXPECT_EQ(c, r[0]);
+    EXPECT_EQ(d, r[2]);
     EXPECT_EQ((1u << MD_GROUP_ROLE_TC) | (1u << MD_GROUP_ROLE_ENERGY), sys.group.roles[a]);
 
     // Replacing a role's groups: the others lose it, the roles after it keep theirs
@@ -809,12 +814,28 @@ UTEST(system, groups_roles) {
     md_system_group_set_role(&sys, MD_GROUP_ROLE_TC, tc2, 1);
     EXPECT_EQ(1u << MD_GROUP_ROLE_ENERGY, sys.group.roles[a]);
     EXPECT_EQ(0u, sys.group.roles[b]);
-    r = md_system_group_role_range(&sys.group, MD_GROUP_ROLE_ENERGY);
-    ASSERT_EQ(3u, r.end - r.beg);
-    EXPECT_EQ(c, sys.group.role_group[r.beg]);
-    EXPECT_EQ(a, sys.group.role_group[r.beg + 1]);
+    r = md_system_group_role_order(&sys.group, MD_GROUP_ROLE_ENERGY, &r_n);
+    ASSERT_EQ(3u, r_n);
+    EXPECT_EQ(c, r[0]);
+    EXPECT_EQ(a, r[1]);
     EXPECT_STREQ("energygrps", md_group_role_mdp_option(MD_GROUP_ROLE_ENERGY));
     EXPECT_STREQ("energy", md_group_role_name(MD_GROUP_ROLE_ENERGY));
+
+    // Adding a group again gives it no role, and the roles and their order agree: a bit for each group in the order
+    EXPECT_EQ(a, md_system_group_add(&sys, MD_STR_LIT("Protein"), md_bitset_range(0, 150)));
+    EXPECT_EQ(1u << MD_GROUP_ROLE_ENERGY, sys.group.roles[a]);
+    for (int role = 0; role < MD_GROUP_ROLE_COUNT; ++role) {
+        size_t n;
+        const uint32_t* order = md_system_group_role_order(&sys.group, (md_group_role_t)role, &n);
+        for (size_t i = 0; i < sys.group.count; ++i) {
+            bool in_order = false;
+            for (size_t k = 0; k < n; ++k) in_order |= order[k] == i;
+            EXPECT_EQ(in_order, (sys.group.roles[i] >> role) & 1u);
+        }
+    }
+    size_t none;
+    EXPECT_TRUE(md_system_group_role_order(&sys.group, MD_GROUP_ROLE_COUNT, &none) == NULL);
+    EXPECT_EQ(0u, none);
 
     md_bitset_free(&odd_set, alloc);
     sys.atom.count = 0;

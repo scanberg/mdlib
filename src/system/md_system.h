@@ -134,12 +134,13 @@ bool md_system_assemblies_init(md_system_t* sys, const md_assembly_gen_t* gen, s
 
 // GROUPS (md_group_data_t)
 
-// Adds a group of atoms, a copy of atoms, with the roles it has (bits of md_group_role_t, 0 for none) and returns its
-// index. A group of the same name and atoms is not added again: it gains the roles, and its index is returned.
-// Atoms past the system's are left out. Records a change of the topology (scripts select groups by name).
-size_t md_system_group_add(md_system_t* sys, md_str_t name, md_bitset_t atoms, uint32_t roles);
+// Adds a group of atoms, a copy of atoms, and returns its index. A group of the same name and atoms is not added again:
+// its index is returned. A group gains roles from md_system_group_set_role alone. Atoms past the system's are left out.
+// Records a change of the topology (scripts select groups by name).
+size_t md_system_group_add(md_system_t* sys, md_str_t name, md_bitset_t atoms);
 
-// Sets the groups of a role, in its order, replacing what it had: indices of groups, which gain the role
+// Sets the groups of a role, in its order, replacing what it had: indices of groups, which gain the role (the bit of
+// their roles) while those it had before and not now lose it. The only writer of the roles and their order.
 void md_system_group_set_role(md_system_t* sys, md_group_role_t role, const uint32_t* group_idx, size_t count);
 
 

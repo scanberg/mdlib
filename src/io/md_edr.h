@@ -70,7 +70,8 @@ bool md_edr_system_supplement_from_file(struct md_system_t* sys, md_str_t filena
 // A group's name may hold '-' (Protein-H, non-Water), so the two of a pair are found among the groups of the system
 // (md_group_data_t): the energy groups of its role, in order, where it has them (a tpr), else any groups of those names
 // (an index file). Of a pair whose names could be split in more than one way, the split of two energy groups in their
-// order is taken. The groups of the T-coupling role likewise, else by name.
+// order is taken. The groups of the T-coupling role likewise, else by name. 'rest' is the role's own alone, never the
+// 'rest' of another role, which is other atoms.
 //
 // term is the name as the file has it, which the published attribute keeps as its label. False when it is not a term of
 // groups, or a group it names is not in the system ('rest' of a role the system does not have, say).
@@ -99,7 +100,8 @@ bool md_edr_term_is_of_groups(md_str_t term);
 // it, else the first of the name in another case), else among the groups GROMACS makes of the topology itself when it is
 // given no index file (md_ndx_default_group: System, Protein, non-Protein, SOL, ...), which become groups of the system;
 // and 'rest', the role's own, is the atoms in none of the others. So an energy file names the groups of its run also when
-// only the structure is loaded, and T-System is every atom.
+// only the structure is loaded, and T-System is every atom. T-rest alone (an mdp which named no tc-grps) sets nothing:
+// a role of one 'rest' of every atom is one a system does not have (md_group_data_t), as a tpr gives none.
 //
 // A role is set only where every name is found and the groups found do not overlap: a role is a partition, which grompp
 // makes sure of, so overlapping groups are of another index file than the one grompp was given, and nothing is set

@@ -78,7 +78,7 @@ static void md_system_groups_free(md_system_t* sys) {
     md_array_free(g->name, alloc);
     md_array_free(g->atoms, alloc);
     md_array_free(g->roles, alloc);
-    md_array_free(g->role_group, alloc);
+    md_array_free(g->role_order.group, alloc);
     md_memset(g, 0, sizeof(md_group_data_t));
 }
 
@@ -93,11 +93,11 @@ static void groups_copy(md_group_data_t* dst, const md_group_data_t* src, md_all
         dst->name[i]  = md_str_empty(src->name[i]) ? (md_str_t){0} : md_alloc_str(alloc, src->name[i]);
         dst->atoms[i] = md_bitset_copy(src->atoms[i], alloc);
     }
-    md_memcpy(dst->role_offset, src->role_offset, sizeof(dst->role_offset));
-    if (md_array_size(src->role_group)) md_array_push_array(dst->role_group, src->role_group, md_array_size(src->role_group), alloc);
+    md_memcpy(dst->role_order.offset, src->role_order.offset, sizeof(dst->role_order.offset));
+    if (md_array_size(src->role_order.group)) md_array_push_array(dst->role_order.group, src->role_order.group, md_array_size(src->role_order.group), alloc);
 }
 
-size_t md_system_group_add(md_system_t* sys, md_str_t name, md_bitset_t atoms, uint32_t roles) {
+size_t md_system_group_add(md_system_t* sys, md_str_t name, md_bitset_t atoms) {
     MD_ASSERT(sys);
     MD_ASSERT(sys->alloc);
     md_group_data_t* g = &sys->group;
@@ -119,7 +119,6 @@ size_t md_system_group_add(md_system_t* sys, md_str_t name, md_bitset_t atoms, u
         md_array_push(g->roles, 0, sys->alloc);
         g->count += 1;
     }
-    g->roles[idx] |= roles;
     md_temp_end(temp);
     md_system_topology_changed(sys);
     return idx;
@@ -129,26 +128,27 @@ void md_system_group_set_role(md_system_t* sys, md_group_role_t role, const uint
     MD_ASSERT(sys);
     if ((uint32_t)role >= MD_GROUP_ROLE_COUNT) return;
     md_group_data_t* g = &sys->group;
-    const uint32_t beg = g->role_offset[role];
-    const uint32_t end = g->role_offset[role + 1];
+    uint32_t* offset = g->role_order.offset;
+    const uint32_t beg = offset[role];
+    const uint32_t end = offset[role + 1];
     // The role's previous groups lose it, unless named again below
-    for (uint32_t i = beg; i < end; ++i) g->roles[g->role_group[i]] &= ~(1u << role);
+    for (uint32_t i = beg; i < end; ++i) g->roles[g->role_order.group[i]] &= ~(1u << role);
     uint32_t n = 0;
     for (size_t i = 0; i < count; ++i) n += group_idx[i] < g->count;
     // Make room for the new list in place of the old one, the roles after it moved along
-    const size_t total = md_array_size(g->role_group);
+    const size_t total = md_array_size(g->role_order.group);
     const size_t new_total = total - (end - beg) + n;
-    if (new_total > total) md_array_resize(g->role_group, new_total, sys->alloc);
-    md_memmove(g->role_group + beg + n, g->role_group + end, (total - end) * sizeof(uint32_t));
-    md_array_shrink(g->role_group, new_total);
+    if (new_total > total) md_array_resize(g->role_order.group, new_total, sys->alloc);
+    md_memmove(g->role_order.group + beg + n, g->role_order.group + end, (total - end) * sizeof(uint32_t));
+    md_array_shrink(g->role_order.group, new_total);
     uint32_t k = beg;
     for (size_t i = 0; i < count; ++i) {
         if (group_idx[i] >= g->count) continue;
-        g->role_group[k++] = group_idx[i];
+        g->role_order.group[k++] = group_idx[i];
         g->roles[group_idx[i]] |= 1u << role;
     }
     for (uint32_t r = role + 1; r <= MD_GROUP_ROLE_COUNT; ++r) {
-        g->role_offset[r] = (uint32_t)(g->role_offset[r] - (end - beg) + n);
+        offset[r] = (uint32_t)(offset[r] - (end - beg) + n);
     }
     md_system_topology_changed(sys);
 }

@@ -265,7 +265,7 @@ UTEST(edr, term_groups) {
     const char* names[] = { "CA", "Protein", "AIN", "SOL", "rest" };
     uint32_t idx[5];
     for (uint32_t i = 0; i < 5; ++i) {
-        idx[i] = (uint32_t)md_system_group_add(&sys, md_str_from_cstr(names[i]), md_bitset_range(20 * i, 20 * i + 20), 0);
+        idx[i] = (uint32_t)md_system_group_add(&sys, md_str_from_cstr(names[i]), md_bitset_range(20 * i, 20 * i + 20));
     }
     md_system_group_set_role(&sys, MD_GROUP_ROLE_ENERGY, idx, 5);
 
@@ -310,13 +310,13 @@ UTEST(edr, term_groups_dashes) {
     md_allocator_i* alloc = md_get_heap_allocator();
     md_system_t sys = { .alloc = alloc };
     sys.atom.count = 100;
-    const uint32_t protein_h = (uint32_t)md_system_group_add(&sys, MD_STR_LIT("Protein-H"), md_bitset_range(0, 10), 0);
-    const uint32_t sol       = (uint32_t)md_system_group_add(&sys, MD_STR_LIT("SOL"),       md_bitset_range(10, 50), 0);
-    const uint32_t non_water = (uint32_t)md_system_group_add(&sys, MD_STR_LIT("non-Water"), md_bitset_range(50, 60), 0);
+    const uint32_t protein_h = (uint32_t)md_system_group_add(&sys, MD_STR_LIT("Protein-H"), md_bitset_range(0, 10));
+    const uint32_t sol       = (uint32_t)md_system_group_add(&sys, MD_STR_LIT("SOL"),       md_bitset_range(10, 50));
+    const uint32_t non_water = (uint32_t)md_system_group_add(&sys, MD_STR_LIT("non-Water"), md_bitset_range(50, 60));
     // Decoys an index file could hold beside them: 'Protein' and 'H-SOL'
-    const uint32_t protein   = (uint32_t)md_system_group_add(&sys, MD_STR_LIT("Protein"),   md_bitset_range(0, 12), 0);
-    const uint32_t h_sol     = (uint32_t)md_system_group_add(&sys, MD_STR_LIT("H-SOL"),     md_bitset_range(5, 50), 0);
-    const uint32_t tc_rest   = (uint32_t)md_system_group_add(&sys, MD_STR_LIT("rest"),      md_bitset_range(10, 100), 0);
+    const uint32_t protein   = (uint32_t)md_system_group_add(&sys, MD_STR_LIT("Protein"),   md_bitset_range(0, 12));
+    const uint32_t h_sol     = (uint32_t)md_system_group_add(&sys, MD_STR_LIT("H-SOL"),     md_bitset_range(5, 50));
+    const uint32_t tc_rest   = (uint32_t)md_system_group_add(&sys, MD_STR_LIT("rest"),      md_bitset_range(10, 100));
 
     md_edr_term_groups_t tg;
     // Without roles (an index file only): the first split of two groups, which here is the decoy pair
@@ -357,11 +357,11 @@ UTEST(edr, infer_group_roles) {
     md_system_t sys = { .alloc = alloc };
     sys.atom.count = 100;
     // In another order than energygrps, and one more the run did not use
-    md_system_group_add(&sys, MD_STR_LIT("SOL"),     md_bitset_range(40, 80), 0);
-    md_system_group_add(&sys, MD_STR_LIT("Other"),   md_bitset_range(0, 100), 0);
-    md_system_group_add(&sys, MD_STR_LIT("CA"),      md_bitset_range(0, 5), 0);
-    md_system_group_add(&sys, MD_STR_LIT("Protein"), md_bitset_range(5, 30), 0);
-    md_system_group_add(&sys, MD_STR_LIT("AIN"),     md_bitset_range(30, 40), 0);
+    md_system_group_add(&sys, MD_STR_LIT("SOL"),     md_bitset_range(40, 80));
+    md_system_group_add(&sys, MD_STR_LIT("Other"),   md_bitset_range(0, 100));
+    md_system_group_add(&sys, MD_STR_LIT("CA"),      md_bitset_range(0, 5));
+    md_system_group_add(&sys, MD_STR_LIT("Protein"), md_bitset_range(5, 30));
+    md_system_group_add(&sys, MD_STR_LIT("AIN"),     md_bitset_range(30, 40));
 
     md_edr_energies_t energies = {0};
     ASSERT_TRUE(md_edr_energies_parse_file(&energies, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/inside-md-pullout.edr"), alloc));
@@ -369,22 +369,24 @@ UTEST(edr, infer_group_roles) {
     for (size_t i = 0; i < energies.num_energies; ++i) names[i] = energies.energy[i].name;
     // The energy groups, and from T-System the T-coupling group: GROMACS' System, every atom, which the system had no group of
     EXPECT_EQ(2u, md_edr_system_infer_group_roles(&sys, names, energies.num_energies));
-    const md_urange_t tr = md_system_group_role_range(&sys.group, MD_GROUP_ROLE_TC);
-    ASSERT_EQ(1u, tr.end - tr.beg);
-    EXPECT_TRUE(md_str_eq(MD_STR_LIT("System"), sys.group.name[sys.group.role_group[tr.beg]]));
-    EXPECT_TRUE(md_bitset_equal(md_bitset_range(0, 100), sys.group.atoms[sys.group.role_group[tr.beg]]));
+    size_t tr_n;
+    const uint32_t* tr = md_system_group_role_order(&sys.group, MD_GROUP_ROLE_TC, &tr_n);
+    ASSERT_EQ(1u, tr_n);
+    EXPECT_TRUE(md_str_eq(MD_STR_LIT("System"), sys.group.name[tr[0]]));
+    EXPECT_TRUE(md_bitset_equal(md_bitset_range(0, 100), sys.group.atoms[tr[0]]));
 
-    const md_urange_t r = md_system_group_role_range(&sys.group, MD_GROUP_ROLE_ENERGY);
-    ASSERT_EQ(5u, r.end - r.beg);
+    size_t r_n;
+    const uint32_t* r = md_system_group_role_order(&sys.group, MD_GROUP_ROLE_ENERGY, &r_n);
+    ASSERT_EQ(5u, r_n);
     const char* order[] = { "CA", "Protein", "AIN", "SOL", "rest" };
-    for (uint32_t i = 0; i < 5; ++i) EXPECT_TRUE(md_str_eq(md_str_from_cstr(order[i]), sys.group.name[sys.group.role_group[r.beg + i]]));
-    const uint32_t rest = sys.group.role_group[r.beg + 4];
+    for (uint32_t i = 0; i < 5; ++i) EXPECT_TRUE(md_str_eq(md_str_from_cstr(order[i]), sys.group.name[r[i]]));
+    const uint32_t rest = r[4];
     EXPECT_TRUE(md_bitset_equal(md_bitset_range(80, 100), sys.group.atoms[rest]));
 
     // Every term of groups resolves, 'rest' too
     md_edr_term_groups_t tg;
     ASSERT_TRUE(md_edr_term_groups(&tg, &sys, MD_STR_LIT("Coul-SR:SOL-rest")));
-    EXPECT_EQ(sys.group.role_group[r.beg + 3], tg.group[0]);
+    EXPECT_EQ(r[3], tg.group[0]);
     EXPECT_EQ(rest, tg.group[1]);
     // Once set, it is left as it is
     EXPECT_EQ(0u, md_edr_system_infer_group_roles(&sys, names, energies.num_energies));
@@ -402,10 +404,10 @@ UTEST(edr, infer_group_roles_refuses) {
     // A group of the energy file the system does not have
     md_system_t sys = { .alloc = alloc };
     sys.atom.count = 10;
-    md_system_group_add(&sys, MD_STR_LIT("B"), md_bitset_range(0, 5), 0);
+    md_system_group_add(&sys, MD_STR_LIT("B"), md_bitset_range(0, 5));
     EXPECT_EQ(0u, md_edr_system_infer_group_roles(&sys, terms, 4));
     // 'rest' of nothing: A holds every atom
-    md_system_group_add(&sys, MD_STR_LIT("A"), md_bitset_range(0, 10), 0);
+    md_system_group_add(&sys, MD_STR_LIT("A"), md_bitset_range(0, 10));
     EXPECT_EQ(0u, md_edr_system_infer_group_roles(&sys, terms, 4));
     EXPECT_EQ(2u, sys.group.count);
     md_system_free(&sys);
@@ -413,12 +415,13 @@ UTEST(edr, infer_group_roles_refuses) {
     // Overlapping groups, of another index file than the run's
     md_system_t ov = { .alloc = alloc };
     ov.atom.count = 10;
-    md_system_group_add(&ov, MD_STR_LIT("A"), md_bitset_range(0, 6), 0);
-    md_system_group_add(&ov, MD_STR_LIT("B"), md_bitset_range(4, 8), 0);
+    md_system_group_add(&ov, MD_STR_LIT("A"), md_bitset_range(0, 6));
+    md_system_group_add(&ov, MD_STR_LIT("B"), md_bitset_range(4, 8));
     const md_str_t ab[] = { MD_STR_LIT("LJ-SR:A-A"), MD_STR_LIT("LJ-SR:A-B"), MD_STR_LIT("LJ-SR:B-B") };
     EXPECT_EQ(0u, md_edr_system_infer_group_roles(&ov, ab, 3));
-    const md_urange_t r = md_system_group_role_range(&ov.group, MD_GROUP_ROLE_ENERGY);
-    EXPECT_EQ(r.beg, r.end);
+    size_t r_n;
+    const uint32_t* r = md_system_group_role_order(&ov.group, MD_GROUP_ROLE_ENERGY, &r_n);
+    EXPECT_EQ(0u, r_n);
     md_system_free(&ov);
 }
 
@@ -427,11 +430,11 @@ UTEST(edr, infer_group_roles_dashes_and_tc) {
     md_allocator_i* alloc = md_get_heap_allocator();
     md_system_t sys = { .alloc = alloc };
     sys.atom.count = 100;
-    const uint32_t protein   = (uint32_t)md_system_group_add(&sys, MD_STR_LIT("Protein"),     md_bitset_range(0, 12), 0);
-    const uint32_t h_sol     = (uint32_t)md_system_group_add(&sys, MD_STR_LIT("H-SOL"),       md_bitset_range(5, 50), 0);
-    const uint32_t protein_h = (uint32_t)md_system_group_add(&sys, MD_STR_LIT("Protein-H"),   md_bitset_range(0, 10), 0);
-    const uint32_t sol       = (uint32_t)md_system_group_add(&sys, MD_STR_LIT("SOL"),         md_bitset_range(10, 50), 0);
-    const uint32_t non_prot  = (uint32_t)md_system_group_add(&sys, MD_STR_LIT("non-Protein"), md_bitset_range(12, 100), 0);
+    const uint32_t protein   = (uint32_t)md_system_group_add(&sys, MD_STR_LIT("Protein"),     md_bitset_range(0, 12));
+    const uint32_t h_sol     = (uint32_t)md_system_group_add(&sys, MD_STR_LIT("H-SOL"),       md_bitset_range(5, 50));
+    const uint32_t protein_h = (uint32_t)md_system_group_add(&sys, MD_STR_LIT("Protein-H"),   md_bitset_range(0, 10));
+    const uint32_t sol       = (uint32_t)md_system_group_add(&sys, MD_STR_LIT("SOL"),         md_bitset_range(10, 50));
+    const uint32_t non_prot  = (uint32_t)md_system_group_add(&sys, MD_STR_LIT("non-Protein"), md_bitset_range(12, 100));
     const md_str_t terms[] = {
         MD_STR_LIT("Coul-SR:Protein-H-Protein-H"), MD_STR_LIT("LJ-SR:Protein-H-Protein-H"),
         MD_STR_LIT("Coul-SR:Protein-H-SOL"), MD_STR_LIT("LJ-SR:Protein-H-SOL"),
@@ -450,10 +453,41 @@ UTEST(edr, infer_group_roles_dashes_and_tc) {
     EXPECT_EQ(sol, tg.group[1]);
     ASSERT_TRUE(md_edr_term_groups(&tg, &sys, MD_STR_LIT("Coul-SR:Protein-H-rest")));
     EXPECT_TRUE(md_bitset_equal(md_bitset_range(50, 100), sys.group.atoms[tg.group[1]]));
-    const md_urange_t tc = md_system_group_role_range(&sys.group, MD_GROUP_ROLE_TC);
-    ASSERT_EQ(2u, tc.end - tc.beg);
-    EXPECT_EQ(protein, sys.group.role_group[tc.beg]);
-    EXPECT_EQ(non_prot, sys.group.role_group[tc.beg + 1]);
+    size_t tc_n;
+    const uint32_t* tc = md_system_group_role_order(&sys.group, MD_GROUP_ROLE_TC, &tc_n);
+    ASSERT_EQ(2u, tc_n);
+    EXPECT_EQ(protein, tc[0]);
+    EXPECT_EQ(non_prot, tc[1]);
+    md_system_free(&sys);
+}
+
+// T-rest alone is an mdp which named no tc-grps: every atom in one 'rest', a role a system does not have (as a tpr
+// gives none). Nor is a term of 'rest' the 'rest' of another role, which is other atoms.
+UTEST(edr, infer_group_roles_rest_alone) {
+    md_allocator_i* alloc = md_get_heap_allocator();
+    md_system_t sys = { .alloc = alloc };
+    sys.atom.count = 100;
+    md_system_group_add(&sys, MD_STR_LIT("Protein"), md_bitset_range(0, 30));
+    const md_str_t terms[] = {
+        MD_STR_LIT("Coul-SR:Protein-Protein"), MD_STR_LIT("Coul-SR:Protein-rest"), MD_STR_LIT("Coul-SR:rest-rest"),
+        MD_STR_LIT("T-rest"), MD_STR_LIT("Lamb-rest"),
+    };
+    EXPECT_EQ(1u, md_edr_system_infer_group_roles(&sys, terms, MD_COUNTOF(terms)));
+    size_t n;
+    md_system_group_role_order(&sys.group, MD_GROUP_ROLE_TC, &n);
+    EXPECT_EQ(0u, n);
+    const uint32_t* er = md_system_group_role_order(&sys.group, MD_GROUP_ROLE_ENERGY, &n);
+    ASSERT_EQ(2u, n);
+    EXPECT_TRUE(md_bitset_equal(md_bitset_range(30, 100), sys.group.atoms[er[1]]));
+    EXPECT_EQ(2u, sys.group.count);
+    for (size_t i = 0; i < sys.group.count; ++i) EXPECT_EQ(0u, sys.group.roles[i] & (1u << MD_GROUP_ROLE_TC));
+
+    // T-rest is of no group, not the energy groups' 'rest'; Coul-SR:Protein-rest is
+    md_edr_term_groups_t tg;
+    EXPECT_FALSE(md_edr_term_groups(&tg, &sys, MD_STR_LIT("T-rest")));
+    EXPECT_FALSE(md_edr_term_groups(&tg, &sys, MD_STR_LIT("Lamb-rest")));
+    ASSERT_TRUE(md_edr_term_groups(&tg, &sys, MD_STR_LIT("Coul-SR:Protein-rest")));
+    EXPECT_EQ(er[1], tg.group[1]);
     md_system_free(&sys);
 }
 
@@ -462,21 +496,22 @@ UTEST(edr, supplement_infers_group_roles) {
     md_allocator_i* alloc = md_get_heap_allocator();
     md_system_t sys = { .alloc = alloc };
     sys.atom.count = 100;
-    md_system_group_add(&sys, MD_STR_LIT("CA"),      md_bitset_range(0, 5), 0);
-    md_system_group_add(&sys, MD_STR_LIT("Protein"), md_bitset_range(5, 30), 0);
-    md_system_group_add(&sys, MD_STR_LIT("AIN"),     md_bitset_range(30, 40), 0);
-    md_system_group_add(&sys, MD_STR_LIT("SOL"),     md_bitset_range(40, 80), 0);
+    md_system_group_add(&sys, MD_STR_LIT("CA"),      md_bitset_range(0, 5));
+    md_system_group_add(&sys, MD_STR_LIT("Protein"), md_bitset_range(5, 30));
+    md_system_group_add(&sys, MD_STR_LIT("AIN"),     md_bitset_range(30, 40));
+    md_system_group_add(&sys, MD_STR_LIT("SOL"),     md_bitset_range(40, 80));
     ASSERT_TRUE(md_edr_system_supplement_from_file(&sys, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/inside-md-pullout.edr"), &(md_load_desc_t){ .run = MD_STR_LIT("run/md") }));
-    md_urange_t r = md_system_group_role_range(&sys.group, MD_GROUP_ROLE_ENERGY);
-    EXPECT_EQ(5u, r.end - r.beg);
+    size_t r_n;
+    const uint32_t* r = md_system_group_role_order(&sys.group, MD_GROUP_ROLE_ENERGY, &r_n);
+    EXPECT_EQ(5u, r_n);
 
     // And from the run's terms, for an index file added after the energy file
     md_system_group_set_role(&sys, MD_GROUP_ROLE_ENERGY, NULL, 0);
-    r = md_system_group_role_range(&sys.group, MD_GROUP_ROLE_ENERGY);
-    EXPECT_EQ(r.beg, r.end);
+    r = md_system_group_role_order(&sys.group, MD_GROUP_ROLE_ENERGY, &r_n);
+    EXPECT_EQ(0u, r_n);
     EXPECT_EQ(1u, md_edr_system_infer_group_roles_of_run(&sys, MD_STR_LIT("run/md")));
-    r = md_system_group_role_range(&sys.group, MD_GROUP_ROLE_ENERGY);
-    EXPECT_EQ(5u, r.end - r.beg);
+    r = md_system_group_role_order(&sys.group, MD_GROUP_ROLE_ENERGY, &r_n);
+    EXPECT_EQ(5u, r_n);
     md_system_free(&sys);
 }
 
@@ -484,9 +519,9 @@ UTEST(edr, terms_groups) {
     md_allocator_i* alloc = md_get_heap_allocator();
     md_system_t sys = { .alloc = alloc };
     sys.atom.count = 100;
-    const uint32_t a = (uint32_t)md_system_group_add(&sys, MD_STR_LIT("A"), md_bitset_range(0, 10), 0);
-    const uint32_t b = (uint32_t)md_system_group_add(&sys, MD_STR_LIT("B"), md_bitset_range(10, 20), 0);
-    const uint32_t c = (uint32_t)md_system_group_add(&sys, MD_STR_LIT("C"), md_bitset_range(20, 30), 0);
+    const uint32_t a = (uint32_t)md_system_group_add(&sys, MD_STR_LIT("A"), md_bitset_range(0, 10));
+    const uint32_t b = (uint32_t)md_system_group_add(&sys, MD_STR_LIT("B"), md_bitset_range(10, 20));
+    const uint32_t c = (uint32_t)md_system_group_add(&sys, MD_STR_LIT("C"), md_bitset_range(20, 30));
     const uint32_t eg[] = { a, b, c };
     md_system_group_set_role(&sys, MD_GROUP_ROLE_ENERGY, eg, 3);
     const md_str_t terms[] = { MD_STR_LIT("Coul-SR:B-B"), MD_STR_LIT("Potential"), MD_STR_LIT("Coul-SR:A-B"), MD_STR_LIT("LJ-SR:B-C"), MD_STR_LIT("LJ-SR:A-C") };
