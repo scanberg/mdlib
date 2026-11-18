@@ -1471,7 +1471,7 @@ size_t md_gto_gpu_basis_num_atoms(md_gto_gpu_basis_t gb) {
 // The build's revision, reported by md_gto_gpu_dmat_info (the benchmark prints it, so a measurement says
 // which kernel it is of). Bump with every change to gto_dmat.slang or to how it is launched.
 #define GTO_DMAT_REVISION_R2 "r2 (64 threads per 16 x 128 block, 4 x 8 per thread, KC 16, next chunk in registers)"
-#define GTO_DMAT_REVISION    "r3 (the r2 blocks on the GEMM core, gemm-core r3: float4 groupshared reads)"
+#define GTO_DMAT_REVISION    "r3 (the r2 blocks on the GEMM core, gemm-core r4: plain float chunks)"
 /* r3 unless MD_GTO_GPU_DMAT_KERNEL=r2: the two side by side until measured */
 static inline bool gto_dmat_use_r2(void) {
     const char* e = getenv("MD_GTO_GPU_DMAT_KERNEL");

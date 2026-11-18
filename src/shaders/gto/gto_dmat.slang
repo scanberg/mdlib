@@ -12,9 +12,9 @@
 // r2. (r1: 256 threads, 2 x 4 per thread, 2 groupshared loads per 8 multiply-adds: bound by groupshared
 // bandwidth, 108 G multiply-adds/s on a GTX 1060.)
 //
-// r3: dmat_tiles_core, the same block on the GEMM core (gto_gemm_core.slang): 16 x 4 threads, 4 x 8 per thread, the
-// chunk read as float4 (3 groupshared loads per 32 multiply-adds, as r2). dmat_tiles (r2) stays until the two are
-// measured against each other (MD_GTO_GPU_DMAT_KERNEL=r2).
+// r3: dmat_tiles_core, the same block on the GEMM core (gto_gemm_core.slang): 16 x 4 threads, 4 x 8 per thread. On
+// gemm-core r3 (float4 chunk reads) 9.57 ms against r2's 8.71 on a protein (RTX 3080); r4 (gemm-core r4, plain floats)
+// to be measured. dmat_tiles (r2) stays until then (MD_GTO_GPU_DMAT_KERNEL=r2).
 
 #include "../md_gpu.slang"
 
