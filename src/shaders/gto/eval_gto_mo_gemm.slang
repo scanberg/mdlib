@@ -26,6 +26,12 @@
 
 #include "gto_gemm_core.slang"
 
+#define GC_TX 16
+#define GC_TY 16
+#define RP (GP / GC_TY)
+#define RM (GM / GC_TX)
+GC_MEM(GcMem, GP, GM)
+
 // A: the block's Phi (AO-major, the group's GP voxels from p0); B: C[m][ao_list[k]]
 struct MoOperands : IGemmOperands {
     uint phi_off, ao_off, p0;
@@ -40,13 +46,13 @@ struct MoOperands : IGemmOperands {
 // Per row: sum_m w_m Psi (mo_mode 0) or w_m Psi^2 (mo_mode 1)
 struct MoEpilogue : IGemmEpilogue {
     float res[RP];
-    [mutating] void take(uint m0, uint ncols, uint tx, uint ty, float X[RP][RM]) {
-        [ForceUnroll] for (int j = 0; j < RM; ++j) {
-            const uint m = m0 + tx * RM + uint(j);
+    [mutating] void take<let R : int, let M : int>(uint m0, uint ncols, uint tx, uint ty, float X[R][M]) {
+        [ForceUnroll] for (int j = 0; j < M; ++j) {
+            const uint m = m0 + tx * M + uint(j);
             if (m < ncols) {
                 float w = 1.0f;
                 if (args.has_weights != 0u) w = args.mo_weights[m];
-                [ForceUnroll] for (int i = 0; i < RP; ++i) {
+                [ForceUnroll] for (int i = 0; i < R; ++i) {
                     const float x = X[i][j];
                     res[i] += w * ((args.mo_mode != 0u) ? x * x : x);
                 }
@@ -75,10 +81,10 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_G
     MoEpilogue epi;
     [ForceUnroll] for (int i = 0; i < RP; ++i) epi.res[i] = 0.0f;
 
-    gemm_core<MoOperands, MoEpilogue>(ops, epi, n, args.num_mos, false, tid, gtid.x, gtid.y);
+    gemm_core<GP, GM, GC_TX, GC_TY, GcMem, MoOperands, MoEpilogue>(ops, epi, n, args.num_mos, false, tid, gtid.x, gtid.y);
 
     float res;
-    gemm_row_sums(epi.res, tid, gtid.x, gtid.y, res);
+    gemm_row_sums<GP, GC_TX, RP, GcMem>(epi.res, tid, gtid.x, gtid.y, res);
     if (tid < GP) {
         uint  p   = pt * GP + tid;
         uint3 vox = blk * BLOCK_SHAPE + block_voxel(p);

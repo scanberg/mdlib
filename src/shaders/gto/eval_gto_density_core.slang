@@ -21,6 +21,12 @@
 
 #include "gto_gemm_core.slang"
 
+#define GC_TX 16
+#define GC_TY 16
+#define RP (GP / GC_TY)
+#define RM (GM / GC_TX)
+GC_MEM(GcMem, GP, GM)
+
 // A: the block's Phi (AO-major, the group's GP voxels from p0); B: w o D_b, gathered (d_mode 1) or from D
 struct DensityOperands : IGemmOperands {
     uint phi_off, ao_off, db_off, n, p0;
@@ -38,12 +44,12 @@ struct DensityOperands : IGemmOperands {
 struct RhoEpilogue : IGemmEpilogue {
     float rho[RP];
     uint  phi_off, p0;
-    [mutating] void take(uint m0, uint n, uint tx, uint ty, float X[RP][RM]) {
-        [ForceUnroll] for (int j = 0; j < RM; ++j) {
-            uint m = m0 + tx * RM + uint(j);
+    [mutating] void take<let R : int, let M : int>(uint m0, uint n, uint tx, uint ty, float X[R][M]) {
+        [ForceUnroll] for (int j = 0; j < M; ++j) {
+            uint m = m0 + tx * M + uint(j);
             if (m < n) {
-                [ForceUnroll] for (int i = 0; i < RP; ++i) {
-                    rho[i] += args.phi[phi_off + m * BLOCK_VOXELS + p0 + ty * RP + uint(i)] * X[i][j];
+                [ForceUnroll] for (int i = 0; i < R; ++i) {
+                    rho[i] += args.phi[phi_off + m * BLOCK_VOXELS + p0 + ty * R + uint(i)] * X[i][j];
                 }
             }
         }
@@ -74,10 +80,10 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_G
     epi.p0      = pt * GP;
     [ForceUnroll] for (int i = 0; i < RP; ++i) epi.rho[i] = 0.0f;
 
-    gemm_core<DensityOperands, RhoEpilogue>(ops, epi, n, n, true, tid, gtid.x, gtid.y);
+    gemm_core<GP, GM, GC_TX, GC_TY, GcMem, DensityOperands, RhoEpilogue>(ops, epi, n, n, true, tid, gtid.x, gtid.y);
 
     float rho;
-    gemm_row_sums(epi.rho, tid, gtid.x, gtid.y, rho);
+    gemm_row_sums<GP, GC_TX, RP, GcMem>(epi.rho, tid, gtid.x, gtid.y, rho);
     if (tid < GP) {
         uint  p   = pt * GP + tid;
         uint3 vox = blk * BLOCK_SHAPE + block_voxel(p);

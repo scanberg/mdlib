@@ -35,6 +35,12 @@
 
 #include "gto_gemm_core.slang"
 
+#define GC_TX 16
+#define GC_TY 16
+#define RP (GP / GC_TY)
+#define RM (GM / GC_TX)
+GC_MEM(GcMem, GP, GM)
+
 #define LC_VOX (GP / 4)     // voxels per group
 #define ELF_CF_SPIN 4.557799872345596   // 3/10 (6 pi^2)^(2/3): the uniform electron gas' kinetic energy density of one spin over rho_s^(5/3)
 
@@ -60,13 +66,13 @@ struct LocalizationOperands : IGemmOperands {
 struct LocalizationEpilogue : IGemmEpilogue {
     float acc[RP][4];
     uint  phi_off, p0;
-    [mutating] void take(uint m0, uint n, uint tx, uint ty, float X[RP][RM]) {
-        const uint c = (ty * RP) / LC_VOX;      // the thread's channel: uniform per wave of 32 or more
-        [ForceUnroll] for (int j = 0; j < RM; ++j) {
-            uint m = m0 + tx * RM + uint(j);
+    [mutating] void take<let R : int, let M : int>(uint m0, uint n, uint tx, uint ty, float X[R][M]) {
+        const uint c = (ty * R) / LC_VOX;      // the thread's channel: uniform per wave of 32 or more
+        [ForceUnroll] for (int j = 0; j < M; ++j) {
+            uint m = m0 + tx * M + uint(j);
             if (m < n) {
-                [ForceUnroll] for (int i = 0; i < RP; ++i) {
-                    const uint  p = p0 + (ty * RP + uint(i)) % LC_VOX;
+                [ForceUnroll] for (int i = 0; i < R; ++i) {
+                    const uint  p = p0 + (ty * R + uint(i)) % LC_VOX;
                     const float x = X[i][j];
                     if (c == 0u) {
                         acc[i][0] += lc_phi(phi_off, m, 0u, p) * x;
@@ -106,22 +112,22 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_G
     epi.p0      = pt * LC_VOX;
     [ForceUnroll] for (int i = 0; i < RP; ++i) [ForceUnroll] for (int q = 0; q < 4; ++q) epi.acc[i][q] = 0.0f;
 
-    gemm_core<LocalizationOperands, LocalizationEpilogue>(ops, epi, n, n, true, tid, gtid.x, gtid.y);
+    gemm_core<GP, GM, GC_TX, GC_TY, GcMem, LocalizationOperands, LocalizationEpilogue>(ops, epi, n, n, true, tid, gtid.x, gtid.y);
 
     // the rows' sums, four of each, then the voxels' terms of them
     float s[4];
     [ForceUnroll] for (int q = 0; q < 4; ++q) {
         float v[RP];
         [ForceUnroll] for (int i = 0; i < RP; ++i) v[i] = epi.acc[i][q];
-        gemm_row_sums(v, tid, gtid.x, gtid.y, s[q]);
+        gemm_row_sums<GP, GC_TX, RP, GcMem>(v, tid, gtid.x, gtid.y, s[q]);
     }
     GroupMemoryBarrierWithGroupSync();
-    const uint RS = GP * TPX;           // past what gemm_row_sums used
-    if (tid < GP) [ForceUnroll] for (int q = 0; q < 4; ++q) gc_st(RS + tid * 4u + uint(q), s[q]);
+    const uint RS = GP * GC_TX;           // past what gemm_row_sums used
+    if (tid < GP) [ForceUnroll] for (int q = 0; q < 4; ++q) GcMem::st(RS + tid * 4u + uint(q), s[q]);
     GroupMemoryBarrierWithGroupSync();
     if (tid < LC_VOX) {
         const uint v = tid;
-        #define LC_RS(c, q) gc_ld(RS + ((c) * LC_VOX + v) * 4u + (q))
+        #define LC_RS(c, q) GcMem::ld(RS + ((c) * LC_VOX + v) * 4u + (q))
         const float rho = LC_RS(0u, 0u);
         const float gx  = LC_RS(0u, 1u) + LC_RS(1u, 0u);
         const float gy  = LC_RS(0u, 2u) + LC_RS(2u, 0u);

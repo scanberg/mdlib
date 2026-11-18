@@ -8,9 +8,8 @@
 //             gradients, a symmetric GEMM of four rows a voxel per spin on the core, then the finish)
 //   orbitals  the sum of psi^2 of the --orbitals highest occupied: MD_GTO_GPU_ORBITAL_ALGO_REFERENCE, _SHELL (8 a
 //             pass), _GEMM (Phi, then Phi x C on the core)
-//   dmat      the density matrix's tiles built from the SCF density's orbitals (md_gto_gpu_dmat_build): r2, its own
-//             loop (MD_GTO_GPU_DMAT_KERNEL=r2), against r3 on the core. Timed as the GPU time of the build's
-//             submission (the orbitals' upload and the kernel); compared through the density's GEMM evaluated from it.
+//   dmat      the density matrix's tiles built from the SCF density's orbitals (md_gto_gpu_dmat_build, on the core),
+//             timed as the GPU time of the build's submission (the orbitals' upload and the kernel).
 //
 // MD_GTO_GEMM_PROFILE=1 (with --verbose) splits each GEMM run into its passes (count+plan, phi+dgather, gemm), each
 // waited for: the totals are then not the normal ones.
@@ -60,7 +59,7 @@
 #include <string.h>
 
 // Bumped with every change to this program's measurement or output
-#define MD_GTO_GEMM_BENCH_REV "gemm-bench r3"
+#define MD_GTO_GEMM_BENCH_REV "gemm-bench r4"
 
 #define ANGSTROM_TO_BOHR 1.8897261246257702
 #define MAX_REPS 32
@@ -222,7 +221,7 @@ static double run_gpu_ms = -1.0;        // the dmat's run: its submission's GPU 
 
 static void run_once(gpu_t* g, kind_t kind, int algo, int spins, size_t num_mo) {
     if (kind == KIND_DMAT) {
-        md_os_env_set("MD_GTO_GPU_DMAT_KERNEL", algo == 0 ? "r2" : NULL);
+        (void)algo;
         md_gpu_stream_sync(g->st);
         md_gto_gpu_dmat_build(g->st, g->dmat[0], run_src->occ_rows, run_src->occ_w, run_src->num_occ);
         const md_gpu_sync_t sync = md_gpu_stream_record(g->st);
@@ -233,13 +232,6 @@ static void run_once(gpu_t* g, kind_t kind, int algo, int spins, size_t num_mo) 
             if (md_gpu_sync_gpu_seconds(sync, &sec)) { run_gpu_ms = sec * 1.0e3; break; }
             md_thread_sleep(1);
         }
-        md_os_env_set("MD_GTO_GPU_DMAT_KERNEL", NULL);
-        // what is compared: the density through it
-        md_gto_gpu_density_desc_t desc = {
-            .basis = g->basis, .atom_xyz = g->atoms, .dmat = g->dmat[0], .out_tex = g->tex, .grid = &g->grid,
-            .sample_offset = {0.5f, 0.5f, 0.5f}, .op = MD_GTO_OP_SET, .algorithm = MD_GTO_GPU_DENSITY_ALGO_GEMM,
-        };
-        md_gto_gpu_density_launch(g->st, &desc);
     } else if (kind == KIND_ORBITALS) {
         md_gto_gpu_orbital_desc_t desc = {
             .basis = g->basis, .atom_xyz = g->atoms, .coeff = g->coeff, .out_tex = g->tex, .grid = &g->grid,
@@ -306,16 +298,16 @@ static void bench_grid(md_gpu_stream_t st, const src_t* s, const md_grid_t* grid
         static const char* loc_names[] = { "reference", "gemm (core)" };
         static const int mo_algos[] = { MD_GTO_GPU_ORBITAL_ALGO_REFERENCE, MD_GTO_GPU_ORBITAL_ALGO_SHELL, MD_GTO_GPU_ORBITAL_ALGO_GEMM };
         static const char* mo_names[] = { "reference", "shell", "gemm (core)" };
-        static const int dmat_algos[] = { 0, 1 };
-        static const char* dmat_names[] = { "r2 (own loop)", "r3 (core)" };
+        static const int dmat_algos[] = { 0 };
+        static const char* dmat_names[] = { "build (core)" };
         const int* algos = kind == KIND_DENSITY ? density_algos : kind == KIND_ORBITALS ? mo_algos : kind == KIND_DMAT ? dmat_algos : loc_algos;
         const char** names = kind == KIND_DENSITY ? density_names : kind == KIND_ORBITALS ? mo_names : kind == KIND_DMAT ? dmat_names : loc_names;
-        const int num_algos = kind == KIND_ORBITALS ? 3 : 2;
+        const int num_algos = kind == KIND_ORBITALS ? 3 : kind == KIND_DMAT ? 1 : 2;
         if (kind == KIND_ORBITALS) printf("    (orbitals: the sum of psi^2 of the %zu highest occupied)\n", s->num_mo);
         if (kind == KIND_DMAT) {
             md_gto_gpu_dmat_info_t di;
             md_gto_gpu_dmat_info(&di, g.dmat[0]);
-            printf("    (dmat: %zu orbitals, %zu of %zu tile pairs; times: the build's GPU time, not the density's evaluation after it)\n",
+            printf("    (dmat: %zu orbitals, %zu of %zu tile pairs; times: the build's GPU time)\n",
                    s->num_occ, di.num_tiles, di.num_tiles_total);
         }
         double base_ms = 0.0;

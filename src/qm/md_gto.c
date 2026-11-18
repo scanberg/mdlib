@@ -1054,8 +1054,7 @@ static md_gpu_kernel_t gto_k_density_gemm_phi[GTO_SHAPE_COUNT]     = {0};
 static md_gpu_kernel_t gto_k_density_gemm_dgather[GTO_SHAPE_COUNT] = {0};
 static md_gpu_kernel_t gto_k_mo_shell[GTO_SHAPE_COUNT][2]      = {{0}};   // [1, 8 orbitals per pass], 4 voxels per thread
 static md_gpu_kernel_t gto_k_mo_gemm[GTO_SHAPE_COUNT]          = {0};     // 32 orbitals per tile
-static md_gpu_kernel_t gto_k_dmat_tiles       = NULL;  // md_gto_gpu_dmat_build: r2, its own loop (MD_GTO_GPU_DMAT_KERNEL=r2)
-static md_gpu_kernel_t gto_k_dmat_tiles_core  = NULL;  // md_gto_gpu_dmat_build: r3, on the GEMM core
+static md_gpu_kernel_t gto_k_dmat_tiles_core  = NULL;  // md_gto_gpu_dmat_build, on the GEMM core
 static md_gpu_kernel_t gto_k_localization[GTO_SHAPE_COUNT] = {0};          // md_gto_gpu_localization_launch
 // The GEMM core (gto_gemm_core.slang): the density's GEMM pass on it, and ELF's and LOL's with their Phi pass and finish
 static md_gpu_kernel_t gto_k_density_core[GTO_SHAPE_COUNT][2] = {{0}};      // [32, 64 AO tile], 128 voxels per group
@@ -1107,7 +1106,6 @@ void md_gto_gpu_shutdown(void) {
         }
         destroy_kernel(&gto_k_mo_gemm[sh]);
     }
-    destroy_kernel(&gto_k_dmat_tiles);
     destroy_kernel(&gto_k_dmat_tiles_core);
     gto_gpu_device = NULL;
 }
@@ -1470,13 +1468,7 @@ size_t md_gto_gpu_basis_num_atoms(md_gto_gpu_basis_t gb) {
 #define GTO_DMAT_NONE 0xFFFFFFFFu
 // The build's revision, reported by md_gto_gpu_dmat_info (the benchmark prints it, so a measurement says
 // which kernel it is of). Bump with every change to gto_dmat.slang or to how it is launched.
-#define GTO_DMAT_REVISION_R2 "r2 (64 threads per 16 x 128 block, 4 x 8 per thread, KC 16, next chunk in registers)"
-#define GTO_DMAT_REVISION    "r3 (the r2 blocks on the GEMM core, gemm-core r4: plain float chunks)"
-/* r3 unless MD_GTO_GPU_DMAT_KERNEL=r2: the two side by side until measured */
-static inline bool gto_dmat_use_r2(void) {
-    const char* e = getenv("MD_GTO_GPU_DMAT_KERNEL");
-    return e && strcmp(e, "r2") == 0;
-}
+#define GTO_DMAT_REVISION    "r3 (16 x 128 blocks on the GEMM core, 16 x 4 threads of 4 x 8)"
 
 struct md_gto_gpu_dmat {
     uint32_t      num_ao, num_atoms, nt;    // nt: tiles per edge
@@ -1711,10 +1703,8 @@ static bool gto_dmat_build_packed(md_gpu_stream_t stream, md_gto_gpu_dmat_t dm, 
         MD_LOG_ERROR("md_gto_gpu_dmat_build: md_gto_gpu_initialize has not been called");
         return false;
     }
-    const bool r2 = gto_dmat_use_r2();
-    md_gpu_kernel_t* kslot = r2 ? &gto_k_dmat_tiles : &gto_k_dmat_tiles_core;
-    ensure_kernel(gto_gpu_device, kslot, r2 ? md_shader_gto_dmat_dmat_tiles_kernel() : md_shader_gto_dmat_dmat_tiles_core_kernel());
-    if (!*kslot) return false;
+    ensure_kernel(gto_gpu_device, &gto_k_dmat_tiles_core, md_shader_gto_dmat_dmat_tiles_core_kernel());
+    if (!gto_k_dmat_tiles_core) return false;
     size_t r = 0;
     for (size_t k = 0; k < num_mo; ++k) r += weight[k] != 0.0;
     if (r == 0 || dm->num_tiles == 0) {
@@ -1741,7 +1731,7 @@ static bool gto_dmat_build_packed(md_gpu_stream_t stream, md_gto_gpu_dmat_t dm, 
         .num_mo = (uint32_t)r, .num_items = (uint32_t)dm->num_items, .items_x = gx, .ntao = (uint32_t)ntao,
         .P = dm->P, .w = dm->w, .items = dm->items, .cols = dm->cols_buf, .tiles = dm->tiles,
     };
-    return md_gpu_launch(stream, *kslot, md_gpu_grid(gx, gy, 1), &a, sizeof(a));
+    return md_gpu_launch(stream, gto_k_dmat_tiles_core, md_gpu_grid(gx, gy, 1), &a, sizeof(a));
 }
 
 bool md_gto_gpu_dmat_build_columns(md_gpu_stream_t stream, md_gto_gpu_dmat_t dm, const double* coeff, size_t ld, const double* weight, size_t num_mo) {
@@ -1804,7 +1794,7 @@ void md_gto_gpu_dmat_info(md_gto_gpu_dmat_info_t* out, md_gto_gpu_dmat_t dm) {
     out->num_ao = dm->num_ao;
     out->num_tiles = (size_t)dm->num_tiles;
     out->num_tiles_total = (size_t)dm->nt * (dm->nt + 1) / 2;
-    out->revision = gto_dmat_use_r2() ? GTO_DMAT_REVISION_R2 : GTO_DMAT_REVISION;
+    out->revision = GTO_DMAT_REVISION;
     out->bytes = sizeof(float) * 256 * (size_t)dm->num_tiles + sizeof(uint32_t) * ((size_t)dm->nt * dm->nt + dm->num_ao + 4 * (size_t)dm->num_items + (size_t)dm->num_tiles);
 }
 
