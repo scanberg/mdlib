@@ -449,8 +449,10 @@ typedef struct md_gto_iso_gpu_profile_t {
     uint32_t num_steps;
     md_gto_iso_gpu_profile_step_t step[MD_GTO_ISO_GPU_PROFILE_CAP];
     double   wait_ms;       // one wait with nothing to wait for: the floor under every step's ms
-    double   skip_ms;       // the profile's own readbacks and host statistics between the steps (in no step, in the
-                            // extraction's wall time: mesh.seconds_total less this is the extraction's own)
+    double   skip_ms;       // the time between the steps that the profile leaves out (its own readbacks and host
+                            // statistics, and whatever else ran since the step before): in the wall time, in no step
+    uint32_t num_skip;      // skip_ms by where (summed by name)
+    struct { const char* name; double ms; uint32_t n; } skip[16];
     // work counts
     uint64_t brick_ao_sum;  // over the bricks: the AOs whose shells reach the brick
     uint32_t brick_ao_max;

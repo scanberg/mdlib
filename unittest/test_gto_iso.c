@@ -4631,8 +4631,9 @@ UTEST(gto_iso_gpu_lib, flood_experiment) {
 // A large system's total density, as viamd extracts its mesh: the density matrix from the published virtual
 // attribute, the field from it, the GPU set and the extraction, each timed. GTO_ISO_LARGE=<file in test_data/vlx>
 // (a protein: 1152 atoms, 9072 AOs); GTO_ISO_LARGE_H (default 0.4), GTO_ISO_LARGE_ISO (default 0.0025);
-// GTO_ISO_LARGE_PROFILE=1 the extraction's steps; GTO_ISO_LARGE_AB=n then n rounds of the isosurface GEMMs on the
-// GEMM core against their own loops (MD_GTO_ISO_GEMM), alternating in this process.
+// GTO_ISO_LARGE_PROFILE=1 the extraction's steps; GTO_ISO_LARGE_STAGES=1 two more without the profile, one by stage;
+// GTO_ISO_LARGE_AB=n then n rounds of the isosurface GEMMs on the GEMM core against their own loops (MD_GTO_ISO_GEMM),
+// alternating in this process; GTO_ISO_LARGE_ORBITALS=n the density of n of the orbitals only.
 #include <md_qm.h>
 // md_gto_iso_gpu_evaluate: the fields of a set at arbitrary points against md_gto_iso_field_evaluate in double,
 // through every vertex evaluator (orbitals, the tiled and the wide GEMM, the D form), from the host and on the
@@ -5127,8 +5128,11 @@ UTEST(gto_iso_gpu_lib, large_density) {
         const size_t count = md_qm_density_orbitals(&rows, &w, &na, &t.sys, MD_STR_LIT("orbital/total/density"), md_get_heap_allocator());
         ASSERT_TRUE(count > 0);
         ASSERT_EQ(na, nao);
-        printf("  orbitals: %zu, %.2f s\n", count, md_tick_to_seconds(md_tick_now() - t0));
-        field = md_gto_iso_field_create_products(&basis, xyz, 3 * sizeof(float), rows, NULL, w, count, md_get_heap_allocator());
+        // GTO_ISO_LARGE_ORBITALS=n: the density of the first n of them only (up to 1024: not the D form, the wide GEMM)
+        const int lim = getenv("GTO_ISO_LARGE_ORBITALS") ? atoi(getenv("GTO_ISO_LARGE_ORBITALS")) : 0;
+        const size_t use = (lim > 0 && (size_t)lim < count) ? (size_t)lim : count;
+        printf("  orbitals: %zu%s, %.2f s\n", use, use < count ? " (of them, GTO_ISO_LARGE_ORBITALS)" : "", md_tick_to_seconds(md_tick_now() - t0));
+        field = md_gto_iso_field_create_products(&basis, xyz, 3 * sizeof(float), rows, NULL, w, use, md_get_heap_allocator());
         md_free(md_get_heap_allocator(), rows, sizeof(double) * count * na);
         md_free(md_get_heap_allocator(), w, sizeof(double) * count);
     }
@@ -5163,6 +5167,25 @@ UTEST(gto_iso_gpu_lib, large_density) {
                ok ? "ok" : "FAILED", ok ? m.vertex_count : 0, ok ? m.index_count / 3 : 0);
         md_gto_iso_gpu_profile_set(NULL);
         if (getenv("GTO_ISO_LARGE_PROFILE")) { md_gto_iso_gpu_profile_print(&prof, text, sizeof(text)); printf("%s", text); }
+        // GTO_ISO_LARGE_STAGES=1: two more extractions without the profile, the first's time from the mesh, the second's
+        // by stage (desc.time_stages: a wait after each)
+        if (ok && getenv("GTO_ISO_LARGE_STAGES") && atoi(getenv("GTO_ISO_LARGE_STAGES")) != 0) {
+            md_gto_iso_gpu_mesh_t sm;
+            if (md_gto_iso_gpu_extract(g.s, set, &gd, &sm)) {
+                printf("  again, no profile: %.1f ms\n", sm.seconds_total * 1e3);
+                md_gto_iso_gpu_mesh_free(g.s, &sm);
+            }
+            md_gto_iso_gpu_desc_t sd = gd;
+            sd.time_stages = true;
+            if (md_gto_iso_gpu_extract(g.s, set, &sd, &sm)) {
+                static const char* stn[MD_GTO_ISO_GPU_STAGE_COUNT] = {"octree", "corners", "nets", "project", "relax", "output"};
+                double sum = 0.0;
+                printf("  again, by stage (ms):");
+                for (int k = 0; k < MD_GTO_ISO_GPU_STAGE_COUNT; ++k) { printf(" %s %.1f", stn[k], sm.seconds[k] * 1e3); sum += sm.seconds[k] * 1e3; }
+                printf("; their sum %.1f of %.1f\n", sum, sm.seconds_total * 1e3);
+                md_gto_iso_gpu_mesh_free(g.s, &sm);
+            }
+        }
         md_gpu_memory_stats(g.dev, MD_GPU_MEM_DEVICE, &ms);
         printf("  device memory: %.1f MB in use, %.1f MB peak, %.1f MB temp\n", ms.bytes_in_use / 1e6, ms.bytes_peak_in_use / 1e6, ms.bytes_temp / 1e6);
         EXPECT_TRUE(ok);
@@ -5172,7 +5195,7 @@ UTEST(gto_iso_gpu_lib, large_density) {
         // round (the first alternating), in this process after the extraction above: one GPU, one clock history, no
         // process between them. Each: the kernels made again (MD_GTO_ISO_GEMM, before the clock starts), an extraction
         // with the profile; its corner steps (the profile's "corners (...)": the D form, the tiled or the wide GEMM), its
-        // vertex evaluations, and its wall time less the profile's own readbacks and statistics
+        // vertex evaluations, and its wall time less the time the profile leaves out (between its steps)
         const int ab = getenv("GTO_ISO_LARGE_AB") ? atoi(getenv("GTO_ISO_LARGE_AB")) : 0;
         if (ab > 0 && ok) {
             enum { AB_MAX = 64 };
@@ -5180,7 +5203,7 @@ UTEST(gto_iso_gpu_lib, large_density) {
             static double ab_ms[2][3][AB_MAX];   // [own][corners, vertex eval, extract][round]
             const iso_ab_env_t env = iso_ab_env_save();
             printf("  A/B (GTO_ISO_LARGE_AB=%d, %s; ms): round (w: a warm-up, not counted), then per variant corners | vertex eval |"
-                   " extract less the profile's own work (that work; vertices)\n", rounds, MD_GTO_GPU_GEMM_CORE_REVISION);
+                   " extract less the profile's left-out time (that time; vertices)\n", rounds, MD_GTO_GPU_GEMM_CORE_REVISION);
             bool ab_ok = true;
             for (int rr = -1; rr < rounds && ab_ok; ++rr) {
                 const int r = rr < 0 ? 0 : rr;   // the warm-up's overwritten by round 0
@@ -5206,6 +5229,11 @@ UTEST(gto_iso_gpu_lib, large_density) {
                     md_gto_iso_gpu_mesh_free(g.s, &mm);
                 }
                 printf("\n");
+                if (rr == 0 && ab_ok) {   // where the left-out time of the round's second run went, once
+                    printf("      left out (ms, times):");
+                    for (uint32_t k = 0; k < prof.num_skip && k < 16; ++k) printf(" %s %.1f (%u);", prof.skip[k].name, prof.skip[k].ms, prof.skip[k].n);
+                    printf("\n");
+                }
             }
             EXPECT_TRUE(ab_ok);
             if (ab_ok) {

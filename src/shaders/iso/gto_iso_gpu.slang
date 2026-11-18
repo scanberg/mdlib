@@ -1582,7 +1582,7 @@ void k_load_chunk_gc<let F : int, Mem : IGcMem>(uint c, uint f0, uint tid, uint 
         uint row = e / uint(F), col = e % uint(F);
         uint ao = min(k_row_ao[min(row, uint(K_CK) - 1u)], a.num_ao - 1u);
         float v = a.C[ao * a.fn_stride + min(f0 + col, a.fn_stride - 1u)] * a.ao_nrm[ao];
-        Mem::st(uint(GK * G_GROUP) + e, f0 + col < a.num_fn ? v : 0.0);
+        Mem::st4c(uint(GK * G_GROUP / 4) + (e >> 2), e & 3u, f0 + col < a.num_fn ? v : 0.0);
     }
     GroupMemoryBarrierWithGroupSync();
 }
@@ -1625,12 +1625,12 @@ struct IsoGemmStager<let F : int, Mem : IGcMem, let VERT : int> : IGemmStager {
                 A = ch == 0u ? R : 2.0 * da * R1;
                 Bg = ch == 0u ? 0.0 : R;
             }
-            uint rb = k_row[i] * uint(G_GROUP) + tid;
+            uint rb = k_row[i] * uint(G_GROUP / 4) + (tid >> 2);   // row k_row[i] at float4 rb, component tid & 3
             [ForceUnroll] for (int n = 0; n < 15; ++n) {
                 if (uint(n) < nc) {                         // uniform
                     float phi = m[n] * A;
                     if (VERT != 0) phi += g[n] * Bg;
-                    Mem::st(rb + uint(n) * uint(G_GROUP), phi);
+                    Mem::st4c(rb + uint(n) * uint(G_GROUP / 4), tid & 3u, phi);
                 }
             }
         }
@@ -1698,7 +1698,7 @@ struct IsoGemmEpilogue<let F : int, Mem : IGcMem, let VERT : int> : IGemmEpilogu
                 [ForceUnroll] for (int v = 0; v < 4; ++v) {
                     uint rr = pg * 4u + uint(v) - r0;
                     if (rr < RR) {
-                        [ForceUnroll] for (int c = 0; c < FC; ++c) Mem::st(rr * uint(F) + cg * uint(FC) + uint(c), X[v][c]);
+                        [ForceUnroll] for (int c = 0; c < FC; ++c) Mem::st4c(rr * uint(F / 4) + cg * uint(FC / 4) + uint(c / 4), uint(c % 4), X[v][c]);
                     }
                 }
                 GroupMemoryBarrierWithGroupSync();
@@ -2405,7 +2405,7 @@ void iso_wide_ao<let VERT : int, Mem : IGcMem>(int rb, uint l, uint nc, float3 d
         if (uint(n) < nc && r >= 0 && r < 16) {
             float phi = m[n] * Av;
             if (VERT != 0) phi += g[n] * Bg;
-            Mem::st(uint(r) * uint(W_ROWS) + 4u * pg + ce, phi);
+            Mem::st4c(uint(r) * uint(W_ROWS / 4) + pg, ce, phi);
         }
     }
 }
@@ -2478,7 +2478,7 @@ struct IsoWide2Stager<let F : int, Mem : IGcMem, let VERT : int> : IGemmStager {
         uint la0 = 16u * c;
         uint nrows = min(16u, A - la0);
         // the prefetched rows of chunk c into B, then chunk c + 1's
-        [ForceUnroll] for (int k = 0; k < F / 16; ++k) Mem::st(uint(GK * W_ROWS) + tid + uint(W_GROUP * k), cr[k]);
+        [ForceUnroll] for (int k = 0; k < F / 16; ++k) Mem::st4c(uint(GK * W_ROWS / 4) + (tid >> 2) + uint(W_GROUP / 4 * k), tid & 3u, cr[k]);
         load_rows(la0 + 16u, m0, tid);
         // the chunk's AO values: shells [i0, i1), each its rows within the chunk
         uint sn = kw_cf[c + 1u];
@@ -2515,7 +2515,7 @@ void k_load_chunk_gcw<let F : int, Mem : IGcMem>(uint c, uint f0, uint tid, uint
         uint row = e / uint(F), col = e % uint(F);
         uint ao = min(k_row_ao[min(row, uint(K_CK) - 1u)], a.num_ao - 1u);
         float v = a.C[ao * a.fn_stride + min(f0 + col, a.fn_stride - 1u)] * a.ao_nrm[ao];
-        Mem::st(uint(GK * W_ROWS) + e, f0 + col < a.num_fn ? v : 0.0);
+        Mem::st4c(uint(GK * W_ROWS / 4) + (e >> 2), e & 3u, f0 + col < a.num_fn ? v : 0.0);
     }
     GroupMemoryBarrierWithGroupSync();
 }
@@ -2562,7 +2562,7 @@ struct IsoWideEpilogue<let F : int, Mem : IGcMem, let VERT : int> : IGemmEpilogu
                 }
             }
             GroupMemoryBarrierWithGroupSync();             // the memory free
-            [ForceUnroll] for (int v = 0; v < 4; ++v) Mem::st(w.cg * uint(W_ROWS) + w.pg * 4u + uint(v), part[v]);
+            [ForceUnroll] for (int v = 0; v < 4; ++v) Mem::st4c(w.cg * uint(W_ROWS / 4) + w.pg, uint(v), part[v]);
             GroupMemoryBarrierWithGroupSync();
             if (tid < uint(W_ROWS)) {
                 float sum = 0.0;
@@ -3090,7 +3090,7 @@ GC_MEM4(IsoGd, 128, 128)
 // dq_phi into the core's A chunk: row r at r * 128 + 4 pg + ce
 void dq_phi_gc<Mem : IGcMem>(uint buf, uint ns, uint j0, uint js, uint nvalid, float3 p, uint pg, uint ce, bool deriv, uint ch) {
     IsoArgs a = MD_ARGS;
-    if (j0 == 0u) for (uint k = nvalid; k < uint(D_CH); ++k) Mem::st(k * 128u + 4u * pg + ce, 0.0);
+    if (j0 == 0u) for (uint k = nvalid; k < uint(D_CH); ++k) Mem::st4c(k * 32u + pg, ce, 0.0);
     uint ax = ch > 0u ? ch - 1u : 0u;
     for (uint j = j0; j < ns; j += js) {
         uint s = buf * uint(D_CH) + j;
@@ -3103,7 +3103,7 @@ void dq_phi_gc<Mem : IGcMem>(uint buf, uint ns, uint j0, uint js, uint nvalid, f
         if (r2 > cs.w) {                                   // beyond the cutoff: its rows zero
             [ForceUnroll] for (int n = 0; n < 15; ++n) {
                 int row = rb + n;
-                if (uint(n) < nc && row >= 0 && row < D_CH) Mem::st(uint(row) * 128u + 4u * pg + ce, 0.0);
+                if (uint(n) < nc && row >= 0 && row < D_CH) Mem::st4c(uint(row) * 32u + pg, ce, 0.0);
             }
             continue;
         }
@@ -3143,7 +3143,7 @@ void dq_phi_gc<Mem : IGcMem>(uint buf, uint ns, uint j0, uint js, uint nvalid, f
             if (uint(n) < nc && row >= 0 && row < D_CH) {
                 float phi = m[n] * A;
                 if (deriv) phi += g[n] * Bg;
-                Mem::st(uint(row) * 128u + 4u * pg + ce, phi);
+                Mem::st4c(uint(row) * 32u + pg, ce, phi);
             }
         }
     }
@@ -3195,7 +3195,7 @@ struct IsoDformStager<let VERT : int, Mem : IGcMem> : IGemmStager {
         }
         uint la0 = q * uint(D_CH);
         dq_phi_gc<Mem>(buf, dq_span(q, nq).y, cg >> 2, uint(NW) / 4u, min(A - la0, uint(D_CH)), p, pg, ce, VERT != 0, ce);
-        [ForceUnroll] for (int i = 0; i < 8; ++i) Mem::st(uint(GK * 128) + tid + 256u * uint(i), dv[i]);
+        [ForceUnroll] for (int i = 0; i < 8; ++i) Mem::st4c(uint(GK * 32) + (tid >> 2) + 64u * uint(i), tid & 3u, dv[i]);
         q += 1u;
         return uint(GK);
     }
@@ -3359,7 +3359,7 @@ void gemm_dform_core<let VERT : int>(uint3 gid, uint tid) {
             [ForceUnroll] for (int v = 0; v < 4; ++v) part[v] = epi.part[v];
             // rows 4 pg + v summed over the waves; row tid's sum
             GroupMemoryBarrierWithGroupSync();             // the memory free
-            [ForceUnroll] for (int v = 0; v < 4; ++v) IsoGd::st((cg * 32u + pg) * 4u + uint(v), part[v]);
+            [ForceUnroll] for (int v = 0; v < 4; ++v) IsoGd::st4c(cg * 32u + pg, uint(v), part[v]);
             GroupMemoryBarrierWithGroupSync();
             float r = 0.0;
             if (tid < uint(G_GROUP)) {

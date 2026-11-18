@@ -16,7 +16,7 @@
 #include <gto_iso_gpu_shaders.inl>
 
 // BENCHMARK (temporary, branch gto-iso-gpu-opt): which round of changes this is, in every profile report
-#define ISOG_REVISION "r39 (the profile's own readbacks and statistics timed: profile.skip_ms; r38: a set's own evaluation cutoff, md_gto_iso_gpu_set_cutoff)"
+#define ISOG_REVISION "r40 (the profile's left-out time by where; r39: profile.skip_ms; r38: a set's own evaluation cutoff)"
 
 typedef struct isog_shell_t {        // mirrors IsoShell
     md_gpu_float4 c;
@@ -1115,11 +1115,16 @@ static void isog_mark_set(uint32_t i, uint32_t items, uint32_t aux) {
 }
 
 // What happened since the previous mark is not timed (profile-only readbacks)
-static void isog_mark_skip(md_gpu_stream_t s) {
+static void isog_mark_skip(md_gpu_stream_t s, const char* name) {
     if (!isog_prof) return;
     md_gpu_stream_sync(s);
     const md_tick_t now = md_tick_now();
-    isog_prof->skip_ms += md_tick_to_seconds(now - isog_prof_tick) * 1e3;
+    const double ms = md_tick_to_seconds(now - isog_prof_tick) * 1e3;
+    isog_prof->skip_ms += ms;
+    uint32_t i = 0;
+    while (i < isog_prof->num_skip && strcmp(isog_prof->skip[i].name, name) != 0) ++i;
+    if (i == isog_prof->num_skip && i < 16) { isog_prof->skip[i].name = name; isog_prof->skip[i].ms = 0.0; isog_prof->skip[i].n = 0; isog_prof->num_skip++; }
+    if (i < 16) { isog_prof->skip[i].ms += ms; isog_prof->skip[i].n++; }
     isog_prof_tick = now;
 }
 
@@ -1132,6 +1137,7 @@ static void isog_prof_begin(md_gpu_stream_t s) {
     if (!isog_prof) return;
     isog_prof->num_steps = 0;
     isog_prof->skip_ms = 0.0;
+    isog_prof->num_skip = 0;
     isog_prof->kernels_used = 0;
     isog_prof->brick_ao_sum = 0;
     isog_prof->brick_ao_max = 0;
@@ -1167,7 +1173,7 @@ static void isog_prof_active(md_gpu_stream_t s, md_gpu_addr_t vdone, uint32_t nv
         }
     }
     md_temp_end(temp);
-    isog_mark_skip(s);
+    isog_mark_skip(s, "vertices moving: read");
 }
 
 size_t md_gto_iso_gpu_profile_print(const md_gto_iso_gpu_profile_t* p, char* buf, size_t cap) {
@@ -1204,7 +1210,10 @@ size_t md_gto_iso_gpu_profile_print(const md_gto_iso_gpu_profile_t* p, char* buf
         ISOG_PR("    %-26s %4u %9.3f %9.3f %11llu %11llu\n", name[k], cnt[k], ms[k], w > 0.0 ? w : 0.0, (unsigned long long)items[k], (unsigned long long)aux[k]);
     }
     ISOG_PR("    %-26s %4u %9.3f %9.3f   (one empty wait: %.3f ms)\n", "all", p->num_steps, total, fmax(0.0, total - p->num_steps * p->wait_ms), p->wait_ms);
-    ISOG_PR("    %-26s %24.3f   (the profile's own readbacks and statistics, in no step)\n", "profile", p->skip_ms);
+    ISOG_PR("    %-26s %4s %9.3f   (between the steps, in none: the profile's readbacks and statistics, and what ran\n"
+            "    %-26s %4s %9s    since the step before them)\n", "left out", "", p->skip_ms, "", "", "");
+    for (uint32_t i = 0; i < p->num_skip && i < 16; ++i)
+        ISOG_PR("      %-24s %4u %9.3f\n", p->skip[i].name, p->skip[i].n, p->skip[i].ms);
     // work: the corner GEMM's multiply-adds (points x reaching AOs x function columns), the octree's
     for (int k = 0; k < nn; ++k) {
         const double w = fmax(1e-6, ms[k] - cnt[k] * p->wait_ms);
@@ -1556,7 +1565,7 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
                 uint32_t cn[12] = {0};
                 isog_read(s, cn, j->counts, sizeof(uint32_t) * (L + 2));
                 for (int l = l0; l <= Lt; ++l) isog_mark_set(j->level_step[l], cn[l], l < L ? cn[l + 1] / 8 : cn[l + 1]);
-                isog_mark_skip(s);
+                isog_mark_skip(s, "octree counts: read");
             }
             j->bricks = j->nodes[(Lt + 1) & 1];
             {   // ---- the bricks' corner slots: one per (brick, field with a sheet bit), their prefix sum
@@ -1631,7 +1640,7 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
                     isog_job_fail(j, "md_gto_iso_gpu_extract: the brick list could not be read back");
                     break;
                 }
-                isog_mark_skip(s);
+                isog_mark_skip(s, "brick list: read");
             }
             const md_gpu_uint4* bl = j->bl;
             if (isog_prof && bl) {    // BENCHMARK: the AOs that reach each brick (what the corner kernels list), not timed
@@ -1654,7 +1663,7 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
                 isog_prof->num_fn = set->num_fn;
                 isog_prof->fn_stride = set->fn_stride;
                 isog_prof->orbitals_only = set->orbitals_only;
-                isog_mark_skip(s);
+                isog_mark_skip(s, "bricks' AOs: host");
             }
             a.bricks = j->bricks;
             a.count = nb;
@@ -1757,7 +1766,7 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
                 j->points_all += c8[5];
                 isog_mark_set(ck, nkept, c8[5]);
                 isog_prof->corner_points = j->points_all;
-                isog_mark_skip(s);
+                isog_mark_skip(s, "corner counts: read");
             } else if (isog_prof) {    // aux: the lattice points evaluated
                 uint32_t c8[8];
                 isog_read(s, c8, a.counters, sizeof(c8));
@@ -1778,7 +1787,7 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
                     isog_prof_groups(set, px, 3, np, isog_prof->cgroup_size, &isog_prof->cgroup_ao_sum, &isog_prof->cgroup_count);
                 }
                 md_temp_end(temp);
-                isog_mark_skip(s);
+                isog_mark_skip(s, "corner groups' AOs");
             }
             {   // the corners a brick shares with the neighbours that evaluated them
                 isog_args_t af = a;
@@ -1888,7 +1897,7 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
                     }
                 }
                 md_temp_end(temp);
-                isog_mark_skip(s);
+                isog_mark_skip(s, "bricks by corners");
             }
             if (isog_debug) {
                 isog_debug_t* dbg = isog_debug;     // the test frees the arrays (free)
@@ -1908,7 +1917,7 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
                 memcpy(dbg->slots, slot, sizeof(uint32_t) * nb);
                 memcpy(dbg->origin, j->origin, sizeof(j->origin));
                 dbg->brick_level = L;
-                isog_mark_skip(s);
+                isog_mark_skip(s, "debug: brick list");
             }
             free(j->bl);
             free(j->slot);
@@ -1971,7 +1980,7 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
                         isog_prof_groups(set, &vp[0].x, 4, nv, vg, &isog_prof->vgroup_ao_sum, &isog_prof->vgroup_count);
                     }
                     md_temp_end(temp);
-                    isog_mark_skip(s);
+                    isog_mark_skip(s, "vertex groups' AOs");
                 }
                 // relaxation reads vpos and writes vpos_out: the two swap roles after every pass (no copy)
                 for (uint32_t r = 0; r < desc->relax_iterations; ++r) {

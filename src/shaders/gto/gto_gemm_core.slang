@@ -53,13 +53,13 @@
 // kernel's). Past the core, Name::ld / Name::st are the kernel's (gemm_row_sums, an epilogue's staging).
 //
 // r5: the template (r4: the same loop with the tile and the threads as each file's macros, one shape per source).
-// r6: the chunks' memory a kernel's choice (GC_MEM, GC_MEM4). r7: GC_MEM4's float4 reads indexed in float4s.
+// r6: the chunks' memory a kernel's choice (GC_MEM, GC_MEM4). r7: GC_MEM4's float4 reads indexed in float4s. r8: st4c.
 
 #ifndef GTO_GEMM_CORE_SLANG
 #define GTO_GEMM_CORE_SLANG
 
 // For measurements: bumped with every change to the core's loop
-#define GTO_GEMM_CORE_REVISION 7
+#define GTO_GEMM_CORE_REVISION 8
 
 #define GK     16               // k per chunk
 #define GC_END 0xFFFFFFFFu      // IGemmStager.stage: no more chunks
@@ -78,6 +78,9 @@ interface IGcMem {
     static float  ld(uint i);
     static float4 ld4(uint i4);
     static void   st(uint i, float v);
+    // st(4 i4 + c, v): for writers that know the float4 and the component. GC_MEM4's st splits a float index into
+    // both per write, and a sum's split (i + 128 n) >> 2 does not fold into the writes' offsets (unsigned wrap)
+    static void   st4c(uint i4, uint c, float v);
 };
 #define GC_MEM(NAME, GPV, GMV)                                                                      \
     groupshared float NAME##_smem[GK * ((GPV) + (GMV))];                                            \
@@ -87,6 +90,7 @@ interface IGcMem {
         static float4 ld4(uint i4)        { return float4(NAME##_smem[4u * i4], NAME##_smem[4u * i4 + 1u], \
                                                           NAME##_smem[4u * i4 + 2u], NAME##_smem[4u * i4 + 3u]); } \
         static void   st(uint i, float v) { NAME##_smem[i] = v; }                                   \
+        static void   st4c(uint i4, uint c, float v) { NAME##_smem[4u * i4 + c] = v; }              \
     };
 #define GC_MEM4(NAME, GPV, GMV)                                                                     \
     groupshared float4 NAME##_d4[GK * ((GPV) + (GMV)) / 4];                                         \
@@ -105,6 +109,10 @@ interface IGcMem {
         static void st(uint i, float v) {                                                           \
             __target_switch { case spirv: NAME##_d4[i >> 2][i & 3u] = v;                           \
                               default:    NAME##_d1[i] = v; }                                       \
+        }                                                                                           \
+        static void st4c(uint i4, uint c, float v) {                                                \
+            __target_switch { case spirv: NAME##_d4[i4][c] = v;                                     \
+                              default:    NAME##_d1[4u * i4 + c] = v; }                             \
         }                                                                                           \
     };
 
