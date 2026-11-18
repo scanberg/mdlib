@@ -225,6 +225,15 @@ UTEST(bonds, reinference_keeps_removed_bonds) {
     EXPECT_TRUE(md_system_bond_remove(&sys, pair.idx[0], pair.idx[1], f));
     ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
     EXPECT_FALSE(has_bond(&sys, pair.idx[0], pair.idx[1], NULL));
+
+    // Restored, inference finds it again; of a pair not removed, nothing is restored
+    EXPECT_TRUE(md_system_bond_restore(&sys, pair.idx[1], pair.idx[0], flags));
+    EXPECT_FALSE(md_system_bond_restore(&sys, pair.idx[0], pair.idx[1], flags));
+    EXPECT_EQ(0u, sys.removed_bond.count);
+    ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
+    EXPECT_TRUE(has_bond(&sys, pair.idx[0], pair.idx[1], &f));
+    EXPECT_EQ(MD_BOND_ORIGIN_INFERRED, md_bond_origin(f));
+    EXPECT_EQ(inferred, sys.bond.count);
     md_vm_arena_destroy(alloc);
 }
 

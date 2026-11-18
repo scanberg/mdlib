@@ -834,6 +834,15 @@ bool md_system_bond_remove(md_system_t* sys, md_atom_idx_t atom_idx_a, md_atom_i
     return true;
 }
 
+bool md_system_bond_restore(md_system_t* sys, md_atom_idx_t atom_idx_a, md_atom_idx_t atom_idx_b, md_bond_flags_t flags) {
+    MD_ASSERT(sys);
+    const md_bond_idx_t idx = given_bond_find(&sys->removed_bond, atom_idx_a, atom_idx_b, flags);
+    if (idx == -1) return false;
+    md_bond_remove(&sys->removed_bond, idx);
+    md_system_topology_changed(sys);
+    return true;
+}
+
 
 
 // ### EXTRACTION ###

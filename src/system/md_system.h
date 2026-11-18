@@ -583,6 +583,12 @@ bool md_system_bond_insert(md_system_t* sys, md_atom_idx_t atom_idx_a, md_atom_i
 // False when it was removed already.
 bool md_system_bond_remove(md_system_t* sys, md_atom_idx_t atom_idx_a, md_atom_idx_t atom_idx_b, md_bond_flags_t flags);
 
+// Undoes md_system_bond_remove of a bond the data gives or inference finds: what was removed between the two atoms in
+// the range of a bond of flags (md_system_t::removed_bond) is no longer, and the bond is there again once the system is
+// inferred again, if the data gives it or inference finds it. An edit of the core, as md_system_bond_insert. False when
+// nothing of it was removed.
+bool md_system_bond_restore(md_system_t* sys, md_atom_idx_t atom_idx_a, md_atom_idx_t atom_idx_b, md_bond_flags_t flags);
+
 // Flags of ring ring_idx of sys->ring, NONE when they have not been inferred
 static inline md_ring_flags_t md_system_ring_flags(const md_system_t* sys, size_t ring_idx) {
     MD_ASSERT(sys);
