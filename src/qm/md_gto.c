@@ -2348,7 +2348,11 @@ typedef struct gto_gemm_plan_t {
     uint64_t                work_issued;
     uint32_t                pieces;
     double                  t_count;        /* ms of the calling thread on the counts and the plan */
-    double                  t_phi, t_gemm;  /* profile only */
+    /* profile only (MD_GTO_GEMM_PROFILE): each pass its own submission, its GPU time (the wall time where the queue
+       cannot time), and what the passes do: the GEMM's multiply-adds as the core makes them, Phi's values, D_b's */
+    double                  t_phi, t_dgather, t_gemm, t_finish;
+    bool                    t_wall;         /* some pass timed by the wall clock */
+    uint64_t                prof_macs, prof_phi, prof_db;
 } gto_gemm_plan_t;
 
 /* Rows of Phi per AO: 4 for ELF and LOL (the value and the gradient), else 1 */
@@ -2474,6 +2478,13 @@ static gto_gemm_plan_t* gto_gemm_plan(gto_gemm_pending_t* p) {
                     bt.n_db      += pregather_D ? (uint64_t)na * na : 0;
                     num_entries  += 1;
                     P->work_total += gto_gemm_phi_work(P, na) + gto_gemm_gemm_work(P, na);
+                    {
+                        const uint64_t cols = a->num_mos ? a->num_mos : 0;
+                        /* the core's: symmetric k >= m, na (na + 1) / 2 per row; the orbitals' na x num_mos */
+                        P->prof_macs += GTO_GEMM_BLOCK_VOXELS * channels * spins * (cols ? (uint64_t)na * cols : (uint64_t)na * (na + 1) / 2);
+                        P->prof_phi  += GTO_GEMM_BLOCK_VOXELS * channels * (uint64_t)na;
+                        P->prof_db   += pregather_D ? spins * (uint64_t)na * na : 0;
+                    }
                 }
             }
             max_ao = MD_MAX(max_ao, bt.n_ao);
@@ -2533,6 +2544,21 @@ static inline bool gto_gemm_plan_issued(const gto_gemm_plan_t* P) {
     return P->bi > P->num_batches;
 }
 
+/* Profile: what was issued since the last mark as a submission of its own, waited for; its GPU time added to *ms
+   (the wall time since t0 where the queue cannot time it) */
+static void gto_gemm_profile_mark(gto_gemm_plan_t* P, double* ms, md_tick_t t0) {
+    const md_gpu_sync_t sync = md_gpu_stream_record(P->stream);
+    md_gpu_sync_wait(sync);
+    const double wall = md_tick_to_milliseconds(md_tick_now() - t0);
+    double sec = 0.0;
+    for (int i = 0; i < 20; ++i) {
+        if (md_gpu_sync_gpu_seconds(sync, &sec)) { *ms += sec * 1.0e3; return; }
+        md_thread_sleep(1);     /* Metal: the time comes with the completion handler */
+    }
+    *ms += wall;
+    P->t_wall = true;
+}
+
 /* ELF and LOL: the arguments of spin sp's D_b (its gather and its GEMM pass): its matrix, its part of D_blocks */
 static void gto_gemm_loc_spin(gto_gemm_plan_t* P, uint32_t sp) {
     gto_density_gemm_args_t* a = &P->a;
@@ -2554,7 +2580,6 @@ static void gto_gemm_launch_entries(gto_gemm_plan_t* P, md_gpu_kernel_t k, uint3
 /* One piece: launches up to about P->piece_work (at least one), not yet submitted. The stream must be in
    implicit order: the GEMM reads what the Phi pass of its batch wrote, the next Phi pass overwrites it. */
 static void gto_gemm_issue_piece(gto_gemm_plan_t* P) {
-    md_gpu_stream_t stream = P->stream;
     const gto_gemm_cfg_t* cfg = &P->cfg;
     uint64_t w = 0;
     while (P->bi <= P->num_batches && w < P->piece_work) {
@@ -2564,9 +2589,10 @@ static void gto_gemm_issue_piece(gto_gemm_plan_t* P) {
             continue;
         }
         if (P->bi < P->num_batches && !P->phi_issued) {
-            const md_tick_t t0 = md_tick_now();
+            md_tick_t t0 = md_tick_now();
             const int sh = gto_shape_of_dim(P->a.grid_dim.z);
             gto_gemm_launch_entries(P, P->loc.on ? P->loc.phi_grad : gto_k_density_gemm_phi[sh], 1, bt->first, bt->count);
+            if (P->profile) { gto_gemm_profile_mark(P, &P->t_phi, t0); t0 = md_tick_now(); }
             if (P->loc.on) {
                 /* each spin's D_b, from its matrix */
                 for (uint32_t sp = 0; sp < P->loc.num_spins; ++sp) {
@@ -2576,7 +2602,7 @@ static void gto_gemm_issue_piece(gto_gemm_plan_t* P) {
             } else if (P->pregather_D) {
                 gto_gemm_launch_entries(P, gto_k_density_gemm_dgather[sh], 1, bt->first, bt->count);
             }
-            if (P->profile) { md_gpu_stream_sync(stream); P->t_phi += md_tick_to_milliseconds(md_tick_now() - t0); }
+            if (P->profile && (P->loc.on || P->pregather_D)) gto_gemm_profile_mark(P, &P->t_dgather, t0);
             for (uint32_t i = 0; i < bt->count; ++i) w += gto_gemm_phi_work(P, P->table[8 * (bt->first + i) + 3]);
             P->phi_issued = true;
         }
@@ -2586,7 +2612,7 @@ static void gto_gemm_issue_piece(gto_gemm_plan_t* P) {
             w += gto_gemm_gemm_work(P, P->table[8 * (bt->first + end) + 3]);
             end++;
         } while (end < bt->count && w < P->piece_work);
-        const md_tick_t t0 = md_tick_now();
+        md_tick_t t0 = md_tick_now();
         if (P->loc.on) {
             /* ELF and LOL: a GEMM pass per spin into the terms, then the values of them; the empty blocks only the latter */
             const bool empty = P->bi == P->num_batches;
@@ -2599,16 +2625,18 @@ static void gto_gemm_issue_piece(gto_gemm_plan_t* P) {
                     if (end > l0) gto_gemm_launch_entries(P, cfg->large, GTO_GEMM_BLOCK_VOXELS / cfg->large_gp, bt->first + l0, end - l0);
                 }
             }
+            if (P->profile) { gto_gemm_profile_mark(P, &P->t_gemm, t0); t0 = md_tick_now(); }
             P->a.terms_valid = empty ? 0u : 1u;
             gto_gemm_launch_entries(P, P->loc.finish, 1, bt->first + P->cursor, end - P->cursor);
+            if (P->profile) gto_gemm_profile_mark(P, &P->t_finish, t0);
         } else {
         /* the small kernel's entries first, as the batch holds them */
         const uint32_t s0 = P->cursor, s1 = MD_MIN(end, bt->num_small);
         if (s1 > s0) gto_gemm_launch_entries(P, cfg->small, GTO_GEMM_BLOCK_VOXELS / cfg->small_gp, bt->first + s0, s1 - s0);
         const uint32_t l0 = MD_MAX(P->cursor, bt->num_small);
         if (end > l0) gto_gemm_launch_entries(P, cfg->large, GTO_GEMM_BLOCK_VOXELS / cfg->large_gp, bt->first + l0, end - l0);
+        if (P->profile) gto_gemm_profile_mark(P, &P->t_gemm, t0);
         }
-        if (P->profile) { md_gpu_stream_sync(stream); P->t_gemm += md_tick_to_milliseconds(md_tick_now() - t0); }
         P->cursor = end;
         if (end == bt->count) {
             P->bi++;
@@ -2626,8 +2654,16 @@ static void gto_gemm_plan_log(const gto_gemm_plan_t* P) {
     if (P->profile) {
         uint64_t total_ao = 0, total_small = 0;
         for (uint32_t i = 0; i < P->num_batches; ++i) { total_ao += P->batches[i].n_ao; total_small += P->batches[i].num_small; }
-        MD_LOG_INFO("GTO %s (GEMM) profile: count+plan %.2f ms, phi%s %.2f ms, gemm[%s] %.2f ms | %u batches, %u pieces, avg %.0f AOs per non-empty block, %.0f%% small",
-                    P->loc.on ? (a->lol ? "LOL" : "ELF") : a->num_mos ? "orbitals" : "density", P->t_count, P->pregather_D ? "+dgather" : "", P->t_phi, P->cfg.label, P->t_gemm, P->num_batches, P->pieces,
+        /* the passes' rates: G multiply-adds / s of the GEMM, G values / s of Phi (with its GB written), GB / s of D_b */
+        const double gb = 1.0 / (1024.0 * 1024.0 * 1024.0);
+        MD_LOG_INFO("GTO %s (GEMM) profile r2 (%s, a submission per pass): count+plan %.2f ms (host) | phi %.2f ms: %.2f G values, %.2f GB, %.1f G values/s | "
+                    "dgather %.2f ms: %.2f GB | gemm[%s] %.2f ms: %.1f G multiply-adds, %.0f G/s | finish %.2f ms | %u batches, %u pieces, avg %.0f AOs per non-empty block, %.0f%% small",
+                    P->loc.on ? (a->lol ? "LOL" : "ELF") : a->num_mos ? "orbitals" : "density", P->t_wall ? "wall time: the queue does not time" : "GPU time",
+                    P->t_count,
+                    P->t_phi, (double)P->prof_phi * 1.0e-9, (double)P->prof_phi * sizeof(float) * gb, P->t_phi > 0 ? (double)P->prof_phi * 1.0e-6 / P->t_phi : 0.0,
+                    P->t_dgather, (double)P->prof_db * sizeof(float) * gb,
+                    P->cfg.label, P->t_gemm, (double)P->prof_macs * 1.0e-9, P->t_gemm > 0 ? (double)P->prof_macs * 1.0e-6 / P->t_gemm : 0.0,
+                    P->t_finish, P->num_batches, P->pieces,
                     (double)total_ao / MD_MAX(1, nonempty), 100.0 * (double)total_small / MD_MAX(1, nonempty));
     }
     MD_LOG_DEBUG("GTO %s (GEMM [%s], " MD_GTO_GPU_GEMM_PIECES_REVISION "; " MD_GTO_GPU_GEMM_CORE_REVISION "): %u blocks, %u non-empty, %u batches in %u pieces (%.1f G multiply-adds), max %.1f MB Phi per batch; the calling thread spent %.1f ms on the counts (waiting for them, and what the stream held before them, unless a job) and the plan",
