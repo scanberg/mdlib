@@ -76,6 +76,7 @@ destruction.
 #include "md_gpu_error.h"
 
 #include <core/md_allocator.h>
+#include <core/md_array.h>
 #include <core/md_format.h>
 #include <core/md_common.h>
 #include <core/md_log.h>
@@ -149,63 +150,6 @@ destruction.
 #define MD_MTL_RELEASE(obj) do { if (obj) CFRelease((__bridge CFTypeRef)(obj)); } while (0)
 
 
-static inline uint64_t md_mtl_align_up(uint64_t v, uint64_t a) { return (v + a - 1) & ~(a - 1); }
-
-typedef struct md_mtl_vec_t {
-    void*  data;
-    size_t count;
-    size_t capacity;
-    size_t stride;
-} md_mtl_vec_t;
-
-static void md_mtl_vec_init(md_mtl_vec_t* v, size_t stride) {
-    v->data = NULL; v->count = 0; v->capacity = 0; v->stride = stride;
-}
-
-static bool md_mtl_vec_reserve(md_mtl_vec_t* v, struct md_allocator_i* alloc, size_t n) {
-    if (n <= v->capacity) return true;
-    size_t cap = v->capacity ? v->capacity * 2 : 16;
-    while (cap < n) cap *= 2;
-    void* mem = md_alloc(alloc, cap * v->stride);
-    if (!mem) return false;
-    if (v->data) {
-        memcpy(mem, v->data, v->count * v->stride);
-        md_free(alloc, v->data, v->capacity * v->stride);
-    }
-    v->data = mem;
-    v->capacity = cap;
-    return true;
-}
-
-static void* md_mtl_vec_push(md_mtl_vec_t* v, struct md_allocator_i* alloc) {
-    if (!md_mtl_vec_reserve(v, alloc, v->count + 1)) return NULL;
-    void* slot = (char*)v->data + v->count * v->stride;
-    memset(slot, 0, v->stride);
-    v->count++;
-    return slot;
-}
-
-static void md_mtl_vec_remove(md_mtl_vec_t* v, size_t i) {
-    char* base = (char*)v->data;
-    memmove(base + i * v->stride, base + (i + 1) * v->stride, (v->count - i - 1) * v->stride);
-    v->count--;
-}
-
-/* For vectors of pointers: remove the first element equal to `p`. */
-static void md_mtl_vec_remove_ptr(md_mtl_vec_t* v, const void* p) {
-    void** arr = (void**)v->data;
-    for (size_t i = 0; i < v->count; ++i) {
-        if (arr[i] == p) { md_mtl_vec_remove(v, i); return; }
-    }
-}
-
-static void md_mtl_vec_free(md_mtl_vec_t* v, struct md_allocator_i* alloc) {
-    if (v->data) md_free(alloc, v->data, v->capacity * v->stride);
-    v->data = NULL; v->count = 0; v->capacity = 0;
-}
-
-#define MD_MTL_VEC_AT(v, type, i) (((type*)(v).data)[i])
-
 /* =========================================================================
    2. Types
    ========================================================================= */
@@ -235,7 +179,7 @@ typedef struct md_mtl_page_t {
 } md_mtl_page_t;
 
 typedef struct md_mtl_arena_t {
-    md_mtl_vec_t pages;    /* md_mtl_page_t* */
+    MD_ARRAY_RAW_TYPE(md_mtl_page_t*) pages;
     size_t       current;
 } md_mtl_arena_t;
 
@@ -285,7 +229,7 @@ typedef struct md_gpu_stream {
     bool              has_work;
     md_gpu_ordering_t ordering;       /* see note 2 at the top */
 
-    md_mtl_vec_t      waits;          /* md_mtl_wait_t, encoded at the next command buffer */
+    MD_ARRAY_RAW_TYPE(md_mtl_wait_t) waits; /* encoded at the next command buffer */
 
     md_mtl_arena_t    arena;
 
@@ -409,15 +353,15 @@ typedef struct md_gpu_device {
     md_mutex_t device_mutex;
 
     md_gpu_heap_t heap;      /* md_gpu_malloc, md_gpu_free, temp scopes, address lookup */
-    md_mtl_vec_t textures;   /* md_gpu_texture_t, live */
+    MD_ARRAY_RAW_TYPE(md_gpu_texture_t) textures; /* live */
     uint64_t     texture_bytes;
-    md_mtl_vec_t kernels;    /* md_gpu_kernel_t */
-    md_mtl_vec_t pipelines;  /* md_gpu_pipeline_t */
-    md_mtl_vec_t surfaces;   /* md_gpu_surface_t */
-    md_mtl_vec_t streams;    /* md_gpu_stream_t */
-    md_mtl_vec_t hostfns;    /* md_mtl_hostfn_t */
-    md_mtl_vec_t retires;    /* md_mtl_retire_t */
-    md_mtl_vec_t live_res;   /* id<MTLResource>, for the no-residency-set path */
+    MD_ARRAY_RAW_TYPE(md_gpu_kernel_t) kernels;
+    MD_ARRAY_RAW_TYPE(md_gpu_pipeline_t) pipelines;
+    MD_ARRAY_RAW_TYPE(md_gpu_surface_t) surfaces;
+    MD_ARRAY_RAW_TYPE(md_gpu_stream_t) streams;
+    MD_ARRAY_RAW_TYPE(md_mtl_hostfn_t) hostfns;
+    MD_ARRAY_RAW_TYPE(md_mtl_retire_t) retires;
+    MD_ARRAY_RAW_TYPE(void*) live_res;   /* id<MTLResource>, bridged and unretained: the no-residency-set path */
     uint64_t     res_gen;    /* bumped whenever live_res gains a resource */
 
     md_gpu_stream_t default_compute;
@@ -483,8 +427,8 @@ static void md_mtl_make_resident_locked(md_gpu_device_t dev, id<MTLResource> res
         md_mtl_msg1(dev->residency_set, @selector(addAllocation:), res);
         md_mtl_msg0(dev->residency_set, @selector(commit));
     } else {
-        __unsafe_unretained id<MTLResource>* slot = (__unsafe_unretained id<MTLResource>*)md_mtl_vec_push(&dev->live_res, dev->alloc);
-        if (slot) *slot = res;
+        void* r = (__bridge void*)res;
+        (void)MD_ARRAY_TRY_PUSH(dev->live_res, r);
         dev->res_gen++;
     }
 }
@@ -495,7 +439,8 @@ static void md_mtl_end_residency_locked(md_gpu_device_t dev, id<MTLResource> res
         md_mtl_msg1(dev->residency_set, @selector(removeAllocation:), res);
         md_mtl_msg0(dev->residency_set, @selector(commit));
     } else {
-        md_mtl_vec_remove_ptr(&dev->live_res, (__bridge const void*)res);
+        void* r = (__bridge void*)res;
+        MD_ARRAY_REMOVE_ITEM(dev->live_res, r);
     }
 }
 
@@ -572,12 +517,12 @@ static void md_mtl_page_destroy(md_gpu_device_t dev, md_mtl_page_t* p) {
    the old (possibly completed) stamp would let a later allocation recycle the
    page -- cursor back to 0 -- over data the open command buffer still needs. */
 static bool md_mtl_page_fits(const md_mtl_page_t* p, uint64_t need, uint64_t align) {
-    return md_mtl_align_up(p->cursor, align) + need <= p->capacity;
+    return MD_ALIGN_TO(p->cursor, align) + need <= p->capacity;
 }
 
 static void md_mtl_page_take(md_mtl_page_t* p, uint64_t need, uint64_t align, uint64_t* out_addr, void** out_host,
                              id<MTLBuffer>* out_buf, uint64_t* out_off) {
-    const uint64_t at = md_mtl_align_up(p->cursor, align);
+    const uint64_t at = MD_ALIGN_TO(p->cursor, align);
     *out_addr = p->address + at;
     if (out_host) *out_host = p->host + at;
     if (out_buf)  *out_buf  = p->buffer;
@@ -591,24 +536,24 @@ static bool md_mtl_arena_alloc(md_gpu_stream_t s, size_t size, uint64_t align, u
     md_gpu_device_t dev = s->device;
     md_mtl_arena_t*  a   = &s->arena;
     if (align < MD_MTL_ARG_ALIGN) align = MD_MTL_ARG_ALIGN;
-    const uint64_t need = md_mtl_align_up(size, MD_MTL_ARG_ALIGN);
+    const uint64_t need = MD_ALIGN_TO(size, MD_MTL_ARG_ALIGN);
 
     const bool dedicated = need > MD_MTL_ARENA_DEDICATED;
     md_mtl_page_t* chosen = NULL;
-    if (!dedicated && a->current < a->pages.count) {
-        md_mtl_page_t* p = MD_MTL_VEC_AT(a->pages, md_mtl_page_t*, a->current);
+    if (!dedicated && a->current < a->pages.size) {
+        md_mtl_page_t* p = a->pages.data[a->current];
         if (!p->dedicated && md_mtl_page_fits(p, need, align)) chosen = p;
     }
     if (!chosen) {
         uint64_t done = md_mtl_stream_completed(s);
-        for (size_t i = 0; i < a->pages.count && !chosen;) {
-            md_mtl_page_t* p = MD_MTL_VEC_AT(a->pages, md_mtl_page_t*, i);
+        for (size_t i = 0; i < a->pages.size && !chosen;) {
+            md_mtl_page_t* p = a->pages.data[i];
             const bool retired = p->retire_value != 0 && p->retire_value <= done;
             if (p->dedicated) {
                 if (retired) {
                     md_mtl_page_destroy(dev, p);
-                    md_mtl_vec_remove(&a->pages, i);
-                    if (a->current > i || a->current >= a->pages.count) a->current = a->current > 0 ? a->current - 1 : 0;
+                    MD_ARRAY_REMOVE(a->pages, i);
+                    if (a->current > i || a->current >= a->pages.size) a->current = a->current > 0 ? a->current - 1 : 0;
                 } else {
                     ++i;
                 }
@@ -621,15 +566,13 @@ static bool md_mtl_arena_alloc(md_gpu_stream_t s, size_t size, uint64_t align, u
     }
     if (!chosen) {
         uint64_t page_size = MD_MTL_ARENA_PAGE_SIZE;
-        if (dedicated) page_size = md_mtl_align_up(need, 65536);
+        if (dedicated) page_size = MD_ALIGN_TO(need, 65536);
         else while (page_size < need) page_size *= 2;
         chosen = md_mtl_page_create(dev, page_size);
         if (!chosen) return md_gpu_fail("failed to allocate a transient page");
         chosen->dedicated = dedicated;
-        md_mtl_page_t** slot = (md_mtl_page_t**)md_mtl_vec_push(&a->pages, dev->alloc);
-        if (!slot) { md_mtl_page_destroy(dev, chosen); return md_gpu_fail("out of memory"); }
-        *slot = chosen;
-        if (!dedicated) a->current = a->pages.count - 1;
+        if (!MD_ARRAY_TRY_PUSH(a->pages, chosen)) { md_mtl_page_destroy(dev, chosen); return md_gpu_fail("out of memory"); }
+        if (!dedicated) a->current = a->pages.size - 1;
     }
     md_mtl_page_take(chosen, need, align, out_addr, out_host, out_buf, out_off);
     return true;
@@ -639,17 +582,17 @@ static bool md_mtl_arena_alloc(md_gpu_stream_t s, size_t size, uint64_t align, u
    overwrite an existing stamp -- see the note in md_gpu_vulkan.c. */
 static void md_mtl_arena_retire(md_gpu_stream_t s, uint64_t value) {
     md_mtl_arena_t* a = &s->arena;
-    for (size_t i = 0; i < a->pages.count; ++i) {
-        md_mtl_page_t* p = MD_MTL_VEC_AT(a->pages, md_mtl_page_t*, i);
+    for (size_t i = 0; i < a->pages.size; ++i) {
+        md_mtl_page_t* p = a->pages.data[i];
         if (p->cursor > 0) p->retire_value = value;
     }
 }
 
 static void md_mtl_arena_free(md_gpu_device_t dev, md_mtl_arena_t* a) {
-    for (size_t i = 0; i < a->pages.count; ++i) {
-        md_mtl_page_destroy(dev, MD_MTL_VEC_AT(a->pages, md_mtl_page_t*, i));
+    for (size_t i = 0; i < a->pages.size; ++i) {
+        md_mtl_page_destroy(dev, a->pages.data[i]);
     }
-    md_mtl_vec_free(&a->pages, dev->alloc);
+    MD_ARRAY_FREE(a->pages);
 }
 
 /* =========================================================================
@@ -669,12 +612,12 @@ static void md_mtl_retire_locked(md_gpu_device_t dev, md_mtl_retire_kind_t kind,
     r.kind   = kind;
     r.object = object;
 
-    const uint32_t n = (uint32_t)dev->streams.count;
+    const uint32_t n = (uint32_t)dev->streams.size;
     if (n > 0) r.waits = (md_mtl_wait_t*)md_alloc(dev->alloc, n * sizeof(md_mtl_wait_t));
     if (r.waits) {
         r.wait_capacity = n;
         for (uint32_t i = 0; i < n; ++i) {
-            md_gpu_stream_t s = MD_MTL_VEC_AT(dev->streams, md_gpu_stream_t, i);
+            md_gpu_stream_t s = dev->streams.data[i];
             uint64_t v = md_mtl_stream_position(s);
             if (v > 0 && md_mtl_stream_completed(s) < v) {
                 r.waits[r.wait_count].stream = s;
@@ -684,33 +627,30 @@ static void md_mtl_retire_locked(md_gpu_device_t dev, md_mtl_retire_kind_t kind,
         }
     }
 
-    md_mtl_retire_t* slot = NULL;
-    if (n == 0 || r.waits) slot = (md_mtl_retire_t*)md_mtl_vec_push(&dev->retires, dev->alloc);
-    if (!slot) {
+    if (!((n == 0 || r.waits) && MD_ARRAY_TRY_PUSH(dev->retires, r))) {
         md_gpu_fail("out of memory recording a deferred destruction; waiting for the device");
         if (r.waits) md_free(dev->alloc, r.waits, n * sizeof(md_mtl_wait_t));
         for (uint32_t i = 0; i < n; ++i) {
-            md_gpu_stream_t s = MD_MTL_VEC_AT(dev->streams, md_gpu_stream_t, i);
+            md_gpu_stream_t s = dev->streams.data[i];
             while (s->submitted_value > 0 && md_mtl_stream_completed(s) < s->submitted_value) md_thread_sleep(0);
         }
         (void)kind;
         md_mtl_texture_free(dev, (md_gpu_texture_t)object);
         return;
     }
-    *slot = r;
 }
 
 /* Caller holds device_mutex. */
 static void md_mtl_process_retires_locked(md_gpu_device_t dev, bool force) {
-    for (size_t i = 0; i < dev->retires.count;) {
-        md_mtl_retire_t* r = &MD_MTL_VEC_AT(dev->retires, md_mtl_retire_t, i);
+    for (size_t i = 0; i < dev->retires.size;) {
+        md_mtl_retire_t* r = &dev->retires.data[i];
         bool done = true;
         for (uint32_t w = 0; w < r->wait_count && done && !force; ++w) {
             if (md_mtl_stream_completed(r->waits[w].stream) < r->waits[w].value) done = false;
         }
         if (!done) { ++i; continue; }
         md_mtl_retire_t e = *r;
-        md_mtl_vec_remove(&dev->retires, i);
+        MD_ARRAY_REMOVE(dev->retires, i);
         md_mtl_texture_free(dev, (md_gpu_texture_t)e.object);
         if (e.waits) md_free(dev->alloc, e.waits, e.wait_capacity * sizeof(md_mtl_wait_t));
     }
@@ -720,21 +660,21 @@ static void md_mtl_process_retires_locked(md_gpu_device_t dev, bool force) {
    it. Caller holds device_mutex. */
 static void md_mtl_forget_stream_locked(md_gpu_device_t dev, md_gpu_stream_t s) {
     md_gpu_heap_forget_stream_locked(&dev->heap, s);
-    for (size_t i = 0; i < dev->hostfns.count; ++i) {
-        md_mtl_hostfn_t* h = &MD_MTL_VEC_AT(dev->hostfns, md_mtl_hostfn_t, i);
+    for (size_t i = 0; i < dev->hostfns.size; ++i) {
+        md_mtl_hostfn_t* h = &dev->hostfns.data[i];
         if (h->sync.stream == s) h->sync = md_gpu_sync_none();
     }
-    for (size_t i = 0; i < dev->retires.count; ++i) {
-        md_mtl_retire_t* r = &MD_MTL_VEC_AT(dev->retires, md_mtl_retire_t, i);
+    for (size_t i = 0; i < dev->retires.size; ++i) {
+        md_mtl_retire_t* r = &dev->retires.data[i];
         for (uint32_t w = 0; w < r->wait_count;) {
             if (r->waits[w].stream == s) r->waits[w] = r->waits[--r->wait_count];
             else ++w;
         }
     }
-    for (size_t i = 0; i < dev->streams.count; ++i) {
-        md_gpu_stream_t o = MD_MTL_VEC_AT(dev->streams, md_gpu_stream_t, i);
-        for (size_t w = 0; w < o->waits.count;) {
-            if (MD_MTL_VEC_AT(o->waits, md_mtl_wait_t, w).stream == s) md_mtl_vec_remove(&o->waits, w);
+    for (size_t i = 0; i < dev->streams.size; ++i) {
+        md_gpu_stream_t o = dev->streams.data[i];
+        for (size_t w = 0; w < o->waits.size;) {
+            if (o->waits.data[w].stream == s) MD_ARRAY_REMOVE(o->waits, w);
             else ++w;
         }
     }
@@ -766,11 +706,11 @@ static bool md_mtl_stream_ensure_cmd(md_gpu_stream_t s) {
             [cb encodeWaitForEvent:s->timeline value:s->submitted_value];
         }
         /* Pending cross-stream waits go at the head of the buffer. */
-        for (size_t i = 0; i < s->waits.count; ++i) {
-            md_mtl_wait_t w = MD_MTL_VEC_AT(s->waits, md_mtl_wait_t, i);
+        for (size_t i = 0; i < s->waits.size; ++i) {
+            md_mtl_wait_t w = s->waits.data[i];
             [cb encodeWaitForEvent:w.stream->timeline value:w.value];
         }
-        s->waits.count = 0;
+        s->waits.size = 0;
     }
     return true;
 }
@@ -856,9 +796,9 @@ static void md_mtl_declare_residency(md_gpu_stream_t s, id<MTLComputeCommandEnco
     if (dev->has_residency_set) return;
     md_mutex_lock(&dev->device_mutex);
     if (s->res_gen != dev->res_gen + 1) {
-        if (dev->live_res.count > 0) {
-            [enc useResources:(__unsafe_unretained id<MTLResource>*)dev->live_res.data
-                        count:dev->live_res.count
+        if (dev->live_res.size > 0) {
+            [enc useResources:(__unsafe_unretained id<MTLResource>*)(void*)dev->live_res.data
+                        count:dev->live_res.size
                         usage:MTLResourceUsageRead | MTLResourceUsageWrite];
         }
         s->res_gen = dev->res_gen + 1;   /* +1 so that 0 always means "not yet declared" */
@@ -936,9 +876,9 @@ static md_gpu_stream_t md_mtl_stream_create_internal(md_gpu_device_t dev, md_gpu
     s->next_value = 1;
     s->is_default = is_default;
     md_snprintf(s->label, sizeof(s->label), "%s", label ? label : "stream");
-    md_mtl_vec_init(&s->arena.pages, sizeof(md_mtl_page_t*));
+    MD_ARRAY_INIT(s->arena.pages, dev->alloc);
     md_gpu_heap_temps_init(&dev->heap, &s->temps);
-    md_mtl_vec_init(&s->waits, sizeof(md_mtl_wait_t));
+    MD_ARRAY_INIT(s->waits, dev->alloc);
 
     @autoreleasepool {
         /* Its own hardware queue, so two streams can genuinely run at once.
@@ -982,10 +922,9 @@ static md_gpu_stream_t md_mtl_stream_create_internal(md_gpu_device_t dev, md_gpu
     if (s->timing) s->timing->refs = 1;     /* without it the stream works as before, untimed */
 
     md_mutex_lock(&dev->device_mutex);
-    md_gpu_stream_t* slot = (md_gpu_stream_t*)md_mtl_vec_push(&dev->streams, dev->alloc);
-    if (slot) *slot = s;
+    const bool listed = MD_ARRAY_TRY_PUSH(dev->streams, s);
     md_mutex_unlock(&dev->device_mutex);
-    if (!slot) {
+    if (!listed) {
         md_mtl_timing_release(s->timing);
         MD_MTL_RELEASE(s->fence);
         MD_MTL_RELEASE(s->timeline);
@@ -1086,17 +1025,15 @@ void md_gpu_stream_wait(md_gpu_stream_t s, md_gpu_sync_t sync) {
         return;
     }
 
-    for (size_t i = 0; i < s->waits.count; ++i) {
-        md_mtl_wait_t* w = &MD_MTL_VEC_AT(s->waits, md_mtl_wait_t, i);
+    for (size_t i = 0; i < s->waits.size; ++i) {
+        md_mtl_wait_t* w = &s->waits.data[i];
         if (w->stream == sync.stream) {
             if (sync.value > w->value) w->value = sync.value;
             return;
         }
     }
-    md_mtl_wait_t* w = (md_mtl_wait_t*)md_mtl_vec_push(&s->waits, s->device->alloc);
-    if (!w) { md_gpu_fail("out of memory queueing a stream wait"); return; }
-    w->stream = sync.stream;
-    w->value  = sync.value;
+    const md_mtl_wait_t w = {sync.stream, sync.value};
+    if (!MD_ARRAY_TRY_PUSH(s->waits, w)) md_gpu_fail("out of memory queueing a stream wait");
 }
 
 void md_gpu_stream_flush(md_gpu_stream_t s) {
@@ -1141,7 +1078,7 @@ static void md_mtl_stream_free(md_gpu_stream_t s) {
     if (s->cmd) { MD_MTL_RELEASE(s->cmd); s->cmd = nil; }
     md_mtl_arena_free(dev, &s->arena);
     md_gpu_heap_temps_free(&dev->heap, &s->temps);
-    md_mtl_vec_free(&s->waits, dev->alloc);
+    MD_ARRAY_FREE(s->waits);
     MD_MTL_RELEASE(s->queue);
     MD_MTL_RELEASE(s->fence);
     MD_MTL_RELEASE(s->timeline);
@@ -1159,7 +1096,7 @@ void md_gpu_stream_destroy(md_gpu_stream_t s) {
     md_gpu_stream_sync(s);
 
     md_mutex_lock(&dev->device_mutex);
-    md_mtl_vec_remove_ptr(&dev->streams, s);
+    MD_ARRAY_REMOVE_ITEM(dev->streams, s);
     md_mtl_forget_stream_locked(dev, s);
     md_mutex_unlock(&dev->device_mutex);
 
@@ -1292,8 +1229,8 @@ bool md_gpu_copy(md_gpu_stream_t s, md_gpu_addr_t dst, md_gpu_addr_t src, size_t
 static bool md_mtl_stream_idle(md_gpu_stream_t s) {
     if (s->has_work || s->cmd) return false;
     if (md_mtl_stream_completed(s) < s->submitted_value) return false;
-    for (size_t i = 0; i < s->waits.count; ++i) {
-        md_mtl_wait_t w = MD_MTL_VEC_AT(s->waits, md_mtl_wait_t, i);
+    for (size_t i = 0; i < s->waits.size; ++i) {
+        md_mtl_wait_t w = s->waits.data[i];
         if (md_mtl_stream_completed(w.stream) < w.value) return false;
     }
     return true;
@@ -1328,7 +1265,7 @@ bool md_gpu_memset(md_gpu_stream_t s, md_gpu_addr_t dst, uint8_t value, size_t s
     /* fillBuffer's range must be 4-byte aligned on macOS, as for copies: fill
        the aligned middle, and the (at most 3-byte) head and tail by kernel. */
     const uint64_t begin = off, end = off + size;
-    const uint64_t abeg  = md_mtl_align_up(begin, 4);
+    const uint64_t abeg  = MD_ALIGN_TO(begin, 4);
     const uint64_t aend  = end & ~3ull;
     if (aend > abeg) {
         id<MTLBlitCommandEncoder> enc = md_mtl_blit_encoder(s);
@@ -1545,7 +1482,7 @@ static md_gpu_texture_t md_mtl_texture_create(md_gpu_stream_t s, const md_gpu_te
                    buffer offset is a heap offset. */
                 id<MTLHeap> heap = sp.buffer.heap;
                 td.resourceOptions = heap.resourceOptions;
-                tex = [heap newTextureWithDescriptor:td offset:(NSUInteger)md_mtl_align_up(sp.offset, sa.align)];
+                tex = [heap newTextureWithDescriptor:td offset:(NSUInteger)MD_ALIGN_TO(sp.offset, sa.align)];
                 if (!tex) ok = md_gpu_fail("%s '%s': placing %s failed", what, label, fi.name);
                 t->placed = true;
             }
@@ -1587,10 +1524,8 @@ static md_gpu_texture_t md_mtl_texture_create(md_gpu_stream_t s, const md_gpu_te
 
     md_mutex_lock(&dev->device_mutex);
     if (ok) {
-        md_gpu_texture_t* slot = (md_gpu_texture_t*)md_mtl_vec_push(&dev->textures, dev->alloc);
-        if (!slot) ok = md_gpu_fail("out of memory");
+        if (!MD_ARRAY_TRY_PUSH(dev->textures, t)) ok = md_gpu_fail("out of memory");
         else {
-            *slot = t;
             /* A residency set holds the chunk's buffer, which keeps its whole
                heap resident, placed textures included. useResources: does
                not reach from a buffer to its heap, so there they are listed. */
@@ -1635,7 +1570,7 @@ void md_gpu_texture_destroy(md_gpu_texture_t t) {
     if (t->external) { md_gpu_fail("md_gpu_texture_destroy: '%s' belongs to a surface and is not destroyed by the caller", t->label); return; }
     md_gpu_device_t dev = t->device;
     md_mutex_lock(&dev->device_mutex);
-    md_mtl_vec_remove_ptr(&dev->textures, t);
+    MD_ARRAY_REMOVE_ITEM(dev->textures, t);
     dev->texture_bytes -= t->bytes;
     md_mtl_retire_locked(dev, MD_MTL_RETIRE_TEXTURE, t);
     md_mutex_unlock(&dev->device_mutex);
@@ -2088,10 +2023,9 @@ md_gpu_kernel_t md_gpu_kernel_create(md_gpu_device_t dev, const md_gpu_kernel_de
     if (!k) return NULL;
 
     md_mutex_lock(&dev->device_mutex);
-    md_gpu_kernel_t* slot = (md_gpu_kernel_t*)md_mtl_vec_push(&dev->kernels, dev->alloc);
-    if (slot) *slot = k;
+    const bool listed = MD_ARRAY_TRY_PUSH(dev->kernels, k);
     md_mutex_unlock(&dev->device_mutex);
-    if (!slot) { md_mtl_kernel_free(dev, k); md_gpu_fail("out of memory"); return NULL; }
+    if (!listed) { md_mtl_kernel_free(dev, k); md_gpu_fail("out of memory"); return NULL; }
     return k;
 }
 
@@ -2101,7 +2035,7 @@ void md_gpu_kernel_destroy(md_gpu_kernel_t k) {
     if (!k) return;
     md_gpu_device_t dev = k->device;
     md_mutex_lock(&dev->device_mutex);
-    md_mtl_vec_remove_ptr(&dev->kernels, k);
+    MD_ARRAY_REMOVE_ITEM(dev->kernels, k);
     md_mutex_unlock(&dev->device_mutex);
     md_mtl_kernel_free(dev, k);
 }
@@ -2512,10 +2446,9 @@ md_gpu_pipeline_t md_gpu_pipeline_create(md_gpu_device_t dev, const md_gpu_pipel
     if (!ok) { md_mtl_pipeline_free(p); return NULL; }
 
     md_mutex_lock(&dev->device_mutex);
-    md_gpu_pipeline_t* slot = (md_gpu_pipeline_t*)md_mtl_vec_push(&dev->pipelines, dev->alloc);
-    if (slot) *slot = p;
+    const bool listed = MD_ARRAY_TRY_PUSH(dev->pipelines, p);
     md_mutex_unlock(&dev->device_mutex);
-    if (!slot) { md_mtl_pipeline_free(p); md_gpu_fail("out of memory"); return NULL; }
+    if (!listed) { md_mtl_pipeline_free(p); md_gpu_fail("out of memory"); return NULL; }
     return p;
 }
 
@@ -2525,7 +2458,7 @@ void md_gpu_pipeline_destroy(md_gpu_pipeline_t p) {
     if (!p) return;
     md_gpu_device_t dev = p->device;
     md_mutex_lock(&dev->device_mutex);
-    md_mtl_vec_remove_ptr(&dev->pipelines, p);
+    MD_ARRAY_REMOVE_ITEM(dev->pipelines, p);
     md_mutex_unlock(&dev->device_mutex);
     md_mtl_pipeline_free(p);
 }
@@ -2659,9 +2592,9 @@ static void md_mtl_declare_residency_render(md_gpu_stream_t s, id<MTLRenderComma
     if (dev->has_residency_set) return;
     md_mutex_lock(&dev->device_mutex);
     if (s->res_gen != dev->res_gen + 1) {
-        if (dev->live_res.count > 0) {
-            [enc useResources:(__unsafe_unretained id<MTLResource>*)dev->live_res.data
-                        count:dev->live_res.count
+        if (dev->live_res.size > 0) {
+            [enc useResources:(__unsafe_unretained id<MTLResource>*)(void*)dev->live_res.data
+                        count:dev->live_res.size
                         usage:MTLResourceUsageRead | MTLResourceUsageWrite
                        stages:MTLRenderStageVertex | MTLRenderStageFragment];
         }
@@ -3109,10 +3042,9 @@ md_gpu_surface_t md_gpu_surface_create(md_gpu_device_t dev, const md_gpu_surface
     }
 
     md_mutex_lock(&dev->device_mutex);
-    md_gpu_surface_t* slot = (md_gpu_surface_t*)md_mtl_vec_push(&dev->surfaces, dev->alloc);
-    if (slot) *slot = sf;
+    const bool listed = MD_ARRAY_TRY_PUSH(dev->surfaces, sf);
     md_mutex_unlock(&dev->device_mutex);
-    if (!slot) {
+    if (!listed) {
         MD_MTL_RELEASE(sf->layer);
         md_free(dev->alloc, sf, sizeof(*sf));
         md_gpu_fail("out of memory");
@@ -3139,7 +3071,7 @@ void md_gpu_surface_destroy(md_gpu_surface_t sf) {
     if (!sf) return;
     md_gpu_device_t dev = sf->device;
     md_mutex_lock(&dev->device_mutex);
-    md_mtl_vec_remove_ptr(&dev->surfaces, sf);
+    MD_ARRAY_REMOVE_ITEM(dev->surfaces, sf);
     md_mtl_surface_release_locked(sf);
     md_mutex_unlock(&dev->device_mutex);
     /* The layer is retained by its view and by any command buffer presenting
@@ -3244,10 +3176,10 @@ bool md_gpu_sync_on_complete(md_gpu_device_t dev, md_gpu_sync_t sync, md_gpu_hos
     if (!dev || !fn) return md_gpu_fail("md_gpu_sync_on_complete: null argument");
     if (md_gpu_sync_is_valid(sync) && sync.stream->device != dev) return md_gpu_fail("md_gpu_sync_on_complete: sync from another device");
     md_mutex_lock(&dev->device_mutex);
-    md_mtl_hostfn_t* h = (md_mtl_hostfn_t*)md_mtl_vec_push(&dev->hostfns, dev->alloc);
-    if (h) { h->sync = sync; h->fn = fn; h->user = user; }
+    const md_mtl_hostfn_t h = {sync, fn, user};
+    const bool listed = MD_ARRAY_TRY_PUSH(dev->hostfns, h);
     md_mutex_unlock(&dev->device_mutex);
-    return h ? true : md_gpu_fail("out of memory");
+    return listed ? true : md_gpu_fail("out of memory");
 }
 
 bool md_gpu_launch_host_fn(md_gpu_stream_t s, md_gpu_host_fn fn, void* user) {
@@ -3263,33 +3195,34 @@ typedef struct md_mtl_snapshot_t {
     md_gpu_stream_t stream;
     uint64_t        completed;
 } md_mtl_snapshot_t;
+MD_ARRAY_RAW_DEFINE_TYPE(md_mtl_snapshot_array_t, md_mtl_snapshot_t);
 
-static bool md_mtl_snapshot_complete(md_gpu_device_t dev, md_mtl_vec_t* snap, md_gpu_sync_t sync) {
+static bool md_mtl_snapshot_complete(md_gpu_device_t dev, md_mtl_snapshot_array_t* snap, md_gpu_sync_t sync) {
     if (!md_gpu_sync_is_valid(sync)) return true;
-    for (size_t i = 0; i < snap->count; ++i) {
-        md_mtl_snapshot_t* e = &MD_MTL_VEC_AT(*snap, md_mtl_snapshot_t, i);
+    for (size_t i = 0; i < snap->size; ++i) {
+        md_mtl_snapshot_t* e = &snap->data[i];
         if (e->stream == sync.stream) return e->completed >= sync.value;
     }
     uint64_t completed = md_mtl_stream_completed(sync.stream);
-    md_mtl_snapshot_t* e = (md_mtl_snapshot_t*)md_mtl_vec_push(snap, dev->alloc);
-    if (e) { e->stream = sync.stream; e->completed = completed; }
+    const md_mtl_snapshot_t e = {sync.stream, completed};
+    (void)MD_ARRAY_TRY_PUSH(*snap, e);
     return completed >= sync.value;
 }
 
 uint32_t md_gpu_device_poll(md_gpu_device_t dev) {
     if (!dev) return 0;
     uint32_t fired = 0;
-    md_mtl_vec_t snap;
-    md_mtl_vec_init(&snap, sizeof(md_mtl_snapshot_t));
+    md_mtl_snapshot_array_t snap;
+    MD_ARRAY_INIT(snap, dev->alloc);
     for (;;) {
         md_mtl_hostfn_t ready;
         bool have = false;
         md_mutex_lock(&dev->device_mutex);
-        for (size_t i = 0; i < dev->hostfns.count; ++i) {
-            md_mtl_hostfn_t* h = &MD_MTL_VEC_AT(dev->hostfns, md_mtl_hostfn_t, i);
+        for (size_t i = 0; i < dev->hostfns.size; ++i) {
+            md_mtl_hostfn_t* h = &dev->hostfns.data[i];
             if (!md_mtl_snapshot_complete(dev, &snap, h->sync)) continue;
             ready = *h;
-            md_mtl_vec_remove(&dev->hostfns, i);
+            MD_ARRAY_REMOVE(dev->hostfns, i);
             have = true;
             break;
         }
@@ -3298,7 +3231,7 @@ uint32_t md_gpu_device_poll(md_gpu_device_t dev) {
         ready.fn(ready.user);
         fired++;
     }
-    md_mtl_vec_free(&snap, dev->alloc);
+    MD_ARRAY_FREE(snap);
 
     md_mutex_lock(&dev->device_mutex);
     md_mtl_process_retires_locked(dev, false);
@@ -3415,19 +3348,19 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
     if (!dev) { md_gpu_fail("out of memory"); return NULL; }
     memset(dev, 0, sizeof(*dev));
     dev->alloc = alloc;
-    md_mtl_vec_init(&dev->textures, sizeof(md_gpu_texture_t));
+    MD_ARRAY_INIT(dev->textures, alloc);
     {
         const char* env = md_os_env_get("MD_GPU_DEBUG_MEMORY");
         const bool debug_memory = (desc && desc->debug_memory) || (env && env[0] && strcmp(env, "0") != 0);
         md_mtl_heap_init(dev, desc ? desc->heap_cache_limit : 0, debug_memory);
     }
-    md_mtl_vec_init(&dev->kernels,  sizeof(md_gpu_kernel_t));
-    md_mtl_vec_init(&dev->pipelines, sizeof(md_gpu_pipeline_t));
-    md_mtl_vec_init(&dev->surfaces, sizeof(md_gpu_surface_t));
-    md_mtl_vec_init(&dev->streams,  sizeof(md_gpu_stream_t));
-    md_mtl_vec_init(&dev->hostfns,  sizeof(md_mtl_hostfn_t));
-    md_mtl_vec_init(&dev->retires,  sizeof(md_mtl_retire_t));
-    md_mtl_vec_init(&dev->live_res, sizeof(id));
+    MD_ARRAY_INIT(dev->kernels, alloc);
+    MD_ARRAY_INIT(dev->pipelines, alloc);
+    MD_ARRAY_INIT(dev->surfaces, alloc);
+    MD_ARRAY_INIT(dev->streams, alloc);
+    MD_ARRAY_INIT(dev->hostfns, alloc);
+    MD_ARRAY_INIT(dev->retires, alloc);
+    MD_ARRAY_INIT(dev->live_res, alloc);
     md_mutex_init(&dev->queue_mutex);
     md_mutex_init(&dev->device_mutex);
 
@@ -3552,23 +3485,23 @@ void md_gpu_device_destroy(md_gpu_device_t dev) {
     struct md_allocator_i* alloc = dev->alloc;
 
     /* Flush and idle every stream, then fire what is pending. */
-    for (size_t i = 0; i < dev->streams.count; ++i) {
-        md_gpu_stream_t s = MD_MTL_VEC_AT(dev->streams, md_gpu_stream_t, i);
+    for (size_t i = 0; i < dev->streams.size; ++i) {
+        md_gpu_stream_t s = dev->streams.data[i];
         s->upload_open = false;
         md_mtl_abandon_pass(s);
         md_mtl_stream_submit(s);
     }
-    for (size_t i = 0; i < dev->streams.count; ++i) {
-        md_gpu_stream_t s = MD_MTL_VEC_AT(dev->streams, md_gpu_stream_t, i);
+    for (size_t i = 0; i < dev->streams.size; ++i) {
+        md_gpu_stream_t s = dev->streams.data[i];
         if (s->submitted_value > 0) md_mtl_event_wait(s->timeline, s->submitted_value);
     }
     md_gpu_device_poll(dev);
 
     /* Everything the caller did not destroy, the device does. */
-    while (dev->textures.count > 0) md_gpu_texture_destroy(MD_MTL_VEC_AT(dev->textures, md_gpu_texture_t, 0));
-    while (dev->kernels.count > 0) md_gpu_kernel_destroy(MD_MTL_VEC_AT(dev->kernels, md_gpu_kernel_t, 0));
-    while (dev->pipelines.count > 0) md_gpu_pipeline_destroy(MD_MTL_VEC_AT(dev->pipelines, md_gpu_pipeline_t, 0));
-    while (dev->surfaces.count > 0) md_gpu_surface_destroy(MD_MTL_VEC_AT(dev->surfaces, md_gpu_surface_t, 0));
+    while (dev->textures.size > 0) md_gpu_texture_destroy(dev->textures.data[0]);
+    while (dev->kernels.size > 0) md_gpu_kernel_destroy(dev->kernels.data[0]);
+    while (dev->pipelines.size > 0) md_gpu_pipeline_destroy(dev->pipelines.data[0]);
+    while (dev->surfaces.size > 0) md_gpu_surface_destroy(dev->surfaces.data[0]);
     if (dev->make_grid_kernel) md_mtl_kernel_free(dev, dev->make_grid_kernel);
     if (dev->byte_op_kernel)   md_mtl_kernel_free(dev, dev->byte_op_kernel);
 
@@ -3576,21 +3509,21 @@ void md_gpu_device_destroy(md_gpu_device_t dev) {
     md_mtl_process_retires_locked(dev, true);
     md_mutex_unlock(&dev->device_mutex);
 
-    for (size_t i = 0; i < dev->streams.count; ++i) {
-        md_mtl_stream_free(MD_MTL_VEC_AT(dev->streams, md_gpu_stream_t, i));
+    for (size_t i = 0; i < dev->streams.size; ++i) {
+        md_mtl_stream_free(dev->streams.data[i]);
     }
-    md_mtl_vec_free(&dev->streams, alloc);
+    MD_ARRAY_FREE(dev->streams);
     md_gpu_heap_destroy(&dev->heap);
-    md_mtl_vec_free(&dev->textures, alloc);
-    md_mtl_vec_free(&dev->kernels, alloc);
-    md_mtl_vec_free(&dev->pipelines, alloc);
-    md_mtl_vec_free(&dev->surfaces, alloc);
+    MD_ARRAY_FREE(dev->textures);
+    MD_ARRAY_FREE(dev->kernels);
+    MD_ARRAY_FREE(dev->pipelines);
+    MD_ARRAY_FREE(dev->surfaces);
     for (int c = 0; c < 8; ++c) for (int w = 0; w < 2; ++w) MD_MTL_RELEASE(dev->depth_states[c][w]);
 
     for (uint32_t i = 0; i < dev->sampler_count; ++i) MD_MTL_RELEASE(dev->samplers[i].sampler);
-    md_mtl_vec_free(&dev->hostfns,  alloc);
-    md_mtl_vec_free(&dev->retires,  alloc);
-    md_mtl_vec_free(&dev->live_res, alloc);
+    MD_ARRAY_FREE(dev->hostfns);
+    MD_ARRAY_FREE(dev->retires);
+    MD_ARRAY_FREE(dev->live_res);
     if (dev->residency_set) MD_MTL_RELEASE(dev->residency_set);
     md_mutex_destroy(&dev->queue_mutex);
     md_mutex_destroy(&dev->device_mutex);

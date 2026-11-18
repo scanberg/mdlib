@@ -55,19 +55,6 @@ typedef struct md_gpu_heap_pending_free_t {
     uint64_t          value;
 } md_gpu_heap_pending_free_t;
 
-/* ---- Arrays --------------------------------------------------------------------
-   md_array.h has no ordered removal: the registry stays sorted and the temp
-   arenas are stacks. */
-
-#define MD_GPU_HEAP_REMOVE_AT(arr, i) \
-    (md_memmove((arr).data + (i), (arr).data + (i) + 1, ((arr).size - (i) - 1) * sizeof(*(arr).data)), (arr).size--)
-
-static void md_gpu_heap_remove_chunk(md_gpu_chunk_array_t* arr, const md_gpu_chunk_t* c) {
-    for (size_t i = 0; i < arr->size; ++i) {
-        if (arr->data[i] == c) { MD_GPU_HEAP_REMOVE_AT(*arr, i); return; }
-    }
-}
-
 /* ---- Registry ------------------------------------------------------------------ */
 
 /* Binary search for the range containing `address`. */
@@ -96,16 +83,12 @@ static size_t md_gpu_heap_registry_lower_bound(const md_gpu_heap_t* h, uint64_t 
 }
 
 static bool md_gpu_heap_registry_insert_locked(md_gpu_heap_t* h, md_gpu_heap_range_t* r) {
-    const size_t at = md_gpu_heap_registry_lower_bound(h, r->address);
-    if (!MD_ARRAY_TRY_EXTEND(h->registry, 1)) return false;
-    md_memmove(h->registry.data + at + 1, h->registry.data + at, (h->registry.size - 1 - at) * sizeof(*h->registry.data));
-    h->registry.data[at] = r;
-    return true;
+    return MD_ARRAY_TRY_INSERT(h->registry, md_gpu_heap_registry_lower_bound(h, r->address), r);
 }
 
 static void md_gpu_heap_registry_remove_locked(md_gpu_heap_t* h, md_gpu_heap_range_t* r) {
     const size_t at = md_gpu_heap_registry_lower_bound(h, r->address);
-    if (at < h->registry.size && h->registry.data[at] == r) MD_GPU_HEAP_REMOVE_AT(h->registry, at);
+    if (at < h->registry.size && h->registry.data[at] == r) MD_ARRAY_REMOVE(h->registry, at);
 }
 
 /* The registry is mutated by malloc on other threads, so the lookup takes the
@@ -180,7 +163,7 @@ static void md_gpu_heap_release_node_locked(md_gpu_heap_t* h, md_gpu_mem_kind_t 
     hk->empty_bytes += c->size;
     if (hk->empty_bytes > h->cache_limit) {
         md_tlsf_remove_region(&hk->tlsf, f);
-        md_gpu_heap_remove_chunk(&hk->chunks, c);
+        MD_ARRAY_REMOVE_ITEM(hk->chunks, c);
         hk->empty_bytes -= c->size;
         hk->reserved    -= c->size;
         h->backend.chunk_destroy(h->backend.user, c);
@@ -190,7 +173,7 @@ static void md_gpu_heap_release_node_locked(md_gpu_heap_t* h, md_gpu_mem_kind_t 
 /* Give a debug memory allocation's chunk back: the GPU is done with it. */
 static void md_gpu_heap_own_release_locked(md_gpu_heap_t* h, md_gpu_mem_kind_t kind, md_gpu_chunk_t* c) {
     md_gpu_heap_kind_t* hk = &h->kinds[kind];
-    md_gpu_heap_remove_chunk(&hk->chunks, c);
+    MD_ARRAY_REMOVE_ITEM(hk->chunks, c);
     hk->reserved -= c->size;
     h->backend.chunk_destroy(h->backend.user, c);
 }
@@ -204,7 +187,7 @@ void md_gpu_heap_poll_locked(md_gpu_heap_t* h) {
     for (size_t i = 0; i < h->pending_frees.size;) {
         const md_gpu_heap_pending_free_t pf = h->pending_frees.data[i];
         if (h->backend.stream_completed(pf.stream) >= pf.value) {
-            MD_GPU_HEAP_REMOVE_AT(h->pending_frees, i);
+            MD_ARRAY_REMOVE(h->pending_frees, i);
             md_gpu_heap_release_free_locked(h, &pf);
         } else {
             ++i;
@@ -216,7 +199,7 @@ void md_gpu_heap_forget_stream_locked(md_gpu_heap_t* h, md_gpu_stream_t s) {
     for (size_t i = 0; i < h->pending_frees.size;) {
         const md_gpu_heap_pending_free_t pf = h->pending_frees.data[i];
         if (pf.stream == s) {
-            MD_GPU_HEAP_REMOVE_AT(h->pending_frees, i);
+            MD_ARRAY_REMOVE(h->pending_frees, i);
             md_gpu_heap_release_free_locked(h, &pf);
         } else {
             ++i;
@@ -239,7 +222,7 @@ static md_tlsf_node_t* md_gpu_heap_alloc_locked(md_gpu_heap_t* h, md_gpu_stream_
             if (pf->node->size < need || pf->node->size > need + need / 4 + MD_GPU_HEAP_ALIGN) continue;
             if (!h->backend.reuse_early(s)) break;
             node = pf->node;
-            MD_GPU_HEAP_REMOVE_AT(h->pending_frees, i);
+            MD_ARRAY_REMOVE(h->pending_frees, i);
             break;
         }
     }
@@ -408,7 +391,7 @@ static md_gpu_chunk_t* md_gpu_heap_temp_acquire(md_gpu_heap_t* h, md_gpu_heap_te
         md_mutex_lock(h->mutex);
         for (size_t i = 0; i < spare->size;) {
             md_gpu_chunk_t* sp = spare->data[i];
-            if (sp->retire_value <= done) { MD_GPU_HEAP_REMOVE_AT(*spare, i); md_gpu_heap_temp_chunk_destroy_locked(h, sp); }
+            if (sp->retire_value <= done) { MD_ARRAY_REMOVE(*spare, i); md_gpu_heap_temp_chunk_destroy_locked(h, sp); }
             else ++i;
         }
         md_mutex_unlock(h->mutex);
@@ -418,14 +401,14 @@ static md_gpu_chunk_t* md_gpu_heap_temp_acquire(md_gpu_heap_t* h, md_gpu_heap_te
             if (sp->retire_value <= done && sp->size >= need) {
                 c = sp;
                 c->cursor = 0;
-                MD_GPU_HEAP_REMOVE_AT(*spare, i);
+                MD_ARRAY_REMOVE(*spare, i);
             }
         }
         for (size_t i = spare->size; i-- > 0 && !c;) {
             md_gpu_chunk_t* sp = spare->data[i];
             if (sp->cursor + need <= sp->size) {
                 c = sp;
-                MD_GPU_HEAP_REMOVE_AT(*spare, i);
+                MD_ARRAY_REMOVE(*spare, i);
             }
         }
     }
