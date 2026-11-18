@@ -52,7 +52,7 @@ bool md_topology_system_init(struct md_system_t* sys, struct md_system_state_t* 
 
 // Applies the topology to a loaded system of the same atoms in the same order: the atom count and every atom name
 // (compared as structure files truncate them) must agree, and the residue boundaries where the residue counts do.
-// The topology's bonds replace all those given but those the user made, every atom has its bonds given complete
+// The topology's bonds replace those the data gave (the user's are apart), every atom has its bonds given complete
 // (md_atom_data_t::bonds_complete), 'atom/charge' and 'atom/mass' are published, and the system is inferred again
 // (md_system_infer, from its reference state). Nothing changes when they do not agree.
 bool md_topology_system_supplement(struct md_system_t* sys, const md_topology_desc_t* desc, md_str_t filename);

@@ -141,13 +141,6 @@ void md_bond_build_connectivity(md_bond_data_t* in_out_bond, size_t atom_count, 
 	build_connectivity(&in_out_bond->conn, in_out_bond->pairs, in_out_bond->flags, in_out_bond->count, atom_count, alloc);
 }
 
-void md_bond_given_reserve(md_bond_data_t* given, size_t count, md_allocator_i* alloc) {
-    MD_ASSERT(given);
-    MD_ASSERT(alloc);
-    md_array_ensure(given->pairs, count + MD_BOND_GIVEN_SLACK, alloc);
-    md_array_ensure(given->flags, count + MD_BOND_GIVEN_SLACK, alloc);
-}
-
 void md_bond_data_free(md_bond_data_t* bond, md_allocator_i* alloc) {
     MD_ASSERT(bond);
     MD_ASSERT(alloc);

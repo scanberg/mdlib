@@ -346,8 +346,8 @@ UTEST(itp, supplement_replaces_only_covered_bonds) {
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, gro, NULL));
 
-    md_system_bond_insert(&sys, 1, 2, MD_BOND_FLAG_NONE);           // from the file, inside: replaced
-    md_system_bond_insert(&sys, 14, 15, MD_BOND_FLAG_NONE);         // from the file, outside: kept
+    md_bond_insert(&sys.given_bond, 1, 2, MD_BOND_FLAG_NONE, sys.alloc);      // from the file, inside: replaced
+    md_bond_insert(&sys.given_bond, 14, 15, MD_BOND_FLAG_NONE, sys.alloc);    // from the file, outside: kept
     md_system_bond_insert(&sys, 3, 4, md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_USER));   // user: kept, and last
 
     md_itp_data_t data = {0};

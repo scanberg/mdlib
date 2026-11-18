@@ -140,25 +140,51 @@ static bool infer_layer(md_system_t* sys, const md_executor_t* executor) {
     }
     PROFILE_STEP("setup");
 
-    // The bonds: those given, and those inferred between the atoms whose bonds are not all given (bonds_complete). A
-    // system a topology describes whole (a TPR, a prmtop) has its bonds, and none is inferred: a metal ion its force
-    // field leaves without bonds has none. Beads are bonded too: a coarse grained system gets the bonds of its model's
-    // topologies (mdi_infer_coarse_grained_bonds). Without bonds given (most structure files) the inferred are the
-    // bonds, and nothing is merged.
+    // The bonds: those given (the data's, then the user's), and those inferred between the atoms whose bonds are not
+    // all given (bonds_complete). A system a topology describes whole (a TPR, a prmtop) has its bonds, and none is
+    // inferred: a metal ion its force field leaves without bonds has none. Beads are bonded too: a coarse grained
+    // system gets the bonds of its model's topologies (mdi_infer_coarse_grained_bonds). Without bonds given (most
+    // structure files) the inferred are the bonds, and nothing is merged.
     {
         size_t num_complete = 0;
         if (sys->atom.bonds_complete) {
             for (size_t i = 0; i < N; ++i) num_complete += sys->atom.bonds_complete[i] != 0;
         }
-        const size_t num_given = sys->given_bond.count + sys->given_bond.noncovalent_count;
+        const md_bond_data_t* data = &sys->given_bond;
+        const md_bond_data_t* user = &sys->user_bond;
+        const size_t num_given = data->count + data->noncovalent_count + user->count + user->noncovalent_count;
         md_bond_data_t bonds = {0};
         if (num_given == 0 && num_complete == 0) {
             md_bond_infer(&bonds, sys, state, alloc, executor);
         } else {
             md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+            md_allocator_i* temp_alloc = md_temp_allocator(temp);
+            // The data's and the user's, as one: the bonds of the graph of each, then the non-covalent bonds of each
+            md_bond_data_t given = *data;
+            if (user->count + user->noncovalent_count) {
+                given = (md_bond_data_t){
+                    .count = data->count + user->count,
+                    .noncovalent_count = data->noncovalent_count + user->noncovalent_count,
+                };
+                md_array_resize(given.pairs, num_given, temp_alloc);
+                md_array_resize(given.flags, num_given, temp_alloc);
+                const md_bond_data_t* parts[2] = { data, user };
+                size_t at = 0;
+                for (int range = 0; range < 2; ++range) {
+                    for (int k = 0; k < 2; ++k) {
+                        const size_t beg = range ? parts[k]->count : 0;
+                        const size_t n = range ? parts[k]->noncovalent_count : parts[k]->count;
+                        if (n) {
+                            md_memcpy(given.pairs + at, parts[k]->pairs + beg, n * sizeof(md_atom_pair_t));
+                            md_memcpy(given.flags + at, parts[k]->flags + beg, n * sizeof(md_bond_flags_t));
+                        }
+                        at += n;
+                    }
+                }
+            }
             md_bond_data_t inferred = {0};
-            if (num_complete < N) md_bond_infer(&inferred, sys, state, md_temp_allocator(temp), executor);
-            md_bond_merge(&bonds, &sys->given_bond, &inferred, num_complete ? sys->atom.bonds_complete : NULL, N, alloc);
+            if (num_complete < N) md_bond_infer(&inferred, sys, state, temp_alloc, executor);
+            md_bond_merge(&bonds, &given, &inferred, num_complete ? sys->atom.bonds_complete : NULL, N, alloc);
             md_temp_end(temp);
         }
         sys->bond = bonds;

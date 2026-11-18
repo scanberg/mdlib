@@ -1078,7 +1078,6 @@ static bool h5md_system_from_core(md_system_t* sys, md_system_state_t* state, hi
     h5md_read_bonds(&bonds, file, p, scratch);
     const size_t num_bonds = md_array_size(bonds);
     md_bond_data_t* given = &sys->given_bond;
-    md_bond_given_reserve(given, num_bonds, sys->alloc);
     md_array_resize(given->pairs, num_bonds, sys->alloc);
     md_array_resize(given->flags, num_bonds, sys->alloc);
     if (num_bonds) md_memcpy(given->pairs, bonds, num_bonds * sizeof(md_atom_pair_t));

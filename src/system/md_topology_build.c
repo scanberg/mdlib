@@ -140,7 +140,6 @@ bool md_topology_system_init(md_system_t* sys, md_system_state_t* state, const m
     {
         const md_bond_flags_t flags = md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_TOPOLOGY);
         md_bond_data_t* given = &sys->given_bond;
-        md_bond_given_reserve(given, d.num_bonds, alloc);
         md_array_resize(given->pairs, d.num_bonds, alloc);
         md_array_resize(given->flags, d.num_bonds, alloc);
         size_t kept = 0;
@@ -237,14 +236,15 @@ bool md_topology_system_supplement(md_system_t* sys, const md_topology_desc_t* d
         }
     }
 
-    // ## Bonds: the topology's, of every atom, replace all those given but the user's, which are kept, as are the
-    // non-covalent ones
+    // ## Bonds: the topology's, of every atom, replace those the data gave of the graph; its non-covalent ones are kept,
+    // and the user's are apart (md_system_t::user_bond)
     {
         const md_bond_data_t* old = &sys->given_bond;
         const size_t old_count = old->count;
         const size_t num_noncovalent = old->noncovalent_count;
         md_bond_data_t given = {0};
-        md_bond_given_reserve(&given, d.num_bonds + old_count + num_noncovalent, sys->alloc);
+        md_array_ensure(given.pairs, d.num_bonds + num_noncovalent, sys->alloc);
+        md_array_ensure(given.flags, d.num_bonds + num_noncovalent, sys->alloc);
         for (size_t b = 0; b < d.num_bonds; ++b) {
             const md_atom_pair_t pair = d.bonds[b];
             if (md_atom_particle_kind(&sys->atom, (size_t)pair.idx[0]) == MD_PARTICLE_VIRTUAL_SITE ||
@@ -253,8 +253,7 @@ bool md_topology_system_supplement(md_system_t* sys, const md_topology_desc_t* d
             md_array_push_no_grow(given.flags, md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_TOPOLOGY));
         }
         const size_t num_topology = md_array_size(given.pairs);
-        for (size_t i = 0; i < old_count + num_noncovalent; ++i) {
-            if (i < old_count && md_bond_origin(old->flags[i]) != MD_BOND_ORIGIN_USER) continue;
+        for (size_t i = old_count; i < old_count + num_noncovalent; ++i) {
             md_array_push_no_grow(given.pairs, old->pairs[i]);
             md_array_push_no_grow(given.flags, old->flags[i]);
         }

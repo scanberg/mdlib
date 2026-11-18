@@ -23,7 +23,7 @@
     X(instance.part_type.id) X(instance.part_type.flags) X(instance.mol_type.flags) \
     X(assembly.id) X(assembly.group_offset) X(assembly.group_inst_offset) X(assembly.inst) X(assembly.group_oper_offset) \
     X(assembly.oper) X(assembly.oper_id) X(assembly.oper_transform) \
-    X(given_bond.pairs) X(given_bond.flags)
+    X(given_bond.pairs) X(given_bond.flags) X(user_bond.pairs) X(user_bond.flags)
 
 #define MD_SYSTEM_DERIVED_ARRAYS(X) \
     X(atom.flags) X(atom.formal_charge) X(atom.hydrogen_count) \
