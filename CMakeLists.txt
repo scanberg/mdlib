@@ -360,38 +360,28 @@ set(TOPO_SLANG_FILES
 # The GTO critical point search: its kernels share one argument struct.
 set(TOPO_GTO_SLANG_FILE src/shaders/topo/topo_gto_cube.slang)
 
+# One kernel per pass for both block shapes (8x8x8, and 32x16x1 for a grid of one layer: the shape an argument,
+# gto_gemm_args.slang), but the shell kernel's, which keeps one per shape
 set(GTO_SLANG_FILES
+  # the references (the GPU tests' oracles, and MD_GTO_GPU_*_ALGO=reference)
   src/shaders/gto/eval_gto_density.slang
   src/shaders/gto/eval_gto_localization.slang
   src/shaders/gto/eval_gto_mo.slang
+  # the orbitals' shell kernel, 1 or 8 a pass, per block shape
   src/shaders/gto/eval_gto_mo_shell_v4_m1.slang
   src/shaders/gto/eval_gto_mo_shell_v4_m8.slang
-  src/shaders/gto/eval_gto_mo_gemm_128x32.slang
-  # the same for a grid of one layer (the image of a plane): blocks of 32x16x1 voxels
-  src/shaders/gto/eval_gto_localization_2d.slang
   src/shaders/gto/eval_gto_mo_shell_v4_m1_2d.slang
   src/shaders/gto/eval_gto_mo_shell_v4_m8_2d.slang
-  src/shaders/gto/eval_gto_mo_gemm_128x32_2d.slang
-  # the density's GEMM pass on the GEMM core (gto_gemm_core.slang); the orbitals' (eval_gto_mo_gemm) is on it too
+  # the density's and the orbitals' GEMM passes on the GEMM core (gto_gemm_core.slang)
   src/shaders/gto/eval_gto_density_core_128x32.slang
   src/shaders/gto/eval_gto_density_core_128x64.slang
-  src/shaders/gto/eval_gto_density_core_128x32_2d.slang
-  src/shaders/gto/eval_gto_density_core_128x64_2d.slang
-  # MEASUREMENT (temporary, md_gto_gpu_switches_t.block_runtime): the block shape an argument, one kernel for both
-  # shapes; the per shape ones go once it is measured (or these do)
-  src/shaders/gto/eval_gto_density_core_128x32_rt.slang
-  src/shaders/gto/eval_gto_density_core_128x64_rt.slang
-  src/shaders/gto/eval_gto_mo_gemm_128x32_rt.slang
-  src/shaders/gto/eval_gto_mo_shell_v4_m1_rt.slang
-  src/shaders/gto/eval_gto_mo_shell_v4_m8_rt.slang
+  src/shaders/gto/eval_gto_mo_gemm_128x32.slang
 )
-# ELF and LOL on the GEMM core: the GEMM pass (main: the same for either block shape, which only its epilogue's terms'
-# entries are not of) and the values of its terms (finish_main: per block shape), with their entries below
+# ELF and LOL on the GEMM core: the GEMM pass (main) at either tile, and the values of its terms (finish_main: the
+# tile is not its), with their entries below
 set(GTO_LOC_CORE_SLANG_FILES
   src/shaders/gto/eval_gto_localization_core_128x32.slang
   src/shaders/gto/eval_gto_localization_core_128x64.slang
-  src/shaders/gto/eval_gto_localization_core_128x32_2d.slang
-  src/shaders/gto/eval_gto_localization_core_128x32_rt.slang
 )
 
 set(GEN_FILES)
@@ -800,8 +790,8 @@ if (MD_ENABLE_GPU)
       DEPENDS   ${GTO_SLANG_INCLUDES}
     )
   endforeach()
-  # the GEMM pass at either tile; the finish per block shape (the tile is not its)
-  foreach(GTO_LOC IN ITEMS "128x32:main finish_main" "128x64:main" "128x32_2d:finish_main" "128x32_rt:finish_main")
+  # the GEMM pass at either tile; the finish once (the tile is not its)
+  foreach(GTO_LOC IN ITEMS "128x32:main finish_main" "128x64:main")
     string(REPLACE ":" ";" GTO_LOC_PARTS "${GTO_LOC}")
     list(GET GTO_LOC_PARTS 0 GTO_LOC_CFG)
     list(GET GTO_LOC_PARTS 1 GTO_LOC_ENTRIES)
@@ -820,22 +810,6 @@ if (MD_ENABLE_GPU)
     NAMESPACE md_shader
     SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_density_gemm.slang
     ENTRIES   count_main phi_main dgather_main phi_grad_main
-    DEPENDS   ${GTO_SLANG_INCLUDES}
-  )
-  # (the D_b gather is the same for either block shape: the 3D file's)
-  compile_gpu_shaders(eval_gto_density_gemm_2d_shaders.inl
-    TARGET    mdlib
-    NAMESPACE md_shader
-    SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_density_gemm_2d.slang
-    ENTRIES   count_main phi_main phi_grad_main
-    DEPENDS   ${GTO_SLANG_INCLUDES}
-  )
-  # MEASUREMENT (temporary): the block shape an argument (md_gto_gpu_switches_t.block_runtime)
-  compile_gpu_shaders(eval_gto_density_gemm_rt_shaders.inl
-    TARGET    mdlib
-    NAMESPACE md_shader
-    SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_density_gemm_rt.slang
-    ENTRIES   count_main phi_main phi_grad_main
     DEPENDS   ${GTO_SLANG_INCLUDES}
   )
   # md_gto_gpu_dmat: a density matrix in tiles, built from orbitals

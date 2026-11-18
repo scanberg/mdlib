@@ -16,7 +16,7 @@
 #include <gto_iso_gpu_shaders.inl>
 
 // BENCHMARK (temporary, branch gto-iso-gpu-opt): which round of changes this is, in every profile report
-#define ISOG_REVISION "r43 (chunks by the GEMMs' columns too, and in the blocking extraction; r42: the variants' wide cases to 1024 functions)"
+#define ISOG_REVISION "r44 (the GEMMs' widths by the function count alone; r43: chunks by the GEMMs' columns too, and in the blocking extraction)"
 
 typedef struct isog_shell_t {        // mirrors IsoShell
     md_gpu_float4 c;
@@ -111,9 +111,6 @@ static int isog_eval_eps_exp = 6;
 //                             than the factored kernels hold (1024) use it regardless; else it is slower than the
 //                             factored GEMM (C60 density) (default 0)
 static int isog_dform = 0;
-// MEASUREMENT (temporary, md_gto_iso_gpu_switches_t): the tiled and wide GEMMs' widths, 0 by the function count
-static int isog_tiled_cols = 0;
-static int isog_wide_cols = 0;
 //   GTO_ISO_FLOOD=0|1|2       APPROXIMATE: the corners from seeds and a flood instead of every brick the octree
 //                             keeps. The bricks' corners are evaluated first; one whose corners straddle an iso
 //                             value is a seed, evaluated in full; then, round by round, a brick across a face of
@@ -1043,18 +1040,23 @@ typedef struct isog_vkernel_t {
     uint32_t per_group;
 } isog_vkernel_t;
 
-// The tiled and the wide GEMM by a set's function count (or the switches): the corners' kernel, the vertices' is
-// GEVAL_* - GCORN_* further on. The wide one -1 where there is none (fewer than 65 functions, not canonical, or off).
+// The tiled and the wide GEMM by a set's function count: the corners' kernel, the vertices' is GEVAL_* - GCORN_*
+// further on. The wide one -1 where there is none (fewer than 65 functions, or not canonical).
 // isog_corner_cols: the columns its GEMM works through, its width times its passes (64 where the work is not by
 // columns: one function, the D form).
+// Each width the fastest in its band, measured against its neighbours (the extraction's total, the densities of the N
+// highest occupied orbitals; isosurface r41-r43), as a fraction of the other's time: at N <= 16 tiled 16 0.88-0.95 of
+// 32's (M4 Pro, GTX 1060, HD 530); at 17-32 tiled 32 0.71-0.81 of 64's (the same three); at 65-128 w128 0.64-0.67 of
+// y256's; at 129-192 w192 0.80-0.86 of y256's and 0.72-0.75 of w128's two passes; past 192 y256 0.64-0.90 of the
+// passes of w128 or w192 (N to 1024; the wide ones on the M4 Pro and the GTX 1060). Tiled 64 is the only one for sets
+// of more than 32 functions that are not canonical. At N 96 w128 took 0.80 of tiled 64's time on the M4 Pro, 0.99 on
+// the GTX 1060, but 1.27 on the HD 530: by the count alone, w128.
 static int isog_tiled_corners(uint32_t nf) {
-    const uint32_t c = isog_tiled_cols ? (uint32_t)isog_tiled_cols : nf <= 16 ? 16u : nf <= 32 ? 32u : 64u;
-    return c == 16 ? ISOG_K_GCORN_F16 : c == 32 ? ISOG_K_GCORN_F32 : ISOG_K_GCORN_F64;
+    return nf <= 16 ? ISOG_K_GCORN_F16 : nf <= 32 ? ISOG_K_GCORN_F32 : ISOG_K_GCORN_F64;
 }
 static int isog_wide_corners(const md_gto_iso_gpu_set_t* set, uint32_t nf) {
-    if (!set->canon || nf <= 64u || isog_wide_cols < 0) return -1;
-    const uint32_t c = isog_wide_cols ? (uint32_t)isog_wide_cols : nf <= 128 ? 128u : nf <= 192 ? 192u : 256u;
-    const int k = c == 128 ? ISOG_K_GCORN_W128 : c == 192 ? ISOG_K_GCORN_W192 : ISOG_K_GCORN_Y256;
+    if (!set->canon || nf <= 64u) return -1;
+    const int k = nf <= 128 ? ISOG_K_GCORN_W128 : nf <= 192 ? ISOG_K_GCORN_W192 : ISOG_K_GCORN_Y256;
     return isog_k[k] ? k : -1;
 }
 
@@ -1100,8 +1102,6 @@ void md_gto_iso_gpu_switches(md_gto_iso_gpu_switches_t* out) {
     out->eval_eps_exp = isog_eval_eps_exp;
     out->dform = isog_dform != 0;
     out->flood = isog_flood;
-    out->tiled_cols = isog_tiled_cols;
-    out->wide_cols = isog_wide_cols;
 }
 
 void md_gto_iso_gpu_switches_set(const md_gto_iso_gpu_switches_t* in) {
@@ -1109,19 +1109,14 @@ void md_gto_iso_gpu_switches_set(const md_gto_iso_gpu_switches_t* in) {
     if (in->eval_eps_exp >= 4 && in->eval_eps_exp <= 12) isog_eval_eps_exp = in->eval_eps_exp;
     isog_dform = in->dform;
     if (in->flood >= 0 && in->flood <= 2) isog_flood = in->flood;
-    isog_tiled_cols = (in->tiled_cols == 16 || in->tiled_cols == 32 || in->tiled_cols == 64) ? in->tiled_cols : 0;
-    isog_wide_cols = (in->wide_cols == 128 || in->wide_cols == 192 || in->wide_cols == 256 || in->wide_cols == -1) ? in->wide_cols : 0;
 }
 
 // The revision and the switches the extraction runs with, as one line
 static const char* md_gto_iso_gpu_profile_variant(void) {
     static char buf[256];
-    snprintf(buf, sizeof(buf), "%s | eval_eps 1e-%d dform %d flood %d%s", ISOG_REVISION, isog_eval_eps_exp, isog_dform, isog_flood,
-             isog_tiled_cols || isog_wide_cols ? " | widths forced" : "");
+    snprintf(buf, sizeof(buf), "%s | eval_eps 1e-%d dform %d flood %d", ISOG_REVISION, isog_eval_eps_exp, isog_dform, isog_flood);
     return buf;
 }
-
-const char* md_gto_iso_gpu_variant(void) { return md_gto_iso_gpu_profile_variant(); }
 
 // Waits for the GPU and appends a step: the time since the previous one. Returns its index (or ~0u).
 static uint32_t isog_mark(md_gpu_stream_t s, const char* name, uint32_t items, uint32_t aux) {

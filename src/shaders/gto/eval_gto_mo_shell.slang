@@ -36,14 +36,8 @@
 #endif
 
 // A group's block of voxels: 8x8x8, VPT voxels a thread along z; or for a grid of one layer (the *_2d.slang
-// wrappers) 32x16x1, VPT along y. BLOCK_RUNTIME (the *_rt.slang wrappers): the shape an argument (args.block_shape),
-// one kernel for both, its 512 / VPT threads in a row, a thread's voxels along z or (one layer) y as above.
-#if defined(BLOCK_RUNTIME)
-#define BLOCK_SHAPE (args.block_shape.xyz)
-#define WG_X (512 / VPT)
-#define WG_Y 1
-#define WG_Z 1
-#else
+// wrappers) 32x16x1, VPT along y. A kernel per shape: one for both, the shape an argument as the GEMM path's
+// (gto_gemm_args.slang), was 5% behind for one orbital on an M4 Pro's volume and 9-19% for 8 on a GTX 1060.
 #ifndef BLOCK_X
 #define BLOCK_X 8
 #define BLOCK_Y 8
@@ -61,7 +55,6 @@
 #define WG_Z 1
 #define VPT_STEP uint3(0u, uint(WG_Y), 0u)
 #endif
-#endif
 #define WG_SIZE (WG_X * WG_Y * WG_Z)
 
 #define GTO_SCAN_WG_SIZE WG_SIZE
@@ -72,7 +65,6 @@ struct RootArgs {
     float4x4 index_to_world;
     float4   step;
     uint4    grid_dim;
-    uint4    block_shape;       // a block's voxels per axis (xyz), and w: log2 x | log2 y << 8 (the BLOCK_RUNTIME kernels)
     uint     num_shells;
     uint     num_aos;
     uint     num_mos;
@@ -123,26 +115,11 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_G
     const float3 aabb_min = float3( gid             * BLOCK_SHAPE) * args.step.xyz;
     const float3 aabb_max = float3((gid + uint3(1u)) * BLOCK_SHAPE) * args.step.xyz;
 
-#if defined(BLOCK_RUNTIME)
-    uint3 tvox, vstep;
-    {
-        const uint lx = args.block_shape.w & 0xFFu, ly = (args.block_shape.w >> 8u) & 0xFFu;
-        if (args.block_shape.z > 1u) {
-            tvox  = uint3(tid & (args.block_shape.x - 1u), (tid >> lx) & (args.block_shape.y - 1u), tid >> (lx + ly));
-            vstep = uint3(0u, 0u, args.block_shape.z / uint(VPT));
-        } else {
-            tvox  = uint3(tid & (args.block_shape.x - 1u), tid >> lx, 0u);
-            vstep = uint3(0u, args.block_shape.y / uint(VPT), 0u);
-        }
-    }
-#else
-    const uint3 tvox = gtid, vstep = VPT_STEP;
-#endif
     float3 coord[VPT];
     uint3  vox[VPT];
     float  result[VPT];
     [ForceUnroll] for (int v = 0; v < VPT; ++v) {
-        vox[v]    = gid * BLOCK_SHAPE + tvox + uint(v) * vstep;
+        vox[v]    = gid * BLOCK_SHAPE + gtid + uint(v) * VPT_STEP;
         coord[v]  = mul(args.index_to_world, float4(float3(vox[v]), 1.0f)).xyz;
         result[v] = 0.0f;
     }

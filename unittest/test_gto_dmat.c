@@ -13,8 +13,8 @@
 //   gto_localization.gemm_matches_reference  ELF and LOL on the GEMM core against the reference kernel and the cpu:
 //                                     h2o, mol (packed and dmat), the OH radical; a cube and a plane; in pieces as
 //                                     a job, bitwise the launch
-//   gto_gpu.plane_matches_volume      a grid of one layer (the 2D kernels, 32x16x1) against the first layer of the
-//                                     same grid 8 deep (3D, 8x8x8): density, orbitals, ELF and LOL
+//   gto_gpu.plane_matches_volume      a grid of one layer (blocks of 32x16x1) against the first layer of the same
+//                                     grid 8 deep (8x8x8): density, orbitals, ELF and LOL
 //   gto_localization.matches_independent  ELF and LOL against PySCF's AOs with Multiwfn's formulas
 //                                     (unittest/elf_ref_data, tools/elf_reference.py), out into the tails
 //   gto_localization.pieces_match_one_launch  mol: ELF and LOL in pieces of a group each (piece_work), as a launch
@@ -797,12 +797,12 @@ UTEST(gto_localization, gemm_matches_reference) {
         loc_free(&s);
     }
 }
-// A grid of one layer is evaluated by the 2D kernels (blocks of 32x16x1 voxels, 16x16x1 for ELF and LOL): what they
-// give is the first layer of the same grid eight layers deep, by the 3D ones (8x8x8), within the difference of what the
-// two screen out. A turned grid at a plane's spacing, as a plane's is; the density (packed and dmat, every algorithm),
-// orbitals (1: shell, 4: shell of 8, 12: GEMM) and ELF, LOL. With the times of one layer by the 2D kernels and by the
-// 3D ones (MD_GTO_GPU_NO_2D), each a second launch: on llvmpipe 6x faster for the density's GEMM path and the
-// orbitals, 1.3x for ELF and LOL, whose cost is the pairs of AOs at each voxel; the reference density has no 2D kernel.
+// A grid of one layer is evaluated in blocks of 32x16x1 voxels (the GEMM path and the shell kernel; the references
+// take 8x8x8 for every grid): what they give is the first layer of the same grid eight layers deep, in blocks of
+// 8x8x8, within the difference of what the two screen out. A turned grid at a plane's spacing, as a plane's is; the
+// density (packed and dmat, every algorithm), orbitals (1: shell, 4: shell of 8, 12: GEMM) and ELF, LOL (here by
+// their reference: bitwise the layer). With the times of one layer in 32x16x1 blocks and in 8x8x8 ones
+// (MD_GTO_GPU_NO_2D), each a second launch: on llvmpipe 5-9x faster for the density's GEMM path and the orbitals.
 typedef struct plane_pair_t {
     md_grid_t        g3, g2;
     md_gpu_texture_t t3, t2;

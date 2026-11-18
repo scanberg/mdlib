@@ -15,30 +15,14 @@
 
 #define BLOCK_VOXELS 512
 
-// The shape of a block of voxels (BLOCK_VOXELS of them): 8x8x8, or for a grid of one layer (the image of a plane;
-// the *_2d.slang wrappers) 32x16x1 - as many voxels as near together, none of the block off the grid. Voxel p of a
-// block is at block_voxel(p): x fastest, as SV_GroupIndex orders a group of numthreads(BLOCK_TX, BLOCK_TY, BLOCK_TZ),
-// and a group of a block's voxels has its thread's at BLOCK_THREAD_VOXEL(gtid, tid).
-// BLOCK_RUNTIME (the *_rt.slang wrappers): the shape is an argument (args.block_shape), one kernel for both, its
-// groups' threads in a row.
-#if defined(BLOCK_RUNTIME)
+// The shape of a block of voxels (BLOCK_VOXELS of them) is an argument (args.block_shape): 8x8x8, or for a grid of one
+// layer (the image of a plane) 32x16x1 - as many voxels as near together, none of the block off the grid. One kernel
+// for both: a group's threads in a row (numthreads(BLOCK_TX, 1, 1)), voxel p of a block at block_voxel(p), x
+// fastest. Measured against a kernel per shape (groups of 8x8x8 and 32x16x1 threads) on an M4 Pro, a GTX 1060 and an
+// HD 530 (gemm-bench r6): the density's, ELF's and the orbitals' GEMM passes with their counts and Phi within 2.2% on
+// volumes; on planes, runs of 0.2-1.6 ms, within their spread (0.95-1.07, one 1.13 of a run that ranged 0.98-1.18).
 #define BLOCK_SHAPE (args.block_shape.xyz)
-#define BLOCK_TX 512
-#define BLOCK_TY 1
-#define BLOCK_TZ 1
-#define BLOCK_THREAD_VOXEL(gtid, tid) block_voxel(tid)
-#else
-#ifndef BLOCK_X
-#define BLOCK_X 8
-#define BLOCK_Y 8
-#define BLOCK_Z 8
-#endif
-#define BLOCK_SHAPE uint3(BLOCK_X, BLOCK_Y, BLOCK_Z)
-#define BLOCK_TX BLOCK_X
-#define BLOCK_TY BLOCK_Y
-#define BLOCK_TZ BLOCK_Z
-#define BLOCK_THREAD_VOXEL(gtid, tid) (gtid)
-#endif
+#define BLOCK_TX BLOCK_VOXELS
 
 struct RootArgs {
     float4x4 world_to_model;
@@ -46,7 +30,7 @@ struct RootArgs {
     float4   step;
     uint4    grid_dim;
     uint4    block_dim;         // blocks per axis (xyz)
-    uint4    block_shape;       // a block's voxels per axis (xyz), and w: log2 x | log2 y << 8 (the BLOCK_RUNTIME kernels)
+    uint4    block_shape;       // a block's voxels per axis (xyz), powers of two, and w: log2 x | log2 y << 8
     uint     num_shells;
     uint     num_aos;
     uint     operation;
@@ -91,16 +75,10 @@ ConstantBuffer<MdGpuRoot> md_root;
 
 #define args (*md_root.args_ptr)
 
-#if defined(BLOCK_RUNTIME)
 uint3 block_voxel(uint p) {
     const uint lx = args.block_shape.w & 0xFFu, ly = (args.block_shape.w >> 8u) & 0xFFu;
     return uint3(p & (args.block_shape.x - 1u), (p >> lx) & (args.block_shape.y - 1u), p >> (lx + ly));
 }
-#else
-uint3 block_voxel(uint p) {
-    return uint3(p % uint(BLOCK_X), (p / uint(BLOCK_X)) % uint(BLOCK_Y), p / uint(BLOCK_X * BLOCK_Y));
-}
-#endif
 
 // D[i][j] of the density, packed or in tiles
 float gto_d(uint i, uint j) {

@@ -276,18 +276,6 @@ static inline uint32_t md_gto_pack_ijkl(int i, int j, int k, int l) {
 void md_gto_gpu_initialize(md_gpu_device_t device);
 void md_gto_gpu_shutdown(void);
 
-// MEASUREMENT (temporary): which kernel variants the evaluations take, for choosing the ones mdlib keeps
-// (benchmark/bench_gto_gemm.c --variants). Zero for the normal choices. Read when an evaluation is issued; not thread
-// safe against evaluations being issued.
-typedef struct md_gto_gpu_switches_t {
-    int block_runtime;  // 1: one kernel for 8^3 blocks and a grid of one layer's 32x16x1, the shape an argument
-                        // (the *_rt.slang wrappers); 0: a kernel per shape
-    int gemm_tile;      // the density's and ELF/LOL's AO tile: 0 per vendor, 32, or 64 (with 32 for blocks of <= 32 AOs)
-} md_gto_gpu_switches_t;
-
-void md_gto_gpu_switches(md_gto_gpu_switches_t* out);
-void md_gto_gpu_switches_set(const md_gto_gpu_switches_t* in);
-
 // ---------------------------------------------------------------------------
 // GPU basis buffer  (owns device-local atom_idx, r, off_len, pgto regions)
 // Create once per basis set; reuse across all density and MO evaluations.
@@ -607,12 +595,13 @@ typedef struct md_gto_gpu_localization_desc_t {
 // The revision of the kernel (eval_gto_localization.slang), for measurements: bumped with every change to it
 #define MD_GTO_GPU_LOCALIZATION_REVISION "r5 (counted, then in pieces of 2^30 voxel-pairs, each its own submission; the screened AOs in index order, bitwise run to run)"
 
-// The revision of the grid kernels' 2D variants (a grid of one layer: blocks of 32x16x1 voxels, 16x16x1 for ELF and
-// LOL), for measurements.
-// MD_GTO_GPU_NO_2D (set in the environment) takes the 3D kernels for every grid, to compare.
-// r3: beside them, one kernel for either shape, the shape an argument (md_gto_gpu_switches_t.block_runtime); the ELF/LOL
-// GEMM pass and the D_b gather one kernel for both shapes (they never depended on it).
-#define MD_GTO_GPU_PLANE_REVISION "plane-kernels r3"
+// The revision of the grid kernels' handling of a grid of one layer (blocks of 32x16x1 voxels), for measurements.
+// MD_GTO_GPU_NO_2D (set in the environment) takes the 8x8x8 blocks for every grid, to compare.
+// r3: beside the kernels per shape, one kernel for either shape, the shape an argument (measured against them).
+// r4: the GEMM path one kernel per pass for either shape, the shape an argument (the counts, Phi, the density's, ELF's
+// and LOL's and the orbitals' GEMM passes, ELF's and LOL's finish); the shell kernel one per shape; the references
+// 8x8x8 for every grid (ELF's and LOL's had 16x16x1 for one layer).
+#define MD_GTO_GPU_PLANE_REVISION "plane-kernels r4"
 
 // In pieces, each its own submission, as the density's GEMM (MD_GTO_GPU_GEMM_PIECES_REVISION): at the cutoff ELF
 // takes, a large system's grid as one launch is minutes of GPU work, which the watchdog (TDR) takes the device for.
