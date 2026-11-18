@@ -4719,6 +4719,135 @@ UTEST(gto_iso_gpu_lib, evaluate_matches_cpu) {
     iso_gpu_free(&g);
 }
 
+// The evaluation as a job (md_gto_iso_gpu_evaluate_job_*): pieces of a few points (a piece target far below what
+// one takes, so there are many), polled until done, the values bitwise those of the launch; the progress from 0 to
+// 1. Points shuffled, then in Morton order (md_gto_iso_gpu_morton_order): the same values point by point, to the
+// evaluation cutoff.
+UTEST(gto_iso_gpu_lib, evaluate_job_matches_launch) {
+    iso_gpu_t g;
+    if (!iso_gpu_init(&g)) { iso_gpu_free(&g); UTEST_SKIP(iso_gpu_no_device()); }
+    md_gto_iso_gpu_initialize(g.dev);
+    iso_dens_src_t s;
+    ASSERT_TRUE(iso_dens_src_load_ex(&s, "amide.h5", true));
+    const size_t lumo = vlx_test_lumo_idx(&s.t, MD_STR_LIT("orbital/alpha/occupation"));
+    iso_dens_prod_t pd;
+    memset(&pd, 0, sizeof(pd));
+    iso_dens_products(&pd, &s, ISO_D_SCF);
+    md_gto_iso_field_t* fields[2] = {
+        md_gto_iso_field_create(&s.basis, s.xyz, 0, s.C + (lumo - 1) * s.num_ao, md_get_heap_allocator()),
+        iso_dens_field(&s, &pd, false),
+    };
+    ASSERT_TRUE(fields[0] && fields[1]);
+
+    enum { N = 20000 };
+    iso_rng_t rng = {0x10b5};
+    double* pdbl = (double*)malloc(sizeof(double) * 3 * N);
+    float* pts = (float*)malloc(sizeof(float) * 3 * N);
+    float* sorted = (float*)malloc(sizeof(float) * 3 * N);
+    uint32_t* order = (uint32_t*)malloc(sizeof(uint32_t) * N);
+    iso_dens_points(pdbl, N, &s, &rng);
+    for (int i = 0; i < 3 * N; ++i) pts[i] = (float)pdbl[i];
+    md_gto_iso_gpu_morton_order(order, pts, 0, N);
+    // a permutation
+    uint8_t* seen = (uint8_t*)calloc(N, 1);
+    for (int r = 0; r < N; ++r) { ASSERT_LT(order[r], (uint32_t)N); seen[order[r]]++; }
+    for (int i = 0; i < N; ++i) EXPECT_EQ(1, (int)seen[i]);
+    for (int r = 0; r < N; ++r) memcpy(sorted + 3 * r, pts + 3 * (size_t)order[r], sizeof(float) * 3);
+    float* shuffled = (float*)malloc(sizeof(float) * 2 * N);
+
+    for (int dform = 0; dform < 2; ++dform) {
+        const int saved_dform = isog_dform;
+        isog_dform = dform;
+        const md_gto_iso_field_t* fl[2] = {fields[0], fields[1]};
+        // the D form takes densities only
+        md_gto_iso_gpu_set_t* set = md_gto_iso_gpu_set_create(g.s, &s.basis, s.xyz, 0, dform ? fl + 1 : fl, dform ? 1 : 2, md_get_heap_allocator());
+        ASSERT_TRUE(set != NULL);
+        const uint32_t nf = dform ? 1 : 2;
+        const size_t bytes = sizeof(float) * nf * N + 16;
+        md_gpu_mem_t d_pts = md_gpu_malloc(g.s, MD_GPU_MEM_DEVICE, sizeof(float) * 3 * N);
+        md_gpu_mem_t d_a = md_gpu_malloc(g.s, MD_GPU_MEM_DEVICE, bytes);
+        md_gpu_mem_t d_b = md_gpu_malloc(g.s, MD_GPU_MEM_DEVICE, bytes);
+        md_gpu_mem_t h = md_gpu_malloc(g.s, MD_GPU_MEM_HOST_READ, 2 * bytes);
+        ASSERT_TRUE(d_pts.gpu && d_a.gpu && d_b.gpu && h.gpu);
+        for (int ord = 0; ord < 2; ++ord) {
+            const float* p = ord ? sorted : pts;
+            ASSERT_TRUE(md_gpu_upload(g.s, d_pts.gpu, p, sizeof(float) * 3 * N));
+            md_gto_iso_gpu_eval_desc_t ed = {0};
+            ed.xyz = d_pts.gpu;
+            ed.num_xyz = N;
+            ed.num_fields = nf;
+            for (uint32_t k = 0; k < nf; ++k) ed.fields[k] = k;
+            ed.out_value = d_a.gpu;
+            ed.out_failed = d_a.gpu + sizeof(float) * nf * N;
+            md_tick_t t0 = md_tick_now();
+            ASSERT_TRUE(md_gto_iso_gpu_evaluate_launch(g.s, set, &ed));
+            md_gpu_stream_sync(g.s);
+            const double t_launch = md_tick_to_seconds(md_tick_now() - t0);
+            ed.out_value = d_b.gpu;
+            ed.out_failed = d_b.gpu + sizeof(float) * nf * N;
+            md_gpu_pieces_policy_t pol = {0};
+            pol.piece_ms = 1.0e-3;      // pieces of the smallest size there is: many of them
+            t0 = md_tick_now();
+            md_gto_iso_gpu_eval_job_t* job = md_gto_iso_gpu_evaluate_job_begin(g.s, set, &ed, &pol);
+            ASSERT_TRUE(job != NULL);
+            float last = 0.0f;
+            md_gto_iso_gpu_job_status_t st;
+            int polls = 0;
+            while ((st = md_gto_iso_gpu_evaluate_job_poll(job, 0.5)) == MD_GTO_ISO_GPU_JOB_RUNNING) {
+                const float prog = md_gto_iso_gpu_evaluate_job_progress(job);
+                EXPECT_GE(prog, last);
+                last = prog;
+                ++polls;
+            }
+            EXPECT_EQ((int)MD_GTO_ISO_GPU_JOB_DONE, (int)st);
+            EXPECT_EQ(1.0f, md_gto_iso_gpu_evaluate_job_progress(job));
+            EXPECT_TRUE(md_gto_iso_gpu_evaluate_job_end(job));
+            const double t_job = md_tick_to_seconds(md_tick_now() - t0);
+            md_gpu_copy(g.s, h.gpu, d_a.gpu, bytes);
+            md_gpu_copy(g.s, h.gpu + bytes, d_b.gpu, bytes);
+            md_gpu_stream_sync(g.s);
+            {
+                // the values and the count of failures after them (the rest of the 16 bytes is not written)
+                const float* va = (const float*)h.cpu;
+                const float* vb = (const float*)((const char*)h.cpu + bytes);
+                EXPECT_EQ(0, memcmp(va, vb, sizeof(float) * nf * N + sizeof(uint32_t)));
+                EXPECT_EQ(0u, *(const uint32_t*)(vb + nf * N));
+            }
+            printf("  %s, %s: launch %.3f s, job %.3f s over %d polls\n", dform ? "D form" : "orbital + products", ord ? "Morton order" : "shuffled", t_launch, t_job, polls);
+            const float* v = (const float*)h.cpu;
+            if (ord == 0) {
+                memcpy(shuffled, v, sizeof(float) * nf * N);     // for the comparison with the sorted points
+            } else {
+                // point by point the same, to the evaluation cutoff: a group lists the AOs that reach its box,
+                // which another order makes of other points
+                float fmax = 0.0f, dmax = 0.0f;
+                for (uint32_t k = 0; k < nf; ++k) {
+                    for (int r = 0; r < N; ++r) {
+                        const float a = shuffled[(size_t)k * N + order[r]], b = v[(size_t)k * N + r];
+                        fmax = fmaxf(fmax, fabsf(a));
+                        dmax = fmaxf(dmax, fabsf(a - b));
+                    }
+                }
+                printf("  shuffled against Morton order: max |f| %.2e, |df| %.1e\n", fmax, dmax);
+                EXPECT_LT(dmax, 1.0e-5f * fmax + 1.0e-5f);
+            }
+        }
+        md_gpu_free(g.s, d_pts.gpu);
+        md_gpu_free(g.s, d_a.gpu);
+        md_gpu_free(g.s, d_b.gpu);
+        md_gpu_free(g.s, h.gpu);
+        md_gto_iso_gpu_set_destroy(g.s, set);
+        isog_dform = saved_dform;
+    }
+    free(shuffled); free(seen); free(order); free(sorted); free(pts); free(pdbl);
+    md_gto_iso_field_destroy(fields[0]);
+    md_gto_iso_field_destroy(fields[1]);
+    iso_dens_prod_free(&pd);
+    iso_dens_src_free(&s);
+    md_gto_iso_gpu_shutdown();
+    iso_gpu_free(&g);
+}
+
 // The average local ionization energy at the vertices of the 0.001 isodensity surface, on the device: the
 // density and the energy weighted density as two fields of one set, evaluated where the extraction left the
 // vertices, against the CPU

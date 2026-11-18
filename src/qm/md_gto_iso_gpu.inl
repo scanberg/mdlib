@@ -12,6 +12,7 @@
 
 #include <core/md_common.h>
 #include <core/md_gpu.h>
+#include <core/md_gpu_pieces.h>
 #include <gto_iso_gpu_shaders.inl>
 
 // BENCHMARK (temporary, branch gto-iso-gpu-opt): which round of changes this is, in every profile report
@@ -2335,43 +2336,129 @@ bool md_gto_iso_gpu_mesh_read_all(md_gpu_stream_t stream, const md_gto_iso_gpu_m
 // The fields at arbitrary points: the vertex evaluators on the caller's points
 // ---------------------------------------------------------------------------------------------
 
-#define ISOG_EVAL_BATCH (1u << 20)      // points per pass: the scratch is ~52 bytes a point
+// Points of a piece at most: its scratch is ~52 bytes a point, 13 MB at this size
+#define ISOG_EVAL_PIECE_MAX (1u << 18)
+// Points of the first piece, before the device has timed one: a D form of ~150 AOs a group, ~10^4 multiply-adds
+// a point, under a millisecond on a GTX 1060
+#define ISOG_EVAL_PIECE_FIRST 4096u
 
-bool md_gto_iso_gpu_evaluate_launch(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, const md_gto_iso_gpu_eval_desc_t* desc) {
+// The evaluation at points, in pieces (md_gpu_pieces.h): a piece is a range of the points, every field asked for
+// evaluated over it, and its own submission. The launch issues them all at once, the job a few ahead of the GPU.
+struct md_gto_iso_gpu_eval_job_t {
+    md_gpu_stream_t s;
+    const md_gto_iso_gpu_set_t* set;
+    md_gto_iso_gpu_eval_desc_t desc;
+    isog_args_t a;
+    isog_vkernel_t vk;
+    uint32_t stride;
+    md_gpu_mem_t m_fields, m_counters, m_vpos, m_vinfo, m_vdone, m_vval;
+    md_gpu_pieces_t pieces;
+    bool failed;
+    md_tick_t t0;
+};
+
+static void isog_eval_job_free(md_gto_iso_gpu_eval_job_t* j) {
+    // stream ordered: after the pieces in flight
+    md_gpu_stream_t s = j->s;
+    if (j->m_fields.gpu)   md_gpu_free(s, j->m_fields.gpu);
+    if (j->m_counters.gpu) md_gpu_free(s, j->m_counters.gpu);
+    if (j->m_vpos.gpu)     md_gpu_free(s, j->m_vpos.gpu);
+    if (j->m_vinfo.gpu)    md_gpu_free(s, j->m_vinfo.gpu);
+    if (j->m_vdone.gpu)    md_gpu_free(s, j->m_vdone.gpu);
+    if (j->m_vval.gpu)     md_gpu_free(s, j->m_vval.gpu);
+    free(j);
+}
+
+// The points [off, off + nb), every field asked for; with the last of them the count of failures
+static bool isog_eval_piece(md_gto_iso_gpu_eval_job_t* j, uint32_t off, uint32_t nb) {
+    md_gpu_stream_t s = j->s;
+    const md_gto_iso_gpu_eval_desc_t* desc = &j->desc;
+    const uint32_t n = desc->num_xyz;
+    isog_args_t a = j->a;
+    a.count = nb;
+    a.pts = desc->xyz + (md_gpu_addr_t)off * j->stride;
+    const md_gpu_grid_t g_pts = md_gpu_grid_for(isog_k[ISOG_K_PLOAD], nb, 1, 1);
+    const md_gpu_grid_t g_eval = j->vk.per_group ? isog_groups((nb + j->vk.per_group - 1) / j->vk.per_group) : md_gpu_grid_for(isog_k[j->vk.k], nb, 1, 1);
+    bool ok = true;
+    for (uint32_t k = 0; ok && k < desc->num_fields; ++k) {
+        const size_t first = (size_t)k * n + off;      // this piece's first output of field k
+        a.pts_field = desc->fields[k];
+        a.mode = k == 0 ? 1u : 0u;                      // the positions once a piece, then only the field
+        ok = MD_GPU_LAUNCH(s, isog_k[ISOG_K_PLOAD], g_pts, a);
+        a.mode = 0;
+        a.vval = desc->out_gradient ? desc->out_gradient + first * sizeof(md_gpu_float4) : j->m_vval.gpu;
+        ok = ok && md_gpu_memset(s, a.vval, 0xFF, sizeof(md_gpu_float4) * nb);    // NaN where no value is made
+        ok = ok && MD_GPU_LAUNCH(s, isog_k[j->vk.k], g_eval, a);
+        if (ok && desc->out_value) {
+            a.pval = desc->out_value + first * sizeof(float);
+            ok = MD_GPU_LAUNCH(s, isog_k[ISOG_K_PSTORE], g_pts, a);
+        }
+    }
+    if (ok && off + nb >= n && desc->out_failed) ok = md_gpu_copy(s, desc->out_failed, j->m_counters.gpu + 7 * sizeof(uint32_t), sizeof(uint32_t));
+    return ok;
+}
+
+// Issues what the pieces have room for; false when a piece could not be issued
+static bool isog_eval_issue(md_gto_iso_gpu_eval_job_t* j) {
+    for (uint64_t n; !j->failed && (n = md_gpu_pieces_next(&j->pieces)) > 0;) {
+        if (!isog_eval_piece(j, (uint32_t)j->pieces.issued, (uint32_t)n)) {
+            MD_LOG_ERROR("md_gto_iso_gpu_evaluate: the evaluation could not be issued (%u points)", j->desc.num_xyz);
+            j->failed = true;
+        }
+        md_gpu_pieces_end(&j->pieces, n);
+    }
+    return !j->failed;
+}
+
+static md_gto_iso_gpu_eval_job_t* isog_eval_job_create(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, const md_gto_iso_gpu_eval_desc_t* desc,
+                                                       const md_gpu_pieces_policy_t* policy) {
     if (!s || !set || !desc || !desc->xyz || desc->num_fields == 0 || desc->num_fields > MD_GTO_ISO_GPU_MAX_FIELDS ||
         (!desc->out_value && !desc->out_gradient) || (desc->xyz_stride & 3u)) {
         MD_LOG_ERROR("md_gto_iso_gpu_evaluate: invalid arguments");
-        return false;
+        return NULL;
     }
     for (uint32_t k = 0; k < desc->num_fields; ++k) {
         if (desc->fields[k] >= set->num_fields) {
             MD_LOG_ERROR("md_gto_iso_gpu_evaluate: field %u is not in the set (%u fields)", desc->fields[k], set->num_fields);
-            return false;
+            return NULL;
         }
     }
-    if (desc->num_xyz == 0) {
-        if (desc->out_failed) md_gpu_memset(s, desc->out_failed, 0, sizeof(uint32_t));
-        return true;
+    if (desc->num_xyz > 0 && (!isog_kernels_ready() || !isog_set_current(s, set))) return NULL;
+
+    md_gto_iso_gpu_eval_job_t* j = (md_gto_iso_gpu_eval_job_t*)calloc(1, sizeof(md_gto_iso_gpu_eval_job_t));
+    if (!j) {
+        MD_LOG_ERROR("md_gto_iso_gpu_evaluate: out of memory");
+        return NULL;
     }
-    if (!isog_kernels_ready() || !isog_set_current(s, set)) return false;
-
-    isog_args_t a;
-    memset(&a, 0, sizeof(a));
-    isog_args_set(&a, set);
-    const isog_vkernel_t vk = isog_vertex_kernel(set, a.dform != 0u, false);
-    if (!isog_have(vk.k) || !isog_have(ISOG_K_PLOAD) || !isog_have(ISOG_K_PSTORE)) return false;
-
+    j->s = s;
+    j->set = set;
+    j->desc = *desc;
+    j->t0 = md_tick_now();
     const uint32_t n = desc->num_xyz;
-    const uint32_t B = n < ISOG_EVAL_BATCH ? n : ISOG_EVAL_BATCH;
-    const uint32_t stride = desc->xyz_stride ? desc->xyz_stride : 3u * (uint32_t)sizeof(float);
+    if (n == 0) {
+        md_gpu_pieces_init(&j->pieces, s, 0, 1, 1, 1, policy);
+        if (desc->out_failed && !md_gpu_memset(s, desc->out_failed, 0, sizeof(uint32_t))) j->failed = true;
+        return j;
+    }
+
+    isog_args_set(&j->a, set);
+    j->vk = isog_vertex_kernel(set, j->a.dform != 0u, false);
+    if (!isog_have(j->vk.k) || !isog_have(ISOG_K_PLOAD) || !isog_have(ISOG_K_PSTORE)) {
+        free(j);
+        return NULL;
+    }
+    // a piece: whole groups of the evaluator (the last takes the rest), at most the scratch
+    const uint32_t gran = j->vk.per_group ? j->vk.per_group : 64u;
+    const uint32_t B = n < ISOG_EVAL_PIECE_MAX ? n : ISOG_EVAL_PIECE_MAX;
+    j->stride = desc->xyz_stride ? desc->xyz_stride : 3u * (uint32_t)sizeof(float);
     // the vertices' state; vval the caller's gradients where they are wanted
-    md_gpu_mem_t m_fields   = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(isog_field_t) * MD_GTO_ISO_GPU_MAX_FIELDS);
-    md_gpu_mem_t m_counters = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(uint32_t) * 12);
-    md_gpu_mem_t m_vpos     = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(md_gpu_float4) * B);
-    md_gpu_mem_t m_vinfo    = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(md_gpu_uint4) * B);
-    md_gpu_mem_t m_vdone    = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(uint32_t) * B);
-    md_gpu_mem_t m_vval     = desc->out_gradient ? (md_gpu_mem_t){0} : md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(md_gpu_float4) * B);
-    bool ok = m_fields.gpu && m_counters.gpu && m_vpos.gpu && m_vinfo.gpu && m_vdone.gpu && (desc->out_gradient || m_vval.gpu);
+    j->m_fields   = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(isog_field_t) * MD_GTO_ISO_GPU_MAX_FIELDS);
+    j->m_counters = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(uint32_t) * 12);
+    j->m_vpos     = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(md_gpu_float4) * B);
+    j->m_vinfo    = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(md_gpu_uint4) * B);
+    j->m_vdone    = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(uint32_t) * B);
+    j->m_vval     = desc->out_gradient ? (md_gpu_mem_t){0} : md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(md_gpu_float4) * B);
+    bool ok = j->m_fields.gpu && j->m_counters.gpu && j->m_vpos.gpu && j->m_vinfo.gpu && j->m_vdone.gpu && (desc->out_gradient || j->m_vval.gpu);
     if (!ok) MD_LOG_ERROR("md_gto_iso_gpu_evaluate: out of device memory (%u points)", B);
     if (ok) {
         // the fields as the extraction uploads them, all 16 (unrolled loops may read past num_fields); their iso
@@ -2379,46 +2466,81 @@ bool md_gto_iso_gpu_evaluate_launch(md_gpu_stream_t s, const md_gto_iso_gpu_set_
         isog_field_t fields[MD_GTO_ISO_GPU_MAX_FIELDS];
         memset(fields, 0, sizeof(fields));
         memcpy(fields, set->fields, sizeof(isog_field_t) * set->num_fields);
-        ok = md_gpu_upload(s, m_fields.gpu, fields, sizeof(fields)) && md_gpu_memset(s, m_counters.gpu, 0, sizeof(uint32_t) * 12);
-        a.fields   = m_fields.gpu;
-        a.counters = m_counters.gpu;
-        a.count_in = m_counters.gpu;    // valid wherever a kernel may read it (llvmpipe loads both sides of a select)
-        a.vpos     = m_vpos.gpu;
-        a.vinfo    = m_vinfo.gpu;
-        a.vdone    = m_vdone.gpu;
-        a.pts_stride = stride / 4u;
-        for (uint32_t off = 0; ok && off < n; off += B) {
-            const uint32_t nb = n - off < B ? n - off : B;
-            a.count = nb;
-            a.pts = desc->xyz + (md_gpu_addr_t)off * stride;
-            const md_gpu_grid_t g_pts = md_gpu_grid_for(isog_k[ISOG_K_PLOAD], nb, 1, 1);
-            const md_gpu_grid_t g_eval = vk.per_group ? isog_groups((nb + vk.per_group - 1) / vk.per_group) : md_gpu_grid_for(isog_k[vk.k], nb, 1, 1);
-            for (uint32_t k = 0; ok && k < desc->num_fields; ++k) {
-                const size_t first = (size_t)k * n + off;      // this pass's first output of field k
-                a.pts_field = desc->fields[k];
-                a.mode = k == 0 ? 1u : 0u;                      // the positions once a pass, then only the field
-                ok = MD_GPU_LAUNCH(s, isog_k[ISOG_K_PLOAD], g_pts, a);
-                a.mode = 0;
-                a.vval = desc->out_gradient ? desc->out_gradient + first * sizeof(md_gpu_float4) : m_vval.gpu;
-                ok = ok && md_gpu_memset(s, a.vval, 0xFF, sizeof(md_gpu_float4) * nb);    // NaN where no value is made
-                ok = ok && MD_GPU_LAUNCH(s, isog_k[vk.k], g_eval, a);
-                if (ok && desc->out_value) {
-                    a.pval = desc->out_value + first * sizeof(float);
-                    ok = MD_GPU_LAUNCH(s, isog_k[ISOG_K_PSTORE], g_pts, a);
-                }
-            }
-        }
-        if (ok && desc->out_failed) ok = md_gpu_copy(s, desc->out_failed, m_counters.gpu + 7 * sizeof(uint32_t), sizeof(uint32_t));
-        if (!ok) MD_LOG_ERROR("md_gto_iso_gpu_evaluate: the evaluation could not be issued (%u points)", n);
+        ok = md_gpu_upload(s, j->m_fields.gpu, fields, sizeof(fields)) && md_gpu_memset(s, j->m_counters.gpu, 0, sizeof(uint32_t) * 12);
     }
-    // stream ordered: after the work above
-    if (m_fields.gpu)   md_gpu_free(s, m_fields.gpu);
-    if (m_counters.gpu) md_gpu_free(s, m_counters.gpu);
-    if (m_vpos.gpu)     md_gpu_free(s, m_vpos.gpu);
-    if (m_vinfo.gpu)    md_gpu_free(s, m_vinfo.gpu);
-    if (m_vdone.gpu)    md_gpu_free(s, m_vdone.gpu);
-    if (m_vval.gpu)     md_gpu_free(s, m_vval.gpu);
+    if (!ok) {
+        isog_eval_job_free(j);
+        return NULL;
+    }
+    j->a.fields   = j->m_fields.gpu;
+    j->a.counters = j->m_counters.gpu;
+    j->a.count_in = j->m_counters.gpu;     // valid wherever a kernel may read it (llvmpipe loads both sides of a select)
+    j->a.vpos     = j->m_vpos.gpu;
+    j->a.vinfo    = j->m_vinfo.gpu;
+    j->a.vdone    = j->m_vdone.gpu;
+    j->a.pts_stride = j->stride / 4u;
+    md_gpu_pieces_init(&j->pieces, s, n, ISOG_EVAL_PIECE_FIRST, gran, B, policy);
+    return j;
+}
+
+static void isog_eval_job_log(const md_gto_iso_gpu_eval_job_t* j, const char* what) {
+    char buf[384];
+    md_gpu_pieces_describe(&j->pieces, buf, sizeof(buf));
+    MD_LOG_DEBUG("md_gto_iso_gpu_evaluate: %u points x %u fields %s after %.1f ms: %s", j->desc.num_xyz, j->desc.num_fields, what,
+                 md_tick_to_seconds(md_tick_now() - j->t0) * 1e3, buf);
+}
+
+bool md_gto_iso_gpu_evaluate_launch(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, const md_gto_iso_gpu_eval_desc_t* desc) {
+    md_gpu_pieces_policy_t all = {0};
+    all.ahead_ms = -1.0;    // every piece at once: a launch never waits
+    md_gto_iso_gpu_eval_job_t* j = isog_eval_job_create(s, set, desc, &all);
+    if (!j) return false;
+    const bool ok = isog_eval_issue(j);
+    isog_eval_job_free(j);
     return ok;
+}
+
+md_gto_iso_gpu_eval_job_t* md_gto_iso_gpu_evaluate_job_begin(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, const md_gto_iso_gpu_eval_desc_t* desc,
+                                                             const md_gpu_pieces_policy_t* policy) {
+    md_gto_iso_gpu_eval_job_t* j = isog_eval_job_create(s, set, desc, policy);
+    if (!j) return NULL;
+    if (!isog_eval_issue(j)) {      // the GPU starts at once
+        isog_eval_job_free(j);
+        return NULL;
+    }
+    return j;
+}
+
+md_gto_iso_gpu_job_status_t md_gto_iso_gpu_evaluate_job_poll(md_gto_iso_gpu_eval_job_t* j, double budget_ms) {
+    if (!j || j->failed) return MD_GTO_ISO_GPU_JOB_FAILED;
+    const md_tick_t t0 = md_tick_now();
+    for (;;) {
+        if (md_gpu_pieces_poll(&j->pieces)) {
+            if (j->pieces.num_pieces) isog_eval_job_log(j, "done");
+            return MD_GTO_ISO_GPU_JOB_DONE;
+        }
+        if (!isog_eval_issue(j)) return MD_GTO_ISO_GPU_JOB_FAILED;
+        if (budget_ms < 0.0) {
+            md_gpu_pieces_wait(&j->pieces);
+            continue;
+        }
+        if (md_tick_to_seconds(md_tick_now() - t0) * 1e3 >= budget_ms) return MD_GTO_ISO_GPU_JOB_RUNNING;
+        // within the budget: the oldest piece may pass in a moment, the next one then issued sooner
+        if (j->pieces.head == j->pieces.tail) continue;
+        if (!md_gpu_sync_is_complete(j->pieces.mark[j->pieces.head % MD_GPU_PIECES_MARKS].sync)) return MD_GTO_ISO_GPU_JOB_RUNNING;
+    }
+}
+
+float md_gto_iso_gpu_evaluate_job_progress(const md_gto_iso_gpu_eval_job_t* j) {
+    return j ? md_gpu_pieces_progress(&j->pieces) : 0.0f;
+}
+
+bool md_gto_iso_gpu_evaluate_job_end(md_gto_iso_gpu_eval_job_t* j) {
+    if (!j) return false;
+    const bool done = !j->failed && md_gpu_pieces_done(&j->pieces);
+    if (!done && !j->failed) isog_eval_job_log(j, "cancelled");
+    isog_eval_job_free(j);
+    return done;
 }
 
 // 10 bits of x spread to every third bit
@@ -2431,9 +2553,50 @@ static inline uint32_t isog_morton_spread(uint32_t x) {
     return x;
 }
 
-static int isog_cmp_u64(const void* pa, const void* pb) {
-    const uint64_t x = *(const uint64_t*)pa, y = *(const uint64_t*)pb;
-    return x < y ? -1 : x > y;
+void md_gto_iso_gpu_morton_order(uint32_t* out, const float* xyz, size_t xyz_stride, size_t count) {
+    if (!out || !xyz || count == 0) return;
+    const size_t st = xyz_stride ? xyz_stride : 3 * sizeof(float);
+#define ISOG_P(i) ((const float*)((const char*)xyz + (i) * st))
+    float lo[3] = {FLT_MAX, FLT_MAX, FLT_MAX}, hi[3] = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
+    for (size_t i = 0; i < count; ++i) {
+        const float* p = ISOG_P(i);
+        for (int c = 0; c < 3; ++c) { lo[c] = MD_MIN(lo[c], p[c]); hi[c] = MD_MAX(hi[c], p[c]); }
+    }
+    float scl[3];
+    for (int c = 0; c < 3; ++c) scl[c] = hi[c] > lo[c] ? 1023.0f / (hi[c] - lo[c]) : 0.0f;
+    md_temp_scope_t temp = md_temp_begin();
+    uint32_t* code = md_temp_alloc_array(temp, uint32_t, count);
+    uint32_t* tmp = md_temp_alloc_array(temp, uint32_t, count);
+    if (!code || !tmp) {
+        md_temp_end(temp);
+        for (size_t i = 0; i < count; ++i) out[i] = (uint32_t)i;   // as they come
+        return;
+    }
+    for (size_t i = 0; i < count; ++i) {
+        const float* p = ISOG_P(i);
+        uint32_t q[3];
+        for (int c = 0; c < 3; ++c) {
+            const float t = (p[c] - lo[c]) * scl[c];
+            q[c] = t > 0.0f ? (t < 1023.0f ? (uint32_t)t : 1023u) : 0u;     // NaN to 0
+        }
+        code[i] = isog_morton_spread(q[0]) | (isog_morton_spread(q[1]) << 1) | (isog_morton_spread(q[2]) << 2);
+        out[i] = (uint32_t)i;
+    }
+#undef ISOG_P
+    // the 30 bits of the codes, 10 at a time, least significant first: stable, so equal codes keep the points'
+    // order (as sorting code << 32 | index would)
+    uint32_t* src = out;
+    uint32_t* dst = tmp;
+    for (uint32_t shift = 0; shift < 30; shift += 10) {
+        uint32_t hist[1025];
+        memset(hist, 0, sizeof(hist));
+        for (size_t i = 0; i < count; ++i) hist[((code[src[i]] >> shift) & 1023u) + 1] += 1;
+        for (uint32_t b = 0; b < 1024; ++b) hist[b + 1] += hist[b];
+        for (size_t i = 0; i < count; ++i) dst[hist[(code[src[i]] >> shift) & 1023u]++] = src[i];
+        uint32_t* t = src; src = dst; dst = t;
+    }
+    if (src != out) memcpy(out, src, sizeof(uint32_t) * count);
+    md_temp_end(temp);
 }
 
 bool md_gto_iso_gpu_evaluate(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set, const uint32_t* fields, uint32_t num_fields,
@@ -2446,40 +2609,21 @@ bool md_gto_iso_gpu_evaluate(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set,
     if (num_xyz == 0) return true;
     const size_t n = num_xyz;
     const size_t st = xyz_stride ? xyz_stride : 3 * sizeof(float);
-#define ISOG_P(i) ((const float*)((const char*)xyz + (i) * st))
 
-    // a Morton curve through the points' box: code << 32 | index, sorted
-    float lo[3] = {FLT_MAX, FLT_MAX, FLT_MAX}, hi[3] = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
-    for (size_t i = 0; i < n; ++i) {
-        const float* p = ISOG_P(i);
-        for (int c = 0; c < 3; ++c) { lo[c] = MD_MIN(lo[c], p[c]); hi[c] = MD_MAX(hi[c], p[c]); }
-    }
-    float scl[3];
-    for (int c = 0; c < 3; ++c) scl[c] = hi[c] > lo[c] ? 1023.0f / (hi[c] - lo[c]) : 0.0f;
+    // a Morton curve through the points' box
     md_temp_scope_t temp = md_temp_begin();
-    uint64_t* order = md_temp_alloc_array(temp, uint64_t, n);
+    uint32_t* order = md_temp_alloc_array(temp, uint32_t, n);
     md_gpu_float4* pts = md_temp_alloc_array(temp, md_gpu_float4, n);
     if (!order || !pts) {
         md_temp_end(temp);
         MD_LOG_ERROR("md_gto_iso_gpu_evaluate: out of memory");
         return false;
     }
-    for (size_t i = 0; i < n; ++i) {
-        const float* p = ISOG_P(i);
-        uint32_t q[3];
-        for (int c = 0; c < 3; ++c) {
-            const float t = (p[c] - lo[c]) * scl[c];
-            q[c] = t > 0.0f ? (t < 1023.0f ? (uint32_t)t : 1023u) : 0u;     // NaN to 0
-        }
-        const uint32_t code = isog_morton_spread(q[0]) | (isog_morton_spread(q[1]) << 1) | (isog_morton_spread(q[2]) << 2);
-        order[i] = ((uint64_t)code << 32) | (uint64_t)i;
-    }
-    qsort(order, n, sizeof(uint64_t), isog_cmp_u64);
+    md_gto_iso_gpu_morton_order(order, xyz, st, n);
     for (size_t r = 0; r < n; ++r) {
-        const float* p = ISOG_P((size_t)(uint32_t)order[r]);
+        const float* p = (const float*)((const char*)xyz + (size_t)order[r] * st);
         pts[r] = (md_gpu_float4){p[0], p[1], p[2], 1.0f};
     }
-#undef ISOG_P
 
     // device: the points, the outputs and the count of failures; then all of it to one host-readable buffer
     const size_t bv = out_value ? sizeof(float) * num_fields * n : 0;
@@ -2509,7 +2653,7 @@ bool md_gto_iso_gpu_evaluate(md_gpu_stream_t s, const md_gto_iso_gpu_set_t* set,
             const uint32_t failed = *(const uint32_t*)((const char*)h_out.cpu + bv + bg);
             for (uint32_t k = 0; k < num_fields; ++k) {
                 for (size_t r = 0; r < n; ++r) {
-                    const size_t i = (size_t)(uint32_t)order[r];
+                    const size_t i = (size_t)order[r];
                     if (out_value) out_value[(size_t)k * n + i] = hv[(size_t)k * n + r];
                     if (out_gradient) {
                         const md_gpu_float4 g = hg[(size_t)k * n + r];
