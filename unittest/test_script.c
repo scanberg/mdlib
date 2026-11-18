@@ -144,21 +144,21 @@ UTEST_F_SETUP(script) {
     utest_fixture->amy.alloc = utest_fixture->arena;
     md_system_state_t amy_state = { .alloc = utest_fixture->arena };
     ASSERT_TRUE(md_gro_system_init_from_file(&utest_fixture->amy, &amy_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL));
-    md_system_infer(&utest_fixture->amy, &amy_state, MD_SYSTEM_INFER_ALL, NULL);
+    md_system_infer(&utest_fixture->amy, &amy_state, NULL);
 
     utest_fixture->ala.alloc = utest_fixture->arena;
     md_system_state_t ala_state = { .alloc = utest_fixture->arena };
     ASSERT_TRUE(md_pdb_system_init_from_file(&utest_fixture->ala, &ala_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL));
     // Its models are the frames the evaluations below step through.
     ASSERT_TRUE(md_pdb_system_publish_run(&utest_fixture->ala, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), SCRIPT_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
-    md_system_infer(&utest_fixture->ala, &ala_state, MD_SYSTEM_INFER_ALL, NULL);
+    md_system_infer(&utest_fixture->ala, &ala_state, NULL);
 
     // A triclinic cell, not just a box. Every other system in this fixture is orthorhombic, which
     // is exactly the shape that hides mistakes in the periodic neighbour walk.
     utest_fixture->npt.alloc = utest_fixture->arena;
     md_system_state_t npt_state = { .alloc = utest_fixture->arena };
     ASSERT_TRUE(md_gro_system_init_from_file(&utest_fixture->npt, &npt_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/npt.gro"), NULL));
-    md_system_infer(&utest_fixture->npt, &npt_state, MD_SYSTEM_INFER_ALL, NULL);
+    md_system_infer(&utest_fixture->npt, &npt_state, NULL);
 }
 
 UTEST_F_TEARDOWN(script) {
@@ -7111,11 +7111,12 @@ UTEST(script, bondsets) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, md_str_from_cstr(bonds_site_pdb), NULL));
-    ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
     // C1-C2, C2-O1, C2-O2, Mg-O1, O-H1, O-H2, Cu-Cu
     ASSERT_EQ(7, (int)sys.bond.count);
     // A hydrogen bond a user marks, from a water hydrogen to O2
     md_system_bond_insert(&sys, 6, 3, md_bond_flags_set_origin(md_bond_flags_set_kind(MD_BOND_FLAG_KIND_GIVEN, MD_BOND_KIND_HYDROGEN), MD_BOND_ORIGIN_USER));
+    ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
     ASSERT_EQ(1, (int)sys.bond.noncovalent_count);
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
@@ -7289,7 +7290,7 @@ UTEST(script, bond_delta) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t ref = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &ref, md_str_from_cstr(bonds_water_pair_pdb), NULL));
-    ASSERT_TRUE(md_system_infer(&sys, &ref, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &ref, NULL));
     ASSERT_EQ(4, (int)sys.bond.count);
 
     md_script_ir_t* ir = md_script_ir_create(alloc);

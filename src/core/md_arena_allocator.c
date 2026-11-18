@@ -126,6 +126,12 @@ void md_arena_allocator_reset(struct md_allocator_i* alloc) {
     arena_reset(arena);
 }
 
+md_allocator_i* md_arena_allocator_backing_of(const md_allocator_i* alloc) {
+    if (!alloc || !alloc->inst || alloc->realloc != arena_realloc) return NULL;
+    const arena_t* arena = (const arena_t*)alloc->inst;
+    return arena->magic == ARENA_MAGIC ? arena->backing : NULL;
+}
+
 md_allocator_i* md_arena_allocator_backing(md_allocator_i* alloc) {
     VALIDATE_AND_EXTRACT_ARENA(alloc);
     return arena->backing;

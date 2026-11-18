@@ -38,7 +38,7 @@ UTEST(molden, parse) {
     EXPECT_EQ(3u, t.state.num_atoms);
     // A QM calculation alone: every atom is in its QM region
     for (size_t i = 0; i < t.sys.atom.count; ++i) {
-        EXPECT_TRUE((md_atom_flags(&t.sys.atom, i) & MD_ATOM_FLAG_QM) != 0);
+        EXPECT_TRUE(md_atom_is_qm(&t.sys.atom, i));
     }
 
     // [Atoms] was written in Angstrom and the state is in Angstrom, so this is a straight read.

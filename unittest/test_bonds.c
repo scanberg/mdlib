@@ -36,31 +36,19 @@ static int compare_u64(const void* a, const void* b) {
     return (x > y) - (x < y);
 }
 
-// What md_system_infer does with the bonds (MD_SYSTEM_INFER_BOND_BIT): inferred anew, merged with those given
-static void infer_system_bonds(md_system_t* sys, const md_system_state_t* st) {
-    md_bond_data_t inferred = {0};
-    md_bond_data_t merged = {0};
-    md_bond_infer(&inferred, sys, st, sys->alloc, NULL);
-    md_bond_merge(&merged, &sys->bond, &inferred, sys->atom.count, sys->alloc);
-    md_bond_data_free(&inferred, sys->alloc);
-    md_bond_data_free(&sys->bond, sys->alloc);
-    sys->bond = merged;
-    md_system_topology_changed(sys);
-}
-
-// Bonds of the system (from its topology) against what inference finds from the coordinates alone
+// Bonds given of the system (from its topology) against what inference finds from the coordinates alone
 static void expect_inference_matches_topology(int* utest_result, const md_system_t* sys, const md_system_state_t* st, md_allocator_i* alloc) {
-    const size_t n = sys->bond.count;
+    const size_t n = md_bond_list_count(&sys->given_bond);
     uint64_t* ref = md_alloc(alloc, sizeof(uint64_t) * (n + 1));
-    for (size_t i = 0; i < n; ++i) ref[i] = pair_key(sys->bond.pairs[i]);
+    for (size_t i = 0; i < n; ++i) ref[i] = pair_key(sys->given_bond.pairs[i]);
     qsort(ref, n, sizeof(uint64_t), compare_u64);
 
-    md_bond_data_t inferred = { 0 };
+    md_bond_list_t inferred = { 0 };
     md_bond_infer(&inferred, sys, st, alloc, NULL);
-    ASSERT_EQ(n, inferred.count);
-    uint64_t* inf = md_alloc(alloc, sizeof(uint64_t) * (inferred.count + 1));
-    for (size_t i = 0; i < inferred.count; ++i) inf[i] = pair_key(inferred.pairs[i]);
-    qsort(inf, inferred.count, sizeof(uint64_t), compare_u64);
+    ASSERT_EQ(n, md_bond_list_count(&inferred));
+    uint64_t* inf = md_alloc(alloc, sizeof(uint64_t) * (n + 1));
+    for (size_t i = 0; i < n; ++i) inf[i] = pair_key(inferred.pairs[i]);
+    qsort(inf, n, sizeof(uint64_t), compare_u64);
     EXPECT_EQ(0, memcmp(ref, inf, sizeof(uint64_t) * n));
 }
 
@@ -83,7 +71,7 @@ UTEST(bonds, clashing_molecules) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_lammps_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/Water_Ethane_Cubic_Init.data"), NULL));
-    EXPECT_TRUE(sys.bond.count > 0 && md_bond_origin(sys.bond.flags[0]) == MD_BOND_ORIGIN_TOPOLOGY);
+    EXPECT_TRUE(md_bond_list_count(&sys.given_bond) > 0 && md_bond_origin(sys.given_bond.flags[0]) == MD_BOND_ORIGIN_TOPOLOGY);
     expect_inference_matches_topology(utest_result, &sys, &st, alloc);
     md_vm_arena_destroy(alloc);
 }
@@ -116,7 +104,7 @@ UTEST(bonds, metal_coordination) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, md_str_from_cstr(metal_site_pdb), NULL));
-    ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
     md_bond_flags_t f = 0;
 
     // Acetate
@@ -158,7 +146,7 @@ UTEST(bonds, metal_sites_deposited) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif"), NULL));
-    ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
     int num_zn = 0;
     for (size_t i = 0; i < sys.atom.count; ++i) {
         if (md_atom_atomic_number(&sys.atom, i) != 30) continue;
@@ -176,7 +164,7 @@ UTEST(bonds, metal_sites_deposited) {
     md_system_t tub = { .alloc = alloc };
     md_system_state_t tub_st = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_file(&tub, &tub_st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), NULL));
-    ASSERT_TRUE(md_system_infer(&tub, &tub_st, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&tub, &tub_st, NULL));
     for (size_t i = 0; i < tub.atom.count; ++i) {
         if (md_atom_atomic_number(&tub.atom, i) == 12) {
             EXPECT_GE((int)md_bond_conn_count(&tub.bond, i), 2);
@@ -185,18 +173,28 @@ UTEST(bonds, metal_sites_deposited) {
     md_vm_arena_destroy(alloc);
 }
 
+// The user's edits (md_system_t::bond_edit) of a range, which add a bond or remove one (MD_BOND_FLAG_INACTIVE)
+static size_t edits_of(const md_system_t* sys, bool noncovalent, bool inactive) {
+    size_t n = 0;
+    for (size_t i = 0; i < md_bond_list_count(&sys->bond_edit); ++i) {
+        const md_bond_flags_t f = sys->bond_edit.flags[i];
+        n += md_bond_is_noncovalent(f) == noncovalent && ((f & MD_BOND_FLAG_INACTIVE) != 0) == inactive;
+    }
+    return n;
+}
+
 // Inferring the bonds again keeps the bonds a user added by hand
 UTEST(bonds, reinference_keeps_user_bonds) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.pdb"), NULL));
-    ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
     const size_t inferred = sys.bond.count;
     const int a = 0, b = (int)sys.atom.count - 1;
     ASSERT_FALSE(has_bond(&sys, a, b, NULL));
     md_system_bond_insert(&sys, a, b, md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_USER));
-    infer_system_bonds(&sys, &st);
+    ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
     md_bond_flags_t f = 0;
     EXPECT_TRUE(has_bond(&sys, a, b, &f));
     EXPECT_EQ(MD_BOND_ORIGIN_USER, md_bond_origin(f));
@@ -204,14 +202,67 @@ UTEST(bonds, reinference_keeps_user_bonds) {
     md_vm_arena_destroy(alloc);
 }
 
+// An inferred bond the user removes stays removed when the system is inferred again: inference is not certain
+UTEST(bonds, reinference_keeps_removed_bonds) {
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t st = { .alloc = alloc };
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.pdb"), NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
+    const size_t inferred = sys.bond.count;
+    ASSERT_GT(inferred, (size_t)0);
+    const md_atom_pair_t pair = sys.bond.pairs[0];
+    const md_bond_flags_t flags = sys.bond.flags[0];
+    ASSERT_EQ(MD_BOND_ORIGIN_INFERRED, md_bond_origin(flags));
+
+    EXPECT_TRUE(md_system_bond_remove(&sys, pair.idx[0], pair.idx[1], flags));
+    EXPECT_FALSE(md_system_bond_remove(&sys, pair.idx[1], pair.idx[0], flags));
+    for (int k = 0; k < 2; ++k) {
+        ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
+        EXPECT_FALSE(has_bond(&sys, pair.idx[0], pair.idx[1], NULL));
+        EXPECT_EQ(inferred - 1, sys.bond.count);
+    }
+
+    // Added again, it is the user's, whatever origin it is given
+    EXPECT_TRUE(md_system_bond_insert(&sys, pair.idx[0], pair.idx[1], md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_FILE)));
+    ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
+    md_bond_flags_t f = 0;
+    EXPECT_TRUE(has_bond(&sys, pair.idx[0], pair.idx[1], &f));
+    EXPECT_EQ(MD_BOND_ORIGIN_USER, md_bond_origin(f));
+    EXPECT_EQ(inferred, sys.bond.count);
+
+    // Removed again, the user's goes, and what was removed before stays removed
+    EXPECT_TRUE(md_system_bond_remove(&sys, pair.idx[0], pair.idx[1], f));
+    ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
+    EXPECT_FALSE(has_bond(&sys, pair.idx[0], pair.idx[1], NULL));
+
+    // Restored, inference finds it again; of a pair not removed, nothing is restored
+    EXPECT_TRUE(md_system_bond_restore(&sys, pair.idx[1], pair.idx[0], flags));
+    EXPECT_FALSE(md_system_bond_restore(&sys, pair.idx[0], pair.idx[1], flags));
+    EXPECT_EQ(0u, edits_of(&sys, false, true));
+    ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
+    EXPECT_TRUE(has_bond(&sys, pair.idx[0], pair.idx[1], &f));
+    EXPECT_EQ(MD_BOND_ORIGIN_INFERRED, md_bond_origin(f));
+    EXPECT_EQ(inferred, sys.bond.count);
+    md_vm_arena_destroy(alloc);
+}
+
 // The persistent non-covalent bonds sit in a range of their own after the bond graph (md_bond_data_t): the graph and
-// everything derived from it never sees them, and inserting, removing and inferring bonds keeps both ranges
+// everything derived from it never sees them, and inserting, removing and inferring bonds keeps both ranges, of the
+// bonds given and of the bonds
+static void expect_ranges(int* utest_result, const md_bond_data_t* bond) {
+    for (size_t i = 0; i < bond->count; ++i) EXPECT_FALSE(md_bond_is_noncovalent(bond->flags[i]));
+    for (size_t i = bond->count; i < bond->count + bond->noncovalent_count; ++i) EXPECT_TRUE(md_bond_is_noncovalent(bond->flags[i]));
+    EXPECT_EQ(bond->count + bond->noncovalent_count, md_array_size(bond->pairs));
+    EXPECT_EQ(bond->count + bond->noncovalent_count, md_array_size(bond->flags));
+}
+
 UTEST(bonds, noncovalent_range) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.pdb"), NULL));
-    ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
     const size_t graph = sys.bond.count;
     const int n = (int)sys.atom.count;
     ASSERT_GE(n, 6);
@@ -222,28 +273,26 @@ UTEST(bonds, noncovalent_range) {
     const md_bond_flags_t inter = md_bond_flags_set_kind(user, MD_BOND_KIND_INTERACTION);
     ASSERT_FALSE(has_bond(&sys, 0, n - 1, NULL));
     ASSERT_FALSE(has_bond(&sys, 1, n - 2, NULL));
-    md_system_bond_insert(&sys, 0, n - 1, hbond);
-    md_system_bond_insert(&sys, 1, n - 2, inter);
-    EXPECT_EQ(graph, sys.bond.count);
-    EXPECT_EQ(2, (int)sys.bond.noncovalent_count);
-    EXPECT_EQ(graph + 2, md_array_size(sys.bond.pairs));
-    EXPECT_EQ(graph + 2, md_array_size(sys.bond.flags));
+    EXPECT_TRUE(md_system_bond_insert(&sys, 0, n - 1, hbond));
+    EXPECT_TRUE(md_system_bond_insert(&sys, 1, n - 2, inter));
+    EXPECT_EQ(0, (int)edits_of(&sys, false, false));
+    EXPECT_EQ(2, (int)edits_of(&sys, true, false));
 
     // An atom pair has one bond: neither range takes a second one
-    md_system_bond_insert(&sys, n - 1, 0, inter);
-    md_system_bond_insert(&sys, sys.bond.pairs[0].idx[0], sys.bond.pairs[0].idx[1], hbond);
-    EXPECT_EQ(graph, sys.bond.count);
-    EXPECT_EQ(2, (int)sys.bond.noncovalent_count);
+    EXPECT_FALSE(md_system_bond_insert(&sys, n - 1, 0, inter));
+    EXPECT_FALSE(md_system_bond_insert(&sys, 0, n - 1, user));
+    EXPECT_EQ(2, (int)edits_of(&sys, true, false));
 
     // A bond of the graph inserted goes before them
-    md_system_bond_insert(&sys, 2, n - 3, user);
+    EXPECT_TRUE(md_system_bond_insert(&sys, 2, n - 3, user));
+    EXPECT_EQ(1, (int)edits_of(&sys, false, false));
+    EXPECT_EQ(2, (int)edits_of(&sys, true, false));
+
+    // The bonds are of what is given once inferred: the graph does not have them, the second range does
+    ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
     EXPECT_EQ(graph + 1, sys.bond.count);
     EXPECT_EQ(2, (int)sys.bond.noncovalent_count);
-    for (size_t i = 0; i < sys.bond.count; ++i) EXPECT_FALSE(md_bond_is_noncovalent(sys.bond.flags[i]));
-    for (size_t i = sys.bond.count; i < sys.bond.count + sys.bond.noncovalent_count; ++i) EXPECT_TRUE(md_bond_is_noncovalent(sys.bond.flags[i]));
-    md_system_bond_build_connectivity(&sys);
-
-    // The graph does not have them, the second range does
+    expect_ranges(utest_result, &sys.bond);
     EXPECT_FALSE(has_bond(&sys, 0, n - 1, NULL));
     EXPECT_TRUE(has_bond(&sys, 2, n - 3, NULL));
     const md_bond_idx_t hb = md_bond_find_noncovalent(&sys.bond, n - 1, 0);
@@ -252,7 +301,7 @@ UTEST(bonds, noncovalent_range) {
     EXPECT_EQ(-1, md_bond_find_noncovalent(&sys.bond, 2, n - 3));
 
     // Inferring the bonds again keeps them, and the user's bond of the graph
-    infer_system_bonds(&sys, &st);
+    ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
     EXPECT_EQ(graph + 1, sys.bond.count);
     EXPECT_EQ(2, (int)sys.bond.noncovalent_count);
     EXPECT_GE(md_bond_find_noncovalent(&sys.bond, 0, n - 1), 0);
@@ -262,24 +311,25 @@ UTEST(bonds, noncovalent_range) {
     // A pair the user marks non-covalent is not given a covalent bond by inference as well
     const md_atom_pair_t covalent = sys.bond.pairs[0];
     ASSERT_EQ(MD_BOND_ORIGIN_INFERRED, md_bond_origin(sys.bond.flags[0]));
-    md_system_bond_remove(&sys, 0);
-    md_system_bond_build_connectivity(&sys);
-    md_system_bond_insert(&sys, covalent.idx[0], covalent.idx[1], hbond);
-    EXPECT_EQ(3, (int)sys.bond.noncovalent_count);
-    infer_system_bonds(&sys, &st);
+    EXPECT_TRUE(md_system_bond_insert(&sys, covalent.idx[0], covalent.idx[1], hbond));
+    EXPECT_EQ(3, (int)edits_of(&sys, true, false));
+    ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
     EXPECT_FALSE(has_bond(&sys, covalent.idx[0], covalent.idx[1], NULL));
     EXPECT_GE(md_bond_find_noncovalent(&sys.bond, covalent.idx[0], covalent.idx[1]), 0);
     EXPECT_EQ(graph, sys.bond.count);
     EXPECT_EQ(3, (int)sys.bond.noncovalent_count);
 
-    // Removing keeps the ranges: a bond of the graph (the last non-covalent one moves down), then a non-covalent one
-    md_system_bond_remove(&sys, 0);
+    // Removing keeps the ranges: the bond of the graph given (the last non-covalent one moves down), then a
+    // non-covalent one
+    EXPECT_TRUE(md_system_bond_remove(&sys, 2, n - 3, user));
+    EXPECT_EQ(0, (int)edits_of(&sys, false, false));
+    EXPECT_EQ(3, (int)edits_of(&sys, true, false));
+    ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
     EXPECT_EQ(graph - 1, sys.bond.count);
     EXPECT_EQ(3, (int)sys.bond.noncovalent_count);
-    EXPECT_EQ(graph + 2, md_array_size(sys.bond.pairs));
-    for (size_t i = 0; i < sys.bond.count; ++i) EXPECT_FALSE(md_bond_is_noncovalent(sys.bond.flags[i]));
-    for (size_t i = sys.bond.count; i < sys.bond.count + sys.bond.noncovalent_count; ++i) EXPECT_TRUE(md_bond_is_noncovalent(sys.bond.flags[i]));
-    md_system_bond_remove(&sys, md_bond_find_noncovalent(&sys.bond, 1, n - 2));
+    expect_ranges(utest_result, &sys.bond);
+    EXPECT_TRUE(md_system_bond_remove(&sys, 1, n - 2, inter));
+    ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
     EXPECT_EQ(2, (int)sys.bond.noncovalent_count);
     EXPECT_EQ(-1, md_bond_find_noncovalent(&sys.bond, 1, n - 2));
     EXPECT_GE(md_bond_find_noncovalent(&sys.bond, 0, n - 1), 0);
@@ -292,7 +342,7 @@ UTEST(bonds, kind_given_stays) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, md_str_from_cstr(metal_site_pdb), NULL));
-    ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
     const md_bond_idx_t b = md_system_bond_find(&sys, 2, 4);
     ASSERT_GE(b, 0);
     sys.bond.flags[b] = md_bond_flags_set_origin(MD_BOND_FLAG_KIND_GIVEN, MD_BOND_ORIGIN_USER);
@@ -375,7 +425,7 @@ static bool delta_fixture_init(delta_fixture_t* f) {
     f->sys = (md_system_t){ .alloc = f->alloc };
     f->ref = (md_system_state_t){ .alloc = f->alloc };
     if (!md_pdb_system_init_from_str(&f->sys, &f->ref, md_str_from_cstr(water_pair_pdb), NULL)) return false;
-    if (!md_system_infer(&f->sys, &f->ref, MD_SYSTEM_INFER_ALL, NULL)) return false;
+    if (!md_system_infer(&f->sys, &f->ref, NULL)) return false;
     f->st = f->ref;
     f->st.xyz = md_alloc(f->alloc, sizeof(md_float3_t) * f->ref.num_atoms);
     md_memcpy(f->st.xyz, f->ref.xyz, sizeof(md_float3_t) * f->ref.num_atoms);
@@ -404,7 +454,7 @@ UTEST(bonds, delta_reference_is_empty) {
     md_system_t tub = { .alloc = f.alloc };
     md_system_state_t tub_st = { .alloc = f.alloc };
     ASSERT_TRUE(md_pdb_system_init_from_file(&tub, &tub_st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), NULL));
-    ASSERT_TRUE(md_system_infer(&tub, &tub_st, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&tub, &tub_st, NULL));
     md_bond_delta_t td = {0};
     ASSERT_TRUE(md_bond_delta_compute(&td, &tub, &tub_st, &delta_default, f.alloc));
     EXPECT_EQ(0, (int)md_bitset_count(td.broken));
@@ -506,6 +556,7 @@ UTEST(bonds, delta_keeps_noncovalent) {
     delta_fixture_t f = {0};
     ASSERT_TRUE(delta_fixture_init(&f));
     md_system_bond_insert(&f.sys, 1, 3, md_bond_flags_set_origin(md_bond_flags_set_kind(MD_BOND_FLAG_KIND_GIVEN, MD_BOND_KIND_HYDROGEN), MD_BOND_ORIGIN_USER));
+    ASSERT_TRUE(md_system_infer(&f.sys, &f.st, NULL));
     f.st.xyz[1] = md_float3_set(1.80f, 0.0f, 0.0f);
     md_bond_delta_t d = {0};
     ASSERT_TRUE(md_bond_delta_compute(&d, &f.sys, &f.st, &delta_default, f.alloc));
@@ -563,7 +614,7 @@ UTEST(bonds, metallic_crystal) {
         md_system_t sys = { .alloc = alloc };
         md_system_state_t st = { .alloc = alloc };
         ASSERT_TRUE(md_xyz_system_init_from_str(&sys, &st, crystal_xyz(fcc_cu, 4, n, a, periodic, alloc), NULL));
-        ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
+        ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
         const size_t num = sys.atom.count;
         EXPECT_EQ(num, count_metallic(&sys));
         EXPECT_EQ(0, (int)count_kind(&sys, MD_BOND_KIND_COVALENT));
@@ -597,7 +648,7 @@ UTEST(bonds, metallic_not_ionic) {
         md_system_t sys = { .alloc = alloc };
         md_system_state_t st = { .alloc = alloc };
         ASSERT_TRUE(md_xyz_system_init_from_str(&sys, &st, crystal_xyz(rock_salt, 8, 3, salts[s].a, true, alloc), NULL));
-        ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
+        ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
         EXPECT_EQ(0, (int)count_metallic(&sys));
         EXPECT_EQ(0, (int)count_kind(&sys, MD_BOND_KIND_METALLIC));
         md_vm_arena_destroy(alloc);
@@ -676,7 +727,7 @@ UTEST(bonds, metallic_slab) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_xyz_system_init_from_str(&sys, &st, (md_str_t){ buf, (size_t)len }, NULL));
-    ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
     ASSERT_EQ(num, (int)sys.atom.count);
 
     uint8_t* metallic = md_alloc(alloc, sys.atom.count);
@@ -736,7 +787,7 @@ UTEST(bonds, metallic_slab_trajectory) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_xyz_system_init_from_data(&sys, &st, &data));
-    ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
     const size_t num = sys.atom.count;
     ASSERT_EQ(540, (int)num);
 
@@ -795,10 +846,10 @@ UTEST(bonds, metallic_slab_trajectory) {
             const md_xyz_coordinate_t c = data.coordinates[data.models[f].beg_coord_index + i];
             fs.xyz[i] = md_float3_set(c.x, c.y, c.z);
         }
-        md_bond_data_t bonds = {0};
+        md_bond_list_t bonds = {0};
         md_bond_infer(&bonds, &sys, &fs, alloc, NULL);
         size_t metallic = 0;
-        for (size_t b = 0; b < bonds.count; ++b) metallic += md_bond_kind(bonds.flags[b]) == MD_BOND_KIND_METALLIC;
+        for (size_t b = 0; b < md_bond_list_count(&bonds); ++b) metallic += md_bond_kind(bonds.flags[b]) == MD_BOND_KIND_METALLIC;
         EXPECT_LT(fabs((double)metallic - (double)num_metallic), 0.01 * (double)num_metallic);
 
         const md_bond_delta_desc_t desc = { .tolerance = MD_BOND_DELTA_TOLERANCE, .breakable = MD_BOND_DELTA_BREAKABLE };
@@ -870,14 +921,14 @@ UTEST(bonds, threads) {
         md_system_t ref = { .alloc = alloc };
         md_system_state_t ref_st = { .alloc = alloc };
         ASSERT_TRUE(pdb ? md_pdb_system_init_from_file(&ref, &ref_st, md_str_from_cstr(path), NULL) : md_gro_system_init_from_file(&ref, &ref_st, md_str_from_cstr(path), NULL));
-        ASSERT_TRUE(md_system_infer(&ref, &ref_st, MD_SYSTEM_INFER_ALL, NULL));
+        ASSERT_TRUE(md_system_infer(&ref, &ref_st, NULL));
         EXPECT_GT(ref.bond.count, (size_t)0);
         const md_executor_t* executors[] = { test_executor(&threads), test_executor(&shuffled) };
         for (size_t e = 0; e < MD_COUNTOF(executors); ++e) {
             md_system_t sys = { .alloc = alloc };
             md_system_state_t st = { .alloc = alloc };
             ASSERT_TRUE(pdb ? md_pdb_system_init_from_file(&sys, &st, md_str_from_cstr(path), &(md_load_desc_t){ .executor = executors[e] }) : md_gro_system_init_from_file(&sys, &st, md_str_from_cstr(path), &(md_load_desc_t){ .executor = executors[e] }));
-            ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, executors[e]));
+            ASSERT_TRUE(md_system_infer(&sys, &st, executors[e]));
             EXPECT_TRUE_MSG(bonds_threads_same(&ref, &sys), path);
         }
     }
@@ -894,7 +945,7 @@ UTEST(bonds, threads_molecules) {
     md_system_t ref = { .alloc = alloc };
     md_system_state_t ref_st = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_file(&ref, &ref_st, md_str_from_cstr(path), NULL));
-    ASSERT_TRUE(md_system_infer(&ref, &ref_st, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&ref, &ref_st, NULL));
     const md_molecule_data_t* rm = &ref.molecule;
     ASSERT_GT(rm->count, (size_t)1);
     test_executor_t threads = test_executor_threads(3);
@@ -905,7 +956,7 @@ UTEST(bonds, threads_molecules) {
         md_system_t sys = { .alloc = a };
         md_system_state_t st = { .alloc = a };
         ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, md_str_from_cstr(path), NULL));
-        ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, test_executor(&threads)));
+        ASSERT_TRUE(md_system_infer(&sys, &st, test_executor(&threads)));
         EXPECT_TRUE(bonds_threads_same(&ref, &sys));
         const md_molecule_data_t* m = &sys.molecule;
         ASSERT_EQ(rm->count, m->count);
@@ -930,9 +981,9 @@ UTEST(bonds, reference_systems) {
     reference_systems_free(&refsys);
 }
 
-// Bond inference marks what it produces as of origin MD_BOND_ORIGIN_INFERRED, and re-inference replaces only those.
-// A bond of another origin (read from a file, user defined, from a topology) is kept wherever it sits in the arrays,
-// is never duplicated by an inferred bond naming the same pair, and survives an inference that cannot run.
+// Bond inference marks what it produces as of origin MD_BOND_ORIGIN_INFERRED, and the bonds are those inferred with
+// those given (md_bond_merge): a bond given (read from a file, user defined, from a topology) is kept, is never
+// duplicated by an inferred bond naming the same pair, and survives an inference that cannot run.
 UTEST(bonds, infer_bonds_replaces_only_inferred) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
 
@@ -951,43 +1002,28 @@ UTEST(bonds, infer_bonds_replaces_only_inferred) {
     md_float3_t xyz[5];
     md_system_state_t state = { .num_atoms = 5, .xyz = pack_xyz(xyz, x, y, z, 5) };
 
-    md_bond_data_t inferred = {0};
+    md_bond_list_t inferred = {0};
     md_bond_infer(&inferred, &sys, &state, alloc, NULL);
-    sys.bond = inferred;
-    ASSERT_EQ(sys.bond.count, 3u);
-    for (size_t i = 0; i < sys.bond.count; ++i) {
-        EXPECT_EQ(MD_BOND_ORIGIN_INFERRED, md_bond_origin(sys.bond.flags[i]));
+    ASSERT_EQ(md_bond_list_count(&inferred), 3u);
+    for (size_t i = 0; i < md_bond_list_count(&inferred); ++i) {
+        EXPECT_EQ(MD_BOND_ORIGIN_INFERRED, md_bond_origin(inferred.flags[i]));
     }
 
-    // Kept bonds placed FIRST, so nothing may rely on them trailing: a file bond duplicating an inferred pair,
-    // a file bond inference would never find, a user bond and a topology bond.
-    md_bond_flags_t* flags = 0;
-    md_atom_pair_t*  pairs = 0;
+    // The bonds given: a file bond duplicating an inferred pair, a file bond inference would never find, a user bond
+    // and a topology bond
+    md_bond_list_t given = {0};
     const md_atom_pair_t kept_pairs[] = {{{1, 2}}, {{3, 4}}, {{0, 4}}, {{2, 4}}};
     const md_bond_flags_t kept_flags[] = {MD_BOND_FLAG_NONE, MD_BOND_FLAG_NONE, md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_USER), md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_TOPOLOGY)};
     for (size_t i = 0; i < 4; ++i) {
-        md_array_push(pairs, kept_pairs[i], alloc);
-        md_array_push(flags, kept_flags[i], alloc);
+        md_array_push(given.pairs, kept_pairs[i], alloc);
+        md_array_push(given.flags, kept_flags[i], alloc);
     }
-    for (size_t i = 0; i < sys.bond.count; ++i) {
-        md_array_push(pairs, sys.bond.pairs[i], alloc);
-        md_array_push(flags, sys.bond.flags[i], alloc);
-    }
-    md_bond_data_clear(&sys.bond);
-    for (size_t i = 0; i < md_array_size(pairs); ++i) {
-        md_array_push(sys.bond.pairs, pairs[i], alloc);
-        md_array_push(sys.bond.flags, flags[i], alloc);
-    }
-    sys.bond.count = md_array_size(pairs);
 
-    // Fresh bond data: inferred above became the system's (its arrays are sys.bond's)
-    md_bond_data_t reinferred = {0};
     md_bond_data_t merged = {0};
-    md_bond_infer(&reinferred, &sys, &state, alloc, NULL);
-    md_bond_merge(&merged, &sys.bond, &reinferred, sys.atom.count, alloc);
+    md_bond_merge(&merged, &given, NULL, &inferred, NULL, sys.atom.count, alloc);
     sys.bond = merged;
 
-    // Inferred 0-1 and 2-3 (1-2 is already kept), then the four kept bonds in their original order
+    // Inferred 0-1 and 2-3 (1-2 is given), then the four given bonds in their order
     ASSERT_EQ(sys.bond.count, 6u);
     size_t num_inferred = 0;
     for (size_t i = 0; i < sys.bond.count; ++i) {
@@ -1000,14 +1036,89 @@ UTEST(bonds, infer_bonds_replaces_only_inferred) {
         EXPECT_EQ((int)sys.bond.flags[2 + i], (int)kept_flags[i]);
     }
 
-    // No coordinates: nothing is inferred, the kept bonds are still there
+    // Atoms whose bonds are given complete get none inferred between them: of 0, 1, 2 the inferred 0-1 goes
+    const uint8_t complete[5] = {1, 1, 1, 0, 0};
+    md_bond_data_t partial = {0};
+    md_bond_merge(&partial, &given, NULL, &inferred, complete, sys.atom.count, alloc);
+    EXPECT_EQ(5u, partial.count);
+    EXPECT_EQ(-1, md_bond_find(&partial, 0, 1));
+    EXPECT_NE(-1, md_bond_find(&partial, 2, 3));
+
+    // The user's edits: the inferred 2-3 and the given 3-4 removed, and a bond of 1-2 added in place of the one given.
+    // The inferred first, then the given, then the user's.
+    md_bond_list_t edits = {0};
+    const md_bond_flags_t user = md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_USER);
+    md_bond_list_push(&edits, 3, 2, md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_INFERRED) | MD_BOND_FLAG_INACTIVE, alloc);
+    md_bond_list_push(&edits, 3, 4, MD_BOND_FLAG_INACTIVE, alloc);
+    md_bond_list_push(&edits, 2, 1, user, alloc);
+    md_bond_data_t edited = {0};
+    md_bond_merge(&edited, &given, &edits, &inferred, NULL, sys.atom.count, alloc);
+    ASSERT_EQ(4u, edited.count);
+    const md_atom_pair_t edited_pairs[] = {{{0, 1}}, {{0, 4}}, {{2, 4}}, {{2, 1}}};
+    for (size_t i = 0; i < 4; ++i) {
+        EXPECT_EQ(edited.pairs[i].idx[0], edited_pairs[i].idx[0]);
+        EXPECT_EQ(edited.pairs[i].idx[1], edited_pairs[i].idx[1]);
+        EXPECT_FALSE(edited.flags[i] & MD_BOND_FLAG_INACTIVE);
+    }
+    EXPECT_EQ((int)user, (int)edited.flags[3]);
+
+    // No coordinates: nothing is inferred, the bonds given are still there
     md_system_state_t empty = { .num_atoms = 5 };
-    md_bond_data_t none = {0};
+    md_bond_list_t none = {0};
     md_bond_data_t kept = {0};
     EXPECT_FALSE(md_bond_infer(&none, &sys, &empty, alloc, NULL));
-    md_bond_merge(&kept, &sys.bond, &none, sys.atom.count, alloc);
+    md_bond_merge(&kept, &given, NULL, &none, NULL, sys.atom.count, alloc);
     sys.bond = kept;
     EXPECT_EQ(sys.bond.count, 4u);
 
     md_vm_arena_destroy(alloc);
+}
+
+// The bonds a user adds are apart from those the data gives (md_system_t::bond_edit): a topology's many bonds are not
+// copied for a few more, which in the arena of the system would keep the old copy, and stay as the data gave them
+UTEST(bonds, user_bonds_apart_from_given) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t st = { .alloc = alloc };
+    ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/peptide_tip3p.tpr"), NULL));
+    const size_t count = md_bond_list_count(&sys.given_bond);
+    ASSERT_GT(count, (size_t)0);
+    const md_atom_pair_t* pairs = sys.given_bond.pairs;
+    const md_bond_flags_t* flags = sys.given_bond.flags;
+    const md_bond_flags_t user = md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_USER);
+    for (int i = 0; i < 8; ++i) {
+        EXPECT_TRUE(md_system_bond_insert(&sys, i, (md_atom_idx_t)(sys.atom.count - 1 - i), user));
+    }
+    // A pair the data gives is not given twice
+    const md_atom_pair_t g = sys.given_bond.pairs[0];
+    EXPECT_FALSE(md_system_bond_insert(&sys, g.idx[1], g.idx[0], user));
+    EXPECT_EQ(count, md_bond_list_count(&sys.given_bond));
+    EXPECT_TRUE(pairs == sys.given_bond.pairs);
+    EXPECT_TRUE(flags == sys.given_bond.flags);
+    EXPECT_EQ(8u, md_bond_list_count(&sys.bond_edit));
+
+    // Inferred, the bonds are those of both. The user's bond removed is gone; the data's is removed, and stays as the
+    // data gave it
+    ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
+    for (int i = 0; i < 8; ++i) {
+        EXPECT_GE(md_system_bond_find(&sys, i, (md_atom_idx_t)(sys.atom.count - 1 - i)), 0);
+    }
+    EXPECT_TRUE(md_system_bond_remove(&sys, 0, (md_atom_idx_t)(sys.atom.count - 1), user));
+    EXPECT_EQ(7u, md_bond_list_count(&sys.bond_edit));
+    EXPECT_EQ(0u, edits_of(&sys, false, true));
+    EXPECT_TRUE(md_system_bond_remove(&sys, g.idx[0], g.idx[1], sys.given_bond.flags[0]));
+    EXPECT_FALSE(md_system_bond_remove(&sys, g.idx[1], g.idx[0], sys.given_bond.flags[0]));
+    EXPECT_EQ(1u, edits_of(&sys, false, true));
+    EXPECT_EQ(count, md_bond_list_count(&sys.given_bond));
+    ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
+    EXPECT_EQ(-1, md_system_bond_find(&sys, g.idx[0], g.idx[1]));
+    EXPECT_EQ(-1, md_system_bond_find(&sys, 0, (md_atom_idx_t)(sys.atom.count - 1)));
+    // Of what is removed, a bond the user adds is the user's
+    EXPECT_TRUE(md_system_bond_insert(&sys, g.idx[0], g.idx[1], user));
+    ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
+    const md_bond_idx_t back = md_system_bond_find(&sys, g.idx[0], g.idx[1]);
+    ASSERT_GE(back, 0);
+    EXPECT_EQ(MD_BOND_ORIGIN_USER, md_bond_origin(md_system_bond_flags(&sys, back)));
+    md_system_free(&sys);
+    md_arena_allocator_destroy(alloc);
 }

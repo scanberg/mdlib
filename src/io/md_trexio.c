@@ -919,9 +919,10 @@ static bool trexio_system_begin(md_system_t* sys, md_system_state_t* state, cons
 
     const size_t capacity = MD_ROUND_UP(num_atoms, 16);
     md_array_resize(sys->atom.type_idx, capacity, sys->alloc);
-    md_array_resize(sys->atom.flags,    capacity, md_system_derived_alloc(sys));
     md_memset(sys->atom.type_idx, 0, md_array_bytes(sys->atom.type_idx));
-    md_memset(sys->atom.flags,    0, md_array_bytes(sys->atom.flags));
+    // A QM calculation alone: every atom is in it (md_atom_data_t::qm)
+    md_array_resize(sys->atom.qm, num_atoms, sys->alloc);
+    md_memset(sys->atom.qm, 1, num_atoms);
 
     md_particle_type_find_or_add(&sys->atom.type, MD_STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
 
@@ -932,8 +933,6 @@ static bool trexio_system_begin(md_system_t* sys, md_system_state_t* state, cons
         sys->atom.type_idx[i] = md_particle_type_find_or_add(&sys->atom.type, md_atomic_number_symbol(z), z,
                                                          md_atomic_number_mass(z), md_atomic_number_vdw_radius(z),
                                                          md_atomic_number_cpk_color(z), 0, sys->alloc);
-        // A QM calculation alone: every atom is in it (MD_ATOM_FLAG_QM)
-        sys->atom.flags[i] |= MD_ATOM_FLAG_QM;
     }
 
     sys->atom.count  = num_atoms;

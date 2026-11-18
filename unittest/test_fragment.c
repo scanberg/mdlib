@@ -23,11 +23,10 @@
 // (right after its heavy atom), bond orders and aromaticity known, metal - non metal bonds coordinate.
 // Residues, when given, as counts of heavy atoms in SMILES order.
 
-// What md_system_infer gives the system of its molecules and parts (MD_SYSTEM_INFER_MOLECULE_BIT, _PART_BIT)
+// What md_system_infer gives the system of its molecules and parts
 static bool test_infer_molecules(md_system_t* sys) {
     md_molecule_data_t molecules = {0};
-    const bool ok = md_molecule_infer(&molecules, sys, sys->alloc);
-    md_molecule_data_free(&sys->molecule, sys->alloc);
+    const bool ok = md_molecule_infer(&molecules, sys, md_system_derived_alloc(sys));
     sys->molecule = molecules;
     return ok;
 }
@@ -172,6 +171,7 @@ static bool frag_case(frag_case_t* t, const char* smiles) {
 }
 
 static void frag_case_free(frag_case_t* t) {
+    md_system_free(&t->sys);
     md_arena_allocator_destroy(t->alloc);
 }
 
@@ -447,6 +447,7 @@ UTEST(fragment, the_backbone_of_a_peptide) {
     EXPECT_NE(md_system_fragment_find_by_atom_idx(&sys, (size_t)heavy_atom[0]), ca);
     const md_fragment_idx_t cterm = md_system_fragment_find_by_atom_idx(&sys, (size_t)heavy_atom[6]);
     EXPECT_EQ(frag_heavy_count(&sys, cterm), (size_t)3);
+    md_system_free(&sys);
     md_arena_allocator_destroy(alloc);
 }
 
@@ -477,6 +478,7 @@ UTEST(fragment, the_alpha_carbon_is_of_the_backbone_alone) {
             EXPECT_EQ((int)md_system_fragment_kind(&sys, f), (int)MD_FRAGMENT_ALKYL);
         }
     }
+    md_system_free(&sys);
     md_arena_allocator_destroy(alloc);
 }
 
@@ -504,6 +506,7 @@ UTEST(fragment, a_group_across_residues_is_of_both) {
         for (size_t i = 0; i < n; ++i) has |= frags[i] == ester;
         EXPECT_TRUE(has);
     }
+    md_system_free(&sys);
     md_arena_allocator_destroy(alloc);
 }
 
@@ -528,6 +531,7 @@ UTEST(fragment, no_molecules_no_fragments) {
     ASSERT_TRUE(md_system_infer_fragments(&sys));
     EXPECT_EQ(md_system_fragment_count(&sys), (size_t)0);
     EXPECT_EQ(md_system_fragment_find_by_atom_idx(&sys, 0), MD_FRAGMENT_NONE);
+    md_system_free(&sys);
     md_arena_allocator_destroy(alloc);
 }
 
@@ -596,7 +600,7 @@ static size_t frag_component_lines(md_array(char)* out, const ref_comp_t* c, md_
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     if (!md_xyz_system_init_from_str(&sys, &st, (md_str_t){ xyz, md_array_size(xyz) }, NULL)) return 0;
-    if (!md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL)) return 0;
+    if (!md_system_infer(&sys, &st, NULL)) return 0;
     const size_t n = md_system_fragment_count(&sys);
     md_array_resize(*out, n * FRAG_REF_LINE, alloc);
     for (md_fragment_idx_t f = 0; f < n; ++f) {
@@ -658,7 +662,7 @@ UTEST(fragment, the_residues_of_a_protein) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), NULL));
-    ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
 
     // The side chain of each amino acid within a chain: its fragments of no backbone, by heavy atoms and name
     static const struct { const char* res; const char* side; } want[] = {

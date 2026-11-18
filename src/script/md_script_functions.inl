@@ -569,7 +569,7 @@ static int _nucleic_irng(data_t*, data_t[], eval_context_t*);   // (irange[]) ->
 static int _polymer_irng(data_t*, data_t[], eval_context_t*);   // (irange[]) -> atomset[]
 static int _nucleotide  (data_t*, data_t[], eval_context_t*);   // -> atomset[]
 
-// Regions of a QM calculation (MD_ATOM_FLAG_QM), one selection per residue which has atoms in it
+// Regions of a QM calculation (md_atom_is_qm), one selection per residue which has atoms in it
 static int _qm          (data_t*, data_t[], eval_context_t*);   // -> atomset[]
 static int _environment (data_t*, data_t[], eval_context_t*);   // -> atomset[]
 static int _res_name    (data_t*, data_t[], eval_context_t*);   // (str[])          -> atomset[]
@@ -3974,7 +3974,7 @@ static int _ion(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return _select_residues_of_kind(dst, arg, ctx, MD_RESIDUE_KIND_ION);
 }
 
-// The atoms of the QM region (MD_ATOM_FLAG_QM), or of its environment: one selection per residue with
+// The atoms of the QM region (md_atom_is_qm), or of its environment: one selection per residue with
 // atoms in the region, holding those atoms. A residue is not assumed to lie on one side: a QM/MM
 // boundary can cut through a residue. Without residues the region is a single selection.
 //
@@ -3993,7 +3993,7 @@ static int _select_region(data_t* dst, data_t arg[], eval_context_t* ctx, bool q
     if (!dst) {
         size_t num_qm = 0;
         for (size_t i = 0; i < num_atoms; ++i) {
-            num_qm += (md_atom_flags(&sys->atom, i) & MD_ATOM_FLAG_QM) ? 1 : 0;
+            num_qm += md_atom_is_qm(&sys->atom, i) ? 1 : 0;
         }
         if (num_qm == 0) {
             EVAL_LOG_ERROR(ctx, ctx->op_token, qm ?
@@ -4006,8 +4006,6 @@ static int _select_region(data_t* dst, data_t arg[], eval_context_t* ctx, bool q
             return -1;
         }
     }
-
-    const md_atom_flags_t want = qm ? MD_ATOM_FLAG_QM : MD_ATOM_FLAG_NONE;
 
     // The groups: the residues in the context, or the whole system as one when it has none
     md_array(md_urange_t) groups = 0;
@@ -4035,7 +4033,7 @@ static int _select_region(data_t* dst, data_t arg[], eval_context_t* ctx, bool q
             for (size_t g = 0; g < md_array_size(groups); ++g) {
                 bool any = false;
                 for (uint32_t i = groups[g].beg; i < groups[g].end; ++i) {
-                    if ((md_atom_flags(&sys->atom, i) & MD_ATOM_FLAG_QM) == want) {
+                    if (md_atom_is_qm(&sys->atom, i) == qm) {
                         md_bitmask_set_bit(&b, i);
                         any = true;
                     }
@@ -4053,7 +4051,7 @@ static int _select_region(data_t* dst, data_t arg[], eval_context_t* ctx, bool q
         int count = 0;
         for (size_t g = 0; g < md_array_size(groups); ++g) {
             for (uint32_t i = groups[g].beg; i < groups[g].end; ++i) {
-                if ((md_atom_flags(&sys->atom, i) & MD_ATOM_FLAG_QM) == want) {
+                if (md_atom_is_qm(&sys->atom, i) == qm) {
                     count += 1;
                     break;
                 }

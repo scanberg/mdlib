@@ -198,7 +198,7 @@ static const md_system_t* vial_ir__run_p(int64_t* num_frames) {
         md_system_state_t state = {.alloc = alloc};
         const md_str_t path = MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
         if (md_pdb_system_init_from_file(&sys, &state, path, NULL)) {
-            md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL);
+            md_system_infer(&sys, &state, NULL);
             if (md_pdb_system_publish_run(&sys, path, MD_STR_LIT("run"), MD_RUN_FLAG_DISABLE_CACHE_WRITE)) {
                 const md_attribute_t* t = md_attributes_find(&sys.attributes, MD_STR_LIT("run/time"));
                 frames = t ? (int64_t)t->format.shape[0] : 0;
@@ -1441,7 +1441,7 @@ static bool vial_ir__load_file(md_system_t* sys, md_system_state_t* st, const ch
     *st = (md_system_state_t){.alloc = alloc};
     const md_str_t p = md_str_from_cstr(path);
     const bool ok = strstr(file, ".gro") ? md_gro_system_init_from_file(sys, st, p, NULL) : md_pdb_system_init_from_file(sys, st, p, NULL);
-    return ok && md_system_infer(sys, st, MD_SYSTEM_INFER_ALL, NULL);
+    return ok && md_system_infer(sys, st, NULL);
 }
 
 static uint32_t vial_ir__count(const char* expr, const md_system_t* sys, const md_system_state_t* st, md_allocator_i* alloc) {
@@ -1545,12 +1545,14 @@ UTEST(vial_ir, anatomy_sets) {
         md_vial_program_free(p);
     }
 
+    md_system_free(&sys);
     ASSERT_TRUE(vial_ir__load_file(&sys, &st, "nucl-dna.gro", alloc));
     const uint32_t base = vial_ir__count("nucleobase", &sys, &st, alloc), side = vial_ir__count("nucleoside", &sys, &st, alloc);
     EXPECT_GT(base, 0u);
     EXPECT_GT(side, base);
     EXPECT_EQ(base, vial_ir__count("nucleobase and nucleoside", &sys, &st, alloc));
     EXPECT_EQ(0u, vial_ir__count("nucleoside and not nucleic", &sys, &st, alloc));
+    md_system_free(&sys);
     md_arena_allocator_destroy(alloc);
 }
 

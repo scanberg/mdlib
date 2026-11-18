@@ -32,7 +32,7 @@ static mcs_fixture_t* mcs_tubulin(void) {
         f.sys = (md_system_t){.alloc = f.alloc};
         f.state = (md_system_state_t){.alloc = f.alloc};
         f.ok = md_pdb_system_init_from_file(&f.sys, &f.state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), NULL) &&
-               md_system_infer(&f.sys, &f.state, MD_SYSTEM_INFER_ALL, NULL);
+               md_system_infer(&f.sys, &f.state, NULL);
     }
     return f.ok ? &f : NULL;
 }
@@ -180,7 +180,7 @@ UTEST(mcs, nucleotides) {
     md_system_t sys = {.alloc = alloc};
     md_system_state_t st = {.alloc = alloc};
     ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"), NULL));
-    ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
     // A purine and a pyrimidine share the sugar and what the base's ring holds in common with it: the first DA has no
     // phosphate, 18 heavy atoms
     int32_t a[64], b[64];
@@ -203,5 +203,6 @@ UTEST(mcs, nucleotides) {
     EXPECT_FALSE(r.by_residue);
     EXPECT_GE(r.count, 12u);
     EXPECT_LT(r.rmsd, 1.5);
+    md_system_free(&sys);
     md_arena_allocator_destroy(alloc);
 }

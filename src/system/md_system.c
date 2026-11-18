@@ -498,21 +498,35 @@ void md_system_unwrap(md_system_state_t* state, const md_system_t* sys) {
     }
 }
 
-// The DERIVED arrays and the reference state, with the allocator of the derived (md_system_t, ALLOCATORS)
+md_allocator_i* md_system_derived_alloc(md_system_t* sys) {
+    MD_ASSERT(sys);
+    if (!sys->derived_arena) {
+        // Where alloc takes its pages from (md_system_t, ALLOCATORS)
+        md_allocator_i* backing = md_arena_allocator_backing_of(sys->alloc);
+        sys->derived_arena = md_arena_allocator_create(backing ? backing : sys->alloc, MD_MEGABYTES(1));
+    }
+    return sys->derived_arena;
+}
+
+void md_system_derived_clear(md_system_t* sys) {
+    MD_ASSERT(sys);
+#define CLEAR_ARRAY(f) sys->f = NULL;
+#define CLEAR_STRUCT(f) md_memset(&sys->f, 0, sizeof(sys->f));
+    MD_SYSTEM_DERIVED_ARRAYS(CLEAR_ARRAY)
+    MD_SYSTEM_DERIVED_STRINGS(CLEAR_ARRAY)
+    MD_SYSTEM_DERIVED_STRUCTS(CLEAR_STRUCT)
+#undef CLEAR_ARRAY
+#undef CLEAR_STRUCT
+    md_memset(&sys->reference, 0, sizeof(sys->reference));
+    sys->derived_arena = NULL;
+}
+
+// The DERIVED arrays and the reference state: all of them in the arena of the derived (md_system_t, ALLOCATORS)
 void md_system_derived_free(md_system_t* sys) {
     MD_ASSERT(sys);
-    md_allocator_i* alloc = md_system_derived_alloc(sys);
-    if (!alloc) return;
-#define FREE_ARRAY(f) md_array_free(sys->f, alloc);
-#define FREE_STRINGS(f) for (size_t i = 0; i < md_array_size(sys->f); ++i) { if (!md_str_empty(sys->f[i])) md_free_str(alloc, sys->f[i]); } md_array_free(sys->f, alloc);
-#define CLEAR_STRUCT(f) md_memset(&sys->f, 0, sizeof(sys->f));
-    MD_SYSTEM_DERIVED_ARRAYS(FREE_ARRAY)
-    MD_SYSTEM_DERIVED_STRINGS(FREE_STRINGS)
-    MD_SYSTEM_DERIVED_STRUCTS(CLEAR_STRUCT)
-#undef FREE_ARRAY
-#undef FREE_STRINGS
-#undef CLEAR_STRUCT
-    md_system_state_free(&sys->reference);
+    md_allocator_i* arena = sys->derived_arena;
+    md_system_derived_clear(sys);
+    if (arena) md_arena_allocator_destroy(arena);
 }
 
 void md_system_free(md_system_t* sys) {
@@ -526,11 +540,17 @@ void md_system_free(md_system_t* sys) {
         sys->nonbonded = NULL;
     }
 
-    // What inference writes, with the allocator of the derived
+    // What inference writes: its arena
     md_system_derived_free(sys);
 
     // ATOM
     md_array_free(sys->atom.type_idx, alloc);
+    md_array_free(sys->atom.qm, alloc);
+    md_array_free(sys->atom.bonds_complete, alloc);
+
+    // BONDS GIVEN
+    md_bond_list_free(&sys->given_bond, alloc);
+    md_bond_list_free(&sys->bond_edit, alloc);
 
     // PARTICLE TYPE
     md_array_free(sys->atom.type.name, alloc);
@@ -545,6 +565,7 @@ void md_system_free(md_system_t* sys) {
     md_array_free(sys->residue.name, alloc);
     md_array_free(sys->residue.seq_id, alloc);
     md_array_free(sys->residue.atom_offset, alloc);
+    md_array_free(sys->residue.typed_kind, alloc);
 
     // INSTANCE
     md_array_free(sys->instance.id, alloc);
@@ -552,6 +573,8 @@ void md_system_free(md_system_t* sys) {
     md_array_free(sys->instance.res_offset, alloc);
     md_array_free(sys->instance.part_type_idx, alloc);
     md_array_free(sys->instance.mol_type_idx, alloc);
+    md_part_type_data_free(&sys->instance.part_type, alloc);
+    md_molecule_type_data_free(&sys->instance.mol_type, alloc);
 
     // ASSEMBLY
     md_system_assemblies_free(sys);
@@ -687,15 +710,14 @@ bool md_system_copy(md_system_t* dst, const md_system_t* src) {
         return false;
     }
     md_allocator_i* alloc = dst->alloc;
-    md_allocator_i* derived_alloc = dst->derived_alloc;
     md_system_free(dst);
 
-    // The counts and everything which is not an array, as they are; the arrays below anew, the derived with dst's
-    // allocator of the derived
+    // The counts and everything which is not an array, as they are; the arrays below anew, the derived in an arena of
+    // dst's own where src has any
     *dst = *src;
     dst->alloc = alloc;
-    dst->derived_alloc = derived_alloc;
-    md_allocator_i* dalloc = md_system_derived_alloc(dst);
+    dst->derived_arena = NULL;
+    md_allocator_i* dalloc = src->derived_arena ? md_system_derived_alloc(dst) : NULL;
     dst->nonbonded = NULL;
     md_memset(&dst->attributes, 0, sizeof(dst->attributes));
     dst->attributes.alloc = alloc;
@@ -707,8 +729,13 @@ bool md_system_copy(md_system_t* dst, const md_system_t* src) {
 #define COPY_DERIVED(f) COPY_ARRAY(dst->f, src->f, dalloc);
 #define COPY_DERIVED_STRINGS(f) copy_strings(&dst->f, src->f, dalloc);
     MD_SYSTEM_CORE_ARRAYS(COPY_FIELD)
-    MD_SYSTEM_DERIVED_ARRAYS(COPY_DERIVED)
-    MD_SYSTEM_DERIVED_STRINGS(COPY_DERIVED_STRINGS)
+    MD_SYSTEM_CORE_STRINGS(COPY_STRINGS)
+    if (dalloc) {
+        MD_SYSTEM_DERIVED_ARRAYS(COPY_DERIVED)
+        MD_SYSTEM_DERIVED_STRINGS(COPY_DERIVED_STRINGS)
+    } else {
+        md_system_derived_clear(dst);
+    }
 #undef COPY_FIELD
 #undef COPY_STRINGS
 #undef COPY_DERIVED
@@ -719,7 +746,7 @@ bool md_system_copy(md_system_t* dst, const md_system_t* src) {
 
     // REFERENCE STATE
     md_memset(&dst->reference, 0, sizeof(dst->reference));
-    if (src->reference.xyz || src->reference.num_atoms) {
+    if (dalloc && (src->reference.xyz || src->reference.num_atoms)) {
         dst->reference.alloc = dalloc;
         md_system_state_copy(&dst->reference, &src->reference);
     }
@@ -731,10 +758,8 @@ bool md_system_copy(md_system_t* dst, const md_system_t* src) {
 void md_system_reset(md_system_t* sys) {
     MD_ASSERT(sys);
     md_allocator_i* alloc = sys->alloc;
-    md_allocator_i* derived_alloc = sys->derived_alloc;
     md_system_free(sys);
     sys->alloc = alloc;
-    sys->derived_alloc = derived_alloc;
     // The table allocates through its own handle, so every loader gets a usable table without
     // having to remember to wire this up itself.
     sys->attributes.alloc = alloc;
@@ -745,6 +770,72 @@ void md_system_reset(md_system_t* sys) {
 void md_system_bond_build_connectivity(md_system_t* sys) {
     MD_ASSERT(sys);
     md_bond_build_connectivity(&sys->bond, sys->atom.count, md_system_derived_alloc(sys));
+}
+
+void md_system_set_bonds_complete(md_system_t* sys) {
+    MD_ASSERT(sys);
+    MD_ASSERT(sys->alloc);
+    md_array_resize(sys->atom.bonds_complete, sys->atom.count, sys->alloc);
+    if (sys->atom.count) md_memset(sys->atom.bonds_complete, 1, sys->atom.count);
+}
+
+static inline bool is_pair(md_atom_pair_t p, md_atom_idx_t a, md_atom_idx_t b) {
+    return (p.idx[0] == a && p.idx[1] == b) || (p.idx[0] == b && p.idx[1] == a);
+}
+
+bool md_system_bond_insert(md_system_t* sys, md_atom_idx_t atom_idx_a, md_atom_idx_t atom_idx_b, md_bond_flags_t flags) {
+    MD_ASSERT(sys);
+    MD_ASSERT(sys->alloc);
+    if (atom_idx_a < 0 || atom_idx_b < 0 || atom_idx_a == atom_idx_b || (size_t)atom_idx_a >= sys->atom.count || (size_t)atom_idx_b >= sys->atom.count) return false;
+    flags = md_bond_flags_set_origin(flags & ~MD_BOND_FLAG_INACTIVE, MD_BOND_ORIGIN_USER);
+
+    // A pair has one bond at most, of the graph or not, and an elastic bond besides: one the user added, or one the
+    // data gives of a range the user has not removed the bond of
+    const bool elastic = md_bond_kind(flags) == MD_BOND_KIND_ELASTIC;
+    uint32_t removed = 0;   // The ranges (md_bond_range) the user removed the bond of the pair of
+    const md_bond_list_t* edits = &sys->bond_edit;
+    for (size_t i = 0; i < md_bond_list_count(edits); ++i) {
+        if (!is_pair(edits->pairs[i], atom_idx_a, atom_idx_b)) continue;
+        const md_bond_flags_t f = edits->flags[i];
+        if (f & MD_BOND_FLAG_INACTIVE) removed |= 1u << md_bond_range(f);
+        else if ((md_bond_kind(f) == MD_BOND_KIND_ELASTIC) == elastic) return false;
+    }
+    const md_bond_list_t* given = &sys->given_bond;
+    for (size_t i = 0; i < md_bond_list_count(given); ++i) {
+        if (!is_pair(given->pairs[i], atom_idx_a, atom_idx_b)) continue;
+        const md_bond_flags_t f = given->flags[i];
+        if ((md_bond_kind(f) == MD_BOND_KIND_ELASTIC) == elastic && !(removed & (1u << md_bond_range(f)))) return false;
+    }
+
+    md_bond_list_push(&sys->bond_edit, atom_idx_a, atom_idx_b, flags, sys->alloc);
+    md_system_topology_changed(sys);
+    return true;
+}
+
+bool md_system_bond_remove(md_system_t* sys, md_atom_idx_t atom_idx_a, md_atom_idx_t atom_idx_b, md_bond_flags_t flags) {
+    MD_ASSERT(sys);
+    MD_ASSERT(sys->alloc);
+    if (atom_idx_a < 0 || atom_idx_b < 0 || atom_idx_a == atom_idx_b || (size_t)atom_idx_a >= sys->atom.count || (size_t)atom_idx_b >= sys->atom.count) return false;
+    flags &= ~MD_BOND_FLAG_INACTIVE;
+    const md_bond_idx_t added = md_bond_list_find(&sys->bond_edit, atom_idx_a, atom_idx_b, flags);
+    if (added != -1) {
+        md_bond_list_remove(&sys->bond_edit, (size_t)added);
+    } else {
+        // Given by the data or inferred: neither is certain, and the user says there is no such bond
+        if (md_bond_list_find(&sys->bond_edit, atom_idx_a, atom_idx_b, flags | MD_BOND_FLAG_INACTIVE) != -1) return false;
+        md_bond_list_push(&sys->bond_edit, atom_idx_a, atom_idx_b, flags | MD_BOND_FLAG_INACTIVE, sys->alloc);
+    }
+    md_system_topology_changed(sys);
+    return true;
+}
+
+bool md_system_bond_restore(md_system_t* sys, md_atom_idx_t atom_idx_a, md_atom_idx_t atom_idx_b, md_bond_flags_t flags) {
+    MD_ASSERT(sys);
+    const md_bond_idx_t idx = md_bond_list_find(&sys->bond_edit, atom_idx_a, atom_idx_b, flags | MD_BOND_FLAG_INACTIVE);
+    if (idx == -1) return false;
+    md_bond_list_remove(&sys->bond_edit, (size_t)idx);
+    md_system_topology_changed(sys);
+    return true;
 }
 
 

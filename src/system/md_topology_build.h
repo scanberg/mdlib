@@ -26,17 +26,17 @@ typedef struct md_topology_desc_t {
     const char* format;             // for the log, "Amber topology"
 
     size_t num_atoms;
-    const md_str_t*   atom_name;       // required
-    const md_str_t*   atom_type;       // force field types, NULL for none
+    const md_str_t*   atom_name;    // required
+    const md_str_t*   atom_type;    // force field types, NULL for none
     const double*  charge;          // e, NULL for none
     const double*  mass;            // Da, NULL for none
     const int64_t* atomic_number;   // NULL for none: inferred from names and masses. <= 0: unknown
 
     size_t num_residues;
-    const md_str_t*    res_name;       // required
+    const md_str_t*    res_name;    // required
     const uint32_t* res_offset;     // num_residues + 1, required
     const int64_t*  res_number;     // NULL: numbered from 1
-    const md_str_t*    res_chain;      // the chain or segment of each residue, NULL for none
+    const md_str_t*    res_chain;   // the chain or segment of each residue, NULL for none
 
     size_t num_bonds;
     const struct md_atom_pair_t* bonds;
@@ -52,8 +52,9 @@ bool md_topology_system_init(struct md_system_t* sys, struct md_system_state_t* 
 
 // Applies the topology to a loaded system of the same atoms in the same order: the atom count and every atom name
 // (compared as structure files truncate them) must agree, and the residue boundaries where the residue counts do.
-// The topology's bonds replace all but those the user made, 'atom/charge' and 'atom/mass' are published, and parts,
-// molecules and backbones are inferred again. Nothing changes when they do not agree.
+// The topology's bonds replace those the data gave (the user's are apart), every atom has its bonds given complete
+// (md_atom_data_t::bonds_complete), 'atom/charge' and 'atom/mass' are published, and the system is inferred again
+// (md_system_infer, from its reference state). Nothing changes when they do not agree.
 bool md_topology_system_supplement(struct md_system_t* sys, const md_topology_desc_t* desc, md_str_t filename);
 
 #ifdef __cplusplus

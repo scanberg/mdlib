@@ -96,9 +96,9 @@ static inline void build_component(md_system_t* sys, md_system_state_t* st, int*
     md_array_push(sys->residue.atom_offset, (uint32_t)n, alloc);
 
     if (infer) {
-        md_bond_data_t inferred = {0};
+        md_bond_list_t inferred = {0};
         md_bond_infer(&inferred, sys, st, alloc, NULL);
-        sys->bond = inferred;
+        md_bond_merge(&sys->bond, NULL, NULL, &inferred, NULL, sys->atom.count, alloc);
     } else {
         for (size_t b = 0; b < md_array_size(c->bond); ++b) {
             const ref_bond_t* r = &c->bond[b];

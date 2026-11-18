@@ -1006,10 +1006,10 @@ static void lammps_molecules_as_instances(md_system_t* sys) {
 			char buf[64];
 			md_str_t name = lammps_formula(buf, sizeof(buf), sys, range);
 			if (md_str_empty(name)) {
-				const int len = md_snprintf(buf, sizeof(buf), "molecule type %zu", sys->molecule.type.count + 1);
+				const int len = md_snprintf(buf, sizeof(buf), "molecule type %zu", sys->instance.mol_type.count + 1);
 				name = (md_str_t){ buf, (size_t)len };
 			}
-			type_idx = md_molecule_type_data_push(&sys->molecule.type, name, MD_MOLECULE_TYPE_FLAG_NONE, md_system_derived_alloc(sys));
+			type_idx = md_molecule_type_data_push(&sys->instance.mol_type, name, MD_MOLECULE_TYPE_FLAG_NONE, sys->alloc);
 			md_hashmap_add(&type_map, key, (uint32_t)type_idx);
 		}
 
@@ -1048,7 +1048,6 @@ bool md_lammps_system_init_from_data(md_system_t* sys, md_system_state_t* state,
 
 	md_array_ensure(state->xyz,		capacity, state->alloc);
 	md_array_ensure(sys->atom.type_idx, capacity, sys->alloc);
-	md_array_ensure(sys->atom.flags,    capacity, md_system_derived_alloc(sys));
 
 	md_temp_scope_t temp_scope = md_temp_begin_avoid(sys->alloc);
 
@@ -1126,7 +1125,6 @@ bool md_lammps_system_init_from_data(md_system_t* sys, md_system_state_t* state,
 				// No name in the file: the generic one (a number would not fit a residue name past 99, and a formula
 				// may read as a residue of its own, "C" a cytidine)
 				md_array_push(sys->residue.name, md_label_make(MD_STR_LIT("MOL")), sys->alloc);
-				md_array_push(sys->residue.flags, 0, md_system_derived_alloc(sys));
 				sys->residue.count += 1;
 			}
 		}
@@ -1138,7 +1136,6 @@ bool md_lammps_system_init_from_data(md_system_t* sys, md_system_state_t* state,
 
 		md_array_push_no_grow(sys->atom.type_idx, type_idx);
 		md_array_push_no_grow(state->xyz, xyz);
-		md_array_push_no_grow(sys->atom.flags, 0);
 		sys->atom.count +=1;
 
 		prev_resid = resid;
@@ -1170,8 +1167,10 @@ bool md_lammps_system_init_from_data(md_system_t* sys, md_system_state_t* state,
 
 	// Create bonds: atom ids are the atoms' in order (sorted), 1 to N but where atoms have been taken away
 	if (data->num_bonds > 0 && data->bonds) {
-		md_array_ensure(sys->bond.pairs, data->num_bonds, md_system_derived_alloc(sys));
-		md_array_ensure(sys->bond.flags, data->num_bonds, md_system_derived_alloc(sys));
+		// The bonds of the force field: the atoms have those and no others
+		md_bond_list_t* given = &sys->given_bond;
+		md_array_ensure(given->pairs, data->num_bonds, sys->alloc);
+		md_array_ensure(given->flags, data->num_bonds, sys->alloc);
 
 		const size_t N = data->num_atoms;
 		const bool dense = N > 0 && data->atoms[0].id == 1 && data->atoms[N - 1].id == (int32_t)N;
@@ -1198,18 +1197,14 @@ bool md_lammps_system_init_from_data(md_system_t* sys, md_system_state_t* state,
 			}
 			md_atom_pair_t pair = {{ MD_MIN(idx[0], idx[1]), MD_MAX(idx[0], idx[1]) }};
 			md_bond_flags_t flag = md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_TOPOLOGY);
-			md_array_push_no_grow(sys->bond.pairs, pair);
-			md_array_push_no_grow(sys->bond.flags, flag);
-			sys->bond.count += 1;
+			md_array_push_no_grow(given->pairs, pair);
+			md_array_push_no_grow(given->flags, flag);
 		}
 		if (num_bad) {
 			MD_LOG_ERROR("LAMMPS: %zu bonds are of atoms the file does not have; they are left out", num_bad);
 		}
-		md_bond_build_connectivity(&sys->bond, sys->atom.count, md_system_derived_alloc(sys));
+		md_system_set_bonds_complete(sys);
 	}
-
-	// The atoms have no names to classify the molecules by, but water and monatomic ions are told by their atoms
-	md_system_infer_residue_flags(sys, state);
 
 	md_temp_end(temp_scope);
 

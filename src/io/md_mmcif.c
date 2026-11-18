@@ -248,12 +248,6 @@ static inline mmcif_entity_t* mmcif_entity_find_or_create(md_array(mmcif_entity_
 // An optional _atom_site column: absent from this file, or present and holding one of mmCIF's two
 // null tokens ('.' unknown, '?' not applicable). NAN for all three, which the publisher below reads
 // as "this atom has no value" without confusing it with a real zero.
-static inline bool float_bits_nan(float v) {
-    uint32_t u;
-    md_memcpy(&u, &v, sizeof(u));
-    return (u & 0x7F800000u) == 0x7F800000u && (u & 0x007FFFFFu) != 0;
-}
-
 static inline float mmcif_optional_float(const md_str_t tok[], const int table[], int field) {
     if (table[field] == -1) {
         return NAN;
@@ -1473,7 +1467,7 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
         // The entities are the part types the file gives, added first so that the instances can name them
         size_t num_entities = md_array_size(entities);
         for (size_t i = 0; i < num_entities; ++i) {
-            md_part_type_data_push(&sys->part.type, entities[i].id, md_part_type_flags_set_kind(MD_PART_TYPE_FLAG_NONE, mmcif_entity_kind(&entities[i])), entities[i].description, md_system_derived_alloc(sys));
+            md_part_type_data_push(&sys->instance.part_type, entities[i].id, md_part_type_flags_set_kind(MD_PART_TYPE_FLAG_NONE, mmcif_entity_kind(&entities[i])), entities[i].description, alloc);
         }
     }
     
@@ -1484,7 +1478,6 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
 
         md_array_ensure(out_state->xyz, reserve_size, out_state->alloc);
         md_array_ensure(sys->atom.type_idx, reserve_size, alloc);
-        md_array_ensure(sys->atom.flags, reserve_size, md_system_derived_alloc(sys));
 
         md_particle_type_find_or_add(&sys->atom.type, MD_STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, alloc); // Ensure that index 0 is always unknown
         md_hashmap32_t type_map = { .allocator = temp_arena };
@@ -1534,7 +1527,13 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
             const int seq_id = entry->label_seq_id != INT32_MIN ? entry->label_seq_id : entry->auth_seq_id;
 
             if (!have_prev || entity != prev_entity) {
-                entity_idx = md_system_part_type_find_by_id(sys, md_str_from_cstrn(entry->label_entity_id, sizeof(entry->label_entity_id)));
+                // Among the entities, the part types the data gives (md_instance_data_t::part_type)
+                const md_str_t id = md_str_from_cstrn(entry->label_entity_id, sizeof(entry->label_entity_id));
+                const md_part_type_data_t* given = &sys->instance.part_type;
+                entity_idx = -1;
+                for (size_t t = 0; t < given->count && entity_idx == -1; ++t) {
+                    if (md_str_eq(MD_LABEL_STR(given->id[t]), id)) entity_idx = (md_part_type_idx_t)t;
+                }
             }
 
             md_particle_type_idx_t particle_type_idx = 0;
@@ -1571,12 +1570,11 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
                 md_array_push(sys->residue.atom_offset, (uint32_t)sys->atom.count, alloc);
                 md_array_push(sys->residue.name, md_label_make(comp_id), alloc);
                 md_array_push(sys->residue.seq_id, seq_id, alloc);
-                md_array_push(sys->residue.flags, MD_RESIDUE_FLAG_NONE, md_system_derived_alloc(sys));
 
                 // Instance handling. An instance is what the file gives: an asym, a polymer chain or a branched
                 // glycan. The asym of a non-polymer entity may hold many molecules (the waters of a chain): each is an
                 // instance of its own, sharing the asym id.
-                const md_part_kind_t entity_kind = entity_idx != -1 ? md_system_part_type_kind(sys, entity_idx) : MD_PART_KIND_UNKNOWN;
+                const md_part_kind_t entity_kind = entity_idx != -1 ? md_part_type_flags_kind(sys->instance.part_type.flags[entity_idx]) : MD_PART_KIND_UNKNOWN;
                 const bool one_per_residue = entity_kind == MD_PART_KIND_WATER || entity_kind == MD_PART_KIND_NON_POLYMER;
                 if (sys->instance.count == 0 || new_inst || one_per_residue) {
                     md_array_push(sys->instance.id, md_label_make(label_asym_id), alloc);
@@ -1597,7 +1595,6 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
  
             md_array_push_no_grow(out_state->xyz, md_float3_set(atom_entries[i].x, atom_entries[i].y, atom_entries[i].z));
             md_array_push_no_grow(sys->atom.type_idx, particle_type_idx);
-            md_array_push_no_grow(sys->atom.flags, MD_ATOM_FLAG_NONE);
             if (occupancy && b_iso && formal_charge) {
                 occupancy[sys->atom.count]     = atom_entries[i].occupancy;
                 b_iso[sys->atom.count]         = atom_entries[i].b_iso_or_equiv;
@@ -1616,19 +1613,8 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
             md_attributes_publish_atom_column(&sys->attributes, MD_STR_LIT("atom/occupancy"),     md_unit_none(),                     1, occupancy,     sys->atom.count);
             md_attributes_publish_atom_column(&sys->attributes, MD_STR_LIT("atom/b_factor"),      md_unit_pow(md_unit_angstrom(), 2), 1, b_iso,         sys->atom.count);
             md_attributes_publish_atom_column(&sys->attributes, MD_STR_LIT("atom/formal_charge"), md_unit_none(),                     1, formal_charge, sys->atom.count);
-
-            // The formal charges given by the file are the system's (md_atom_data_t) until perception replaces them,
-            // which keeps them by reading the column above. Built with fast math, so NAN (no value) is told by its
-            // bits and not by q != q.
-            bool any_charge = false;
-            for (size_t i = 0; i < sys->atom.count && !any_charge; ++i) any_charge = !float_bits_nan(formal_charge[i]);
-            if (any_charge) {
-                md_array_resize(sys->atom.formal_charge, sys->atom.count, md_system_derived_alloc(sys));
-                for (size_t i = 0; i < sys->atom.count; ++i) {
-                    const float q = formal_charge[i];
-                    sys->atom.formal_charge[i] = float_bits_nan(q) ? 0 : (int8_t)MD_CLAMP(lroundf(q), -8, 8);
-                }
-            }
+            // The formal charges the file gives are this column: what the chemistry starts from (md_chem_perceive), which
+            // writes the system's (md_atom_data_t::formal_charge, inferred)
         }
 
         if (sys->residue.atom_offset) {
@@ -1644,8 +1630,7 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
         out_state->unitcell = md_unitcell_from_extent_and_angles(cell.a, cell.b, cell.c, cell.alpha, cell.beta, cell.gamma);
     }
 
-    // The bonds, what the residues are by them and the chains are md_system_infer's (MD_SYSTEM_INFER_BOND_BIT,
-    // _RESIDUE_BIT, _PART_BIT): the loader gives what the file says.
+    // The bonds, what the residues are by them and the chains are md_system_infer's: the loader gives what the file says.
 
     // The assemblies name the instances by their asym ids
     mmcif_assemblies(sys, assembly_gen, opers, temp_arena);

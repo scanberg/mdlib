@@ -3,12 +3,12 @@
 // The arrays of md_system_t, as X macros: X(field), field a path from the system ("atom.type_idx"). Each array of the
 // system is in exactly one of the lists, by what it is to inference (md_system_infer):
 //
-//   CORE       What the data gives: the atoms, their types, the residues, the instances and the assemblies. Inference
-//              reads it and never writes it, so a system inferred on another thread can share it
-//              (md_system_infer_prepare).
-//   DERIVED    What inference writes: what it finds (the bonds, chains, parts, backbones, molecules, rings, lipids, fragments, the
-//              chemistry, the kinds of the residues and the roles of their atoms), and what the data may give of it
-//              which inference adds to or replaces (the bonds of a file, the part types of an mmCIF file).
+//   CORE       What the data gives, and the user: the atoms, their types, the residues, the instances with the part
+//              and molecule types given, the assemblies and the bonds given. Inference reads it and never writes it, so
+//              a system inferred on another thread can share it (md_system_infer_prepare).
+//   DERIVED    What inference writes, all of it anew from the core: the bonds (those given with those inferred), chains,
+//              parts, backbones, molecules, rings, lipids, fragments, the chemistry, the kinds of the residues and the
+//              roles of their atoms.
 //   DERIVED_STRINGS  Arrays of strings of DERIVED, each string allocated of its own
 //
 // A new array of the system goes in one of the lists, or it is neither copied (md_system_copy) nor published from a
@@ -16,12 +16,14 @@
 // fails when inference writes an array of CORE.
 
 #define MD_SYSTEM_CORE_ARRAYS(X) \
-    X(atom.type_idx) \
+    X(atom.type_idx) X(atom.qm) X(atom.bonds_complete) \
     X(atom.type.name) X(atom.type.ff_type) X(atom.type.z) X(atom.type.mass) X(atom.type.radius) X(atom.type.color) X(atom.type.flags) \
-    X(residue.name) X(residue.seq_id) X(residue.atom_offset) \
+    X(residue.name) X(residue.seq_id) X(residue.atom_offset) X(residue.typed_kind) \
     X(instance.id) X(instance.auth_id) X(instance.res_offset) X(instance.part_type_idx) X(instance.mol_type_idx) \
+    X(instance.part_type.id) X(instance.part_type.flags) X(instance.mol_type.flags) \
     X(assembly.id) X(assembly.group_offset) X(assembly.group_inst_offset) X(assembly.inst) X(assembly.group_oper_offset) \
-    X(assembly.oper) X(assembly.oper_id) X(assembly.oper_transform)
+    X(assembly.oper) X(assembly.oper_id) X(assembly.oper_transform) \
+    X(given_bond.pairs) X(given_bond.flags) X(bond_edit.pairs) X(bond_edit.flags)
 
 #define MD_SYSTEM_DERIVED_ARRAYS(X) \
     X(atom.flags) X(atom.formal_charge) X(atom.hydrogen_count) \
@@ -42,6 +44,10 @@
     X(fragment.mol_template) X(fragment.frag_offset) X(fragment.template_molecule) X(fragment.template_slot_offset) \
     X(fragment.slot_frag) X(fragment.template_frag_offset) X(fragment.frag_type) X(fragment.frag_slot_offset) \
     X(fragment.frag_slot) X(fragment.type.kind) X(fragment.type.color)
+
+// Arrays of strings of CORE, each string allocated of its own
+#define MD_SYSTEM_CORE_STRINGS(X) \
+    X(instance.part_type.description) X(instance.mol_type.name)
 
 #define MD_SYSTEM_DERIVED_STRINGS(X) \
     X(part.type.description) X(molecule.type.name) X(fragment.type.name)

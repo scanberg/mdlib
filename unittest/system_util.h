@@ -17,19 +17,18 @@
 
 #include <string.h>
 
-// What md_system_infer gives the system of its molecules (MD_SYSTEM_INFER_MOLECULE_BIT)
+// What md_system_infer gives the system of its molecules
 static inline bool test_infer_molecules(md_system_t* sys) {
     md_molecule_data_t molecules = {0};
-    const bool ok = md_molecule_infer(&molecules, sys, sys->alloc);
-    md_molecule_data_free(&sys->molecule, sys->alloc);
+    // Of the derived: in the system's derived arena, which they are freed with
+    const bool ok = md_molecule_infer(&molecules, sys, md_system_derived_alloc(sys));
     sys->molecule = molecules;
     return ok;
 }
 
 static inline bool test_infer_chains(md_system_t* sys) {
     md_chain_data_t chains = {0};
-    const bool ok = md_chain_infer(&chains, sys, sys->alloc);
-    md_chain_data_free(&sys->chain, sys->alloc);
+    const bool ok = md_chain_infer(&chains, sys, md_system_derived_alloc(sys));
     sys->chain = chains;
     return ok;
 }
@@ -37,7 +36,7 @@ static inline bool test_infer_chains(md_system_t* sys) {
 // What a structure file's loader gave before it gave only the core (md_gro, md_pdb, md_mmcif): the bonds, what the
 // residues are by them, and the chains. The tests below were written against that.
 static inline bool test_infer_as_loaded(md_system_t* sys, md_system_state_t* state) {
-    return md_system_infer(sys, state, MD_SYSTEM_INFER_BOND_BIT | MD_SYSTEM_INFER_RESIDUE_BIT, NULL) && test_infer_chains(sys);
+    return md_system_infer(sys, state, NULL) && test_infer_chains(sys);
 }
 
 // The tests lay out coordinates per axis, which reads well; a state holds them packed.
@@ -52,18 +51,22 @@ static inline void make_chain_system(md_system_t* sys, md_allocator_i* alloc, in
     const int n = num_chains * chain_len;
     sys->alloc = alloc;
     sys->atom.count = (size_t)n;
+    // The bonds are of the derived, in its arena (md_system_t, ALLOCATORS), which md_system_free gives back
+    md_allocator_i* dalloc = md_system_derived_alloc(sys);
     for (int c = 0; c < num_chains; ++c) {
         for (int i = 0; i < chain_len - 1; ++i) {
             md_atom_pair_t pair = { c * chain_len + i, c * chain_len + i + 1 };
-            md_array_push(sys->bond.pairs, pair, alloc);
+            md_array_push(sys->bond.pairs, pair, dalloc);
             sys->bond.count += 1;
         }
     }
-    md_bond_build_connectivity(&sys->bond, (size_t)n, alloc);
+    md_bond_build_connectivity(&sys->bond, (size_t)n, dalloc);
 }
 
 // Appends a residue of coarse grained beads. The BB bead of an amino acid residue is its backbone.
 static inline void cg_add_residue(md_system_t* sys, const char* res_name, int seq_id, md_residue_kind_t res_kind, const char* atom_names[], size_t num_atoms, md_allocator_i* alloc) {
+    // The flags are of the derived, in its arena where the system has an allocator (md_system_t, ALLOCATORS)
+    md_allocator_i* dalloc = sys->alloc ? md_system_derived_alloc(sys) : alloc;
     if (sys->atom.type.count == 0) {
         // Type 0 is the "not found" sentinel
         md_particle_type_find_or_add(&sys->atom.type, MD_STR_LIT("?"), 0, 0, 0, 0, 0, alloc);
@@ -76,12 +79,12 @@ static inline void cg_add_residue(md_system_t* sys, const char* res_name, int se
         const md_atom_flags_t flags = (res_kind == MD_RESIDUE_KIND_AMINO_ACID && strcmp(atom_names[i], "BB") == 0) ? MD_ATOM_FLAG_BACKBONE : MD_ATOM_FLAG_NONE;
         md_particle_type_idx_t type = md_particle_type_find_or_add(&sys->atom.type, md_str_from_cstr(atom_names[i]), 0, 50.0f, 2.35f, 0xFFFFFFFF, type_flags, alloc);
         md_array_push(sys->atom.type_idx, type, alloc);
-        md_array_push(sys->atom.flags, flags, alloc);
+        md_array_push(sys->atom.flags, flags, dalloc);
         sys->atom.count += 1;
     }
     md_array_push(sys->residue.name, md_label_make(md_str_from_cstr(res_name)), alloc);
     md_array_push(sys->residue.seq_id, seq_id, alloc);
-    md_array_push(sys->residue.flags, MD_RESIDUE_FLAG_NONE, alloc);
+    md_array_push(sys->residue.flags, MD_RESIDUE_FLAG_NONE, dalloc);
     md_array_push(sys->residue.atom_offset, (uint32_t)sys->atom.count, alloc);
     sys->residue.count += 1;
     md_system_set_residue_kind(sys, sys->residue.count - 1, res_kind);
@@ -202,22 +205,22 @@ static inline void reference_systems_load(reference_systems_t* ref) {
     md_system_state_t mol_ala_state = { .alloc = alloc };
     md_pdb_system_init_from_file(&ref->mol_ala, &mol_ala_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL);
     md_pdb_system_publish_run(&ref->mol_ala, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), MD_STR_LIT("run/ala"), MD_RUN_FLAG_DISABLE_CACHE_WRITE);
-    md_system_infer(&ref->mol_ala, &mol_ala_state, MD_SYSTEM_INFER_ALL, NULL);
+    md_system_infer(&ref->mol_ala, &mol_ala_state, NULL);
 
     ref->mol_pftaa.alloc = alloc;
     md_system_state_t mol_pftaa_state = { .alloc = alloc };
     md_gro_system_init_from_file(&ref->mol_pftaa, &mol_pftaa_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/pftaa.gro"), NULL);
-    md_system_infer(&ref->mol_pftaa, &mol_pftaa_state, MD_SYSTEM_INFER_ALL, NULL);
+    md_system_infer(&ref->mol_pftaa, &mol_pftaa_state, NULL);
 
     ref->mol_nucleotides.alloc = alloc;
     md_system_state_t mol_nucleotides_state = { .alloc = alloc };
     md_gro_system_init_from_file(&ref->mol_nucleotides, &mol_nucleotides_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/nucleotides.gro"), NULL);
-    md_system_infer(&ref->mol_nucleotides, &mol_nucleotides_state, MD_SYSTEM_INFER_ALL, NULL);
+    md_system_infer(&ref->mol_nucleotides, &mol_nucleotides_state, NULL);
 
     ref->mol_centered.alloc = alloc;
     md_system_state_t mol_centered_state = { .alloc = alloc };
     md_gro_system_init_from_file(&ref->mol_centered, &mol_centered_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL);
-    md_system_infer(&ref->mol_centered, &mol_centered_state, MD_SYSTEM_INFER_ALL, NULL);
+    md_system_infer(&ref->mol_centered, &mol_centered_state, NULL);
 }
 
 static inline void reference_systems_free(reference_systems_t* ref) {

@@ -46,11 +46,11 @@ UBENCH_EX(gro, postprocess) {
         return;
     }
 
-    md_system_infer(&sys, &sys_state, MD_SYSTEM_INFER_ALL, NULL);
+    md_system_infer(&sys, &sys_state, NULL);
 
     size_t reset_pos = md_linear_allocator_get_pos(alloc);
     UBENCH_DO_BENCHMARK() {
-        md_system_infer(&sys, &sys_state, MD_SYSTEM_INFER_BOND_BIT, NULL);
+        md_system_infer(&sys, &sys_state, NULL);
         md_system_reset(&sys);
         md_linear_allocator_set_pos_back(alloc, reset_pos);
     }
