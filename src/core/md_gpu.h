@@ -436,6 +436,19 @@ void md_gpu_stream_sync(md_gpu_stream_t stream);
 bool md_gpu_sync_is_complete(md_gpu_sync_t sync);
 void md_gpu_sync_wait(md_gpu_sync_t sync);
 
+/* The GPU time of the submission `sync` names: from the start of its first
+   command to the end of its last, in seconds, as the device measured it. What
+   a host sees of a submission - when a poll finds it done - includes the time
+   the GPU sat idle or ran other work; this does not (beyond work of another
+   context that preempted it). For sizing work to the device: a long
+   evaluation issued in pieces (md_gpu_pieces.h) times its pieces with it.
+
+   False until the submission has completed and its time is known (on Metal a
+   moment after the sync completes), for the none sync, for a submission older
+   than the last 256 of its stream, and where the queue cannot time (a Vulkan
+   queue family without timestamps, a transfer-only stream). Never waits. */
+bool md_gpu_sync_gpu_seconds(md_gpu_sync_t sync, double* seconds);
+
 /* ---- Ordering ---------------------------------------------------------------
 
    IMPLICIT (the default): each operation is ordered after everything before it
