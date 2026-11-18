@@ -2110,7 +2110,7 @@ static md_gpu_stream_t md_vk_stream_create_internal(md_gpu_device_t dev, md_gpu_
     md_vk_vec_init(&s->cmds, sizeof(md_vk_cmd_t));
     md_vk_vec_init(&s->waits, sizeof(md_vk_wait_t));
     md_vk_vec_init(&s->arena.pages, sizeof(md_vk_page_t*));
-    md_gpu_heap_temps_init(&s->temps);
+    md_gpu_heap_temps_init(&dev->heap, &s->temps);
 
     VkSemaphoreTypeCreateInfo stci = {VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO};
     stci.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;

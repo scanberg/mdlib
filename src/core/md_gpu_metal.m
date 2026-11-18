@@ -953,7 +953,7 @@ static md_gpu_stream_t md_mtl_stream_create_internal(md_gpu_device_t dev, md_gpu
     s->is_default = is_default;
     md_snprintf(s->label, sizeof(s->label), "%s", label ? label : "stream");
     md_mtl_vec_init(&s->arena.pages, sizeof(md_mtl_page_t*));
-    md_gpu_heap_temps_init(&s->temps);
+    md_gpu_heap_temps_init(&dev->heap, &s->temps);
     md_mtl_vec_init(&s->waits, sizeof(md_mtl_wait_t));
 
     @autoreleasepool {
