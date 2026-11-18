@@ -20,8 +20,10 @@ Structure of this file:
     15. Device destruction
 
 The dependency model is program order within a stream, implemented as a single
-global VkMemoryBarrier2 between consecutive operations in a command buffer
-(IMPLICIT ordering), or as caller-placed stage barriers (EXPLICIT ordering).
+global VkMemoryBarrier2 between consecutive operations (IMPLICIT ordering) --
+from the stages the operations before it wrote in to the stages the next one
+reads in, see md_vk_begin_op -- or as caller-placed stage barriers (EXPLICIT
+ordering).
 There is no per-resource state tracking anywhere in this file, and every image
 lives in VK_IMAGE_LAYOUT_GENERAL for its entire life -- render targets
 included, since dynamic rendering takes GENERAL attachments. Swapchain images
@@ -346,10 +348,20 @@ typedef struct md_gpu_stream {
     md_vk_vec_t          cmds;             /* md_vk_cmd_t */
     VkCommandBuffer      open;             /* currently recording, or NULL  */
     bool                 has_work;
-    bool                 needs_barrier;
+    /* Stages of the operations recorded since md_gpu last placed a barrier,
+       across submissions: what the next barrier waits for. */
+    md_gpu_stage_flags_t written;
+    bool                 order_next;       /* order the next op after `written`
+                                              in either ordering mode (the first
+                                              op of an EXPLICIT region)        */
+    bool                 cb_head;          /* nothing recorded yet in `open`   */
     bool                 force_barrier;    /* full barrier before the next op, in
                                               either ordering mode (memory reuse) */
     md_gpu_ordering_t    ordering;
+    /* Bindings in the open command buffer, set once and kept. */
+    struct md_gpu_kernel* bound_kernel;
+    bool                 compute_set_bound;
+    bool                 graphics_set_bound;
 
     md_vk_vec_t          waits;            /* md_vk_wait_t, pending for the next submit */
 
@@ -2168,8 +2180,12 @@ static bool md_vk_stream_ensure_cmd(md_gpu_stream_t s) {
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     if (!md_vk_check(vkBeginCommandBuffer(found->cmd, &bi), "vkBeginCommandBuffer")) return false;
 
-    s->open     = found->cmd;
-    s->has_work = false;
+    s->open               = found->cmd;
+    s->has_work           = false;
+    s->cb_head            = true;
+    s->bound_kernel       = NULL;
+    s->compute_set_bound  = false;
+    s->graphics_set_bound = false;
     /* The GPU time of the submission this buffer becomes, which signals
        next_value: from here to its end (md_vk_stream_submit) */
     if (s->ts_pool) {
@@ -2177,14 +2193,15 @@ static bool md_vk_stream_ensure_cmd(md_gpu_stream_t s) {
         vkCmdResetQueryPool(s->open, s->ts_pool, q, 2);
         vkCmdWriteTimestamp2(s->open, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, s->ts_pool, q);
     }
-    /* If this stream has already submitted, the first operation recorded here
-       still needs a dependency on that earlier work. Batches submitted to one
-       queue may overlap -- submission order alone creates no memory
-       dependency. A barrier's first synchronisation scope covers everything
-       earlier in submission order, which spans command buffers and batches, so
-       one barrier at the top of the buffer closes it. (In EXPLICIT mode the
-       caller's own barriers carry the same scope across submissions.) */
-    if (s->submitted_value > 0) s->needs_barrier = true;
+    /* The first operation recorded here still needs a dependency on earlier
+       work: batches submitted to one queue may overlap -- submission order
+       alone creates no memory dependency. A barrier's first synchronisation
+       scope covers everything earlier in submission order, which spans
+       command buffers and batches, so md_vk_begin_op gives the buffer's first
+       operation a barrier from every stage (cb_head). That also covers other
+       streams' work on the same VkQueue, which matters when memory one of
+       them freed is reused by another. (In EXPLICIT mode the caller's own
+       barriers carry the same scope across submissions.) */
     return true;
 }
 
@@ -2229,46 +2246,62 @@ static void md_vk_emit_barrier(md_gpu_stream_t s, VkPipelineStageFlags2 src_stag
     vkCmdPipelineBarrier2(s->open, &di);
 }
 
-/* The command buffer an operation records into, with IMPLICIT ordering
-   applied: one global barrier before the operation if anything precedes it.
-   Returns VK_NULL_HANDLE on failure. */
 /* Operations that record work outside a render pass fail inside one. */
 static bool md_vk_not_in_pass(md_gpu_stream_t s, const char* what) {
     if (!s->in_pass) return true;
     return md_vk_fail("%s: stream '%s' is inside a render pass; call md_gpu_render_end first", what, s->label);
 }
 
-static VkCommandBuffer md_vk_begin_op(md_gpu_stream_t s) {
+static void md_vk_stage_masks(md_gpu_stream_t s, md_gpu_stage_flags_t stages, bool producer,
+                              VkPipelineStageFlags2* out_stage, VkAccessFlags2* out_access);
+
+/* The command buffer an operation records into, with ordering applied. IMPLICIT
+   ordering is one global memory barrier before the operation, from the stages
+   the operations since the last such barrier wrote in, to the stages this one
+   reads in (`consumers`). Chained, these order every operation after all the
+   ones before it: each barrier's first scope includes the previous barrier's
+   second. Nothing waits for more than it must -- a kernel after a kernel does
+   not flush render targets. Returns VK_NULL_HANDLE on failure. */
+static VkCommandBuffer md_vk_begin_op(md_gpu_stream_t s, md_gpu_stage_flags_t consumers) {
     if (s->upload_open) { md_vk_fail("stream '%s' has an open upload; call md_gpu_upload_end first", s->label); return VK_NULL_HANDLE; }
     if (!md_vk_not_in_pass(s, "operation")) return VK_NULL_HANDLE;
     if (!md_vk_stream_ensure_cmd(s)) return VK_NULL_HANDLE;
-    if ((s->needs_barrier && s->ordering == MD_GPU_ORDER_IMPLICIT) || s->force_barrier) {
-        VkPipelineStageFlags2 ss, ds; VkAccessFlags2 sa, da;
+    VkPipelineStageFlags2 ss = 0, ds = 0; VkAccessFlags2 sa = 0, da = 0;
+    if (s->force_barrier) {
         md_vk_stream_full_masks(s, &ss, &sa, &ds, &da);
+    } else if (s->ordering == MD_GPU_ORDER_IMPLICIT || s->order_next) {
+        /* At the head of a command buffer: after everything earlier on the
+           queue (see md_vk_stream_ensure_cmd). Within it: after what the
+           operations since the last barrier wrote. */
+        md_gpu_stage_flags_t from = s->cb_head ? MD_GPU_STAGE_ALL : s->written;
+        if (from) {
+            md_vk_stage_masks(s, from,      true,  &ss, &sa);
+            md_vk_stage_masks(s, consumers, false, &ds, &da);
+        }
+    }
+    if (ss && ds) {
         md_vk_emit_barrier(s, ss, sa, ds, da);
-        s->needs_barrier = false;
+        s->written = 0;
     }
     s->force_barrier = false;
+    s->order_next    = false;
+    s->cb_head       = false;
     return s->open;
 }
 
-/* Mark that an operation was recorded. */
-static void md_vk_end_op(md_gpu_stream_t s) {
-    s->needs_barrier = true;
-    s->has_work      = true;
+/* Mark that an operation was recorded, writing in `producers`. */
+static void md_vk_end_op(md_gpu_stream_t s, md_gpu_stage_flags_t producers) {
+    s->written |= producers;
+    s->has_work = true;
 }
 
+/* Both edges of an EXPLICIT region are ordered: its first operation after
+   everything before it, and, back in IMPLICIT, the next operation after
+   everything in it -- which `written` already covers, as it is only cleared
+   by a barrier md_gpu places. */
 void md_gpu_stream_set_ordering(md_gpu_stream_t s, md_gpu_ordering_t ordering) {
     if (!s) return;
-    if (ordering == MD_GPU_ORDER_IMPLICIT && s->ordering != MD_GPU_ORDER_IMPLICIT) {
-        /* Order the next operation after everything in the explicit region. */
-        s->needs_barrier = true;
-    }
-    if (ordering == MD_GPU_ORDER_EXPLICIT && s->ordering == MD_GPU_ORDER_IMPLICIT && s->needs_barrier) {
-        /* And the region's first operation after everything before it: both
-           edges of an explicit region are ordered. */
-        s->force_barrier = true;
-    }
+    if (ordering == MD_GPU_ORDER_EXPLICIT && s->ordering == MD_GPU_ORDER_IMPLICIT) s->order_next = true;
     s->ordering = ordering;
 }
 
@@ -2421,8 +2454,6 @@ static bool md_vk_stream_submit(md_gpu_stream_t s) {
     s->bin_signal_count = 0;
     s->open            = VK_NULL_HANDLE;
     s->has_work        = false;
-    /* md_vk_stream_ensure_cmd re-arms needs_barrier for the next buffer. */
-    s->needs_barrier   = false;
     return true;
 }
 
@@ -2963,11 +2994,11 @@ static void md_vk_heaps_free_locked(md_gpu_device_t dev) {
 
 static bool md_vk_record_buffer_copy(md_gpu_stream_t s, VkBuffer src, uint64_t src_off,
                                      VkBuffer dst, uint64_t dst_off, uint64_t size) {
-    VkCommandBuffer cmd = md_vk_begin_op(s);
+    VkCommandBuffer cmd = md_vk_begin_op(s, MD_GPU_STAGE_TRANSFER);
     if (!cmd) return false;
     VkBufferCopy region = {src_off, dst_off, size};
     vkCmdCopyBuffer(cmd, src, dst, 1, &region);
-    md_vk_end_op(s);
+    md_vk_end_op(s, MD_GPU_STAGE_TRANSFER);
     return true;
 }
 
@@ -3025,10 +3056,10 @@ bool md_gpu_memset(md_gpu_stream_t s, md_gpu_addr_t dst, uint8_t value, size_t s
     uint64_t aend = end & ~3ull;
 
     if (aend > abeg) {
-        VkCommandBuffer cmd = md_vk_begin_op(s);
+        VkCommandBuffer cmd = md_vk_begin_op(s, MD_GPU_STAGE_TRANSFER);
         if (!cmd) return false;
         vkCmdFillBuffer(cmd, b.buffer, abeg, aend - abeg, ((uint32_t)value) * 0x01010101u);
-        md_vk_end_op(s);
+        md_vk_end_op(s, MD_GPU_STAGE_TRANSFER);
     }
 
     /* Unaligned head and tail go through a small staged copy. */
@@ -3581,11 +3612,11 @@ static bool md_vk_check_buffer_offset(md_gpu_texture_t t, uint64_t off, const ch
 
 static bool md_vk_record_texture_copy(md_gpu_stream_t s, md_gpu_texture_t t, VkBuffer buffer,
                                       const VkBufferImageCopy* copy, bool to_texture) {
-    VkCommandBuffer cmd = md_vk_begin_op(s);
+    VkCommandBuffer cmd = md_vk_begin_op(s, MD_GPU_STAGE_TRANSFER);
     if (!cmd) return false;
     if (to_texture) vkCmdCopyBufferToImage(cmd, buffer, t->image, VK_IMAGE_LAYOUT_GENERAL, 1, copy);
     else            vkCmdCopyImageToBuffer(cmd, t->image, VK_IMAGE_LAYOUT_GENERAL, buffer, 1, copy);
-    md_vk_end_op(s);
+    md_vk_end_op(s, MD_GPU_STAGE_TRANSFER);
     return true;
 }
 
@@ -3663,10 +3694,10 @@ bool md_gpu_copy_texture(md_gpu_stream_t s, md_gpu_texture_t dst, const md_gpu_t
     ic.dstOffset      = dr.copy.imageOffset;
     ic.extent         = sr.copy.imageExtent;
 
-    VkCommandBuffer cmd = md_vk_begin_op(s);
+    VkCommandBuffer cmd = md_vk_begin_op(s, MD_GPU_STAGE_TRANSFER);
     if (!cmd) return false;
     vkCmdCopyImage(cmd, src->image, VK_IMAGE_LAYOUT_GENERAL, dst->image, VK_IMAGE_LAYOUT_GENERAL, 1, &ic);
-    md_vk_end_op(s);
+    md_vk_end_op(s, MD_GPU_STAGE_TRANSFER);
     return true;
 }
 
@@ -3914,16 +3945,24 @@ static bool md_vk_grid_check(md_gpu_stream_t s, md_gpu_kernel_t k, md_gpu_grid_t
 static bool md_vk_dispatch(md_gpu_stream_t s, md_gpu_kernel_t k, uint64_t args_addr, md_gpu_grid_t grid,
                            const md_vk_span_t* indirect) {
     md_gpu_device_t dev = s->device;
-    VkCommandBuffer cmd = md_vk_begin_op(s);
+    VkCommandBuffer cmd = md_vk_begin_op(s, indirect ? (MD_GPU_STAGE_COMPUTE | MD_GPU_STAGE_INDIRECT) : MD_GPU_STAGE_COMPUTE);
     if (!cmd) return false;
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, k->pipeline);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, dev->pipeline_layout, 0, 1, &dev->desc_set, 0, NULL);
+    /* Every kernel shares one pipeline layout, so the set stays bound across
+       pipelines; both are bound once per command buffer and kept. */
+    if (s->bound_kernel != k) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, k->pipeline);
+        s->bound_kernel = k;
+    }
+    if (!s->compute_set_bound) {
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, dev->pipeline_layout, 0, 1, &dev->desc_set, 0, NULL);
+        s->compute_set_bound = true;
+    }
     vkCmdPushConstants(cmd, dev->pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 8, &args_addr);
     md_vk_dispatch_label_begin(dev, cmd, k);
     if (indirect) vkCmdDispatchIndirect(cmd, indirect->buffer, indirect->offset);
     else          vkCmdDispatch(cmd, grid.x, grid.y, grid.z);
     md_vk_dispatch_label_end(dev, cmd);
-    md_vk_end_op(s);
+    md_vk_end_op(s, MD_GPU_STAGE_COMPUTE);
     return true;
 }
 
@@ -4497,7 +4536,9 @@ bool md_gpu_render_begin(md_gpu_stream_t s, const md_gpu_render_desc_t* desc) {
         da.clearValue.depthStencil.depth = a->clear_depth;
     }
 
-    VkCommandBuffer cmd = md_vk_begin_op(s);
+    /* A pass reads in every raster stage: indirect commands, indices, vertex
+       and fragment shaders, and its attachments' load actions. */
+    VkCommandBuffer cmd = md_vk_begin_op(s, MD_GPU_STAGE_INDIRECT | MD_GPU_STAGE_VERTEX | MD_GPU_STAGE_FRAGMENT | MD_GPU_STAGE_ATTACHMENT);
     if (!cmd) return false;
     md_gpu_device_t dev = s->device;
     s->pass_labelled = desc->label && md_vk_debug_labels(dev);
@@ -4515,7 +4556,10 @@ bool md_gpu_render_begin(md_gpu_stream_t s, const md_gpu_render_desc_t* desc) {
     ri.pColorAttachments    = ca;
     ri.pDepthAttachment     = desc->depth.texture ? &da : NULL;
     vkCmdBeginRendering(cmd, &ri);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, dev->raster_layout, 0, 1, &dev->desc_set, 0, NULL);
+    if (!s->graphics_set_bound) {
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, dev->raster_layout, 0, 1, &dev->desc_set, 0, NULL);
+        s->graphics_set_bound = true;
+    }
 
     s->in_pass          = true;
     s->has_work         = true;
@@ -4544,7 +4588,7 @@ bool md_gpu_render_end(md_gpu_stream_t s) {
     s->in_pass        = false;
     s->pass_labelled  = false;
     s->bound_pipeline = NULL;
-    md_vk_end_op(s);
+    md_vk_end_op(s, MD_GPU_STAGE_VERTEX | MD_GPU_STAGE_FRAGMENT | MD_GPU_STAGE_ATTACHMENT);
     return true;
 }
 
