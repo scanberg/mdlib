@@ -569,9 +569,9 @@ static inline md_bond_idx_t md_system_bond_find(const md_system_t* sys, md_atom_
 // which describes the whole system says (a TPR, a prmtop, a PSF, the bonds of a LAMMPS data file)
 void md_system_set_bonds_complete(md_system_t* sys);
 
-// Adds a bond of the user (md_system_t::bond_edit), unless the two atoms have one the user added already, or one the
-// data gives which is not removed (but for an elastic bond, which stands in for no bond of the molecule). An edit of the
-// core: the bonds (sys->bond) and all that follows from them are of it once the system is inferred again
+// Adds a bond of the user (md_system_t::bond_edit), of origin MD_BOND_ORIGIN_USER whatever flags says, unless the two
+// atoms have one the user added already, or one the data gives which is not removed (but for an elastic bond, which
+// stands in for no bond of the molecule). An edit of the core: the bonds (sys->bond) and all that follows from them are of it once the system is inferred again
 // (md_system_infer). False when nothing was added.
 bool md_system_bond_insert(md_system_t* sys, md_atom_idx_t atom_idx_a, md_atom_idx_t atom_idx_b, md_bond_flags_t flags);
 

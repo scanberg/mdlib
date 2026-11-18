@@ -1246,11 +1246,17 @@ UTEST(hierarchy, molecule_structures) {
 
     // The bonds changed and changed back by hand (as code which changes the arrays itself may): valid again, from what
     // they were found from
-    md_bond_insert(&sys.bond, 0, 100, md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_USER), md_system_derived_alloc(&sys));
+    ASSERT_EQ(0u, sys.bond.noncovalent_count);
+    const md_atom_pair_t extra = {{ 0, 100 }};
+    md_array_push(sys.bond.pairs, extra, md_system_derived_alloc(&sys));
+    md_array_push(sys.bond.flags, md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_USER), md_system_derived_alloc(&sys));
+    sys.bond.count += 1;
     md_system_bond_build_connectivity(&sys);
     md_system_topology_changed(&sys);
     EXPECT_FALSE(md_system_molecule_structures_valid(&sys));
-    md_bond_remove(&sys.bond, md_bond_find(&sys.bond, 0, 100));
+    sys.bond.count -= 1;
+    md_array_shrink(sys.bond.pairs, sys.bond.count);
+    md_array_shrink(sys.bond.flags, sys.bond.count);
     md_system_bond_build_connectivity(&sys);
     md_system_topology_changed(&sys);
     EXPECT_TRUE(md_system_molecule_structures_valid(&sys));

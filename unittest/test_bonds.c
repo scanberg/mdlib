@@ -223,8 +223,8 @@ UTEST(bonds, reinference_keeps_removed_bonds) {
         EXPECT_EQ(inferred - 1, sys.bond.count);
     }
 
-    // Added again, it is the user's
-    EXPECT_TRUE(md_system_bond_insert(&sys, pair.idx[0], pair.idx[1], md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_USER)));
+    // Added again, it is the user's, whatever origin it is given
+    EXPECT_TRUE(md_system_bond_insert(&sys, pair.idx[0], pair.idx[1], md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_FILE)));
     ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
     md_bond_flags_t f = 0;
     EXPECT_TRUE(has_bond(&sys, pair.idx[0], pair.idx[1], &f));

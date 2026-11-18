@@ -202,9 +202,10 @@ typedef struct md_bond_conn_data_t {
 //                                           bonds and interactions a file gives or a user marks
 // Whatever walks the bonds as the graph (the connectivity, rings, molecules, perception, matching, bonds formed and
 // broken over a run) reads the first range only, by count, and leaves the elastic and metallic bonds out. The arrays
-// hold both ranges, so they are uploaded as one. A bond index names a bond in either range: md_bond_insert,
-// md_bond_remove, md_bond_pair and md_system_bond_flags take both, and keep every bond in the range of its kind.
-// md_bond_find finds a bond of the graph, md_bond_find_noncovalent one of the second range. Bonds computed for a frame
+// hold both ranges, so they are uploaded as one. A bond index names a bond in either range: md_bond_pair and
+// md_system_bond_flags take both. Made by md_bond_merge in md_system_infer, which then perceives their kinds and orders
+// in place; no bond is added or removed here, but by the edits of the core (md_system_bond_insert, md_system_bond_remove)
+// and inference again. md_bond_find finds a bond of the graph, md_bond_find_noncovalent one of the second range. Bonds computed for a frame
 // (bonds formed, hydrogen bonds found) are never here: they are a bond set of their own (md_bond_delta_t, the script).
 typedef struct md_bond_data_t {
     size_t count;                   // Bonds of the first range: the graph, the elastic and the metallic bonds
@@ -288,10 +289,16 @@ static inline void md_bond_list_free(md_bond_list_t* list, md_allocator_i* alloc
     list->flags = NULL;
 }
 
-// The pair and the range of a bond of flags, as one: a pair has one bond of the graph or a non-covalent one, and an
-// elastic bond besides (which stands in for no bond of the molecule). The atoms in either order.
+// The range of a bond of flags a pair has one bond of: 0 of the first range of md_bond_data_t but the elastic bonds, 1
+// the elastic bonds (which stand in for no bond of the molecule), 2 the non-covalent bonds
+static inline uint32_t md_bond_range(md_bond_flags_t flags) {
+    return md_bond_is_noncovalent(flags) ? 2 : md_bond_kind(flags) == MD_BOND_KIND_ELASTIC ? 1 : 0;
+}
+
+// The pair and the range of a bond of flags (md_bond_range), as one: a pair has one bond of each range. The atoms in
+// either order.
 static inline uint64_t md_bond_key(md_atom_pair_t pair, md_bond_flags_t flags) {
-    const uint64_t range = md_bond_is_noncovalent(flags) ? 2 : md_bond_kind(flags) == MD_BOND_KIND_ELASTIC ? 1 : 0;
+    const uint64_t range = md_bond_range(flags);
     const uint32_t lo = (uint32_t)(pair.idx[0] < pair.idx[1] ? pair.idx[0] : pair.idx[1]);
     const uint32_t hi = (uint32_t)(pair.idx[0] < pair.idx[1] ? pair.idx[1] : pair.idx[0]);
     return (range << 62) | ((uint64_t)lo << 31) | hi;
@@ -369,68 +376,6 @@ static inline md_bond_idx_t md_bond_find_noncovalent(const md_bond_data_t* bond_
         }
     }
 	return -1;
-}
-
-// Adds a bond between two atoms unless they have one, into the range of its kind: the bond graph, or the non-covalent
-// bonds (md_bond_is_noncovalent). A bond of the graph inserted where there are non-covalent bonds moves the first of
-// them to the end, which changes its index.
-static inline void md_bond_insert(md_bond_data_t* bond_data, md_atom_idx_t atom_idx_a, md_atom_idx_t atom_idx_b, md_bond_flags_t flags, md_allocator_i* alloc) {
-    MD_ASSERT(bond_data);
-    MD_ASSERT(alloc);
-    // A bond outside of the graph has neither an order nor resonance
-    MD_ASSERT(md_bond_is_graph(flags) || !(flags & (MD_BOND_FLAG_ORDER_MASK | MD_BOND_FLAG_RESONANCE_MASK)));
-
-    // An atom pair has one bond at most, but for an elastic bond: it is not found, and does not stand in for a bond of the
-    // molecule
-    if (md_bond_find(bond_data, atom_idx_a, atom_idx_b) != -1 || md_bond_find_noncovalent(bond_data, atom_idx_a, atom_idx_b) != -1) {
-        return;
-    }
-
-    // Add bond
-    md_atom_pair_t pair = {atom_idx_a, atom_idx_b};
-    md_array_push(bond_data->pairs, pair, alloc);
-    md_array_push(bond_data->flags, flags, alloc);
-    if (md_bond_is_noncovalent(flags)) {
-        bond_data->noncovalent_count++;
-        return;
-    }
-    if (bond_data->noncovalent_count) {
-        // Into the place of the first non-covalent bond, which goes to the end
-        const size_t first = bond_data->count;
-        const size_t last  = bond_data->count + bond_data->noncovalent_count;
-        bond_data->pairs[last] = bond_data->pairs[first];
-        bond_data->flags[last] = bond_data->flags[first];
-        bond_data->pairs[first] = pair;
-        bond_data->flags[first] = flags;
-    }
-    bond_data->count++;
-}
-
-// Removes a bond of either range. The last bond of its range takes its place, so that one changes its index (and so
-// does the last non-covalent bond, when a bond of the graph is removed). A bond of the graph removed requires a rebuild
-// of the connectivity to be valid again.
-static inline void md_bond_remove(md_bond_data_t* bond_data, md_bond_idx_t bond_idx) {
-    MD_ASSERT(bond_data);
-    const size_t total = bond_data->count + bond_data->noncovalent_count;
-    MD_ASSERT(bond_idx >= 0 && (size_t)bond_idx < total);
-
-    if ((size_t)bond_idx < bond_data->count) {
-        // The last bond of the graph takes its place, and the last non-covalent bond that of the last of the graph
-        const size_t last = bond_data->count - 1;
-        bond_data->pairs[bond_idx] = bond_data->pairs[last];
-        bond_data->flags[bond_idx] = bond_data->flags[last];
-        if (bond_data->noncovalent_count) {
-            bond_data->pairs[last] = bond_data->pairs[total - 1];
-            bond_data->flags[last] = bond_data->flags[total - 1];
-        }
-        bond_data->count--;
-    } else {
-        bond_data->pairs[bond_idx] = bond_data->pairs[total - 1];
-        bond_data->flags[bond_idx] = bond_data->flags[total - 1];
-        bond_data->noncovalent_count--;
-    }
-    md_array_shrink(bond_data->pairs, total - 1);
-    md_array_shrink(bond_data->flags, total - 1);
 }
 
 static inline md_atom_pair_t md_bond_pair(const md_bond_data_t* bond_data, md_bond_idx_t bond_idx) {

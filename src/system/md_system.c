@@ -779,22 +779,34 @@ void md_system_set_bonds_complete(md_system_t* sys) {
     if (sys->atom.count) md_memset(sys->atom.bonds_complete, 1, sys->atom.count);
 }
 
+static inline bool is_pair(md_atom_pair_t p, md_atom_idx_t a, md_atom_idx_t b) {
+    return (p.idx[0] == a && p.idx[1] == b) || (p.idx[0] == b && p.idx[1] == a);
+}
+
 bool md_system_bond_insert(md_system_t* sys, md_atom_idx_t atom_idx_a, md_atom_idx_t atom_idx_b, md_bond_flags_t flags) {
     MD_ASSERT(sys);
     MD_ASSERT(sys->alloc);
     if (atom_idx_a < 0 || atom_idx_b < 0 || atom_idx_a == atom_idx_b || (size_t)atom_idx_a >= sys->atom.count || (size_t)atom_idx_b >= sys->atom.count) return false;
-    flags &= ~MD_BOND_FLAG_INACTIVE;
-    // A pair has one bond at most, of the graph or not, but for an elastic bond. One the data gives which is removed is
-    // none.
-    const md_bond_flags_t graph = md_bond_flags_set_kind(MD_BOND_FLAG_NONE, md_bond_kind(flags) == MD_BOND_KIND_ELASTIC ? MD_BOND_KIND_ELASTIC : MD_BOND_KIND_COVALENT);
-    const md_bond_flags_t noncovalent = md_bond_flags_set_kind(MD_BOND_FLAG_KIND_GIVEN, MD_BOND_KIND_INTERACTION);
-    const md_bond_flags_t probes[2] = { graph, noncovalent };
-    const int num_probes = md_bond_kind(flags) == MD_BOND_KIND_ELASTIC ? 1 : 2;
-    for (int p = 0; p < num_probes; ++p) {
-        if (md_bond_list_find(&sys->bond_edit, atom_idx_a, atom_idx_b, probes[p]) != -1) return false;
-        if (md_bond_list_find(&sys->given_bond, atom_idx_a, atom_idx_b, probes[p]) != -1 &&
-            md_bond_list_find(&sys->bond_edit, atom_idx_a, atom_idx_b, probes[p] | MD_BOND_FLAG_INACTIVE) == -1) return false;
+    flags = md_bond_flags_set_origin(flags & ~MD_BOND_FLAG_INACTIVE, MD_BOND_ORIGIN_USER);
+
+    // A pair has one bond at most, of the graph or not, and an elastic bond besides: one the user added, or one the
+    // data gives of a range the user has not removed the bond of
+    const bool elastic = md_bond_kind(flags) == MD_BOND_KIND_ELASTIC;
+    uint32_t removed = 0;   // The ranges (md_bond_range) the user removed the bond of the pair of
+    const md_bond_list_t* edits = &sys->bond_edit;
+    for (size_t i = 0; i < md_bond_list_count(edits); ++i) {
+        if (!is_pair(edits->pairs[i], atom_idx_a, atom_idx_b)) continue;
+        const md_bond_flags_t f = edits->flags[i];
+        if (f & MD_BOND_FLAG_INACTIVE) removed |= 1u << md_bond_range(f);
+        else if ((md_bond_kind(f) == MD_BOND_KIND_ELASTIC) == elastic) return false;
     }
+    const md_bond_list_t* given = &sys->given_bond;
+    for (size_t i = 0; i < md_bond_list_count(given); ++i) {
+        if (!is_pair(given->pairs[i], atom_idx_a, atom_idx_b)) continue;
+        const md_bond_flags_t f = given->flags[i];
+        if ((md_bond_kind(f) == MD_BOND_KIND_ELASTIC) == elastic && !(removed & (1u << md_bond_range(f)))) return false;
+    }
+
     md_bond_list_push(&sys->bond_edit, atom_idx_a, atom_idx_b, flags, sys->alloc);
     md_system_topology_changed(sys);
     return true;
