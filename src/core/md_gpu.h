@@ -352,6 +352,12 @@ typedef struct md_gpu_device_desc_t {
        returning them to the driver. 0 selects 256 MiB. */
     uint64_t heap_cache_limit;
 
+    /* Texture handles the device can hold at once: a texture takes one if it
+       is SAMPLED and one per mip level if it is STORAGE. 0 selects 4095.
+       Clamped to what the device can bind (the clamp is logged); Metal has no
+       such limit and ignores it. */
+    uint32_t max_textures;
+
     const char* label;
 } md_gpu_device_desc_t;
 
@@ -715,6 +721,42 @@ typedef struct md_gpu_texture_desc_t {
    md_gpu_stream_wait). Never blocks. Textures are device-local. Returns NULL
    on failure. */
 md_gpu_texture_t md_gpu_texture_create(md_gpu_stream_t stream, const md_gpu_texture_desc_t* desc);
+
+/* ---- Textures in md_gpu memory ---------------------------------------------
+   A texture can instead be placed in MD_GPU_MEM_DEVICE memory the caller
+   allocated, so that textures that are never live at the same time share it
+   (render targets of passes that do not overlap, scratch volumes), and so
+   that their memory comes from the same stream-ordered heaps and temp scopes
+   as everything else:
+
+       uint64_t size = md_gpu_texture_placement_size(dev, &desc);
+       md_gpu_addr_t mem = md_gpu_malloc(s, size, MD_GPU_MEM_DEVICE);
+       md_gpu_texture_t t = md_gpu_texture_create_at(s, &desc, mem);
+       ...
+       md_gpu_texture_destroy(t);
+       md_gpu_free(s, mem);
+
+   The memory may be aliased by buffers and other placed textures. Whatever
+   was last written through one alias, the others read as undefined; before a
+   placed texture is used after its memory was written through anything else,
+   discard it (below). Destroying the texture does not free the memory, and
+   the texture must not be used once its memory is freed. */
+
+/* The bytes of MD_GPU_MEM_DEVICE memory a texture of `desc` needs, from any
+   start address (alignment included), or 0 if it cannot be made or placed;
+   the reason is reported through the error callback. */
+uint64_t md_gpu_texture_placement_size(md_gpu_device_t device, const md_gpu_texture_desc_t* desc);
+
+/* As md_gpu_texture_create, but in [memory, memory + placement size), which
+   must lie within one live MD_GPU_MEM_DEVICE allocation. Nothing is
+   allocated. The texture's contents start undefined. */
+md_gpu_texture_t md_gpu_texture_create_at(md_gpu_stream_t stream, const md_gpu_texture_desc_t* desc, md_gpu_addr_t memory);
+
+/* Give up the contents of `tex`, ordered after everything issued into
+   `stream` before it and before everything after it, in either ordering
+   mode. Required before using a placed texture after its memory was written
+   through another alias; harmless otherwise. */
+bool md_gpu_texture_discard(md_gpu_stream_t stream, md_gpu_texture_t tex);
 
 /* Deferred and non-blocking: the texture and its handles are released once
    every stream has completed the work issued before this call. */

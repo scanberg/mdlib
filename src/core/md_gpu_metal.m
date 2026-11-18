@@ -262,6 +262,7 @@ typedef struct md_mtl_span_t {
     __unsafe_unretained id<MTLBuffer> buffer;
     uint64_t offset;
     uint8_t* host;
+    md_mtl_chunk_t* chunk;           /* the chunk `buffer` is */
 } md_mtl_span_t;
 
 typedef struct md_mtl_heap_t {
@@ -397,6 +398,7 @@ typedef struct md_gpu_texture {
     md_gpu_texture_desc_t desc;              /* normalised */
     bool                  resident;          /* in the residency set / live_res */
     bool                  external;          /* a drawable's texture; not the caller's */
+    bool                  placed;            /* in a DEVICE chunk's heap, the caller's memory */
     char                  label[64];
 } md_gpu_texture;
 
@@ -573,6 +575,7 @@ static bool md_mtl_resolve(md_gpu_device_t dev, md_gpu_addr_t addr, uint64_t siz
         out->buffer = copy.chunk->buffer;
         out->offset = copy.chunk_offset + off;
         out->host   = copy.chunk->host ? copy.chunk->host + copy.chunk_offset + off : NULL;
+        out->chunk  = copy.chunk;
     }
     return true;
 }
@@ -612,13 +615,30 @@ static void md_mtl_end_residency_locked(md_gpu_device_t dev, id<MTLResource> res
     }
 }
 
+/* Host visible memory is a plain shared buffer. DEVICE memory is a private
+   buffer over the whole of a placement heap of its own, so that textures can
+   be placed in it (md_gpu_texture_create_at); the buffer holds the heap. The
+   heap tracks hazards, as a plain buffer does. */
 static bool md_mtl_create_raw_buffer(md_gpu_device_t dev, uint64_t size, md_gpu_mem_kind_t kind,
                                      id<MTLBuffer>* out_buf, uint64_t* out_addr, void** out_host) {
-    const MTLResourceOptions opts = (kind != MD_GPU_MEM_DEVICE)
-        ? MTLResourceStorageModeShared
-        : MTLResourceStorageModePrivate;
-    id<MTLBuffer> buf = [dev->device newBufferWithLength:(NSUInteger)size options:opts];
-    if (!buf) return md_mtl_fail("newBufferWithLength failed for %llu bytes", (unsigned long long)size);
+    id<MTLBuffer> buf = nil;
+    if (kind != MD_GPU_MEM_DEVICE) {
+        buf = [dev->device newBufferWithLength:(NSUInteger)size options:MTLResourceStorageModeShared];
+    } else {
+        const MTLResourceOptions opts = MTLResourceStorageModePrivate | MTLResourceHazardTrackingModeTracked;
+        MTLHeapDescriptor* hd = [[MTLHeapDescriptor alloc] init];
+        hd.type               = MTLHeapTypePlacement;
+        hd.storageMode        = MTLStorageModePrivate;
+        hd.hazardTrackingMode = MTLHazardTrackingModeTracked;
+        hd.size               = [dev->device heapBufferSizeAndAlignWithLength:(NSUInteger)size options:opts].size;
+        id<MTLHeap> heap = [dev->device newHeapWithDescriptor:hd];
+        MD_MTL_DROP_NEW(hd);
+        if (heap) {
+            buf = [heap newBufferWithLength:(NSUInteger)size options:heap.resourceOptions offset:0];
+            MD_MTL_DROP_NEW(heap);
+        }
+    }
+    if (!buf) return md_mtl_fail("allocating a %llu-byte buffer failed", (unsigned long long)size);
     MD_MTL_OWN(buf);
 
     *out_buf  = buf;
@@ -1834,46 +1854,86 @@ static void md_mtl_texture_free(md_gpu_device_t dev, md_gpu_texture_t t) {
     md_free(dev->alloc, t, sizeof(*t));
 }
 
-md_gpu_texture_t md_gpu_texture_create(md_gpu_stream_t s, const md_gpu_texture_desc_t* desc) {
-    if (!s || !desc) { md_mtl_fail("md_gpu_texture_create: null argument"); return NULL; }
-    md_gpu_device_t dev = s->device;
-    if (!md_mtl_check_no_upload(s, "md_gpu_texture_create")) return NULL;
-    if (!md_mtl_not_in_pass(s, "md_gpu_texture_create")) return NULL;
-
+/* Validate and normalise a texture description. Fails, by name, on anything
+   Metal never supports; the rest is left to texture creation. */
+static bool md_mtl_texture_validate(const md_gpu_texture_desc_t* desc, const char* what,
+                                    md_gpu_texture_desc_t* out_d, md_mtl_fmt_t* out_fi) {
     md_gpu_texture_desc_t d = *desc;
     const char* label = d.label ? d.label : "texture";
     md_mtl_fmt_t fi = md_mtl_format_info(d.format);
-    if (fi.fmt == MTLPixelFormatInvalid) { md_mtl_fail("texture '%s': invalid format %d", label, (int)d.format); return NULL; }
+    if (fi.fmt == MTLPixelFormatInvalid) return md_mtl_fail("%s '%s': invalid format %d", what, label, (int)d.format);
     if (d.type != MD_GPU_TEX_2D && d.type != MD_GPU_TEX_2D_ARRAY && d.type != MD_GPU_TEX_3D) {
-        md_mtl_fail("texture '%s': invalid type %d (a zero-initialised desc has no type)", label, (int)d.type);
-        return NULL;
+        return md_mtl_fail("%s '%s': invalid type %d (a zero-initialised desc has no type)", what, label, (int)d.type);
     }
     if (!(d.usage & (MD_GPU_TEX_STORAGE | MD_GPU_TEX_SAMPLED | MD_GPU_TEX_RENDER_TARGET))) {
-        md_mtl_fail("texture '%s': usage is empty", label);
-        return NULL;
+        return md_mtl_fail("%s '%s': usage is empty", what, label);
     }
-    if (d.width == 0 || d.height == 0) { md_mtl_fail("texture '%s': zero width or height", label); return NULL; }
+    if (d.width == 0 || d.height == 0) return md_mtl_fail("%s '%s': zero width or height", what, label);
     if (d.type == MD_GPU_TEX_2D && d.depth_or_layers > 1) {
-        md_mtl_fail("texture '%s': a 2D texture has depth_or_layers %u; use MD_GPU_TEX_3D or MD_GPU_TEX_2D_ARRAY",
-                    label, d.depth_or_layers);
-        return NULL;
+        return md_mtl_fail("%s '%s': a 2D texture has depth_or_layers %u; use MD_GPU_TEX_3D or MD_GPU_TEX_2D_ARRAY",
+                           what, label, d.depth_or_layers);
     }
-    /* Metal has no format-capability query; reject what it never supports,
-       by name, and leave the rest to newTextureWithDescriptor:. */
     if ((d.usage & MD_GPU_TEX_STORAGE) && (fi.depth || fi.srgb)) {
-        md_mtl_fail("texture '%s': the device does not support %s with usage STORAGE", label, fi.name);
-        return NULL;
+        return md_mtl_fail("%s '%s': the device does not support %s with usage STORAGE", what, label, fi.name);
     }
     if (fi.depth && d.type == MD_GPU_TEX_3D) {
-        md_mtl_fail("texture '%s': the device does not support 3D %s", label, fi.name);
-        return NULL;
+        return md_mtl_fail("%s '%s': the device does not support 3D %s", what, label, fi.name);
     }
     if ((d.usage & MD_GPU_TEX_RENDER_TARGET) && d.type == MD_GPU_TEX_3D) {
-        md_mtl_fail("texture '%s': RENDER_TARGET needs a 2D or 2D_ARRAY texture", label);
-        return NULL;
+        return md_mtl_fail("%s '%s': RENDER_TARGET needs a 2D or 2D_ARRAY texture", what, label);
     }
     if (d.depth_or_layers == 0) d.depth_or_layers = 1;
     if (d.mip_levels == 0) d.mip_levels = 1;
+    *out_d  = d;
+    *out_fi = fi;
+    return true;
+}
+
+/* A +1 descriptor for a validated texture description. */
+static MTLTextureDescriptor* md_mtl_texture_descriptor(const md_gpu_texture_desc_t* d, md_mtl_fmt_t fi) {
+    MTLTextureDescriptor* td = [[MTLTextureDescriptor alloc] init];
+    td.textureType      = md_mtl_texture_type(d->type);
+    td.pixelFormat      = fi.fmt;
+    td.width            = d->width;
+    td.height           = d->height;
+    td.depth            = d->type == MD_GPU_TEX_3D       ? d->depth_or_layers : 1;
+    td.arrayLength      = d->type == MD_GPU_TEX_2D_ARRAY ? d->depth_or_layers : 1;
+    td.mipmapLevelCount = d->mip_levels;
+    td.storageMode      = MTLStorageModePrivate;
+    MTLTextureUsage usage = 0;
+    if (d->usage & MD_GPU_TEX_STORAGE)       usage |= MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+    if (d->usage & MD_GPU_TEX_SAMPLED)       usage |= MTLTextureUsageShaderRead;
+    if (d->usage & MD_GPU_TEX_RENDER_TARGET) usage |= MTLTextureUsageRenderTarget;
+    td.usage = usage;
+    return td;
+}
+
+uint64_t md_gpu_texture_placement_size(md_gpu_device_t dev, const md_gpu_texture_desc_t* desc) {
+    if (!dev || !desc) { md_mtl_fail("md_gpu_texture_placement_size: null argument"); return 0; }
+    md_gpu_texture_desc_t d; md_mtl_fmt_t fi;
+    if (!md_mtl_texture_validate(desc, "md_gpu_texture_placement_size: texture", &d, &fi)) return 0;
+    uint64_t total = 0;
+    @autoreleasepool {
+        MTLTextureDescriptor* td = md_mtl_texture_descriptor(&d, fi);
+        const MTLSizeAndAlign sa = [dev->device heapTextureSizeAndAlignWithDescriptor:td];
+        MD_MTL_DROP_NEW(td);
+        if (sa.size == 0) md_mtl_fail("md_gpu_texture_placement_size: '%s' (%s) cannot be placed", d.label ? d.label : "texture", fi.name);
+        else total = (uint64_t)sa.size + (uint64_t)sa.align - 1;   /* room to align any start address */
+    }
+    return total;
+}
+
+/* Both texture creations: its own memory (`at` 0), or placed at `at` in the
+   heap behind a DEVICE chunk. */
+static md_gpu_texture_t md_mtl_texture_create(md_gpu_stream_t s, const md_gpu_texture_desc_t* desc, md_gpu_addr_t at, const char* what) {
+    if (!s || !desc) { md_mtl_fail("%s: null argument", what); return NULL; }
+    md_gpu_device_t dev = s->device;
+    if (!md_mtl_check_no_upload(s, what)) return NULL;
+    if (!md_mtl_not_in_pass(s, what)) return NULL;
+
+    md_gpu_texture_desc_t d; md_mtl_fmt_t fi;
+    if (!md_mtl_texture_validate(desc, "texture", &d, &fi)) return NULL;
+    const char* label = d.label ? d.label : "texture";
 
     md_gpu_texture_t t = (md_gpu_texture_t)md_alloc(dev->alloc, sizeof(md_gpu_texture));
     if (!t) { md_mtl_fail("out of memory"); return NULL; }
@@ -1886,30 +1946,34 @@ md_gpu_texture_t md_gpu_texture_create(md_gpu_stream_t s, const md_gpu_texture_d
 
     bool ok = true;
     @autoreleasepool {
-        MTLTextureDescriptor* td = [[MTLTextureDescriptor alloc] init];
-        td.textureType      = md_mtl_texture_type(d.type);
-        td.pixelFormat      = fi.fmt;
-        td.width            = d.width;
-        td.height           = d.height;
-        td.depth            = d.type == MD_GPU_TEX_3D       ? d.depth_or_layers : 1;
-        td.arrayLength      = d.type == MD_GPU_TEX_2D_ARRAY ? d.depth_or_layers : 1;
-        td.mipmapLevelCount = d.mip_levels;
-        td.storageMode      = MTLStorageModePrivate;
-        MTLTextureUsage usage = 0;
-        if (d.usage & MD_GPU_TEX_STORAGE)       usage |= MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
-        if (d.usage & MD_GPU_TEX_SAMPLED)       usage |= MTLTextureUsageShaderRead;
-        if (d.usage & MD_GPU_TEX_RENDER_TARGET) usage |= MTLTextureUsageRenderTarget;
-        td.usage = usage;
-
-        id<MTLTexture> tex = [dev->device newTextureWithDescriptor:td];
-        MD_MTL_DROP_NEW(td);
-        if (!tex) {
-            ok = md_mtl_fail("texture '%s': newTextureWithDescriptor failed for %s", label, fi.name);
+        MTLTextureDescriptor* td = md_mtl_texture_descriptor(&d, fi);
+        id<MTLTexture> tex = nil;
+        if (!at) {
+            tex = [dev->device newTextureWithDescriptor:td];
+            if (!tex) ok = md_mtl_fail("texture '%s': newTextureWithDescriptor failed for %s", label, fi.name);
         } else {
+            const MTLSizeAndAlign sa = [dev->device heapTextureSizeAndAlignWithDescriptor:td];
+            md_mtl_span_t sp;
+            if (sa.size == 0) ok = md_mtl_fail("%s '%s': %s cannot be placed", what, label, fi.name);
+            else if (!md_mtl_resolve(dev, at, (uint64_t)sa.size + (uint64_t)sa.align - 1, &sp, what)) ok = false;
+            else if (sp.chunk->kind != MD_GPU_MEM_DEVICE || !sp.buffer.heap) {
+                ok = md_mtl_fail("%s '%s': textures are placed in MD_GPU_MEM_DEVICE memory", what, label);
+            } else {
+                /* The chunk's buffer starts at offset 0 of its heap, so a
+                   buffer offset is a heap offset. */
+                id<MTLHeap> heap = sp.buffer.heap;
+                td.resourceOptions = heap.resourceOptions;
+                tex = [heap newTextureWithDescriptor:td offset:(NSUInteger)md_mtl_align_up(sp.offset, sa.align)];
+                if (!tex) ok = md_mtl_fail("%s '%s': placing %s failed", what, label, fi.name);
+                t->placed = true;
+            }
+        }
+        MD_MTL_DROP_NEW(td);
+        if (ok) {
             MD_MTL_OWN(tex);
             tex.label = [NSString stringWithUTF8String:t->label];
             t->texture = tex;
-            t->bytes   = (uint64_t)[tex allocatedSize];
+            t->bytes   = t->placed ? 0 : (uint64_t)[tex allocatedSize];
             if (d.usage & MD_GPU_TEX_SAMPLED) t->sampled_handle = (uint64_t)tex.gpuResourceID._impl;
         }
 
@@ -1945,8 +2009,13 @@ md_gpu_texture_t md_gpu_texture_create(md_gpu_stream_t s, const md_gpu_texture_d
         if (!slot) ok = md_mtl_fail("out of memory");
         else {
             *slot = t;
-            md_mtl_make_resident_locked(dev, t->texture);
-            t->resident = true;
+            /* A residency set holds the chunk's buffer, which keeps its whole
+               heap resident, placed textures included. useResources: does
+               not reach from a buffer to its heap, so there they are listed. */
+            if (!t->placed || !dev->has_residency_set) {
+                md_mtl_make_resident_locked(dev, t->texture);
+                t->resident = true;
+            }
             dev->texture_bytes += t->bytes;
         }
     }
@@ -1956,8 +2025,27 @@ md_gpu_texture_t md_gpu_texture_create(md_gpu_stream_t s, const md_gpu_texture_d
         t = NULL;
     }
     md_mutex_unlock(&dev->device_mutex);
-    (void)s;   /* Metal has no layout transition to order; creation is complete now. */
-    return t;
+    return t;   /* Metal has no layout transition to order; creation is complete now. */
+}
+
+md_gpu_texture_t md_gpu_texture_create(md_gpu_stream_t s, const md_gpu_texture_desc_t* desc) {
+    return md_mtl_texture_create(s, desc, 0, "md_gpu_texture_create");
+}
+
+md_gpu_texture_t md_gpu_texture_create_at(md_gpu_stream_t s, const md_gpu_texture_desc_t* desc, md_gpu_addr_t memory) {
+    if (!memory) { md_mtl_fail("md_gpu_texture_create_at: null memory address"); return NULL; }
+    return md_mtl_texture_create(s, desc, memory, "md_gpu_texture_create_at");
+}
+
+/* Metal keeps no layout, and a placed texture's first full write rebuilds any
+   compression state, so there is nothing to record; the call checks its
+   arguments like the Vulkan one. */
+bool md_gpu_texture_discard(md_gpu_stream_t s, md_gpu_texture_t t) {
+    if (!s || !t) return md_mtl_fail("md_gpu_texture_discard: null argument");
+    if (t->device != s->device) return md_mtl_fail("md_gpu_texture_discard: texture '%s' belongs to another device", t->label);
+    if (t->external) return md_mtl_fail("md_gpu_texture_discard: '%s' belongs to a surface", t->label);
+    if (!md_mtl_check_no_upload(s, "md_gpu_texture_discard")) return false;
+    return md_mtl_not_in_pass(s, "md_gpu_texture_discard");
 }
 
 void md_gpu_texture_destroy(md_gpu_texture_t t) {

@@ -1815,6 +1815,205 @@ UTEST(gpu, texture_destroy_waits_on_every_stream) {
    Kernels
    ========================================================================= */
 
+static md_gpu_texture_desc_t gpu_volume_desc(uint32_t d, const char* label) {
+    md_gpu_texture_desc_t td = {0};
+    td.type   = MD_GPU_TEX_3D;
+    td.format = MD_GPU_FORMAT_R32_FLOAT;
+    td.usage  = MD_GPU_TEX_STORAGE;
+    td.width  = d; td.height = d; td.depth_or_layers = d;
+    td.label  = label;
+    return td;
+}
+
+/* Write `scale * index` into every voxel of `tex` through a kernel and check it
+   on the host. */
+static bool gpu_write_and_check(gpu_fixture_t* f, md_gpu_texture_t tex, uint32_t d, float scale) {
+    tex_args_t ta = {0};
+    ta.dim[0] = d; ta.dim[1] = d; ta.dim[2] = d;
+    ta.tex = md_gpu_texture_storage(tex, 0);
+    ta.scale = scale;
+    if (!MD_GPU_LAUNCH(f->compute, f->k_tex_write, md_gpu_grid_for(f->k_tex_write, d, d, d), ta)) return false;
+    const size_t n = (size_t)d * d * d;
+    float* host = (float*)malloc(n * sizeof(float));
+    bool ok = host && gpu_read_tex(f, f->compute, host, tex, NULL);
+    for (size_t i = 0; ok && i < n; ++i) ok = host[i] == (float)i * scale;
+    free(host);
+    return ok;
+}
+
+/* A texture placed in DEVICE memory works like any other, takes no texture
+   memory of its own, and can sit at any address in its allocation. */
+UTEST(gpu, texture_placed_in_device_memory) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
+
+    enum { D = 8 };
+    md_gpu_texture_desc_t td = gpu_volume_desc(D, "placed");
+    const uint64_t size = md_gpu_texture_placement_size(f.dev, &td);
+    ASSERT_TRUE(size >= (uint64_t)D * D * D * sizeof(float));
+
+    md_gpu_memory_stats_t before, after;
+    ASSERT_TRUE(md_gpu_memory_stats(f.dev, MD_GPU_MEM_DEVICE, &before));
+
+    /* At the start of an allocation, and at an odd offset into one. */
+    md_gpu_addr_t a = gpu_alloc(&f, f.compute, size);
+    md_gpu_addr_t b = gpu_alloc(&f, f.compute, size + 4);
+    ASSERT_TRUE(a && b);
+    md_gpu_texture_t ta = md_gpu_texture_create_at(f.compute, &td, a);
+    md_gpu_texture_t tb = md_gpu_texture_create_at(f.compute, &td, b + 4);
+    ASSERT_TRUE(ta != NULL);
+    ASSERT_TRUE(tb != NULL);
+    ASSERT_TRUE(md_gpu_memory_stats(f.dev, MD_GPU_MEM_DEVICE, &after));
+    EXPECT_EQ(before.bytes_textures, after.bytes_textures);
+
+    EXPECT_TRUE(gpu_write_and_check(&f, ta, D, 2.0f));
+    EXPECT_TRUE(gpu_write_and_check(&f, tb, D, 3.0f));
+    /* Neither wrote over the other. */
+    float host[D * D * D];
+    ASSERT_TRUE(gpu_read_tex(&f, f.compute, host, ta, NULL));
+    for (int i = 0; i < D * D * D; ++i) EXPECT_EQ((float)i * 2.0f, host[i]);
+
+    md_gpu_texture_destroy(ta);
+    md_gpu_texture_destroy(tb);
+    md_gpu_free(f.compute, a);
+    md_gpu_free(f.compute, b);
+    md_gpu_stream_sync(f.compute);
+    md_gpu_device_poll(f.dev);
+    gpu_close(&f);
+}
+
+/* Two textures and a buffer in the same memory, used in turn, each discarded
+   (or, for the buffer, simply written) before its turn. */
+UTEST(gpu, texture_placed_aliases_share_memory) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
+
+    enum { D = 8, N = D * D * D };
+    md_gpu_texture_desc_t td = gpu_volume_desc(D, "alias a");
+    md_gpu_texture_desc_t ud = gpu_volume_desc(D, "alias b");
+    ud.usage |= MD_GPU_TEX_SAMPLED;
+    uint64_t size = md_gpu_texture_placement_size(f.dev, &td);
+    const uint64_t size_b = md_gpu_texture_placement_size(f.dev, &ud);
+    if (size_b > size) size = size_b;
+    ASSERT_TRUE(size > 0);
+
+    md_gpu_addr_t mem = gpu_alloc(&f, f.compute, size);
+    ASSERT_TRUE(mem != 0);
+    md_gpu_texture_t a = md_gpu_texture_create_at(f.compute, &td, mem);
+    md_gpu_texture_t b = md_gpu_texture_create_at(f.compute, &ud, mem);
+    ASSERT_TRUE(a && b);
+
+    for (int round = 0; round < 3; ++round) {
+        ASSERT_TRUE(md_gpu_texture_discard(f.compute, a));
+        EXPECT_TRUE(gpu_write_and_check(&f, a, D, 1.0f + (float)round));
+        ASSERT_TRUE(md_gpu_texture_discard(f.compute, b));
+        EXPECT_TRUE(gpu_write_and_check(&f, b, D, 10.0f + (float)round));
+
+        /* The memory as a buffer: a fill, then a texture again. */
+        fill_args_t fa = {N, (uint32_t)round, 0, 0, mem};
+        ASSERT_TRUE(MD_GPU_LAUNCH(f.compute, f.k_fill, md_gpu_grid_for(f.k_fill, N, 1, 1), fa));
+        uint32_t words[N];
+        ASSERT_TRUE(gpu_read(&f, f.compute, words, mem, sizeof(words)));
+        for (int i = 0; i < N; ++i) EXPECT_EQ((uint32_t)(round + i), words[i]);
+    }
+
+    md_gpu_texture_destroy(a);
+    md_gpu_texture_destroy(b);
+    md_gpu_free(f.compute, mem);
+    md_gpu_stream_sync(f.compute);
+    md_gpu_device_poll(f.dev);
+    gpu_close(&f);
+}
+
+/* Render targets of passes that do not overlap, in one temp scope. */
+UTEST(gpu, texture_placed_in_temp_memory) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
+
+    enum { D = 8 };
+    md_gpu_texture_desc_t td = gpu_volume_desc(D, "temp placed");
+    const uint64_t size = md_gpu_texture_placement_size(f.dev, &td);
+    ASSERT_TRUE(size > 0);
+    for (int frame = 0; frame < 4; ++frame) {
+        md_gpu_temp_t scope = md_gpu_temp_begin(f.compute);
+        md_gpu_mem_t m = md_gpu_temp_alloc(scope, MD_GPU_MEM_DEVICE, size);
+        ASSERT_TRUE(m.gpu != 0);
+        md_gpu_texture_t t = md_gpu_texture_create_at(f.compute, &td, m.gpu);
+        ASSERT_TRUE(t != NULL);
+        EXPECT_TRUE(gpu_write_and_check(&f, t, D, (float)(frame + 1)));
+        md_gpu_texture_destroy(t);
+        md_gpu_temp_end(scope);
+    }
+    md_gpu_stream_sync(f.compute);
+    md_gpu_device_poll(f.dev);
+    gpu_close(&f);
+}
+
+UTEST(gpu, texture_placement_is_validated) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
+
+    enum { D = 8 };
+    md_gpu_texture_desc_t td = gpu_volume_desc(D, "placed");
+    const uint64_t size = md_gpu_texture_placement_size(f.dev, &td);
+    ASSERT_TRUE(size > 0);
+
+    /* An invalid description has no size. */
+    md_gpu_texture_desc_t bad = td;
+    bad.type = MD_GPU_TEX_TYPE_INVALID;
+    EXPECT_EQ(0u, (unsigned)md_gpu_texture_placement_size(f.dev, &bad));
+
+    /* No memory, memory that is not md_gpu's, too little, the wrong kind. */
+    EXPECT_TRUE(md_gpu_texture_create_at(f.compute, &td, 0) == NULL);
+    md_gpu_addr_t small = gpu_alloc(&f, f.compute, size - 1);
+    md_gpu_mem_t host = md_gpu_malloc(f.compute, MD_GPU_MEM_HOST_WRITE, size);
+    ASSERT_TRUE(small && host.gpu);
+    EXPECT_TRUE(md_gpu_texture_create_at(f.compute, &td, small + (1u << 30)) == NULL);
+    EXPECT_TRUE(md_gpu_texture_create_at(f.compute, &td, small) == NULL);
+    EXPECT_TRUE(md_gpu_texture_create_at(f.compute, &td, host.gpu) == NULL);
+    const char* err = md_gpu_last_error();
+    ASSERT_TRUE(err != NULL);
+    EXPECT_TRUE(strstr(err, "MD_GPU_MEM_DEVICE") != NULL);
+
+    md_gpu_free(f.compute, small);
+    md_gpu_free(f.compute, host.gpu);
+    gpu_close(&f);
+}
+
+/* The bindless heap holds as many texture handles as asked for, and a texture
+   that does not fit says so. Metal has no such heap. */
+UTEST(gpu, max_textures_bounds_the_bindless_heap) {
+    md_gpu_device_desc_t dd = {0};
+    dd.enable_validation = true;
+    dd.max_textures      = 4;
+    dd.label             = "md_gpu unittest (4 textures)";
+    md_gpu_device_t dev = md_gpu_device_create(&dd);
+    if (!dev) UTEST_SKIP(gpu_no_device_reason());
+    md_gpu_stream_t s = md_gpu_stream_default(dev, MD_GPU_STREAM_COMPUTE);
+
+    md_gpu_texture_desc_t td = gpu_volume_desc(4, "slot");
+    md_gpu_texture_t t[5] = {0};
+    for (int i = 0; i < 4; ++i) {
+        t[i] = md_gpu_texture_create(s, &td);
+        ASSERT_TRUE(t[i] != NULL);
+    }
+#if MD_GPU_BACKEND_VULKAN
+    t[4] = md_gpu_texture_create(s, &td);
+    EXPECT_TRUE(t[4] == NULL);
+    const char* err = md_gpu_last_error();
+    ASSERT_TRUE(err != NULL);
+    EXPECT_TRUE(strstr(err, "max_textures") != NULL);
+
+    /* A destroyed texture's slot comes back once the GPU is done with it. */
+    md_gpu_texture_destroy(t[0]);
+    md_gpu_stream_sync(s);
+    md_gpu_device_poll(dev);
+    t[0] = md_gpu_texture_create(s, &td);
+    EXPECT_TRUE(t[0] != NULL);
+#endif
+    md_gpu_device_destroy(dev);
+}
+
 /* The generated descriptor carries [numthreads] and the argument-struct size. */
 UTEST(gpu, generated_kernel_descriptors) {
     gpu_fixture_t f;
