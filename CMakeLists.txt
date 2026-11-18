@@ -408,8 +408,8 @@ if (MD_ENABLE_GPU)
     list(APPEND MD_CORE_FILES src/core/md_gpu_vulkan.c)
   endif()
 
-  # Backend-independent memory behind md_gpu_malloc and the temp scopes, and its sub-allocator.
-  list(APPEND MD_CORE_FILES src/core/md_gpu_heap.c src/core/md_gpu_tlsf.c)
+  # Backend-independent parts: errors, the memory behind md_gpu_malloc and the temp scopes, and its sub-allocator.
+  list(APPEND MD_CORE_FILES src/core/md_gpu_error.c src/core/md_gpu_heap.c src/core/md_gpu_tlsf.c)
   # Long evaluations as bounded submissions, sized by their measured GPU time.
   list(APPEND MD_CORE_FILES src/core/md_gpu_pieces.c)
 

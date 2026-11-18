@@ -3,8 +3,6 @@
 #include <core/md_allocator.h>
 #include <core/md_common.h>
 
-#include <string.h>
-
 #define MD_TLSF_SLAB_NODES 255
 
 struct md_tlsf_slab_t {
@@ -41,7 +39,7 @@ static md_tlsf_node_t* md_tlsf_node_new(md_tlsf_t* t) {
     }
     md_tlsf_node_t* n = t->spare;
     t->spare = n->next_free;
-    memset(n, 0, sizeof(*n));
+    md_memset(n, 0, sizeof(*n));
     return n;
 }
 
@@ -80,7 +78,7 @@ static void md_tlsf_remove_free(md_tlsf_t* t, md_tlsf_node_t* n) {
 }
 
 void md_tlsf_init(md_tlsf_t* t, struct md_allocator_i* alloc, uint64_t granularity) {
-    memset(t, 0, sizeof(*t));
+    md_memset(t, 0, sizeof(*t));
     t->alloc       = alloc;
     t->granularity = granularity ? granularity : 1;
 }

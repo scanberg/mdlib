@@ -8,7 +8,7 @@
 /* The selector of a device description: desc->adapter, else $MD_GPU_DEVICE,
    with surrounding whitespace removed. Returns false when there is none. */
 static bool md_gpu_sel_get(const md_gpu_device_desc_t* desc, char* out, size_t cap) {
-    const char* s = (desc && desc->adapter && desc->adapter[0]) ? desc->adapter : getenv("MD_GPU_DEVICE");
+    const char* s = (desc && desc->adapter && desc->adapter[0]) ? desc->adapter : md_os_env_get("MD_GPU_DEVICE");
     out[0] = 0;
     if (!s) return false;
     while (*s && isspace((unsigned char)*s)) ++s;

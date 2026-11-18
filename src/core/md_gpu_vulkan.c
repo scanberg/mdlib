@@ -45,6 +45,7 @@ written on one and read on another needs no queue-family ownership transfer.
 
 #include "md_gpu.h"
 #include "md_gpu_heap.h"
+#include "md_gpu_error.h"
 
 #include <core/md_allocator.h>
 #include <core/md_format.h>
@@ -56,16 +57,6 @@ written on one and read on another needs no queue-family ownership transfer.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#if defined(_WIN32)
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>   /* GetModuleHandleW, for Win32 surfaces */
-#endif
 
 #define VOLK_IMPLEMENTATION
 #include <volk.h>
@@ -114,34 +105,12 @@ written on one and read on another needs no queue-family ownership transfer.
 #define MD_VK_ARENA_DEDICATED   (16ull * 1024u * 1024u)
 #define MD_VK_ARG_ALIGN            64u
 #define MD_VK_DEBUG_GUARD        (64ull << 10)     /* each side of a debug memory allocation */
-#define MD_VK_ERROR_BUF           2560u   /* room for an adapter list with missing features */
 
-#if defined(_MSC_VER)
-#define MD_VK_THREAD_LOCAL __declspec(thread)
-#else
-#define MD_VK_THREAD_LOCAL __thread
-#endif
 
-static MD_VK_THREAD_LOCAL char md_vk_error_buf[MD_VK_ERROR_BUF];
-static MD_VK_THREAD_LOCAL bool md_vk_has_error;
 
 /* The instance whose entry points volk holds while a device using it is alive
    (VK_NULL_HANDLE otherwise), so md_gpu_enumerate_adapters can put them back. */
 static VkInstance md_vk_live_instance = VK_NULL_HANDLE;
-
-static bool md_vk_fail(const char* fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    md_vsnprintf(md_vk_error_buf, sizeof(md_vk_error_buf), fmt, ap);
-    va_end(ap);
-    md_vk_has_error = true;
-    MD_LOG_ERROR("md_gpu: %s", md_vk_error_buf);
-    return false;
-}
-
-const char* md_gpu_last_error(void) {
-    return md_vk_has_error ? md_vk_error_buf : NULL;
-}
 
 static const char* md_vk_result_str(VkResult r) {
     switch (r) {
@@ -167,7 +136,7 @@ static const char* md_vk_result_str(VkResult r) {
 
 static bool md_vk_check(VkResult r, const char* what) {
     if (r == VK_SUCCESS) return true;
-    return md_vk_fail("%s failed: %s (%d)", what, md_vk_result_str(r), (int)r);
+    return md_gpu_fail("%s failed: %s (%d)", what, md_vk_result_str(r), (int)r);
 }
 
 static inline uint64_t md_vk_align_up(uint64_t v, uint64_t a) {
@@ -662,7 +631,7 @@ static bool md_vk_image_memory(md_gpu_device_t dev, VkImage image, VkDeviceMemor
     uint32_t types[VK_MAX_MEMORY_TYPES];
     uint32_t n = md_vk_memory_types(dev, req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, 0, types);
     if (n == 0) n = md_vk_memory_types(dev, req.memoryTypeBits, 0, 0, 0, types);   /* UMA */
-    if (n == 0) return md_vk_fail("no memory type for an image");
+    if (n == 0) return md_gpu_fail("no memory type for an image");
     VkMemoryAllocateInfo mai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
     mai.allocationSize  = req.size;
     mai.memoryTypeIndex = types[0];
@@ -779,7 +748,7 @@ static bool md_vk_raw_create(md_gpu_device_t dev, uint64_t size, md_gpu_mem_kind
     }
     if (num_types == 0) {
         vkDestroyBuffer(dev->device, buf, NULL);
-        return md_vk_fail("no suitable memory type for %llu bytes (kind %d)", (unsigned long long)size, (int)kind);
+        return md_gpu_fail("no suitable memory type for %llu bytes (kind %d)", (unsigned long long)size, (int)kind);
     }
 
     VkMemoryAllocateFlagsInfo fi = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO};
@@ -806,7 +775,7 @@ static bool md_vk_raw_create(md_gpu_device_t dev, uint64_t size, md_gpu_mem_kind
     if (mem == VK_NULL_HANDLE) {
         vkDestroyBuffer(dev->device, buf, NULL);
         md_vk_check(res, "vkAllocateMemory");
-        return md_vk_fail("could not allocate %llu bytes (kind %d) from any of %u memory types", (unsigned long long)size, (int)kind, num_types);
+        return md_gpu_fail("could not allocate %llu bytes (kind %d) from any of %u memory types", (unsigned long long)size, (int)kind, num_types);
     }
     if (!md_vk_check(vkBindBufferMemory(dev->device, buf, mem, guard), "vkBindBufferMemory")) {
         vkFreeMemory(dev->device, mem, NULL);
@@ -927,9 +896,9 @@ static bool md_vk_arena_alloc(md_gpu_stream_t s, size_t size, uint64_t* out_addr
     if (dedicated) page_size = md_vk_align_up(need, 65536);
     else while (page_size < need) page_size *= 2;
     md_vk_page_t* p = md_vk_page_create(dev, page_size, dedicated);
-    if (!p) return md_vk_fail("failed to allocate a %llu byte transient page", (unsigned long long)page_size);
+    if (!p) return md_gpu_fail("failed to allocate a %llu byte transient page", (unsigned long long)page_size);
     md_vk_page_t** slot = (md_vk_page_t**)md_vk_vec_push(&a->pages, dev->alloc);
-    if (!slot) { md_vk_page_destroy(dev, p); return md_vk_fail("out of memory"); }
+    if (!slot) { md_vk_page_destroy(dev, p); return md_gpu_fail("out of memory"); }
     *slot = p;
     if (!dedicated) a->current = a->pages.count - 1;
     md_vk_page_take(p, need, out_addr, out_host, out_buffer, out_offset);
@@ -1001,7 +970,7 @@ static void md_vk_retire_locked(md_gpu_device_t dev, md_vk_retire_kind_t kind, v
     md_vk_retire_t* slot = NULL;
     if (n == 0 || r.waits) slot = (md_vk_retire_t*)md_vk_vec_push(&dev->retires, dev->alloc);
     if (!slot) {
-        md_vk_fail("out of memory recording a deferred destruction; waiting for the device");
+        md_gpu_fail("out of memory recording a deferred destruction; waiting for the device");
         if (r.waits) md_free(dev->alloc, r.waits, n * sizeof(md_vk_wait_t));
         vkDeviceWaitIdle(dev->device);
         switch (kind) {
@@ -1334,9 +1303,9 @@ static uint32_t md_vk_collect_adapters(VkInstance instance, struct md_allocator_
 }
 
 uint32_t md_gpu_enumerate_adapters(md_gpu_adapter_info_t* out, uint32_t max) {
-    md_vk_has_error = false;
+    md_gpu_clear_error();
     if (volkInitialize() != VK_SUCCESS) {
-        md_vk_fail("volkInitialize failed — no Vulkan loader present");
+        md_gpu_fail("volkInitialize failed — no Vulkan loader present");
         return 0;
     }
     VkApplicationInfo ai = {VK_STRUCTURE_TYPE_APPLICATION_INFO};
@@ -1364,22 +1333,22 @@ uint32_t md_gpu_enumerate_adapters(md_gpu_adapter_info_t* out, uint32_t max) {
 }
 
 md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
-    md_vk_has_error = false;
+    md_gpu_clear_error();
 
     struct md_allocator_i* alloc = (desc && desc->alloc) ? desc->alloc : md_get_heap_allocator();
 
     if (volkInitialize() != VK_SUCCESS) {
-        md_vk_fail("volkInitialize failed — no Vulkan loader present");
+        md_gpu_fail("volkInitialize failed — no Vulkan loader present");
         return NULL;
     }
 
     md_gpu_device_t dev = (md_gpu_device_t)md_alloc(alloc, sizeof(md_gpu_device));
-    if (!dev) { md_vk_fail("out of memory"); return NULL; }
+    if (!dev) { md_gpu_fail("out of memory"); return NULL; }
     memset(dev, 0, sizeof(*dev));
     dev->alloc = alloc;
     dev->validation = desc && desc->enable_validation;
     {
-        const char* env = getenv("MD_GPU_DEBUG_MEMORY");
+        const char* env = md_os_env_get("MD_GPU_DEBUG_MEMORY");
         const bool debug_memory = (desc && desc->debug_memory) || (env && env[0] && strcmp(env, "0") != 0);
         md_vk_heap_init(dev, desc ? desc->heap_cache_limit : 0, debug_memory);
     }
@@ -1468,7 +1437,7 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
     md_vk_adapter_t* adapters = NULL;
     const uint32_t adapter_count = md_vk_collect_adapters(dev->instance, alloc, &adapters);
     if (adapter_count == 0) {
-        md_vk_fail("no Vulkan physical devices");
+        md_gpu_fail("no Vulkan physical devices");
         goto fail_instance;
     }
     md_gpu_adapter_info_t* infos = (md_gpu_adapter_info_t*)md_alloc(alloc, adapter_count * sizeof(md_gpu_adapter_info_t));
@@ -1490,7 +1459,7 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
     }
     md_free(alloc, adapters, adapter_count * sizeof(md_vk_adapter_t));
     if (!chosen) {
-        md_vk_fail("md_gpu_device_create: %s", why);
+        md_gpu_fail("md_gpu_device_create: %s", why);
         goto fail_instance;
     }
     dev->phys = chosen;
@@ -1559,7 +1528,7 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
 
     if (dev->compute_family == UINT32_MAX) {
         md_free(alloc, qfs, qf_count * sizeof(VkQueueFamilyProperties));
-        md_vk_fail("no compute-capable queue family");
+        md_gpu_fail("no compute-capable queue family");
         goto fail_instance;
     }
     /* What each family's timestamps hold: the GPU time of a submission
@@ -1743,10 +1712,10 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
             MD_LOG_INFO("md_gpu: %u texture slots requested; this device binds at most %u", want - 1, lim - 1);
             want = lim;
         }
-        if (want < 2) { md_vk_fail("md_gpu: the device has no bindless texture slots"); goto fail_device; }
+        if (want < 2) { md_gpu_fail("md_gpu: the device has no bindless texture slots"); goto fail_device; }
         dev->tex_slot_count = want;
         dev->tex_free = (uint32_t*)md_alloc(alloc, (want - 1) * sizeof(uint32_t));
-        if (!dev->tex_free) { md_vk_fail("out of memory"); goto fail_device; }
+        if (!dev->tex_free) { md_gpu_fail("out of memory"); goto fail_device; }
         for (uint32_t i = 0; i < want - 1; ++i) dev->tex_free[i] = want - 1 - i;
         dev->tex_free_count = want - 1;
     }
@@ -2078,7 +2047,7 @@ static uint64_t md_vk_stream_completed(md_gpu_stream_t s) {
 
 static md_gpu_stream_t md_vk_stream_create_internal(md_gpu_device_t dev, md_gpu_stream_kind_t kind, const char* label, bool is_default) {
     md_gpu_stream_t s = (md_gpu_stream_t)md_alloc(dev->alloc, sizeof(md_gpu_stream));
-    if (!s) { md_vk_fail("out of memory"); return NULL; }
+    if (!s) { md_gpu_fail("out of memory"); return NULL; }
     memset(s, 0, sizeof(*s));
     s->device     = dev;
     s->kind       = kind;
@@ -2157,20 +2126,20 @@ static md_gpu_stream_t md_vk_stream_create_internal(md_gpu_device_t dev, md_gpu_
         vkDestroyCommandPool(dev->device, s->cmd_pool, NULL);
         vkDestroySemaphore(dev->device, s->timeline, NULL);
         md_free(dev->alloc, s, sizeof(*s));
-        md_vk_fail("out of memory");
+        md_gpu_fail("out of memory");
         return NULL;
     }
     return s;
 }
 
 md_gpu_stream_t md_gpu_stream_create(md_gpu_device_t dev, md_gpu_stream_kind_t kind, const char* label) {
-    if (!dev) { md_vk_fail("md_gpu_stream_create: null device"); return NULL; }
+    if (!dev) { md_gpu_fail("md_gpu_stream_create: null device"); return NULL; }
     if (kind != MD_GPU_STREAM_COMPUTE && kind != MD_GPU_STREAM_TRANSFER && kind != MD_GPU_STREAM_GRAPHICS) {
-        md_vk_fail("md_gpu_stream_create: invalid stream kind %d", (int)kind);
+        md_gpu_fail("md_gpu_stream_create: invalid stream kind %d", (int)kind);
         return NULL;
     }
     if (kind == MD_GPU_STREAM_GRAPHICS && !dev->supports_graphics) {
-        md_vk_fail("md_gpu_stream_create: the device has no graphics support (md_gpu_device_info_t.supports_graphics)");
+        md_gpu_fail("md_gpu_stream_create: the device has no graphics support (md_gpu_device_info_t.supports_graphics)");
         return NULL;
     }
     return md_vk_stream_create_internal(dev, kind, label, false);
@@ -2181,7 +2150,7 @@ md_gpu_stream_t md_gpu_stream_default(md_gpu_device_t dev, md_gpu_stream_kind_t 
     switch (kind) {
     case MD_GPU_STREAM_TRANSFER: return dev->default_transfer;
     case MD_GPU_STREAM_GRAPHICS:
-        if (!dev->default_graphics) md_vk_fail("md_gpu_stream_default: the device has no graphics support");
+        if (!dev->default_graphics) md_gpu_fail("md_gpu_stream_default: the device has no graphics support");
         return dev->default_graphics;
     default:                     return dev->default_compute;
     }
@@ -2210,7 +2179,7 @@ static bool md_vk_stream_ensure_cmd(md_gpu_stream_t s) {
         VkCommandBuffer cb = VK_NULL_HANDLE;
         if (!md_vk_check(vkAllocateCommandBuffers(dev->device, &cbai, &cb), "vkAllocateCommandBuffers")) return false;
         md_vk_cmd_t* slot = (md_vk_cmd_t*)md_vk_vec_push(&s->cmds, dev->alloc);
-        if (!slot) { vkFreeCommandBuffers(dev->device, s->cmd_pool, 1, &cb); return md_vk_fail("out of memory"); }
+        if (!slot) { vkFreeCommandBuffers(dev->device, s->cmd_pool, 1, &cb); return md_gpu_fail("out of memory"); }
         slot->cmd = cb;
         found = slot;
     }
@@ -2289,7 +2258,7 @@ static void md_vk_emit_barrier(md_gpu_stream_t s, VkPipelineStageFlags2 src_stag
 /* Operations that record work outside a render pass fail inside one. */
 static bool md_vk_not_in_pass(md_gpu_stream_t s, const char* what) {
     if (!s->in_pass) return true;
-    return md_vk_fail("%s: stream '%s' is inside a render pass; call md_gpu_render_end first", what, s->label);
+    return md_gpu_fail("%s: stream '%s' is inside a render pass; call md_gpu_render_end first", what, s->label);
 }
 
 static void md_vk_stage_masks(md_gpu_stream_t s, md_gpu_stage_flags_t stages, bool producer,
@@ -2303,7 +2272,7 @@ static void md_vk_stage_masks(md_gpu_stream_t s, md_gpu_stage_flags_t stages, bo
    second. Nothing waits for more than it must -- a kernel after a kernel does
    not flush render targets. Returns VK_NULL_HANDLE on failure. */
 static VkCommandBuffer md_vk_begin_op(md_gpu_stream_t s, md_gpu_stage_flags_t consumers) {
-    if (s->upload_open) { md_vk_fail("stream '%s' has an open upload; call md_gpu_upload_end first", s->label); return VK_NULL_HANDLE; }
+    if (s->upload_open) { md_gpu_fail("stream '%s' has an open upload; call md_gpu_upload_end first", s->label); return VK_NULL_HANDLE; }
     if (!md_vk_not_in_pass(s, "operation")) return VK_NULL_HANDLE;
     if (!md_vk_stream_ensure_cmd(s)) return VK_NULL_HANDLE;
     VkPipelineStageFlags2 ss = 0, ds = 0; VkAccessFlags2 sa = 0, da = 0;
@@ -2402,7 +2371,7 @@ static void md_vk_stage_masks(md_gpu_stream_t s, md_gpu_stage_flags_t stages, bo
 
 void md_gpu_barrier(md_gpu_stream_t s, md_gpu_stage_flags_t producers, md_gpu_stage_flags_t consumers) {
     if (!s) return;
-    if (s->upload_open) { md_vk_fail("md_gpu_barrier: stream '%s' has an open upload", s->label); return; }
+    if (s->upload_open) { md_gpu_fail("md_gpu_barrier: stream '%s' has an open upload", s->label); return; }
     if (!md_vk_not_in_pass(s, "md_gpu_barrier")) return;
     VkPipelineStageFlags2 ss, ds; VkAccessFlags2 sa, da;
     md_vk_stage_masks(s, producers, true,  &ss, &sa);
@@ -2439,7 +2408,7 @@ static bool md_vk_stream_submit(md_gpu_stream_t s) {
     const uint32_t wait_count    = tl_wait_count + s->bin_wait_count;
     if (wait_count > 8) {
         waits = (VkSemaphoreSubmitInfo*)md_alloc(dev->alloc, wait_count * sizeof(VkSemaphoreSubmitInfo));
-        if (!waits) return md_vk_fail("out of memory");
+        if (!waits) return md_gpu_fail("out of memory");
     }
     for (uint32_t i = 0; i < tl_wait_count; ++i) {
         md_vk_wait_t w = MD_VK_VEC_AT(s->waits, md_vk_wait_t, i);
@@ -2500,7 +2469,7 @@ static bool md_vk_stream_submit(md_gpu_stream_t s) {
 md_gpu_sync_t md_gpu_stream_record(md_gpu_stream_t s) {
     md_gpu_sync_t out = md_gpu_sync_none();
     if (!s) return out;
-    if (s->upload_open) { md_vk_fail("md_gpu_stream_record: stream '%s' has an open upload", s->label); return out; }
+    if (s->upload_open) { md_gpu_fail("md_gpu_stream_record: stream '%s' has an open upload", s->label); return out; }
     if (!md_vk_not_in_pass(s, "md_gpu_stream_record")) return out;
     md_vk_stream_submit(s);
     if (s->submitted_value == 0) return out;
@@ -2512,7 +2481,7 @@ md_gpu_sync_t md_gpu_stream_record(md_gpu_stream_t s) {
 void md_gpu_stream_wait(md_gpu_stream_t s, md_gpu_sync_t sync) {
     if (!s || !md_gpu_sync_is_valid(sync)) return;
     if (sync.stream == s) return;                    /* already ordered */
-    if (sync.stream->device != s->device) { md_vk_fail("md_gpu_stream_wait: sync from another device"); return; }
+    if (sync.stream->device != s->device) { md_gpu_fail("md_gpu_stream_wait: sync from another device"); return; }
     if (!md_vk_not_in_pass(s, "md_gpu_stream_wait")) return;
     if (md_gpu_sync_is_complete(sync)) return;       /* nothing to wait for */
 
@@ -2528,7 +2497,7 @@ void md_gpu_stream_wait(md_gpu_stream_t s, md_gpu_sync_t sync) {
         }
     }
     md_vk_wait_t* w = (md_vk_wait_t*)md_vk_vec_push(&s->waits, s->device->alloc);
-    if (!w) { md_vk_fail("out of memory queueing a stream wait"); return; }
+    if (!w) { md_gpu_fail("out of memory queueing a stream wait"); return; }
     w->stream = sync.stream;
     w->value  = sync.value;
 }
@@ -2634,7 +2603,7 @@ void md_gpu_stream_destroy(md_gpu_stream_t s) {
 static md_gpu_chunk_t* md_vk_chunk_create(void* user, md_gpu_mem_kind_t kind, uint64_t size) {
     md_gpu_device_t dev = (md_gpu_device_t)user;
     md_vk_chunk_t* c = (md_vk_chunk_t*)md_alloc(dev->alloc, sizeof(md_vk_chunk_t));
-    if (!c) { md_vk_fail("out of memory"); return NULL; }
+    if (!c) { md_gpu_fail("out of memory"); return NULL; }
     memset(c, 0, sizeof(*c));
     md_vk_raw_t raw;
     if (!md_vk_raw_create(dev, size, kind, dev->heap.debug ? MD_VK_RAW_GUARDED : 0, &raw)) {
@@ -2665,51 +2634,47 @@ static bool md_vk_reuse_early(md_gpu_stream_t s) {
     return true;
 }
 
-static void md_vk_heap_fail(const char* message) {
-    md_vk_fail("%s", message);
-}
-
 static void md_vk_heap_init(md_gpu_device_t dev, uint64_t cache_limit, bool debug) {
     const md_gpu_heap_backend_t backend = {
         dev, md_vk_chunk_create, md_vk_chunk_destroy,
-        md_vk_stream_position, md_vk_stream_completed, md_vk_reuse_early, md_vk_heap_fail,
+        md_vk_stream_position, md_vk_stream_completed, md_vk_reuse_early,
     };
     md_gpu_heap_init(&dev->heap, dev->alloc, &dev->device_mutex, &backend, cache_limit, debug);
 }
 
 md_gpu_mem_t md_gpu_malloc(md_gpu_stream_t s, md_gpu_mem_kind_t kind, size_t size) {
     const md_gpu_mem_t none = {0, NULL};
-    if (!s) { md_vk_fail("md_gpu_malloc: null stream"); return none; }
+    if (!s) { md_gpu_fail("md_gpu_malloc: null stream"); return none; }
     return md_gpu_heap_malloc(&s->device->heap, s, kind, size);
 }
 
 void md_gpu_free(md_gpu_stream_t s, md_gpu_addr_t addr) {
     if (!addr) return;
-    if (!s) { md_vk_fail("md_gpu_free: a stream is required"); return; }
+    if (!s) { md_gpu_fail("md_gpu_free: a stream is required"); return; }
     md_gpu_heap_free(&s->device->heap, s, addr);
 }
 
 md_gpu_temp_t md_gpu_temp_begin(md_gpu_stream_t s) {
     const md_gpu_temp_t none = {NULL, 0};
-    if (!s) { md_vk_fail("md_gpu_temp_begin: null stream"); return none; }
+    if (!s) { md_gpu_fail("md_gpu_temp_begin: null stream"); return none; }
     return md_gpu_heap_temp_begin(&s->temps, s);
 }
 
 md_gpu_mem_t md_gpu_temp_alloc(md_gpu_temp_t scope, md_gpu_mem_kind_t kind, size_t size) {
     const md_gpu_mem_t none = {0, NULL};
     md_gpu_stream_t s = scope.stream;
-    if (!s) { md_vk_fail("md_gpu_temp_alloc: null scope"); return none; }
+    if (!s) { md_gpu_fail("md_gpu_temp_alloc: null scope"); return none; }
     return md_gpu_heap_temp_alloc(&s->device->heap, &s->temps, scope, kind, size, s->label);
 }
 
 void md_gpu_temp_end(md_gpu_temp_t scope) {
     md_gpu_stream_t s = scope.stream;
-    if (!s) { md_vk_fail("md_gpu_temp_end: null scope"); return; }
+    if (!s) { md_gpu_fail("md_gpu_temp_end: null scope"); return; }
     md_gpu_heap_temp_end(&s->device->heap, &s->temps, scope);
 }
 
 bool md_gpu_memory_stats(md_gpu_device_t dev, md_gpu_mem_kind_t kind, md_gpu_memory_stats_t* out) {
-    if (!dev || !out || (unsigned)kind >= (unsigned)MD_GPU_MEM_KIND_COUNT) return md_vk_fail("md_gpu_memory_stats: invalid argument");
+    if (!dev || !out || (unsigned)kind >= (unsigned)MD_GPU_MEM_KIND_COUNT) return md_gpu_fail("md_gpu_memory_stats: invalid argument");
     memset(out, 0, sizeof(*out));
     md_mutex_lock(&dev->device_mutex);
     md_gpu_heap_stats_locked(&dev->heap, kind, out);
@@ -2731,7 +2696,7 @@ static bool md_vk_record_buffer_copy(md_gpu_stream_t s, VkBuffer src, uint64_t s
 }
 
 bool md_gpu_copy(md_gpu_stream_t s, md_gpu_addr_t dst, md_gpu_addr_t src, size_t size) {
-    if (!s) return md_vk_fail("md_gpu_copy: null stream");
+    if (!s) return md_gpu_fail("md_gpu_copy: null stream");
     if (size == 0) return true;
     md_vk_span_t d, sp;
     if (!md_vk_resolve(s->device, dst, size, &d,  "md_gpu_copy (dst)")) return false;
@@ -2752,10 +2717,10 @@ static bool md_vk_stream_idle(md_gpu_stream_t s) {
 }
 
 bool md_gpu_upload(md_gpu_stream_t s, md_gpu_addr_t dst, const void* src, size_t size) {
-    if (!s) return md_vk_fail("md_gpu_upload: null stream");
+    if (!s) return md_gpu_fail("md_gpu_upload: null stream");
     if (size == 0) return true;
-    if (!src) return md_vk_fail("md_gpu_upload: null source");
-    if (s->upload_open) return md_vk_fail("md_gpu_upload: stream '%s' has an open upload", s->label);
+    if (!src) return md_gpu_fail("md_gpu_upload: null source");
+    if (s->upload_open) return md_gpu_fail("md_gpu_upload: stream '%s' has an open upload", s->label);
     if (!md_vk_not_in_pass(s, "md_gpu_upload")) return false;
     md_vk_span_t d;
     if (!md_vk_resolve(s->device, dst, size, &d, "md_gpu_upload")) return false;
@@ -2772,7 +2737,7 @@ bool md_gpu_upload(md_gpu_stream_t s, md_gpu_addr_t dst, const void* src, size_t
 }
 
 bool md_gpu_memset(md_gpu_stream_t s, md_gpu_addr_t dst, uint8_t value, size_t size) {
-    if (!s) return md_vk_fail("md_gpu_memset: null stream");
+    if (!s) return md_gpu_fail("md_gpu_memset: null stream");
     if (!md_vk_not_in_pass(s, "md_gpu_memset")) return false;
     if (size == 0) return true;
     md_vk_span_t b;
@@ -2810,8 +2775,8 @@ bool md_gpu_memset(md_gpu_stream_t s, md_gpu_addr_t dst, uint8_t value, size_t s
 }
 
 void* md_gpu_upload_begin(md_gpu_stream_t s, md_gpu_addr_t dst, size_t size) {
-    if (!s || !dst || size == 0) { md_vk_fail("md_gpu_upload_begin: null argument"); return NULL; }
-    if (s->upload_open) { md_vk_fail("an upload is already open on stream '%s'", s->label); return NULL; }
+    if (!s || !dst || size == 0) { md_gpu_fail("md_gpu_upload_begin: null argument"); return NULL; }
+    if (s->upload_open) { md_gpu_fail("an upload is already open on stream '%s'", s->label); return NULL; }
     if (!md_vk_not_in_pass(s, "md_gpu_upload_begin")) return NULL;
     md_vk_span_t b;
     if (!md_vk_resolve(s->device, dst, size, &b, "md_gpu_upload_begin")) return NULL;
@@ -2835,7 +2800,7 @@ void* md_gpu_upload_begin(md_gpu_stream_t s, md_gpu_addr_t dst, size_t size) {
 }
 
 bool md_gpu_upload_end(md_gpu_stream_t s) {
-    if (!s || !s->upload_open) return md_vk_fail("md_gpu_upload_end: no upload is open");
+    if (!s || !s->upload_open) return md_gpu_fail("md_gpu_upload_end: no upload is open");
     s->upload_open = false;
     if (s->upload_direct) return true;
 
@@ -2957,22 +2922,22 @@ static bool md_vk_texture_image_info(md_gpu_device_t dev, const md_gpu_texture_d
     md_gpu_texture_desc_t d = *desc;
     const char* label = d.label ? d.label : "texture";
     md_vk_format_info_t fi = md_vk_format_info(d.format);
-    if (fi.format == VK_FORMAT_UNDEFINED) return md_vk_fail("%s '%s': invalid format %d", what, label, (int)d.format);
+    if (fi.format == VK_FORMAT_UNDEFINED) return md_gpu_fail("%s '%s': invalid format %d", what, label, (int)d.format);
     if (d.type != MD_GPU_TEX_2D && d.type != MD_GPU_TEX_2D_ARRAY && d.type != MD_GPU_TEX_3D) {
-        return md_vk_fail("%s '%s': invalid type %d (a zero-initialised desc has no type)", what, label, (int)d.type);
+        return md_gpu_fail("%s '%s': invalid type %d (a zero-initialised desc has no type)", what, label, (int)d.type);
     }
     if (!(d.usage & (MD_GPU_TEX_STORAGE | MD_GPU_TEX_SAMPLED | MD_GPU_TEX_RENDER_TARGET))) {
-        return md_vk_fail("%s '%s': usage is empty", what, label);
+        return md_gpu_fail("%s '%s': usage is empty", what, label);
     }
-    if (d.width == 0 || d.height == 0) return md_vk_fail("%s '%s': zero width or height", what, label);
+    if (d.width == 0 || d.height == 0) return md_gpu_fail("%s '%s': zero width or height", what, label);
     if ((d.usage & MD_GPU_TEX_RENDER_TARGET) && d.type == MD_GPU_TEX_3D) {
-        return md_vk_fail("%s '%s': RENDER_TARGET needs a 2D or 2D_ARRAY texture", what, label);
+        return md_gpu_fail("%s '%s': RENDER_TARGET needs a 2D or 2D_ARRAY texture", what, label);
     }
     if ((d.usage & MD_GPU_TEX_RENDER_TARGET) && !dev->supports_graphics) {
-        return md_vk_fail("%s '%s': RENDER_TARGET usage on a device without graphics support", what, label);
+        return md_gpu_fail("%s '%s': RENDER_TARGET usage on a device without graphics support", what, label);
     }
     if (d.type == MD_GPU_TEX_2D && d.depth_or_layers > 1) {
-        return md_vk_fail("%s '%s': a 2D texture has depth_or_layers %u; use MD_GPU_TEX_3D or MD_GPU_TEX_2D_ARRAY",
+        return md_gpu_fail("%s '%s': a 2D texture has depth_or_layers %u; use MD_GPU_TEX_3D or MD_GPU_TEX_2D_ARRAY",
                           what, label, d.depth_or_layers);
     }
     if (d.depth_or_layers == 0) d.depth_or_layers = 1;
@@ -2999,7 +2964,7 @@ static bool md_vk_texture_image_info(md_gpu_device_t dev, const md_gpu_texture_d
 
     VkImageFormatProperties ifp;
     if (vkGetPhysicalDeviceImageFormatProperties(dev->phys, ici->format, ici->imageType, ici->tiling, ici->usage, 0, &ifp) != VK_SUCCESS) {
-        return md_vk_fail("%s '%s': the device does not support %s %s with usage%s%s%s",
+        return md_gpu_fail("%s '%s': the device does not support %s %s with usage%s%s%s",
                           what, label, md_vk_tex_type_name(d.type), fi.name,
                           (d.usage & MD_GPU_TEX_STORAGE) ? " STORAGE" : "",
                           (d.usage & MD_GPU_TEX_SAMPLED) ? " SAMPLED" : "",
@@ -3016,7 +2981,7 @@ static bool md_vk_texture_image_info(md_gpu_device_t dev, const md_gpu_texture_d
         vkGetPhysicalDeviceFormatProperties2(dev->phys, ici->format, &fp2);
         const VkFormatFeatureFlags2 ff = fp3.optimalTilingFeatures;
         if (!(ff & VK_FORMAT_FEATURE_2_STORAGE_WRITE_WITHOUT_FORMAT_BIT)) {
-            return md_vk_fail("%s '%s': the device cannot write %s storage images without a format qualifier", what, label, fi.name);
+            return md_gpu_fail("%s '%s': the device cannot write %s storage images without a format qualifier", what, label, fi.name);
         }
         if (!(ff & VK_FORMAT_FEATURE_2_STORAGE_READ_WITHOUT_FORMAT_BIT) && (uint32_t)d.format < 64u &&
             !(dev->warned_storage_read & (1ull << (uint32_t)d.format))) {
@@ -3027,7 +2992,7 @@ static bool md_vk_texture_image_info(md_gpu_device_t dev, const md_gpu_texture_d
     }
     if (d.width > ifp.maxExtent.width || d.height > ifp.maxExtent.height || ici->extent.depth > ifp.maxExtent.depth ||
         d.mip_levels > ifp.maxMipLevels || ici->arrayLayers > ifp.maxArrayLayers) {
-        return md_vk_fail("%s '%s': %ux%ux%u with %u mips and %u layers exceeds the device limits for %s",
+        return md_gpu_fail("%s '%s': %ux%ux%u with %u mips and %u layers exceeds the device limits for %s",
                           what, label, d.width, d.height, ici->extent.depth, d.mip_levels, ici->arrayLayers, fi.name);
     }
     *out_d  = d;
@@ -3051,7 +3016,7 @@ static void md_vk_placement(md_gpu_device_t dev, const VkMemoryRequirements* req
 }
 
 uint64_t md_gpu_texture_placement_size(md_gpu_device_t dev, const md_gpu_texture_desc_t* desc) {
-    if (!dev || !desc) { md_vk_fail("md_gpu_texture_placement_size: null argument"); return 0; }
+    if (!dev || !desc) { md_gpu_fail("md_gpu_texture_placement_size: null argument"); return 0; }
     md_gpu_texture_desc_t d; md_vk_format_info_t fi; VkImageCreateInfo ici;
     if (!md_vk_texture_image_info(dev, desc, "md_gpu_texture_placement_size: texture", &d, &fi, &ici)) return 0;
     VkDeviceImageMemoryRequirements dimr = {VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS};
@@ -3059,7 +3024,7 @@ uint64_t md_gpu_texture_placement_size(md_gpu_device_t dev, const md_gpu_texture
     VkMemoryRequirements2 mr = {VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2};
     vkGetDeviceImageMemoryRequirements(dev->device, &dimr, &mr);
     if (!(mr.memoryRequirements.memoryTypeBits & dev->device_buffer_types)) {
-        md_vk_fail("md_gpu_texture_placement_size: this device cannot place %s textures in MD_GPU_MEM_DEVICE memory", fi.name);
+        md_gpu_fail("md_gpu_texture_placement_size: this device cannot place %s textures in MD_GPU_MEM_DEVICE memory", fi.name);
         return 0;
     }
     md_vk_placement_t pl;
@@ -3081,9 +3046,9 @@ static bool md_vk_texture_init(md_gpu_stream_t s, md_gpu_texture_t t) {
 
 /* Both texture creations: in memory of its own (`at` 0), or placed at `at`. */
 static md_gpu_texture_t md_vk_texture_create(md_gpu_stream_t s, const md_gpu_texture_desc_t* desc, md_gpu_addr_t at, const char* what) {
-    if (!s || !desc) { md_vk_fail("%s: null argument", what); return NULL; }
+    if (!s || !desc) { md_gpu_fail("%s: null argument", what); return NULL; }
     md_gpu_device_t dev = s->device;
-    if (s->upload_open) { md_vk_fail("%s: stream '%s' has an open upload", what, s->label); return NULL; }
+    if (s->upload_open) { md_gpu_fail("%s: stream '%s' has an open upload", what, s->label); return NULL; }
     if (!md_vk_not_in_pass(s, what)) return NULL;
 
     md_gpu_texture_desc_t d; md_vk_format_info_t fi; VkImageCreateInfo ici;
@@ -3091,7 +3056,7 @@ static md_gpu_texture_t md_vk_texture_create(md_gpu_stream_t s, const md_gpu_tex
     const char* label = d.label ? d.label : "texture";
 
     md_gpu_texture_t t = (md_gpu_texture_t)md_alloc(dev->alloc, sizeof(md_gpu_texture));
-    if (!t) { md_vk_fail("out of memory"); return NULL; }
+    if (!t) { md_gpu_fail("out of memory"); return NULL; }
     memset(t, 0, sizeof(*t));
     t->device = dev;
     t->fi     = fi;
@@ -3112,11 +3077,11 @@ static md_gpu_texture_t md_vk_texture_create(md_gpu_stream_t s, const md_gpu_tex
         md_vk_span_t sp;
         if (!md_vk_resolve(dev, at, pl.total, &sp, what)) goto fail;
         if (sp.chunk->base.kind != MD_GPU_MEM_DEVICE) {
-            md_vk_fail("%s '%s': textures are placed in MD_GPU_MEM_DEVICE memory", what, label);
+            md_gpu_fail("%s '%s': textures are placed in MD_GPU_MEM_DEVICE memory", what, label);
             goto fail;
         }
         if (!(req.memoryTypeBits & (1u << sp.chunk->memory_type))) {
-            md_vk_fail("%s '%s': this device cannot place %s textures in MD_GPU_MEM_DEVICE memory", what, label, fi.name);
+            md_gpu_fail("%s '%s': this device cannot place %s textures in MD_GPU_MEM_DEVICE memory", what, label, fi.name);
             goto fail;
         }
         const uint64_t off = md_vk_align_up(sp.chunk->memory_offset + sp.offset, pl.align);
@@ -3131,7 +3096,7 @@ static md_gpu_texture_t md_vk_texture_create(md_gpu_stream_t s, const md_gpu_tex
     if (d.usage & MD_GPU_TEX_STORAGE) {
         t->storage_views = (VkImageView*)md_alloc(dev->alloc, d.mip_levels * sizeof(VkImageView));
         t->storage_slots = (uint32_t*)md_alloc(dev->alloc, d.mip_levels * sizeof(uint32_t));
-        if (!t->storage_views || !t->storage_slots) { md_vk_fail("out of memory"); goto fail; }
+        if (!t->storage_views || !t->storage_slots) { md_gpu_fail("out of memory"); goto fail; }
         memset(t->storage_views, 0, d.mip_levels * sizeof(VkImageView));
         memset(t->storage_slots, 0, d.mip_levels * sizeof(uint32_t));
         for (uint32_t m = 0; m < d.mip_levels; ++m) {
@@ -3153,7 +3118,7 @@ static md_gpu_texture_t md_vk_texture_create(md_gpu_stream_t s, const md_gpu_tex
                path so the image outlives that command buffer. */
             md_vk_retire_locked(dev, MD_VK_RETIRE_TEXTURE, t);
             md_mutex_unlock(&dev->device_mutex);
-            md_vk_fail("texture '%s': out of bindless heap slots (%u; md_gpu_device_desc_t.max_textures)", label, dev->tex_slot_count - 1);
+            md_gpu_fail("texture '%s': out of bindless heap slots (%u; md_gpu_device_desc_t.max_textures)", label, dev->tex_slot_count - 1);
             return NULL;
         }
         if (d.usage & MD_GPU_TEX_SAMPLED) {
@@ -3170,7 +3135,7 @@ static md_gpu_texture_t md_vk_texture_create(md_gpu_stream_t s, const md_gpu_tex
         if (!slot) {
             md_vk_retire_locked(dev, MD_VK_RETIRE_TEXTURE, t);
             md_mutex_unlock(&dev->device_mutex);
-            md_vk_fail("out of memory");
+            md_gpu_fail("out of memory");
             return NULL;
         }
         *slot = t;
@@ -3192,22 +3157,22 @@ md_gpu_texture_t md_gpu_texture_create(md_gpu_stream_t s, const md_gpu_texture_d
 }
 
 md_gpu_texture_t md_gpu_texture_create_at(md_gpu_stream_t s, const md_gpu_texture_desc_t* desc, md_gpu_addr_t memory) {
-    if (!memory) { md_vk_fail("md_gpu_texture_create_at: null memory address"); return NULL; }
+    if (!memory) { md_gpu_fail("md_gpu_texture_create_at: null memory address"); return NULL; }
     return md_vk_texture_create(s, desc, memory, "md_gpu_texture_create_at");
 }
 
 bool md_gpu_texture_discard(md_gpu_stream_t s, md_gpu_texture_t t) {
-    if (!s || !t) return md_vk_fail("md_gpu_texture_discard: null argument");
-    if (t->device != s->device) return md_vk_fail("md_gpu_texture_discard: texture '%s' belongs to another device", t->label);
-    if (t->external) return md_vk_fail("md_gpu_texture_discard: '%s' belongs to a surface", t->label);
-    if (s->upload_open) return md_vk_fail("md_gpu_texture_discard: stream '%s' has an open upload", s->label);
+    if (!s || !t) return md_gpu_fail("md_gpu_texture_discard: null argument");
+    if (t->device != s->device) return md_gpu_fail("md_gpu_texture_discard: texture '%s' belongs to another device", t->label);
+    if (t->external) return md_gpu_fail("md_gpu_texture_discard: '%s' belongs to a surface", t->label);
+    if (s->upload_open) return md_gpu_fail("md_gpu_texture_discard: stream '%s' has an open upload", s->label);
     if (!md_vk_not_in_pass(s, "md_gpu_texture_discard")) return false;
     return md_vk_texture_init(s, t);
 }
 
 void md_gpu_texture_destroy(md_gpu_texture_t t) {
     if (!t) return;
-    if (t->external) { md_vk_fail("md_gpu_texture_destroy: '%s' belongs to a surface and is not destroyed by the caller", t->label); return; }
+    if (t->external) { md_gpu_fail("md_gpu_texture_destroy: '%s' belongs to a surface and is not destroyed by the caller", t->label); return; }
     md_gpu_device_t dev = t->device;
     md_mutex_lock(&dev->device_mutex);
     md_vk_vec_remove_ptr(&dev->textures, t);
@@ -3241,7 +3206,7 @@ static bool md_vk_sampler_desc_eq(const md_gpu_sampler_desc_t* a, const md_gpu_s
 
 md_gpu_sampler_t md_gpu_sampler(md_gpu_device_t dev, const md_gpu_sampler_desc_t* desc) {
     md_gpu_sampler_t h = {0};
-    if (!dev) { md_vk_fail("md_gpu_sampler: null device"); return h; }
+    if (!dev) { md_gpu_fail("md_gpu_sampler: null device"); return h; }
     md_gpu_sampler_desc_t d;
     memset(&d, 0, sizeof(d));
     if (desc) d = *desc;
@@ -3256,7 +3221,7 @@ md_gpu_sampler_t md_gpu_sampler(md_gpu_device_t dev, const md_gpu_sampler_desc_t
     }
     if (dev->sampler_count + 1 >= MD_VK_MAX_SAMPLERS) {
         md_mutex_unlock(&dev->device_mutex);
-        md_vk_fail("md_gpu_sampler: more than %u distinct samplers", MD_VK_MAX_SAMPLERS - 1);
+        md_gpu_fail("md_gpu_sampler: more than %u distinct samplers", MD_VK_MAX_SAMPLERS - 1);
         return h;
     }
 
@@ -3316,7 +3281,7 @@ static bool md_vk_resolve_region(md_gpu_texture_t t, const md_gpu_tex_region_t* 
     memset(&z, 0, sizeof(z));
     if (!r) r = &z;
     const md_gpu_texture_desc_t* d = &t->desc;
-    if (r->mip >= d->mip_levels) return md_vk_fail("%s: mip %u out of range (texture '%s' has %u)", what, r->mip, t->label, d->mip_levels);
+    if (r->mip >= d->mip_levels) return md_gpu_fail("%s: mip %u out of range (texture '%s' has %u)", what, r->mip, t->label, d->mip_levels);
 
     uint32_t dim[3];
     dim[0] = d->width  >> r->mip; if (!dim[0]) dim[0] = 1;
@@ -3327,12 +3292,12 @@ static bool md_vk_resolve_region(md_gpu_texture_t t, const md_gpu_tex_region_t* 
     uint32_t ext[3];
     for (int i = 0; i < 3; ++i) {
         if (r->offset[i] >= dim[i]) {
-            return md_vk_fail("%s: offset[%d] = %u is outside texture '%s' (extent %u at mip %u)",
+            return md_gpu_fail("%s: offset[%d] = %u is outside texture '%s' (extent %u at mip %u)",
                               what, i, r->offset[i], t->label, dim[i], r->mip);
         }
         ext[i] = r->extent[i] ? r->extent[i] : dim[i] - r->offset[i];
         if (ext[i] > dim[i] - r->offset[i]) {
-            return md_vk_fail("%s: region [%u, +%u) on axis %d overruns texture '%s' (extent %u at mip %u)",
+            return md_gpu_fail("%s: region [%u, +%u) on axis %d overruns texture '%s' (extent %u at mip %u)",
                               what, r->offset[i], ext[i], i, t->label, dim[i], r->mip);
         }
     }
@@ -3371,7 +3336,7 @@ static bool md_vk_check_buffer_offset(md_gpu_texture_t t, uint64_t off, const ch
     /* Vulkan requires a multiple of the texel size, and of 4 for depth. */
     const uint64_t a = t->fi.depth ? 4 : t->fi.bytes;
     if (off % a != 0) {
-        return md_vk_fail("%s: buffer address must be %llu-byte aligned for %s", what, (unsigned long long)a, t->fi.name);
+        return md_gpu_fail("%s: buffer address must be %llu-byte aligned for %s", what, (unsigned long long)a, t->fi.name);
     }
     return true;
 }
@@ -3387,7 +3352,7 @@ static bool md_vk_record_texture_copy(md_gpu_stream_t s, md_gpu_texture_t t, VkB
 }
 
 bool md_gpu_copy_to_texture(md_gpu_stream_t s, md_gpu_texture_t t, const md_gpu_tex_region_t* region, md_gpu_addr_t src) {
-    if (!s || !t) return md_vk_fail("md_gpu_copy_to_texture: null argument");
+    if (!s || !t) return md_gpu_fail("md_gpu_copy_to_texture: null argument");
     md_vk_copy_region_t cr;
     if (!md_vk_resolve_region(t, region, &cr, "md_gpu_copy_to_texture")) return false;
     md_vk_span_t b;
@@ -3398,7 +3363,7 @@ bool md_gpu_copy_to_texture(md_gpu_stream_t s, md_gpu_texture_t t, const md_gpu_
 }
 
 bool md_gpu_copy_from_texture(md_gpu_stream_t s, md_gpu_addr_t dst, md_gpu_texture_t t, const md_gpu_tex_region_t* region) {
-    if (!s || !t) return md_vk_fail("md_gpu_copy_from_texture: null argument");
+    if (!s || !t) return md_gpu_fail("md_gpu_copy_from_texture: null argument");
     md_vk_copy_region_t cr;
     if (!md_vk_resolve_region(t, region, &cr, "md_gpu_copy_from_texture")) return false;
     md_vk_span_t b;
@@ -3409,13 +3374,13 @@ bool md_gpu_copy_from_texture(md_gpu_stream_t s, md_gpu_addr_t dst, md_gpu_textu
 }
 
 bool md_gpu_upload_texture(md_gpu_stream_t s, md_gpu_texture_t t, const md_gpu_tex_region_t* region, const void* src, size_t size) {
-    if (!s || !t || !src) return md_vk_fail("md_gpu_upload_texture: null argument");
-    if (s->upload_open) return md_vk_fail("md_gpu_upload_texture: stream '%s' has an open upload", s->label);
+    if (!s || !t || !src) return md_gpu_fail("md_gpu_upload_texture: null argument");
+    if (s->upload_open) return md_gpu_fail("md_gpu_upload_texture: stream '%s' has an open upload", s->label);
     if (!md_vk_not_in_pass(s, "md_gpu_upload_texture")) return false;
     md_vk_copy_region_t cr;
     if (!md_vk_resolve_region(t, region, &cr, "md_gpu_upload_texture")) return false;
     if ((uint64_t)size != cr.bytes) {
-        return md_vk_fail("md_gpu_upload_texture: region of texture '%s' is %llu bytes but %zu were given",
+        return md_gpu_fail("md_gpu_upload_texture: region of texture '%s' is %llu bytes but %zu were given",
                           t->label, (unsigned long long)cr.bytes, size);
     }
     uint64_t addr; void* host; VkBuffer buf; uint64_t off;
@@ -3427,14 +3392,14 @@ bool md_gpu_upload_texture(md_gpu_stream_t s, md_gpu_texture_t t, const md_gpu_t
 
 bool md_gpu_copy_texture(md_gpu_stream_t s, md_gpu_texture_t dst, const md_gpu_tex_region_t* dst_region,
                          md_gpu_texture_t src, const md_gpu_tex_region_t* src_region) {
-    if (!s || !dst || !src) return md_vk_fail("md_gpu_copy_texture: null argument");
-    if (dst->device != s->device || src->device != s->device) return md_vk_fail("md_gpu_copy_texture: texture from another device");
+    if (!s || !dst || !src) return md_gpu_fail("md_gpu_copy_texture: null argument");
+    if (dst->device != s->device || src->device != s->device) return md_gpu_fail("md_gpu_copy_texture: texture from another device");
     if (dst->desc.format != src->desc.format) {
-        return md_vk_fail("md_gpu_copy_texture: formats differ ('%s' is %s, '%s' is %s); a converting copy is a draw or a kernel",
+        return md_gpu_fail("md_gpu_copy_texture: formats differ ('%s' is %s, '%s' is %s); a converting copy is a draw or a kernel",
                           src->label, src->fi.name, dst->label, dst->fi.name);
     }
     if ((dst->desc.type == MD_GPU_TEX_3D) != (src->desc.type == MD_GPU_TEX_3D)) {
-        return md_vk_fail("md_gpu_copy_texture: cannot copy between a 3D texture and a 2D one ('%s' -> '%s')", src->label, dst->label);
+        return md_gpu_fail("md_gpu_copy_texture: cannot copy between a 3D texture and a 2D one ('%s' -> '%s')", src->label, dst->label);
     }
     md_vk_copy_region_t sr, dr;
     if (!md_vk_resolve_region(src, src_region, &sr, "md_gpu_copy_texture (src)")) return false;
@@ -3447,7 +3412,7 @@ bool md_gpu_copy_texture(md_gpu_stream_t s, md_gpu_texture_t dst, const md_gpu_t
     d.extent[1] = sr.copy.imageExtent.height;
     d.extent[2] = src->desc.type == MD_GPU_TEX_3D ? sr.copy.imageExtent.depth : sr.copy.imageSubresource.layerCount;
     if (dst->desc.type == MD_GPU_TEX_2D && d.extent[2] != 1) {
-        return md_vk_fail("md_gpu_copy_texture: %u layers of '%s' do not fit 2D texture '%s'", d.extent[2], src->label, dst->label);
+        return md_gpu_fail("md_gpu_copy_texture: %u layers of '%s' do not fit 2D texture '%s'", d.extent[2], src->label, dst->label);
     }
     if (!md_vk_resolve_region(dst, &d, &dr, "md_gpu_copy_texture (dst)")) return false;
     if (!md_vk_not_in_pass(s, "md_gpu_copy_texture")) return false;
@@ -3542,9 +3507,9 @@ static bool md_vk_spec_init(md_vk_spec_t* sp, const void* data, uint32_t size, c
                             const VkSpecializationInfo** out) {
     *out = NULL;
     if (size == 0) return true;
-    if (!data) return md_vk_fail("'%s': %u bytes of constants but no data", label, size);
+    if (!data) return md_gpu_fail("'%s': %u bytes of constants but no data", label, size);
     if (size % 4 != 0 || size / 4 > MD_GPU_MAX_CONSTANTS) {
-        return md_vk_fail("'%s': constants_size %u is not a multiple of 4 up to %u", label, size, 4 * MD_GPU_MAX_CONSTANTS);
+        return md_gpu_fail("'%s': constants_size %u is not a multiple of 4 up to %u", label, size, 4 * MD_GPU_MAX_CONSTANTS);
     }
     const uint32_t n = size / 4;
     for (uint32_t i = 0; i < n; ++i) {
@@ -3562,26 +3527,26 @@ static bool md_vk_spec_init(md_vk_spec_t* sp, const void* data, uint32_t size, c
 
 md_gpu_kernel_t md_gpu_kernel_create(md_gpu_device_t dev, const md_gpu_kernel_desc_t* desc) {
     if (!dev || !desc || !desc->code || desc->code_size == 0) {
-        md_vk_fail("md_gpu_kernel_create: missing code");
+        md_gpu_fail("md_gpu_kernel_create: missing code");
         return NULL;
     }
     const char* label = desc->label ? desc->label : "kernel";
-    if (desc->code_size % 4 != 0) { md_vk_fail("kernel '%s': SPIR-V size must be a multiple of 4", label); return NULL; }
+    if (desc->code_size % 4 != 0) { md_gpu_fail("kernel '%s': SPIR-V size must be a multiple of 4", label); return NULL; }
     if (desc->group_size[0] == 0 || desc->group_size[1] == 0 || desc->group_size[2] == 0) {
-        md_vk_fail("kernel '%s': group_size is required ({%u,%u,%u} given); use the generated kernel descriptor",
+        md_gpu_fail("kernel '%s': group_size is required ({%u,%u,%u} given); use the generated kernel descriptor",
                    label, desc->group_size[0], desc->group_size[1], desc->group_size[2]);
         return NULL;
     }
     uint32_t spv[3];
     if (md_vk_spirv_local_size((const uint32_t*)desc->code, desc->code_size / 4, spv) &&
         (spv[0] != desc->group_size[0] || spv[1] != desc->group_size[1] || spv[2] != desc->group_size[2])) {
-        md_vk_fail("kernel '%s': group_size {%u,%u,%u} does not match [numthreads(%u,%u,%u)] in the shader",
+        md_gpu_fail("kernel '%s': group_size {%u,%u,%u} does not match [numthreads(%u,%u,%u)] in the shader",
                    label, desc->group_size[0], desc->group_size[1], desc->group_size[2], spv[0], spv[1], spv[2]);
         return NULL;
     }
     const uint64_t threads = (uint64_t)desc->group_size[0] * desc->group_size[1] * desc->group_size[2];
     if (threads > dev->props.limits.maxComputeWorkGroupInvocations) {
-        md_vk_fail("kernel '%s': %llu threads per group exceeds the device limit of %u",
+        md_gpu_fail("kernel '%s': %llu threads per group exceeds the device limit of %u",
                    label, (unsigned long long)threads, dev->props.limits.maxComputeWorkGroupInvocations);
         return NULL;
     }
@@ -3590,7 +3555,7 @@ md_gpu_kernel_t md_gpu_kernel_create(md_gpu_device_t dev, const md_gpu_kernel_de
     if (!md_vk_spec_init(&spec, desc->constants, desc->constants_size, label, &spec_info)) return NULL;
 
     md_gpu_kernel_t k = (md_gpu_kernel_t)md_alloc(dev->alloc, sizeof(md_gpu_kernel));
-    if (!k) { md_vk_fail("out of memory"); return NULL; }
+    if (!k) { md_gpu_fail("out of memory"); return NULL; }
     memset(k, 0, sizeof(*k));
     k->device       = dev;
     k->group_size[0] = desc->group_size[0];
@@ -3623,7 +3588,7 @@ md_gpu_kernel_t md_gpu_kernel_create(md_gpu_device_t dev, const md_gpu_kernel_de
        pipeline when their shader compiler rejects the module; binding that
        later faults inside the driver, so treat it as the failure it is. */
     if (k->pipeline == VK_NULL_HANDLE) {
-        md_vk_fail("kernel '%s': vkCreateComputePipelines returned VK_SUCCESS but no pipeline "
+        md_gpu_fail("kernel '%s': vkCreateComputePipelines returned VK_SUCCESS but no pipeline "
                    "(the driver could not compile the shader)", label);
         md_vk_kernel_free(dev, k);
         return NULL;
@@ -3636,7 +3601,7 @@ md_gpu_kernel_t md_gpu_kernel_create(md_gpu_device_t dev, const md_gpu_kernel_de
     md_gpu_kernel_t* slot = (md_gpu_kernel_t*)md_vk_vec_push(&dev->kernels, dev->alloc);
     if (slot) *slot = k;
     md_mutex_unlock(&dev->device_mutex);
-    if (!slot) { md_vk_kernel_free(dev, k); md_vk_fail("out of memory"); return NULL; }
+    if (!slot) { md_vk_kernel_free(dev, k); md_gpu_fail("out of memory"); return NULL; }
     return k;
 }
 
@@ -3692,10 +3657,10 @@ static bool md_vk_args_copy(md_gpu_stream_t s, uint32_t expected, const void* ar
                             uint64_t* out_addr, const char* what, const char* name) {
     *out_addr = 0;
     if (expected != 0 && args_size != expected) {
-        return md_vk_fail("%s: '%s' expects a %u-byte argument struct but %zu bytes were passed", what, name, expected, args_size);
+        return md_gpu_fail("%s: '%s' expects a %u-byte argument struct but %zu bytes were passed", what, name, expected, args_size);
     }
     if (args_size == 0) return true;
-    if (!args) return md_vk_fail("%s: '%s': null args with non-zero size", what, name);
+    if (!args) return md_gpu_fail("%s: '%s': null args with non-zero size", what, name);
     void* host;
     if (!md_vk_arena_alloc(s, args_size, out_addr, &host, NULL, NULL)) return false;
     memcpy(host, args, args_size);
@@ -3711,10 +3676,10 @@ static uint64_t md_vk_args_align(uint32_t size) {
 }
 
 static bool md_vk_args_at(md_gpu_stream_t s, uint32_t expected, md_gpu_addr_t args, const char* what) {
-    if (!args) return md_vk_fail("%s: null argument address", what);
+    if (!args) return md_gpu_fail("%s: null argument address", what);
     const uint64_t align = md_vk_args_align(expected);
     if (args % align != 0) {
-        return md_vk_fail("%s: argument address 0x%llx is not %llu-byte aligned, as its %u-byte struct is",
+        return md_gpu_fail("%s: argument address 0x%llx is not %llu-byte aligned, as its %u-byte struct is",
                           what, (unsigned long long)args, (unsigned long long)align, expected);
     }
     return md_vk_resolve(s->device, args, expected ? expected : 1, NULL, what);
@@ -3723,9 +3688,9 @@ static bool md_vk_args_at(md_gpu_stream_t s, uint32_t expected, md_gpu_addr_t ar
 /* ---- Launches ------------------------------------------------------------------ */
 
 static bool md_vk_launch_check(md_gpu_stream_t s, md_gpu_kernel_t k, const char* what) {
-    if (k->device != s->device) return md_vk_fail("%s: kernel '%s' belongs to a different device", what, k->label);
+    if (k->device != s->device) return md_gpu_fail("%s: kernel '%s' belongs to a different device", what, k->label);
     if (s->kind == MD_GPU_STREAM_TRANSFER) {
-        return md_vk_fail("%s: kernel '%s' launched into '%s', a transfer stream; kernels run on compute streams", what, k->label, s->label);
+        return md_gpu_fail("%s: kernel '%s' launched into '%s', a transfer stream; kernels run on compute streams", what, k->label, s->label);
     }
     return true;
 }
@@ -3734,7 +3699,7 @@ static bool md_vk_grid_check(md_gpu_stream_t s, md_gpu_kernel_t k, md_gpu_grid_t
     const VkPhysicalDeviceLimits* lim = &s->device->props.limits;
     if (grid.x > lim->maxComputeWorkGroupCount[0] || grid.y > lim->maxComputeWorkGroupCount[1] ||
         grid.z > lim->maxComputeWorkGroupCount[2]) {
-        return md_vk_fail("kernel '%s': grid {%u,%u,%u} exceeds the device limit {%u,%u,%u}", k->label,
+        return md_gpu_fail("kernel '%s': grid {%u,%u,%u} exceeds the device limit {%u,%u,%u}", k->label,
                           grid.x, grid.y, grid.z, lim->maxComputeWorkGroupCount[0],
                           lim->maxComputeWorkGroupCount[1], lim->maxComputeWorkGroupCount[2]);
     }
@@ -3768,13 +3733,13 @@ static bool md_vk_dispatch(md_gpu_stream_t s, md_gpu_kernel_t k, uint64_t args_a
 
 static bool md_vk_resolve_grid(md_gpu_stream_t s, md_gpu_addr_t grid, md_vk_span_t* out, const char* what) {
     if (!md_vk_resolve(s->device, grid, 3 * sizeof(uint32_t), out, what)) return false;
-    if (out->offset % 4 != 0) return md_vk_fail("%s: grid address must be 4-byte aligned", what);
+    if (out->offset % 4 != 0) return md_gpu_fail("%s: grid address must be 4-byte aligned", what);
     return true;
 }
 
 bool md_gpu_launch(md_gpu_stream_t s, md_gpu_kernel_t k, md_gpu_grid_t grid, const void* args, size_t args_size) {
     const char* what = "md_gpu_launch";
-    if (!s || !k) return md_vk_fail("%s: null stream or kernel", what);
+    if (!s || !k) return md_gpu_fail("%s: null stream or kernel", what);
     if (grid.x == 0 || grid.y == 0 || grid.z == 0) return true;   /* empty launch */
     if (!md_vk_launch_check(s, k, what) || !md_vk_grid_check(s, k, grid)) return false;
     uint64_t a;
@@ -3784,7 +3749,7 @@ bool md_gpu_launch(md_gpu_stream_t s, md_gpu_kernel_t k, md_gpu_grid_t grid, con
 
 bool md_gpu_launch_at(md_gpu_stream_t s, md_gpu_kernel_t k, md_gpu_grid_t grid, md_gpu_addr_t args) {
     const char* what = "md_gpu_launch_at";
-    if (!s || !k) return md_vk_fail("%s: null stream or kernel", what);
+    if (!s || !k) return md_gpu_fail("%s: null stream or kernel", what);
     if (grid.x == 0 || grid.y == 0 || grid.z == 0) return true;
     if (!md_vk_launch_check(s, k, what) || !md_vk_grid_check(s, k, grid)) return false;
     if (!md_vk_args_at(s, k->args_size, args, what)) return false;
@@ -3793,7 +3758,7 @@ bool md_gpu_launch_at(md_gpu_stream_t s, md_gpu_kernel_t k, md_gpu_grid_t grid, 
 
 bool md_gpu_launch_indirect(md_gpu_stream_t s, md_gpu_kernel_t k, md_gpu_addr_t grid, const void* args, size_t args_size) {
     const char* what = "md_gpu_launch_indirect";
-    if (!s || !k || !grid) return md_vk_fail("%s: null argument", what);
+    if (!s || !k || !grid) return md_gpu_fail("%s: null argument", what);
     if (!md_vk_launch_check(s, k, what)) return false;
     md_vk_span_t b;
     if (!md_vk_resolve_grid(s, grid, &b, what)) return false;
@@ -3804,7 +3769,7 @@ bool md_gpu_launch_indirect(md_gpu_stream_t s, md_gpu_kernel_t k, md_gpu_addr_t 
 
 bool md_gpu_launch_indirect_at(md_gpu_stream_t s, md_gpu_kernel_t k, md_gpu_addr_t grid, md_gpu_addr_t args) {
     const char* what = "md_gpu_launch_indirect_at";
-    if (!s || !k || !grid) return md_vk_fail("%s: null argument", what);
+    if (!s || !k || !grid) return md_gpu_fail("%s: null argument", what);
     if (!md_vk_launch_check(s, k, what)) return false;
     md_vk_span_t b;
     if (!md_vk_resolve_grid(s, grid, &b, what)) return false;
@@ -3839,7 +3804,7 @@ static bool md_vk_create_builtin_kernels(md_gpu_device_t dev) {
 }
 
 bool md_gpu_make_grid(md_gpu_stream_t s, md_gpu_addr_t out_grid, md_gpu_addr_t count, md_gpu_kernel_t k) {
-    if (!s || !out_grid || !count || !k) return md_vk_fail("md_gpu_make_grid: null argument");
+    if (!s || !out_grid || !count || !k) return md_gpu_fail("md_gpu_make_grid: null argument");
     if (!md_vk_resolve(s->device, out_grid, 3 * sizeof(uint32_t), NULL, "md_gpu_make_grid (out_grid)")) return false;
     if (!md_vk_resolve(s->device, count, sizeof(uint32_t), NULL, "md_gpu_make_grid (count)")) return false;
     md_vk_make_grid_args_t a;
@@ -3937,34 +3902,34 @@ static void md_vk_pipeline_free(md_gpu_device_t dev, md_gpu_pipeline_t p) {
 }
 
 static bool md_vk_check_shader(const md_gpu_shader_t* sh, const char* stage, const char* label) {
-    if (sh->code_size % 4 != 0) return md_vk_fail("pipeline '%s': %s shader SPIR-V size must be a multiple of 4", label, stage);
+    if (sh->code_size % 4 != 0) return md_gpu_fail("pipeline '%s': %s shader SPIR-V size must be a multiple of 4", label, stage);
     const uint32_t* w = (const uint32_t*)sh->code;
-    if (sh->code_size < 20 || w[0] != 0x07230203u) return md_vk_fail("pipeline '%s': %s shader is not SPIR-V", label, stage);
+    if (sh->code_size < 20 || w[0] != 0x07230203u) return md_gpu_fail("pipeline '%s': %s shader is not SPIR-V", label, stage);
     return true;
 }
 
 md_gpu_pipeline_t md_gpu_pipeline_create(md_gpu_device_t dev, const md_gpu_pipeline_desc_t* desc) {
-    if (!dev || !desc) { md_vk_fail("md_gpu_pipeline_create: null argument"); return NULL; }
+    if (!dev || !desc) { md_gpu_fail("md_gpu_pipeline_create: null argument"); return NULL; }
     const char* label = desc->label ? desc->label : "pipeline";
-    if (!dev->supports_graphics) { md_vk_fail("pipeline '%s': the device has no graphics support", label); return NULL; }
-    if (!desc->vertex.code || desc->vertex.code_size == 0) { md_vk_fail("pipeline '%s': no vertex shader", label); return NULL; }
+    if (!dev->supports_graphics) { md_gpu_fail("pipeline '%s': the device has no graphics support", label); return NULL; }
+    if (!desc->vertex.code || desc->vertex.code_size == 0) { md_gpu_fail("pipeline '%s': no vertex shader", label); return NULL; }
     if (!md_vk_check_shader(&desc->vertex, "vertex", label)) return NULL;
     const bool has_fs = desc->fragment.code != NULL;
     if (has_fs && !md_vk_check_shader(&desc->fragment, "fragment", label)) return NULL;
     if (desc->color_count > MD_GPU_MAX_COLOR_TARGETS) {
-        md_vk_fail("pipeline '%s': %u colour targets, at most %u", label, desc->color_count, MD_GPU_MAX_COLOR_TARGETS);
+        md_gpu_fail("pipeline '%s': %u colour targets, at most %u", label, desc->color_count, MD_GPU_MAX_COLOR_TARGETS);
         return NULL;
     }
     if (!has_fs && desc->color_count > 0) {
-        md_vk_fail("pipeline '%s': colour targets without a fragment shader", label);
+        md_gpu_fail("pipeline '%s': colour targets without a fragment shader", label);
         return NULL;
     }
     const VkPrimitiveTopology topo = md_vk_topology(desc->topology);
-    if (topo == VK_PRIMITIVE_TOPOLOGY_MAX_ENUM) { md_vk_fail("pipeline '%s': invalid topology %d", label, (int)desc->topology); return NULL; }
+    if (topo == VK_PRIMITIVE_TOPOLOGY_MAX_ENUM) { md_gpu_fail("pipeline '%s': invalid topology %d", label, (int)desc->topology); return NULL; }
     const uint32_t vs_args = desc->vertex.args_size;
     const uint32_t fs_args = has_fs ? desc->fragment.args_size : 0;
     if (vs_args && fs_args && vs_args != fs_args) {
-        md_vk_fail("pipeline '%s': the vertex shader takes a %u-byte argument struct and the fragment shader %u bytes; "
+        md_gpu_fail("pipeline '%s': the vertex shader takes a %u-byte argument struct and the fragment shader %u bytes; "
                    "both stages read the same one", label, vs_args, fs_args);
         return NULL;
     }
@@ -3976,24 +3941,24 @@ md_gpu_pipeline_t md_gpu_pipeline_create(md_gpu_device_t dev, const md_gpu_pipel
         const md_gpu_color_target_t* ct = &desc->color[i];
         md_vk_format_info_t fi = md_vk_format_info(ct->format);
         if (fi.format == VK_FORMAT_UNDEFINED || fi.depth) {
-            md_vk_fail("pipeline '%s': colour target %u has %s, which is not a colour format", label, i,
+            md_gpu_fail("pipeline '%s': colour target %u has %s, which is not a colour format", label, i,
                        fi.format == VK_FORMAT_UNDEFINED ? "no format" : fi.name);
             return NULL;
         }
         VkFormatProperties fp;
         vkGetPhysicalDeviceFormatProperties(dev->phys, fi.format, &fp);
         if (!(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)) {
-            md_vk_fail("pipeline '%s': the device cannot render to %s (colour target %u)", label, fi.name, i);
+            md_gpu_fail("pipeline '%s': the device cannot render to %s (colour target %u)", label, fi.name, i);
             return NULL;
         }
         const md_gpu_blend_t* b = &ct->blend;
         if (b->enable) {
             if (md_vk_format_is_uint(ct->format)) {
-                md_vk_fail("pipeline '%s': colour target %u is %s, an integer format, and cannot blend", label, i, fi.name);
+                md_gpu_fail("pipeline '%s': colour target %u is %s, an integer format, and cannot blend", label, i, fi.name);
                 return NULL;
             }
             if (!(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT)) {
-                md_vk_fail("pipeline '%s': the device cannot blend %s (colour target %u)", label, fi.name, i);
+                md_gpu_fail("pipeline '%s': the device cannot blend %s (colour target %u)", label, fi.name, i);
                 return NULL;
             }
             blend[i].blendEnable         = VK_TRUE;
@@ -4006,7 +3971,7 @@ md_gpu_pipeline_t md_gpu_pipeline_create(md_gpu_device_t dev, const md_gpu_pipel
             if (blend[i].srcColorBlendFactor == VK_BLEND_FACTOR_MAX_ENUM || blend[i].dstColorBlendFactor == VK_BLEND_FACTOR_MAX_ENUM ||
                 blend[i].srcAlphaBlendFactor == VK_BLEND_FACTOR_MAX_ENUM || blend[i].dstAlphaBlendFactor == VK_BLEND_FACTOR_MAX_ENUM ||
                 blend[i].colorBlendOp == VK_BLEND_OP_MAX_ENUM || blend[i].alphaBlendOp == VK_BLEND_OP_MAX_ENUM) {
-                md_vk_fail("pipeline '%s': invalid blend factor or op on colour target %u", label, i);
+                md_gpu_fail("pipeline '%s': invalid blend factor or op on colour target %u", label, i);
                 return NULL;
             }
         }
@@ -4018,14 +3983,14 @@ md_gpu_pipeline_t md_gpu_pipeline_create(md_gpu_device_t dev, const md_gpu_pipel
     if (desc->depth_format != MD_GPU_FORMAT_INVALID) {
         md_vk_format_info_t fi = md_vk_format_info(desc->depth_format);
         if (!fi.depth) {
-            md_vk_fail("pipeline '%s': depth_format %s is not a depth format", label,
+            md_gpu_fail("pipeline '%s': depth_format %s is not a depth format", label,
                        fi.format == VK_FORMAT_UNDEFINED ? "(invalid)" : fi.name);
             return NULL;
         }
         VkFormatProperties fp;
         vkGetPhysicalDeviceFormatProperties(dev->phys, fi.format, &fp);
         if (!(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)) {
-            md_vk_fail("pipeline '%s': the device cannot use %s as a depth attachment", label, fi.name);
+            md_gpu_fail("pipeline '%s': the device cannot use %s as a depth attachment", label, fi.name);
             return NULL;
         }
         depth_format = fi.format;
@@ -4036,7 +4001,7 @@ md_gpu_pipeline_t md_gpu_pipeline_create(md_gpu_device_t dev, const md_gpu_pipel
     if (!md_vk_spec_init(&spec, desc->constants, desc->constants_size, label, &spec_info)) return NULL;
 
     md_gpu_pipeline_t p = (md_gpu_pipeline_t)md_alloc(dev->alloc, sizeof(md_gpu_pipeline));
-    if (!p) { md_vk_fail("out of memory"); return NULL; }
+    if (!p) { md_gpu_fail("out of memory"); return NULL; }
     memset(p, 0, sizeof(*p));
     p->device      = dev;
     p->color_count = desc->color_count;
@@ -4132,7 +4097,7 @@ md_gpu_pipeline_t md_gpu_pipeline_create(md_gpu_device_t dev, const md_gpu_pipel
     md_gpu_pipeline_t* slot = (md_gpu_pipeline_t*)md_vk_vec_push(&dev->pipelines, dev->alloc);
     if (slot) *slot = p;
     md_mutex_unlock(&dev->device_mutex);
-    if (!slot) { md_vk_pipeline_free(dev, p); md_vk_fail("out of memory"); return NULL; }
+    if (!slot) { md_vk_pipeline_free(dev, p); md_gpu_fail("out of memory"); return NULL; }
     return p;
 }
 
@@ -4163,7 +4128,7 @@ static VkImageView md_vk_attach_view(md_gpu_texture_t t, uint32_t mip, uint32_t 
     if (t->attach_view_count == t->attach_view_cap) {
         const uint32_t cap = t->attach_view_cap ? t->attach_view_cap * 2 : 2;
         md_vk_attach_view_t* arr = (md_vk_attach_view_t*)md_alloc(dev->alloc, cap * sizeof(md_vk_attach_view_t));
-        if (!arr) { md_mutex_unlock(&dev->device_mutex); md_vk_fail("out of memory"); return VK_NULL_HANDLE; }
+        if (!arr) { md_mutex_unlock(&dev->device_mutex); md_gpu_fail("out of memory"); return VK_NULL_HANDLE; }
         if (t->attach_views) {
             memcpy(arr, t->attach_views, t->attach_view_count * sizeof(md_vk_attach_view_t));
             md_free(dev->alloc, t->attach_views, t->attach_view_cap * sizeof(md_vk_attach_view_t));
@@ -4195,27 +4160,27 @@ static bool md_vk_check_attachment(md_gpu_stream_t s, md_gpu_texture_t t, uint32
     char what[32];
     if (depth) md_snprintf(what, sizeof(what), "depth attachment");
     else       md_snprintf(what, sizeof(what), "colour attachment %u", index);
-    if (!t) return md_vk_fail("md_gpu_render_begin: %s has no texture", what);
-    if (t->device != s->device) return md_vk_fail("md_gpu_render_begin: %s '%s' belongs to another device", what, t->label);
+    if (!t) return md_gpu_fail("md_gpu_render_begin: %s has no texture", what);
+    if (t->device != s->device) return md_gpu_fail("md_gpu_render_begin: %s '%s' belongs to another device", what, t->label);
     if (!(t->desc.usage & MD_GPU_TEX_RENDER_TARGET)) {
-        return md_vk_fail("md_gpu_render_begin: %s '%s' lacks MD_GPU_TEX_RENDER_TARGET usage", what, t->label);
+        return md_gpu_fail("md_gpu_render_begin: %s '%s' lacks MD_GPU_TEX_RENDER_TARGET usage", what, t->label);
     }
     if (t->fi.depth != depth) {
-        return md_vk_fail("md_gpu_render_begin: %s '%s' is %s; %s", what, t->label, t->fi.name,
+        return md_gpu_fail("md_gpu_render_begin: %s '%s' is %s; %s", what, t->label, t->fi.name,
                           depth ? "a depth attachment needs a depth format" : "depth formats go in md_gpu_render_desc_t.depth");
     }
     if (mip >= t->desc.mip_levels) {
-        return md_vk_fail("md_gpu_render_begin: %s '%s': mip %u out of range (%u levels)", what, t->label, mip, t->desc.mip_levels);
+        return md_gpu_fail("md_gpu_render_begin: %s '%s': mip %u out of range (%u levels)", what, t->label, mip, t->desc.mip_levels);
     }
     const uint32_t layers = t->desc.type == MD_GPU_TEX_2D_ARRAY ? t->desc.depth_or_layers : 1u;
     if (layer >= layers) {
-        return md_vk_fail("md_gpu_render_begin: %s '%s': layer %u out of range (%u layers)", what, t->label, layer, layers);
+        return md_gpu_fail("md_gpu_render_begin: %s '%s': layer %u out of range (%u layers)", what, t->label, layer, layers);
     }
     uint32_t mw = t->desc.width  >> mip; if (!mw) mw = 1;
     uint32_t mh = t->desc.height >> mip; if (!mh) mh = 1;
     if (*w == 0) { *w = mw; *h = mh; }
     else if (*w != mw || *h != mh) {
-        return md_vk_fail("md_gpu_render_begin: %s '%s' is %ux%u at mip %u but the pass is %ux%u; every attachment must be the same size",
+        return md_gpu_fail("md_gpu_render_begin: %s '%s' is %ux%u at mip %u but the pass is %ux%u; every attachment must be the same size",
                           what, t->label, mw, mh, mip, *w, *h);
     }
     return true;
@@ -4305,14 +4270,14 @@ static void md_vk_apply_scissor(md_gpu_stream_t s, const md_gpu_rect_t* r) {
 }
 
 bool md_gpu_render_begin(md_gpu_stream_t s, const md_gpu_render_desc_t* desc) {
-    if (!s || !desc) return md_vk_fail("md_gpu_render_begin: null argument");
-    if (!s->can_graphics) return md_vk_fail("md_gpu_render_begin: stream '%s' is not a GRAPHICS stream", s->label);
-    if (s->in_pass) return md_vk_fail("md_gpu_render_begin: stream '%s' is already inside a render pass", s->label);
-    if (s->upload_open) return md_vk_fail("md_gpu_render_begin: stream '%s' has an open upload", s->label);
+    if (!s || !desc) return md_gpu_fail("md_gpu_render_begin: null argument");
+    if (!s->can_graphics) return md_gpu_fail("md_gpu_render_begin: stream '%s' is not a GRAPHICS stream", s->label);
+    if (s->in_pass) return md_gpu_fail("md_gpu_render_begin: stream '%s' is already inside a render pass", s->label);
+    if (s->upload_open) return md_gpu_fail("md_gpu_render_begin: stream '%s' has an open upload", s->label);
     if (desc->color_count > MD_GPU_MAX_COLOR_TARGETS) {
-        return md_vk_fail("md_gpu_render_begin: %u colour attachments, at most %u", desc->color_count, MD_GPU_MAX_COLOR_TARGETS);
+        return md_gpu_fail("md_gpu_render_begin: %u colour attachments, at most %u", desc->color_count, MD_GPU_MAX_COLOR_TARGETS);
     }
-    if (desc->color_count == 0 && !desc->depth.texture) return md_vk_fail("md_gpu_render_begin: the pass has no attachments");
+    if (desc->color_count == 0 && !desc->depth.texture) return md_gpu_fail("md_gpu_render_begin: the pass has no attachments");
 
     uint32_t w = 0, h = 0;
     VkRenderingAttachmentInfo ca[MD_GPU_MAX_COLOR_TARGETS];
@@ -4386,8 +4351,8 @@ bool md_gpu_render_begin(md_gpu_stream_t s, const md_gpu_render_desc_t* desc) {
 }
 
 bool md_gpu_render_end(md_gpu_stream_t s) {
-    if (!s) return md_vk_fail("md_gpu_render_end: null stream");
-    if (!s->in_pass) return md_vk_fail("md_gpu_render_end: stream '%s' has no open render pass", s->label);
+    if (!s) return md_gpu_fail("md_gpu_render_end: null stream");
+    if (!s->in_pass) return md_gpu_fail("md_gpu_render_end: stream '%s' has no open render pass", s->label);
     vkCmdEndRendering(s->open);
     if (s->pass_labelled) vkCmdEndDebugUtilsLabelEXT(s->open);
     s->in_pass        = false;
@@ -4404,16 +4369,16 @@ static void md_vk_abandon_pass(md_gpu_stream_t s) {
 
 void md_gpu_set_draw_state(md_gpu_stream_t s, const md_gpu_draw_state_t* state) {
     if (!s) return;
-    if (!s->in_pass) { md_vk_fail("md_gpu_set_draw_state: stream '%s' has no open render pass", s->label); return; }
+    if (!s->in_pass) { md_gpu_fail("md_gpu_set_draw_state: stream '%s' has no open render pass", s->label); return; }
     md_gpu_draw_state_t n;
     memset(&n, 0, sizeof(n));
     if (state) n = *state;
     if ((unsigned)n.depth_compare > (unsigned)MD_GPU_COMPARE_GREATER || (unsigned)n.cull > (unsigned)MD_GPU_CULL_FRONT) {
-        md_vk_fail("md_gpu_set_draw_state: invalid depth_compare or cull");
+        md_gpu_fail("md_gpu_set_draw_state: invalid depth_compare or cull");
         return;
     }
     if (n.depth_bias_clamp != 0.0f && !s->device->depth_bias_clamp) {
-        md_vk_fail("md_gpu_set_draw_state: the device does not support depth_bias_clamp; leave it 0");
+        md_gpu_fail("md_gpu_set_draw_state: the device does not support depth_bias_clamp; leave it 0");
         return;
     }
     md_vk_apply_draw_state(s, &n, false);
@@ -4421,12 +4386,12 @@ void md_gpu_set_draw_state(md_gpu_stream_t s, const md_gpu_draw_state_t* state) 
 
 void md_gpu_set_viewport(md_gpu_stream_t s, const md_gpu_viewport_t* viewport) {
     if (!s) return;
-    if (!s->in_pass) { md_vk_fail("md_gpu_set_viewport: stream '%s' has no open render pass", s->label); return; }
+    if (!s->in_pass) { md_gpu_fail("md_gpu_set_viewport: stream '%s' has no open render pass", s->label); return; }
     md_gpu_viewport_t v = {0, 0, (float)s->pass_width, (float)s->pass_height, 0, 0};
     if (viewport) v = *viewport;
-    if (!(v.width > 0.0f) || !(v.height > 0.0f)) { md_vk_fail("md_gpu_set_viewport: width and height must be positive"); return; }
+    if (!(v.width > 0.0f) || !(v.height > 0.0f)) { md_gpu_fail("md_gpu_set_viewport: width and height must be positive"); return; }
     if (v.min_depth < 0.0f || v.min_depth > 1.0f || v.max_depth < 0.0f || v.max_depth > 1.0f) {
-        md_vk_fail("md_gpu_set_viewport: depth range must lie in [0, 1]");
+        md_gpu_fail("md_gpu_set_viewport: depth range must lie in [0, 1]");
         return;
     }
     md_vk_apply_viewport(s, &v);
@@ -4434,7 +4399,7 @@ void md_gpu_set_viewport(md_gpu_stream_t s, const md_gpu_viewport_t* viewport) {
 
 void md_gpu_set_scissor(md_gpu_stream_t s, const md_gpu_rect_t* scissor) {
     if (!s) return;
-    if (!s->in_pass) { md_vk_fail("md_gpu_set_scissor: stream '%s' has no open render pass", s->label); return; }
+    if (!s->in_pass) { md_gpu_fail("md_gpu_set_scissor: stream '%s' has no open render pass", s->label); return; }
     md_gpu_rect_t r = {0, 0, s->pass_width, s->pass_height};
     if (scissor) r = *scissor;
     md_vk_apply_scissor(s, &r);
@@ -4476,21 +4441,21 @@ static const char* md_vk_draw_name(const md_vk_draw_t* d) {
 
 /* The pass and the pipeline agree; nothing is recorded. */
 static bool md_vk_draw_check(md_gpu_stream_t s, md_gpu_pipeline_t p, const char* what) {
-    if (!s || !p) return md_vk_fail("%s: null stream or pipeline", what);
-    if (p->device != s->device) return md_vk_fail("%s: pipeline '%s' belongs to another device", what, p->label);
-    if (!s->in_pass) return md_vk_fail("%s: stream '%s' has no open render pass", what, s->label);
+    if (!s || !p) return md_gpu_fail("%s: null stream or pipeline", what);
+    if (p->device != s->device) return md_gpu_fail("%s: pipeline '%s' belongs to another device", what, p->label);
+    if (!s->in_pass) return md_gpu_fail("%s: stream '%s' has no open render pass", what, s->label);
     if (p->color_count != s->pass_color_count) {
-        return md_vk_fail("%s: pipeline '%s' has %u colour targets but the pass has %u attachments",
+        return md_gpu_fail("%s: pipeline '%s' has %u colour targets but the pass has %u attachments",
                           what, p->label, p->color_count, s->pass_color_count);
     }
     for (uint32_t i = 0; i < p->color_count; ++i) {
         if (p->color[i] != s->pass_color[i]) {
-            return md_vk_fail("%s: pipeline '%s' colour target %u is %s but the pass attachment is %s",
+            return md_gpu_fail("%s: pipeline '%s' colour target %u is %s but the pass attachment is %s",
                               what, p->label, i, md_vk_format_info(p->color[i]).name, md_vk_format_info(s->pass_color[i]).name);
         }
     }
     if (p->depth != s->pass_depth) {
-        return md_vk_fail("%s: pipeline '%s' depth format is %s but the pass has %s", what, p->label,
+        return md_gpu_fail("%s: pipeline '%s' depth format is %s but the pass has %s", what, p->label,
                           p->depth ? md_vk_format_info(p->depth).name : "none",
                           s->pass_depth ? md_vk_format_info(s->pass_depth).name : "none");
     }
@@ -4499,10 +4464,10 @@ static bool md_vk_draw_check(md_gpu_stream_t s, md_gpu_pipeline_t p, const char*
 
 static bool md_vk_resolve_indices(md_gpu_stream_t s, md_gpu_addr_t indices, md_gpu_index_type_t type, uint64_t count,
                                   md_vk_span_t* out, const char* what) {
-    if (type != MD_GPU_INDEX_U32 && type != MD_GPU_INDEX_U16) return md_vk_fail("%s: invalid index type %d", what, (int)type);
+    if (type != MD_GPU_INDEX_U32 && type != MD_GPU_INDEX_U16) return md_gpu_fail("%s: invalid index type %d", what, (int)type);
     const uint64_t isize = type == MD_GPU_INDEX_U16 ? 2 : 4;
-    if (!indices) return md_vk_fail("%s: null index address", what);
-    if (indices % isize != 0) return md_vk_fail("%s: index address must be %llu-byte aligned", what, (unsigned long long)isize);
+    if (!indices) return md_gpu_fail("%s: null index address", what);
+    if (indices % isize != 0) return md_gpu_fail("%s: index address must be %llu-byte aligned", what, (unsigned long long)isize);
     return md_vk_resolve(s->device, indices, count * isize, out, what);
 }
 
@@ -4521,8 +4486,8 @@ static bool md_vk_draw(md_gpu_stream_t s, md_gpu_pipeline_t p, const md_vk_draw_
     md_vk_span_t ib = {0}, cb = {0};
     if (indexed && !md_vk_resolve_indices(s, d->indices, d->index_type, indirect ? 1 : d->count, &ib, what)) return false;
     if (indirect) {
-        if (!d->cmds) return md_vk_fail("%s: null command address", what);
-        if (d->cmds % 4 != 0) return md_vk_fail("%s: command address must be 4-byte aligned", what);
+        if (!d->cmds) return md_gpu_fail("%s: null command address", what);
+        if (d->cmds % 4 != 0) return md_gpu_fail("%s: command address must be 4-byte aligned", what);
         if (!md_vk_resolve(s->device, d->cmds, (uint64_t)d->count * stride, &cb, what)) return false;
     }
 
@@ -4671,7 +4636,7 @@ static void md_vk_swapchain_free(md_gpu_device_t dev, md_vk_swapchain_t* sc) {
 static md_gpu_texture_t md_vk_wrap_image_locked(md_gpu_surface_t sf, VkImage image, uint32_t w, uint32_t h, uint32_t index) {
     md_gpu_device_t dev = sf->device;
     md_gpu_texture_t t = (md_gpu_texture_t)md_alloc(dev->alloc, sizeof(md_gpu_texture));
-    if (!t) { md_vk_fail("out of memory"); return NULL; }
+    if (!t) { md_gpu_fail("out of memory"); return NULL; }
     memset(t, 0, sizeof(*t));
     t->device   = dev;
     t->image    = image;
@@ -4691,7 +4656,7 @@ static md_gpu_texture_t md_vk_wrap_image_locked(md_gpu_surface_t sf, VkImage ima
         t->sampled_view = md_vk_create_view(dev, t, 0, 1);
         if (!t->sampled_view) goto fail;
         t->sampled_slot = md_vk_alloc_slot_locked(dev);
-        if (!t->sampled_slot) { md_vk_fail("surface '%s': out of bindless heap slots", sf->label); goto fail; }
+        if (!t->sampled_slot) { md_gpu_fail("surface '%s': out of bindless heap slots", sf->label); goto fail; }
         md_vk_write_image_slot(dev, t->sampled_slot, t->sampled_view, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE);
     }
     if (sf->desc.usage & MD_GPU_TEX_STORAGE) {
@@ -4699,11 +4664,11 @@ static md_gpu_texture_t md_vk_wrap_image_locked(md_gpu_surface_t sf, VkImage ima
         if (t->storage_views) t->storage_views[0] = VK_NULL_HANDLE;
         t->storage_slots = (uint32_t*)md_alloc(dev->alloc, sizeof(uint32_t));
         if (t->storage_slots) t->storage_slots[0] = 0;
-        if (!t->storage_views || !t->storage_slots) { md_vk_fail("out of memory"); goto fail; }
+        if (!t->storage_views || !t->storage_slots) { md_gpu_fail("out of memory"); goto fail; }
         t->storage_views[0] = md_vk_create_view(dev, t, 0, 1);
         if (!t->storage_views[0]) goto fail;
         t->storage_slots[0] = md_vk_alloc_slot_locked(dev);
-        if (!t->storage_slots[0]) { md_vk_fail("surface '%s': out of bindless heap slots", sf->label); goto fail; }
+        if (!t->storage_slots[0]) { md_gpu_fail("surface '%s': out of bindless heap slots", sf->label); goto fail; }
         md_vk_write_image_slot(dev, t->storage_slots[0], t->storage_views[0], VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
     }
     return t;
@@ -4760,7 +4725,7 @@ static bool md_vk_surface_rebuild(md_gpu_surface_t sf, bool* zero_size) {
     sci.oldSwapchain     = sf->sc ? sf->sc->swapchain : VK_NULL_HANDLE;
 
     md_vk_swapchain_t* sc = (md_vk_swapchain_t*)md_alloc(dev->alloc, sizeof(md_vk_swapchain_t));
-    if (!sc) return md_vk_fail("out of memory");
+    if (!sc) return md_gpu_fail("out of memory");
     memset(sc, 0, sizeof(*sc));
     sc->width  = ext.width;
     sc->height = ext.height;
@@ -4785,7 +4750,7 @@ static bool md_vk_surface_rebuild(md_gpu_surface_t sf, bool* zero_size) {
             if (sc->textures)     md_free(dev->alloc, sc->textures, n * sizeof(md_gpu_texture_t));
             if (sc->present_sems) md_free(dev->alloc, sc->present_sems, n * sizeof(VkSemaphore));
             sc->textures = NULL; sc->present_sems = NULL;
-            ok = md_vk_fail("out of memory");
+            ok = md_gpu_fail("out of memory");
         } else {
             sc->image_count = n;
             memset(sc->textures, 0, n * sizeof(md_gpu_texture_t));
@@ -4822,18 +4787,18 @@ static md_gpu_format_t md_vk_surface_format_from_vk(VkFormat f) {
 }
 
 md_gpu_surface_t md_gpu_surface_create(md_gpu_device_t dev, const md_gpu_surface_desc_t* desc) {
-    if (!dev || !desc) { md_vk_fail("md_gpu_surface_create: null argument"); return NULL; }
+    if (!dev || !desc) { md_gpu_fail("md_gpu_surface_create: null argument"); return NULL; }
     const char* label = desc->label ? desc->label : "surface";
     if (!dev->supports_present) {
-        md_vk_fail("surface '%s': the device cannot present (VK_KHR_surface / VK_KHR_swapchain unavailable)", label);
+        md_gpu_fail("surface '%s': the device cannot present (VK_KHR_surface / VK_KHR_swapchain unavailable)", label);
         return NULL;
     }
     if (desc->system != MD_GPU_WINDOW_HEADLESS && !desc->window) {
-        md_vk_fail("surface '%s': no window handle", label);
+        md_gpu_fail("surface '%s': no window handle", label);
         return NULL;
     }
     if (desc->usage & ~(MD_GPU_TEX_SAMPLED | MD_GPU_TEX_STORAGE | MD_GPU_TEX_RENDER_TARGET)) {
-        md_vk_fail("surface '%s': invalid usage bits", label);
+        md_gpu_fail("surface '%s': invalid usage bits", label);
         return NULL;
     }
 
@@ -4845,16 +4810,14 @@ md_gpu_surface_t md_gpu_surface_create(md_gpu_device_t dev, const md_gpu_surface
         md_vk_create_surface_fn fn = (md_vk_create_surface_fn)vkGetInstanceProcAddr(dev->instance, "vkCreateWin32SurfaceKHR");
         if (!dev->has_win32_surface || !fn) { ext_missing = "VK_KHR_win32_surface"; break; }
         md_vk_win32_surface_ci_t ci = {MD_VK_STYPE_WIN32_SURFACE, NULL, 0, desc->display, desc->window};
-#if defined(_WIN32)
-        if (!ci.hinstance) ci.hinstance = (void*)GetModuleHandleW(NULL);
-#endif
+        if (!ci.hinstance) ci.hinstance = md_os_module_handle();
         r = fn(dev->instance, &ci, NULL, &vs);
         break;
     }
     case MD_GPU_WINDOW_X11: {
         md_vk_create_surface_fn fn = (md_vk_create_surface_fn)vkGetInstanceProcAddr(dev->instance, "vkCreateXlibSurfaceKHR");
         if (!dev->has_xlib_surface || !fn) { ext_missing = "VK_KHR_xlib_surface"; break; }
-        if (!desc->display) { md_vk_fail("surface '%s': X11 needs the Display* in `display`", label); return NULL; }
+        if (!desc->display) { md_gpu_fail("surface '%s': X11 needs the Display* in `display`", label); return NULL; }
         md_vk_xlib_surface_ci_t ci = {MD_VK_STYPE_XLIB_SURFACE, NULL, 0, desc->display, (unsigned long)(uintptr_t)desc->window};
         r = fn(dev->instance, &ci, NULL, &vs);
         break;
@@ -4862,7 +4825,7 @@ md_gpu_surface_t md_gpu_surface_create(md_gpu_device_t dev, const md_gpu_surface
     case MD_GPU_WINDOW_WAYLAND: {
         md_vk_create_surface_fn fn = (md_vk_create_surface_fn)vkGetInstanceProcAddr(dev->instance, "vkCreateWaylandSurfaceKHR");
         if (!dev->has_wayland_surface || !fn) { ext_missing = "VK_KHR_wayland_surface"; break; }
-        if (!desc->display) { md_vk_fail("surface '%s': Wayland needs the wl_display* in `display`", label); return NULL; }
+        if (!desc->display) { md_gpu_fail("surface '%s': Wayland needs the wl_display* in `display`", label); return NULL; }
         md_vk_wayland_surface_ci_t ci = {MD_VK_STYPE_WAYLAND_SURFACE, NULL, 0, desc->display, desc->window};
         r = fn(dev->instance, &ci, NULL, &vs);
         break;
@@ -4875,17 +4838,17 @@ md_gpu_surface_t md_gpu_surface_create(md_gpu_device_t dev, const md_gpu_surface
         break;
     }
     case MD_GPU_WINDOW_COCOA:
-        md_vk_fail("surface '%s': COCOA windows present through the Metal backend", label);
+        md_gpu_fail("surface '%s': COCOA windows present through the Metal backend", label);
         return NULL;
     default:
-        md_vk_fail("surface '%s': invalid window system %d", label, (int)desc->system);
+        md_gpu_fail("surface '%s': invalid window system %d", label, (int)desc->system);
         return NULL;
     }
-    if (ext_missing) { md_vk_fail("surface '%s': the Vulkan instance lacks %s", label, ext_missing); return NULL; }
+    if (ext_missing) { md_gpu_fail("surface '%s': the Vulkan instance lacks %s", label, ext_missing); return NULL; }
     if (!md_vk_check(r, "vkCreate*SurfaceKHR")) return NULL;
 
     md_gpu_surface_t sf = (md_gpu_surface_t)md_alloc(dev->alloc, sizeof(md_gpu_surface));
-    if (!sf) { vkDestroySurfaceKHR(dev->instance, vs, NULL); md_vk_fail("out of memory"); return NULL; }
+    if (!sf) { vkDestroySurfaceKHR(dev->instance, vs, NULL); md_gpu_fail("out of memory"); return NULL; }
     memset(sf, 0, sizeof(*sf));
     sf->device  = dev;
     sf->surface = vs;
@@ -4901,7 +4864,7 @@ md_gpu_surface_t md_gpu_surface_create(md_gpu_device_t dev, const md_gpu_surface
 
     VkBool32 supported = VK_FALSE;
     vkGetPhysicalDeviceSurfaceSupportKHR(dev->phys, dev->graphics_family, vs, &supported);
-    if (!supported) { md_vk_fail("surface '%s': the graphics queue cannot present to it", label); goto fail; }
+    if (!supported) { md_gpu_fail("surface '%s': the graphics queue cannot present to it", label); goto fail; }
 
     /* Format: exactly the one asked for, no silent substitute. */
     {
@@ -4924,7 +4887,7 @@ md_gpu_surface_t md_gpu_surface_create(md_gpu_device_t dev, const md_gpu_surface
                 if (mf == MD_GPU_FORMAT_INVALID) continue;
                 len += (size_t)md_snprintf(avail + len, sizeof(avail) - len, "%s%s", len ? ", " : "", md_vk_format_info(mf).name);
             }
-            md_vk_fail("surface '%s': %s is not supported (the surface offers: %s)", label, fi.name, len ? avail : "nothing md_gpu knows");
+            md_gpu_fail("surface '%s': %s is not supported (the surface offers: %s)", label, fi.name, len ? avail : "nothing md_gpu knows");
             goto fail;
         }
     }
@@ -4939,19 +4902,19 @@ md_gpu_surface_t md_gpu_surface_create(md_gpu_device_t dev, const md_gpu_surface
         sf->image_usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
         sf->image_usage |= caps.supportedUsageFlags & (VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
         if (!(caps.supportedUsageFlags & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)) {
-            md_vk_fail("surface '%s': images cannot be rendered to", label);
+            md_gpu_fail("surface '%s': images cannot be rendered to", label);
             goto fail;
         }
         if (sf->desc.usage & MD_GPU_TEX_SAMPLED) {
             if (!(caps.supportedUsageFlags & VK_IMAGE_USAGE_SAMPLED_BIT) || !(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)) {
-                md_vk_fail("surface '%s': SAMPLED usage is not supported for %s", label, fi.name);
+                md_gpu_fail("surface '%s': SAMPLED usage is not supported for %s", label, fi.name);
                 goto fail;
             }
             sf->image_usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
         }
         if (sf->desc.usage & MD_GPU_TEX_STORAGE) {
             if (!(caps.supportedUsageFlags & VK_IMAGE_USAGE_STORAGE_BIT) || !(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) {
-                md_vk_fail("surface '%s': STORAGE usage is not supported for %s", label, fi.name);
+                md_gpu_fail("surface '%s': STORAGE usage is not supported for %s", label, fi.name);
                 goto fail;
             }
             sf->image_usage |= VK_IMAGE_USAGE_STORAGE_BIT;
@@ -4993,7 +4956,7 @@ md_gpu_surface_t md_gpu_surface_create(md_gpu_device_t dev, const md_gpu_surface
     md_gpu_surface_t* slot = (md_gpu_surface_t*)md_vk_vec_push(&dev->surfaces, dev->alloc);
     if (slot) *slot = sf;
     md_mutex_unlock(&dev->device_mutex);
-    if (!slot) { md_vk_fail("out of memory"); goto fail; }
+    if (!slot) { md_gpu_fail("out of memory"); goto fail; }
     return sf;
 
 fail:
@@ -5019,7 +4982,7 @@ void md_gpu_surface_destroy(md_gpu_surface_t sf) {
     VkSemaphore* sems = (VkSemaphore*)md_alloc(dev->alloc, MD_VK_ACQUIRE_SEMS * sizeof(VkSemaphore));
     if (!sc || !sems) {
         /* Cannot defer: idle and free now. */
-        md_vk_fail("out of memory destroying surface '%s'; waiting for the device", sf->label);
+        md_gpu_fail("out of memory destroying surface '%s'; waiting for the device", sf->label);
         vkDeviceWaitIdle(dev->device);
         if (sems) md_free(dev->alloc, sems, MD_VK_ACQUIRE_SEMS * sizeof(VkSemaphore));
         if (sc) { sc->present_queue = NULL; md_vk_swapchain_free(dev, sc); }
@@ -5048,14 +5011,14 @@ void md_gpu_surface_resize(md_gpu_surface_t sf, uint32_t width, uint32_t height)
 }
 
 md_gpu_texture_t md_gpu_surface_acquire(md_gpu_stream_t s, md_gpu_surface_t sf) {
-    if (!s || !sf) { md_vk_fail("md_gpu_surface_acquire: null argument"); return NULL; }
+    if (!s || !sf) { md_gpu_fail("md_gpu_surface_acquire: null argument"); return NULL; }
     md_gpu_device_t dev = s->device;
-    if (sf->device != dev) { md_vk_fail("md_gpu_surface_acquire: surface '%s' belongs to another device", sf->label); return NULL; }
-    if (!s->can_graphics) { md_vk_fail("md_gpu_surface_acquire: stream '%s' is not a GRAPHICS stream", s->label); return NULL; }
+    if (sf->device != dev) { md_gpu_fail("md_gpu_surface_acquire: surface '%s' belongs to another device", sf->label); return NULL; }
+    if (!s->can_graphics) { md_gpu_fail("md_gpu_surface_acquire: stream '%s' is not a GRAPHICS stream", s->label); return NULL; }
     if (!md_vk_not_in_pass(s, "md_gpu_surface_acquire")) return NULL;
-    if (s->upload_open) { md_vk_fail("md_gpu_surface_acquire: stream '%s' has an open upload", s->label); return NULL; }
-    if (sf->acquired) { md_vk_fail("md_gpu_surface_acquire: surface '%s' already has an acquired image; present it first", sf->label); return NULL; }
-    if (s->bin_wait_count >= 4) { md_vk_fail("md_gpu_surface_acquire: too many acquires pending on stream '%s'", s->label); return NULL; }
+    if (s->upload_open) { md_gpu_fail("md_gpu_surface_acquire: stream '%s' has an open upload", s->label); return NULL; }
+    if (sf->acquired) { md_gpu_fail("md_gpu_surface_acquire: surface '%s' already has an acquired image; present it first", sf->label); return NULL; }
+    if (s->bin_wait_count >= 4) { md_gpu_fail("md_gpu_surface_acquire: too many acquires pending on stream '%s'", s->label); return NULL; }
 
     for (int attempt = 0; attempt < 3; ++attempt) {
         if (!sf->sc || sf->dirty) {
@@ -5108,17 +5071,17 @@ md_gpu_texture_t md_gpu_surface_acquire(md_gpu_stream_t s, md_gpu_surface_t sf) 
         sf->acquired_stream = s;
         return tex;
     }
-    md_vk_fail("md_gpu_surface_acquire: surface '%s' stayed out of date", sf->label);
+    md_gpu_fail("md_gpu_surface_acquire: surface '%s' stayed out of date", sf->label);
     return NULL;
 }
 
 bool md_gpu_surface_present(md_gpu_stream_t s, md_gpu_surface_t sf) {
-    if (!s || !sf) return md_vk_fail("md_gpu_surface_present: null argument");
-    if (!sf->acquired) return md_vk_fail("md_gpu_surface_present: surface '%s' has no acquired image", sf->label);
-    if (sf->acquired_stream != s) return md_vk_fail("md_gpu_surface_present: surface '%s' was acquired on another stream", sf->label);
+    if (!s || !sf) return md_gpu_fail("md_gpu_surface_present: null argument");
+    if (!sf->acquired) return md_gpu_fail("md_gpu_surface_present: surface '%s' has no acquired image", sf->label);
+    if (sf->acquired_stream != s) return md_gpu_fail("md_gpu_surface_present: surface '%s' was acquired on another stream", sf->label);
     if (!md_vk_not_in_pass(s, "md_gpu_surface_present")) return false;
-    if (s->upload_open) return md_vk_fail("md_gpu_surface_present: stream '%s' has an open upload", s->label);
-    if (s->bin_signal_count >= 4) return md_vk_fail("md_gpu_surface_present: too many presents pending on stream '%s'", s->label);
+    if (s->upload_open) return md_gpu_fail("md_gpu_surface_present: stream '%s' has an open upload", s->label);
+    if (s->bin_signal_count >= 4) return md_gpu_fail("md_gpu_surface_present: too many presents pending on stream '%s'", s->label);
 
     md_gpu_device_t dev = s->device;
     md_vk_swapchain_t* sc = sf->sc;
@@ -5160,17 +5123,17 @@ bool md_gpu_surface_present(md_gpu_stream_t s, md_gpu_surface_t sf) {
    ========================================================================= */
 
 bool md_gpu_sync_on_complete(md_gpu_device_t dev, md_gpu_sync_t sync, md_gpu_host_fn fn, void* user) {
-    if (!dev || !fn) return md_vk_fail("md_gpu_sync_on_complete: null argument");
-    if (md_gpu_sync_is_valid(sync) && sync.stream->device != dev) return md_vk_fail("md_gpu_sync_on_complete: sync from another device");
+    if (!dev || !fn) return md_gpu_fail("md_gpu_sync_on_complete: null argument");
+    if (md_gpu_sync_is_valid(sync) && sync.stream->device != dev) return md_gpu_fail("md_gpu_sync_on_complete: sync from another device");
     md_mutex_lock(&dev->device_mutex);
     md_vk_hostfn_t* h = (md_vk_hostfn_t*)md_vk_vec_push(&dev->hostfns, dev->alloc);
     if (h) { h->sync = sync; h->fn = fn; h->user = user; }
     md_mutex_unlock(&dev->device_mutex);
-    return h ? true : md_vk_fail("out of memory");
+    return h ? true : md_gpu_fail("out of memory");
 }
 
 bool md_gpu_launch_host_fn(md_gpu_stream_t s, md_gpu_host_fn fn, void* user) {
-    if (!s || !fn) return md_vk_fail("md_gpu_launch_host_fn: null argument");
+    if (!s || !fn) return md_gpu_fail("md_gpu_launch_host_fn: null argument");
     if (!md_vk_not_in_pass(s, "md_gpu_launch_host_fn")) return false;
     md_gpu_sync_t sync = md_gpu_stream_record(s);
     return md_gpu_sync_on_complete(s->device, sync, fn, user);

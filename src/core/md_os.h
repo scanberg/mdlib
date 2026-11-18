@@ -75,6 +75,11 @@ const char* md_os_env_get(const char* name);
 // for setup, tests and tools, not for state that threads share.
 bool md_os_env_set(const char* name, const char* value);
 
+// ### MODULE ###
+// The executable the process was started from, as Windows identifies it: its HMODULE (GetModuleHandleW(NULL)), which
+// Win32 window and surface APIs take as the instance (HINSTANCE). NULL on other systems.
+void* md_os_module_handle(void);
+
 // ### PATH ###
 // Paths, those that ask the file system included, are in md_path.h.
 

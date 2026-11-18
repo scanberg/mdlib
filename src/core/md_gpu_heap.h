@@ -72,7 +72,7 @@ typedef struct md_gpu_heap_backend_t {
     void* user;   /* passed back to chunk_create and chunk_destroy */
     /* A chunk of `size` bytes of `kind`: a zeroed struct of the backend's with
        md_gpu_chunk_t first and its address, host, size and kind filled in.
-       NULL on failure, reported through fail. */
+       NULL on failure, reported (md_gpu_fail). */
     md_gpu_chunk_t* (*chunk_create)(void* user, md_gpu_mem_kind_t kind, uint64_t size);
     void            (*chunk_destroy)(void* user, md_gpu_chunk_t* chunk);
     /* The point a free or a temp scope's end issued now waits for, and how far
@@ -83,7 +83,6 @@ typedef struct md_gpu_heap_backend_t {
        free. Order what follows after what came before (a barrier in EXPLICIT
        mode) and return true, or return false when that cannot be done now. */
     bool            (*reuse_early)(md_gpu_stream_t s);
-    void            (*fail)(const char* message);
 } md_gpu_heap_backend_t;
 
 /* The device-wide heap for one memory kind. */
