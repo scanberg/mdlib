@@ -1590,13 +1590,13 @@ void k_load_chunk_gc<let F : int, Mem : IGcMem>(uint c, uint f0, uint tid, uint 
 // The chunks: the shells that reach the group's box, K_LIST listed at a time, packed into chunks of whole shells of at
 // most G_CK rows; each staged and its AO values made at the thread's row
 struct IsoGemmStager<let F : int, Mem : IGcMem, let VERT : int> : IGemmStager {
+    IsoArgs a;                                             // the kernel's (r8: not read from MD_ARGS again per chunk)
     float3 glo, ghi, p;
     uint   ch, ax;
     uint   s0, c, nchunk;
     bool   listed;
     [mutating] void begin(uint m0, uint tid) { s0 = 0u; c = 0u; nchunk = 0u; listed = false; }
     [mutating] uint stage(uint m0, uint tid) {
-        IsoArgs a = MD_ARGS;
         while (c >= nchunk) {                              // uniform
             if (listed) s0 += uint(K_LIST);
             if (s0 >= a.num_shells) return GC_END;
@@ -1794,6 +1794,7 @@ void gemm_eval_core<let F : int, Mem : IGcMem, let VERT : int>(uint3 gid, uint t
         GroupMemoryBarrierWithGroupSync();
     }
     IsoGemmStager<F, Mem, VERT> st;
+    st.a = a;
     st.glo = g_lohi[0].xyz;
     st.ghi = g_lohi[1].xyz;
     st.p   = p;
@@ -2388,7 +2389,7 @@ bool iso_wide_rows<let VERT : int>(uint3 gid, uint tid, out IsoWideRows w) {
 
 // A shell's AO values at the thread's point into rows [rb, rb + nc) of the chunk (those in [0, 16)), row r at
 // r * 64 + 4 pg + ce of the A chunk; VERT: channel ce (0 the value, 1 + ax the derivative along ax)
-void iso_wide_ao<let VERT : int, Mem : IGcMem>(int rb, uint l, uint nc, float3 d, float R, float R1, uint pg, uint ce) {
+void iso_wide_ao<let VERT : int, Mem : IGcMem, let CLIP : int>(int rb, uint l, uint nc, float3 d, float R, float R1, uint pg, uint ce) {
     uint ax = ce > 0u ? ce - 1u : 0u;
     float m[15];
     cart_monomials(l, d, m);
@@ -2402,7 +2403,7 @@ void iso_wide_ao<let VERT : int, Mem : IGcMem>(int rb, uint l, uint nc, float3 d
     }
     [ForceUnroll] for (int n = 0; n < 15; ++n) {
         int r = rb + n;
-        if (uint(n) < nc && r >= 0 && r < 16) {
+        if (uint(n) < nc && (CLIP == 0 || (r >= 0 && r < 16))) {   // CLIP: a shell may straddle the chunk's edges
             float phi = m[n] * Av;
             if (VERT != 0) phi += g[n] * Bg;
             Mem::st4c(uint(r) * uint(W_ROWS / 4) + pg, ce, phi);
@@ -2412,12 +2413,12 @@ void iso_wide_ao<let VERT : int, Mem : IGcMem>(int rb, uint l, uint nc, float3 d
 
 // gemm_wide's chunks: k_list's (K_LIST shells listed at a time, chunks of whole shells of at most G_CK rows)
 struct IsoWideStager<let F : int, Mem : IGcMem, let VERT : int> : IGemmStager {
+    IsoArgs a;                                             // the kernel's (r8: not read from MD_ARGS again per chunk)
     IsoWideRows w;
     uint s0, c, nchunk;
     bool listed;
     [mutating] void begin(uint m0, uint tid) { s0 = 0u; c = 0u; nchunk = 0u; listed = false; }
     [mutating] uint stage(uint m0, uint tid) {
-        IsoArgs a = MD_ARGS;
         while (c >= nchunk) {                              // uniform
             if (listed) s0 += uint(K_LIST);
             if (s0 >= a.num_shells) return GC_END;
@@ -2434,7 +2435,7 @@ struct IsoWideStager<let F : int, Mem : IGcMem, let VERT : int> : IGemmStager {
             uint l, nc;
             if (VERT == 0) k_shell(i - i0, w.p, d, R, l, nc);
             else           k_shell_d(i - i0, w.p, d, R, R1, l, nc);
-            iso_wide_ao<VERT, Mem>(int(k_row[i]), l, nc, d, R, R1, w.pg, w.ce);
+            iso_wide_ao<VERT, Mem, 0>(int(k_row[i]), l, nc, d, R, R1, w.pg, w.ce);
         }
         const uint nrows = k_nrows[c];
         c += 1u;
@@ -2445,12 +2446,12 @@ struct IsoWideStager<let F : int, Mem : IGcMem, let VERT : int> : IGemmStager {
 // gemm_wide2's chunks: the shells listed once a pass (kw_list), chunks of 16 consecutive AOs of the list (a shell across
 // a chunk's edge made in both), the next chunk's rows of C loaded into registers while the current one is used
 struct IsoWide2Stager<let F : int, Mem : IGcMem, let VERT : int> : IGemmStager {
+    IsoArgs a;                                             // the kernel's (r8: not read from MD_ARGS again per chunk)
     IsoWideRows w;
     uint s_begin, A, nsh, nchunk, c;
     bool done;
     float cr[F / 16];                                      // the next chunk's rows of C: e = tid + W_GROUP k
     [mutating] void load_rows(uint ln, uint f0, uint tid) {
-        IsoArgs a = MD_ARGS;
         [ForceUnroll] for (int k = 0; k < F / 16; ++k) {
             uint e = tid + uint(W_GROUP * k), row = e / uint(F), col = e % uint(F);
             uint ao = kw_rowao[min(ln + row, max(A, 1u) - 1u)];
@@ -2458,12 +2459,10 @@ struct IsoWide2Stager<let F : int, Mem : IGcMem, let VERT : int> : IGemmStager {
         }
     }
     [mutating] void begin(uint m0, uint tid) {
-        IsoArgs a = MD_ARGS;
         s_begin = 0u; A = 0u; nsh = 0u; nchunk = 0u; c = 0u;
         done = a.num_shells == 0u;
     }
     [mutating] uint stage(uint m0, uint tid) {
-        IsoArgs a = MD_ARGS;
         while (c >= nchunk) {                              // uniform
             if (done) return GC_END;
             kw_list(s_begin, w.glo, w.ghi, tid, W_GROUP);  // barriers inside
@@ -2488,7 +2487,7 @@ struct IsoWide2Stager<let F : int, Mem : IGcMem, let VERT : int> : IGemmStager {
             float R, R1;
             uint l, nc;
             kw_shell<VERT>(i, w.p, d, R, R1, l, nc);
-            iso_wide_ao<VERT, Mem>(int(kw_la[i]) - int(la0), l, nc, d, R, R1, w.pg, w.ce);
+            iso_wide_ao<VERT, Mem, 1>(int(kw_la[i]) - int(la0), l, nc, d, R, R1, w.pg, w.ce);
         }
         c += 1u;
         return nrows;
@@ -2590,12 +2589,14 @@ void gemm_wide_core<let F : int, Mem : IGcMem, let VERT : int, let V2 : int>(uin
     epi.res = 0.0;
     if (V2 != 0) {
         IsoWide2Stager<F, Mem, VERT> st;
+        st.a = a;
         st.w = w;
         st.s_begin = 0u; st.A = 0u; st.nsh = 0u; st.nchunk = 0u; st.c = 0u; st.done = true;
         [ForceUnroll] for (int k = 0; k < F / 16; ++k) st.cr[k] = 0.0;
         gemm_core_staged<W_ROWS, F, 16, 16, Mem, IsoWide2Stager<F, Mem, VERT>, IsoWideEpilogue<F, Mem, VERT> >(st, epi, a.num_fn, tid, w.cg, w.pg);
     } else {
         IsoWideStager<F, Mem, VERT> st;
+        st.a = a;
         st.w = w;
         st.s0 = 0u; st.c = 0u; st.nchunk = 0u; st.listed = false;
         gemm_core_staged<W_ROWS, F, 16, 16, Mem, IsoWideStager<F, Mem, VERT>, IsoWideEpilogue<F, Mem, VERT> >(st, epi, a.num_fn, tid, w.cg, w.pg);

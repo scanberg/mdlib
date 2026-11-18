@@ -3676,6 +3676,30 @@ static bool iso_ab_select(md_gpu_device_t dev, bool own) {
     return isog_kernels_ready();
 }
 
+// The isosurface GEMM kernels of both variants as the driver reports them (registers, shared memory; "" where it
+// reports nothing): the occupancy behind a few percent. Leaves the own loops' kernels made.
+static void iso_ab_kernels(md_gpu_device_t dev) {
+    char st[2][ISOG_K_DEVAL - ISOG_K_GCORN_F16 + 1][96];
+    const char* name[2][ISOG_K_DEVAL - ISOG_K_GCORN_F16 + 1];
+    for (int own = 0; own < 2; ++own) {
+        if (!iso_ab_select(dev, own != 0)) return;
+        for (int k = ISOG_K_GCORN_F16; k <= ISOG_K_DEVAL; ++k) {
+            md_gpu_kernel_info_t ki;
+            const int i = k - ISOG_K_GCORN_F16;
+            st[own][i][0] = 0;
+            name[own][i] = isog_kname[k] ? isog_kname[k] : "?";
+            if (!isog_k[k] || !md_gpu_kernel_info(isog_k[k], &ki)) continue;
+            const char* r = strstr(ki.stats, "Register Count ");
+            const char* m = strstr(ki.stats, "Shared Memory Size ");
+            snprintf(st[own][i], sizeof(st[own][i]), "%d regs, %d B", r ? atoi(r + 15) : -1, m ? atoi(m + 19) : -1);
+            if (!r && !m) snprintf(st[own][i], sizeof(st[own][i]), "%.40s", ki.stats);
+        }
+    }
+    printf("  kernels (the driver's report): core | own\n");
+    for (int i = 0; i <= ISOG_K_DEVAL - ISOG_K_GCORN_F16; ++i)
+        printf("    %-34s %-22s | %-34s %s\n", name[0][i], st[0][i], name[1][i], st[1][i]);
+}
+
 // MD_GTO_ISO_GEMM as it was before the A/B (iso_ab_env_save), set again after it
 typedef struct iso_ab_env_t { bool had; char value[64]; } iso_ab_env_t;
 static iso_ab_env_t iso_ab_env_save(void) {
@@ -3814,6 +3838,7 @@ UTEST(gto_iso_gpu_lib, benchmark) {
            ab ? "both, the GEMM core against their own loops (GTO_ISO_BENCH_AB=1)"
               : (getenv("MD_GTO_ISO_GEMM") && strcmp(getenv("MD_GTO_ISO_GEMM"), "own") == 0) ? "their own loops (MD_GTO_ISO_GEMM=own)" : "on the GEMM core");
     if (ab) {
+        iso_ab_kernels(g.dev);
         printf("  A/B (GTO_ISO_BENCH_AB=1): stages in ms, medians over the rounds; core / own: the median of the rounds' ratios (range)\n");
         printf("  %-12s %5s | %4s %7s | %8s %8s %18s | %8s %8s %18s\n", "field", "h", "fn", "verts", "corners", "own", "core / own",
                "project", "own", "core / own");
@@ -5159,26 +5184,37 @@ UTEST(gto_iso_gpu_lib, large_density) {
         gd.iso[0] = iso;
         static md_gto_iso_gpu_profile_t prof;
         static char text[1 << 16];
+        // GTO_ISO_LARGE_STAGES=1: this extraction by stage too (desc.time_stages: a wait after each), and two more after it
+        const bool stages = getenv("GTO_ISO_LARGE_STAGES") && atoi(getenv("GTO_ISO_LARGE_STAGES")) != 0;
+        static const char* stn[MD_GTO_ISO_GPU_STAGE_COUNT] = {"octree", "corners", "nets", "project", "relax", "output"};
         md_gto_iso_gpu_profile_set(getenv("GTO_ISO_LARGE_PROFILE") ? &prof : NULL);
+        md_gto_iso_gpu_desc_t gd0 = gd;
+        gd0.time_stages = stages;
         t0 = md_tick_now();
         md_gto_iso_gpu_mesh_t m;
-        const bool ok = md_gto_iso_gpu_extract(g.s, set, &gd, &m);
-        printf("  extract (h %.2f, iso %g): %.2f s, %s: %u vertices, %u triangles\n", h, iso, md_tick_to_seconds(md_tick_now() - t0),
-               ok ? "ok" : "FAILED", ok ? m.vertex_count : 0, ok ? m.index_count / 3 : 0);
+        const bool ok = md_gto_iso_gpu_extract(g.s, set, &gd0, &m);
+        // the wall time from the call, and the job's own from its start (after the host's set-up: the kernels, the
+        // set's cutoff, the root box)
+        printf("  extract (h %.2f, iso %g): %.2f s (the job %.2f s), %s: %u vertices, %u triangles\n", h, iso, md_tick_to_seconds(md_tick_now() - t0),
+               ok ? m.seconds_total : 0.0, ok ? "ok" : "FAILED", ok ? m.vertex_count : 0, ok ? m.index_count / 3 : 0);
+        if (ok && stages) {
+            printf("  the first, by stage (ms):");
+            for (int k = 0; k < MD_GTO_ISO_GPU_STAGE_COUNT; ++k) printf(" %s %.1f", stn[k], m.seconds[k] * 1e3);
+            printf("\n");
+        }
         md_gto_iso_gpu_profile_set(NULL);
         if (getenv("GTO_ISO_LARGE_PROFILE")) { md_gto_iso_gpu_profile_print(&prof, text, sizeof(text)); printf("%s", text); }
-        // GTO_ISO_LARGE_STAGES=1: two more extractions without the profile, the first's time from the mesh, the second's
-        // by stage (desc.time_stages: a wait after each)
-        if (ok && getenv("GTO_ISO_LARGE_STAGES") && atoi(getenv("GTO_ISO_LARGE_STAGES")) != 0) {
+        // two more without the profile: the wall time and the job's, then by stage
+        if (ok && stages) {
             md_gto_iso_gpu_mesh_t sm;
+            md_tick_t ts = md_tick_now();
             if (md_gto_iso_gpu_extract(g.s, set, &gd, &sm)) {
-                printf("  again, no profile: %.1f ms\n", sm.seconds_total * 1e3);
+                printf("  again, no profile: %.1f ms (the job %.1f ms)\n", md_tick_to_seconds(md_tick_now() - ts) * 1e3, sm.seconds_total * 1e3);
                 md_gto_iso_gpu_mesh_free(g.s, &sm);
             }
             md_gto_iso_gpu_desc_t sd = gd;
             sd.time_stages = true;
             if (md_gto_iso_gpu_extract(g.s, set, &sd, &sm)) {
-                static const char* stn[MD_GTO_ISO_GPU_STAGE_COUNT] = {"octree", "corners", "nets", "project", "relax", "output"};
                 double sum = 0.0;
                 printf("  again, by stage (ms):");
                 for (int k = 0; k < MD_GTO_ISO_GPU_STAGE_COUNT; ++k) { printf(" %s %.1f", stn[k], sm.seconds[k] * 1e3); sum += sm.seconds[k] * 1e3; }
@@ -5193,51 +5229,41 @@ UTEST(gto_iso_gpu_lib, large_density) {
 
         // GTO_ISO_LARGE_AB=n: n rounds of the isosurface GEMMs on the GEMM core against their own loops, both in each
         // round (the first alternating), in this process after the extraction above: one GPU, one clock history, no
-        // process between them. Each: the kernels made again (MD_GTO_ISO_GEMM, before the clock starts), an extraction
-        // with the profile; its corner steps (the profile's "corners (...)": the D form, the tiled or the wide GEMM), its
-        // vertex evaluations, and its wall time less the time the profile leaves out (between its steps)
+        // process between them. Each: the kernels made again (MD_GTO_ISO_GEMM, before the clock starts), an extraction by
+        // stage without the profile (whose host statistics take seconds on this system: the GPU idle between its steps);
+        // the corners and the projection stages (the D form, the tiled or the wide GEMM; the vertex evaluations and their
+        // Newton steps), and the job's time from its start
         const int ab = getenv("GTO_ISO_LARGE_AB") ? atoi(getenv("GTO_ISO_LARGE_AB")) : 0;
         if (ab > 0 && ok) {
             enum { AB_MAX = 64 };
             const int rounds = ab < AB_MAX ? ab : AB_MAX;
-            static double ab_ms[2][3][AB_MAX];   // [own][corners, vertex eval, extract][round]
+            static double ab_ms[2][3][AB_MAX];   // [own][corners, project, job][round]
             const iso_ab_env_t env = iso_ab_env_save();
-            printf("  A/B (GTO_ISO_LARGE_AB=%d, %s; ms): round (w: a warm-up, not counted), then per variant corners | vertex eval |"
-                   " extract less the profile's left-out time (that time; vertices)\n", rounds, MD_GTO_GPU_GEMM_CORE_REVISION);
+            iso_ab_kernels(g.dev);
+            printf("  A/B (GTO_ISO_LARGE_AB=%d, %s; ms, by stage): round (w: a warm-up, not counted), then per variant corners |"
+                   " project | the job (vertices)\n", rounds, MD_GTO_GPU_GEMM_CORE_REVISION);
+            md_gto_iso_gpu_desc_t ad = gd;
+            ad.time_stages = true;
             bool ab_ok = true;
             for (int rr = -1; rr < rounds && ab_ok; ++rr) {
                 const int r = rr < 0 ? 0 : rr;   // the warm-up's overwritten by round 0
                 if (rr < 0) printf("     w"); else printf("    %2d", rr);
                 for (int i = 0; i < 2 && ab_ok; ++i) {
                     const int own = (rr & 1) ? 1 - i : i;
-                    ab_ok = iso_ab_select(g.dev, own != 0);
-                    md_gto_iso_gpu_profile_set(&prof);
                     md_gto_iso_gpu_mesh_t mm;
-                    ab_ok = ab_ok && md_gto_iso_gpu_extract(g.s, set, &gd, &mm);
-                    md_gto_iso_gpu_profile_set(NULL);
+                    ab_ok = iso_ab_select(g.dev, own != 0) && md_gto_iso_gpu_extract(g.s, set, &ad, &mm);
                     if (!ab_ok) break;
-                    double tc = 0.0, tv = 0.0;
-                    for (uint32_t k = 0; k < prof.num_steps; ++k) {
-                        if (strncmp(prof.step[k].name, "corners (", 9) == 0) tc += prof.step[k].ms;
-                        else if (strcmp(prof.step[k].name, "vertex eval") == 0) tv += prof.step[k].ms;
-                    }
-                    const double ext = mm.seconds_total * 1e3 - prof.skip_ms;
-                    ab_ms[own][0][r] = tc;
-                    ab_ms[own][1][r] = tv;
-                    ab_ms[own][2][r] = ext;
-                    printf("   %s %8.2f | %7.2f | %8.2f (%7.1f; %u)", own ? "own " : "core", tc, tv, ext, prof.skip_ms, mm.vertex_count);
+                    ab_ms[own][0][r] = mm.seconds[MD_GTO_ISO_GPU_STAGE_CORNERS] * 1e3;
+                    ab_ms[own][1][r] = mm.seconds[MD_GTO_ISO_GPU_STAGE_PROJECT] * 1e3;
+                    ab_ms[own][2][r] = mm.seconds_total * 1e3;
+                    printf("   %s %8.2f | %7.2f | %8.2f (%u)", own ? "own " : "core", ab_ms[own][0][r], ab_ms[own][1][r], ab_ms[own][2][r], mm.vertex_count);
                     md_gto_iso_gpu_mesh_free(g.s, &mm);
                 }
                 printf("\n");
-                if (rr == 0 && ab_ok) {   // where the left-out time of the round's second run went, once
-                    printf("      left out (ms, times):");
-                    for (uint32_t k = 0; k < prof.num_skip && k < 16; ++k) printf(" %s %.1f (%u);", prof.skip[k].name, prof.skip[k].ms, prof.skip[k].n);
-                    printf("\n");
-                }
             }
             EXPECT_TRUE(ab_ok);
             if (ab_ok) {
-                static const char* what[3] = {"corners", "vertex eval", "extract"};
+                static const char* what[3] = {"corners", "project", "the job"};
                 for (int w = 0; w < 3; ++w) {
                     const iso_ab_stat_t st = iso_ab_stat(ab_ms[0][w], ab_ms[1][w], rounds);
                     printf("  A/B %-12s median core %8.2f, own %8.2f; core / own per round: median %.3f (%.3f .. %.3f)\n", what[w],
