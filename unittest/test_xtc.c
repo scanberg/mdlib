@@ -1,6 +1,9 @@
 ﻿#include "utest.h"
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <float.h>
+#include <math.h>
 
 #include <md_xtc.h>
 #include <md_gro.h>
@@ -799,8 +802,9 @@ UTEST(xtc, atom_count_from_the_first_frame) {
 // below. Each has 12 atoms, since a frame of 9 or fewer is stored uncompressed.
 //
 // xtc_planar (written by MDAnalysis 2): two frames, every atom at the same y and z, so the range of those is a single
-// value. The three way division of the small integers then divides by 1, which libdivide's branchfree divider
-// refuses with an abort: a planar system (a 2D material, a membrane model on a grid) brought the whole program down.
+// value. The three way division of the small integers then divides by 1, which libdivide's branchfree divider, which
+// the decoder once used, refused with an abort: a planar system (a 2D material, a membrane model on a grid) brought
+// the whole program down.
 static const uint8_t xtc_planar[248] = {
     0x00, 0x00, 0x07, 0xcb, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x40, 0xa0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -940,4 +944,122 @@ UTEST(xtc, magic_2023) {
     }
     remove(path.ptr);
     md_vm_arena_destroy(arena);
+}
+
+// Frames written here with xdrfile's writer, held to what was written: every coordinate within half a step of the
+// precision (and the float rounding of its magnitude) of the one that went in. Water-like groups (an O and two Hs
+// within 0.05 nm) in a box, at precisions that take the decoder through each of its ways of reading a number: the
+// first coordinate of a group of up to 57, 63 and 72 bits (the last read wrong until it was fixed), and of three
+// fields when a range is beyond 24 bits; the small ones by one multiplication each (precision 1e3, 1e4), one after
+// the other (1e5), and by plain division (1e6); and a range of a single value (all atoms in a plane).
+static uint64_t xtc_test_rand_state = 0x9E3779B97F4A7C15ull;
+static double xtc_test_rand(void) {
+    uint64_t s = xtc_test_rand_state;
+    s ^= s << 13; s ^= s >> 7; s ^= s << 17;
+    xtc_test_rand_state = s;
+    return (double)(s >> 11) * (1.0 / 9007199254740992.0);
+}
+
+UTEST(xtc, decode_matches_what_was_written) {
+    // spread: how far the two atoms after the first of each group of three lie from it, in nm
+    const struct { float prec; float box; float spread; bool planar; } cases[] = {
+        {1e3f,   6.0f, 0.1f, false},
+        {1e4f,   6.0f, 0.1f, false},
+        {1e5f,   6.0f, 0.1f, false},     // 58 bits
+        {3e5f,   6.0f, 0.1f, false},     // 63 bits
+        {1e6f,   6.0f, 0.1f, false},     // 68 bits
+        {1e6f,   1.0f, 0.4f, false},     // 62 bits, small coordinates past smallidx 48
+        {1e7f,   1.0f, 0.1f, false},     // 71 bits, small coordinates past smallidx 48
+        {1e7f,   1.0f, 0.9f, false},     // ranges beyond 24 bits, small coordinates past smallidx 63
+        {1e3f,   6.0f, 0.1f, true},
+        {1e5f, 200.0f, 0.1f, false},     // ranges beyond 24 bits
+    };
+    const int natoms = 3 * 200;
+    const int nframes = 3;
+    const char* path = "md_unittest_written.xtc";
+    float* xyz = malloc(sizeof(float) * 3 * natoms * nframes);
+    float* out = malloc(sizeof(float) * 3 * natoms);
+
+    for (size_t c = 0; c < MD_COUNTOF(cases); ++c) {
+        XDRFILE* xd = xdrfile_open(path, "w");
+        ASSERT_TRUE(xd != NULL);
+        for (int f = 0; f < nframes; ++f) {
+            float* x = xyz + (size_t)f * 3 * natoms;
+            for (int w = 0; w < natoms / 3; ++w) {
+                float o[3];
+                for (int a = 0; a < 3; ++a) o[a] = (float)(cases[c].box * xtc_test_rand());
+                for (int k = 0; k < 3; ++k) {
+                    for (int a = 0; a < 3; ++a) {
+                        x[9 * w + 3 * k + a] = (cases[c].planar && a == 2) ? 1.5f : o[a] + (k ? (float)(cases[c].spread * (xtc_test_rand() - 0.5)) : 0.0f);
+                    }
+                }
+            }
+            matrix box = {{cases[c].box, 0, 0}, {0, cases[c].box, 0}, {0, 0, cases[c].box}};
+            ASSERT_EQ(exdrOK, write_xtc(xd, natoms, f, (float)f, box, (rvec*)x, cases[c].prec));
+        }
+        xdrfile_close(xd);
+
+        md_file_t file = {0};
+        ASSERT_TRUE(md_file_open(&file, MD_STR_LIT("md_unittest_written.xtc"), MD_FILE_READ));
+        const size_t size = (size_t)md_file_size(file);
+        uint8_t* bytes = malloc(size + MD_XTC_DECODE_PADDING);
+        ASSERT_EQ(size, md_file_read(file, bytes, size));
+        memset(bytes + size, 0, MD_XTC_DECODE_PADDING);
+        md_file_close(&file);
+
+        size_t offset = 0;
+        for (int f = 0; f < nframes; ++f) {
+            ASSERT_LE(offset + 92, size);
+            const uint8_t* p = bytes + offset;
+            const uint32_t count = (uint32_t)p[88] << 24 | (uint32_t)p[89] << 16 | (uint32_t)p[90] << 8 | p[91];
+            const size_t frame_bytes = 92 + ((count + 3) & ~3u);
+            md_xtc_header_t header;
+            EXPECT_TRUE(md_xtc_decode_frame_data(p, frame_bytes, &header, out, natoms));
+            const float* x = xyz + (size_t)f * 3 * natoms;
+            int off = 0;
+            for (int i = 0; i < 3 * natoms; ++i) {
+                const float tol = 0.5f / cases[c].prec + 4.0f * FLT_EPSILON * fabsf(x[i]);
+                off += fabsf(out[i] - x[i]) > tol;
+            }
+            EXPECT_EQ(0, off);
+            offset += frame_bytes;
+        }
+        free(bytes);
+    }
+    remove(path);
+    free(out);
+    free(xyz);
+}
+
+// Frames of noise under valid headers, in buffers of exactly the frame and MD_XTC_DECODE_PADDING: decoded or refused,
+// never read past the buffer (which an address sanitizer build catches) or written past the coordinates.
+UTEST(xtc, noise_stays_in_bounds) {
+    enum { natoms = 500 };
+    float* out = malloc(sizeof(float) * 3 * natoms + 64);
+    for (int it = 0; it < 2000; ++it) {
+        const uint32_t count = 1 + (uint32_t)(xtc_test_rand() * 3000);
+        const size_t frame_bytes = 92 + count;
+        uint8_t* p = malloc(frame_bytes + MD_XTC_DECODE_PADDING);
+        for (size_t i = 0; i < frame_bytes + MD_XTC_DECODE_PADDING; ++i) p[i] = (uint8_t)(xtc_test_rand() * 256);
+        const uint32_t words[] = {1995, natoms};
+        for (int k = 0; k < 2; ++k) for (int b = 0; b < 4; ++b) p[4 * k + b] = (uint8_t)(words[k] >> (24 - 8 * b));
+        for (int b = 0; b < 4; ++b) p[52 + b] = (uint8_t)((uint32_t)natoms >> (24 - 8 * b));
+        const float prec = 1000.0f;
+        uint32_t prec_bits;
+        memcpy(&prec_bits, &prec, 4);
+        for (int b = 0; b < 4; ++b) p[56 + b] = (uint8_t)(prec_bits >> (24 - 8 * b));
+        for (int a = 0; a < 3; ++a) {
+            const double r = xtc_test_rand();
+            const uint32_t range = r < 0.1 ? 1 : r < 0.2 ? 0x3fffffffu : 1 + (uint32_t)(xtc_test_rand() * (double)(1u << (int)(1 + 24 * xtc_test_rand())));
+            const uint32_t lo = 100, hi = lo + range - 1;
+            for (int b = 0; b < 4; ++b) { p[60 + 4 * a + b] = (uint8_t)(lo >> (24 - 8 * b)); p[72 + 4 * a + b] = (uint8_t)(hi >> (24 - 8 * b)); }
+        }
+        const uint32_t smallidx = 9 + (uint32_t)(xtc_test_rand() * 64);
+        for (int b = 0; b < 4; ++b) { p[84 + b] = (uint8_t)(smallidx >> (24 - 8 * b)); p[88 + b] = (uint8_t)(count >> (24 - 8 * b)); }
+        out[3 * natoms] = 12345.0f;
+        md_xtc_decode_frame_data(p, frame_bytes, NULL, out, natoms);
+        EXPECT_EQ(12345.0f, out[3 * natoms]);
+        free(p);
+    }
+    free(out);
 }

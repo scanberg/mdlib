@@ -673,7 +673,8 @@ static inline void decodeints(int buf[], int num_of_ints, int num_of_bits, unsig
                               int nums[]) {
     // @NOTE: Some trajectories seem to overflow the bytes here which was originally set to 8
     int bytes[16];
-    int i, j, num_of_bytes, p, num, size;
+    int i, j, num_of_bytes;
+    unsigned int p, num, size; // num << 8 reaches 2^32 for sizes past 2^23
 
     bytes[1] = bytes[2] = bytes[3] = 0;
     num_of_bytes = 0;
@@ -692,9 +693,9 @@ static inline void decodeints(int buf[], int num_of_ints, int num_of_bits, unsig
             num = (num << 8) | bytes[j];
             p = num / size;
             num = num - p * size;
-            bytes[j] = p;
+            bytes[j] = (int)p;
         }
-        nums[i] = num;
+        nums[i] = (int)num;
     }
     nums[0] = bytes[0] | (bytes[1] << 8) | (bytes[2] << 16) | (bytes[3] << 24);
 }

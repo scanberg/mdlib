@@ -731,7 +731,6 @@ target_include_directories(mdlib
   ext/svd3/
   ext/pffft/
   ext/stb/
-  ext/libdivide/
   ext/hy36/
 )
 

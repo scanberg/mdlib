@@ -122,13 +122,17 @@ bool md_topo_gpu_context_extract(md_topo_extremum_graph_t* out_graph, md_topo_gp
 // ---------------------------------------------------------------------------
 // Grid-free alternative to the volume based extraction above. Works directly on
 //     rho(r) = sum_{mu,nu} D_{mu nu} phi_mu(r) phi_nu(r)
-// and PROVES, cube by cube, that a region holds no critical point or exactly one (Newton then
-// polishes it to |dx| < 1e-13 Bohr). Every non-degenerate critical point with rho >= rho_min is found;
+// and PROVES, cube by cube, that a region holds no critical point or exactly one (Krawczyk on the cube
+// grown 1.5x; its type is proven with it). Every non-degenerate critical point with rho >= rho_min is found;
 // near-degenerate topology that cannot be resolved down to h_min is reported, never guessed.
+// Newton polishes each certified CP until its step is below 1e-13 Bohr, on the field screened as the search
+// screens it (what is left out adds at most ~1e-12 to the gradient: weak CPs, whose Hessian eigenvalues are
+// small, are placed to within about that over the smallest eigenvalue).
 // Vertices are in Bohr, rounded to float; vertices_f64 holds them as polished, in double, with the Hessian
 // of rho there. Types follow md_topo_critical_point_type_t (SPLIT_SADDLE = bond CP (3,-1), JOIN_SADDLE =
 // ring CP (3,+1), MINIMUM = cage CP (3,+3)). Edges run from a saddle to the extremum its separatrix ends in
-// (bond paths for BCPs, RCP attractor paths for RCPs), as in the volume pipeline.
+// (bond paths for BCPs, RCP attractor paths for RCPs), as in the volume pipeline; the separatrices are
+// integrated numerically, outside the certificate.
 // out_graph->alloc must be set (as for md_topo_simplify).
 // Parallel through the caller's executor, and deterministic: the output is bit-identical for any executor and
 // thread count. Blocking; run it from a worker thread for interactive use and cancel through 'cancel', or through
@@ -154,12 +158,15 @@ typedef struct md_topo_gto_desc_t {
     bool          profile_gpu_kernels;   // GPU sweep only: wait for each kernel and time it (ms_gpu_*); slower, for benchmarks
 } md_topo_gto_desc_t;
 
+// A diagnostic for a group of adjacent unresolved cubes, not part of the certificate.
 typedef struct md_topo_gto_cluster_t {
-    float    lo[3], hi[3];               // bounds (Bohr) of a group of adjacent unresolved cubes
+    float    lo[3], hi[3];               // the box the degree is taken on (Bohr): the group's cubes' bounds, grown
+                                         // by the largest cube's half-width. It can hold certified CPs too
     uint32_t num_boxes;
-    int32_t  degree;                     // Brouwer degree of grad rho on the boundary = sum of sign(det H) over the
-                                         // CPs inside (max -1, BCP +1, RCP -1, CCP +1). 0: a cancelling pair or nothing
-    float    degree_residual;            // distance of the computed degree from the nearest integer
+    int32_t  degree;                     // degree of grad rho on the box's boundary, estimated from grad rho / |grad rho|
+                                         // sampled on a 32 x 32 grid per face. When the sampling resolves it, it is the
+                                         // sum of sign(det H) over the CPs inside (max -1, BCP +1, RCP -1, CCP +1)
+    float    degree_residual;            // distance of the estimate from the nearest integer
     float    min_boundary_grad;          // smallest |grad rho| seen on the boundary
 } md_topo_gto_cluster_t;
 
@@ -167,7 +174,7 @@ typedef struct md_topo_gto_cluster_t {
 
 typedef struct md_topo_gto_info_t {
     uint64_t num_box_evals;
-    uint64_t num_inflated_evals;
+    uint64_t num_inflated_evals;         // cubes Krawczyk was tried on (on the cube grown 1.5x)
     uint32_t num_levels;
     uint32_t num_threads;
     uint32_t num_unresolved_boxes;
@@ -239,7 +246,9 @@ bool md_topo_compute_extremum_graph_gto(md_topo_extremum_graph_t* out_graph, md_
 // The separatrices (edges) are traced on the GPU in fp32, a numerical integration outside the certificate
 // in either precision: an edge can differ from the CPU search's where a path runs close to the boundary
 // between two basins (none did on the test inputs, nor on a 9636-AO protein). The critical points are the
-// same as the CPU search's, bit for bit.
+// same as the CPU search's, both being polished in double; positions can differ in the last bits where the
+// two searches polish a CP from different cubes (Newton from another start), which they did on none of the
+// test inputs.
 // Blocking: works through 'stream' in chunks, two in flight. If the GPU cannot be used the whole sweep
 // runs on the CPU (info.used_gpu false). Same inputs; deterministic on a given device.
 bool md_topo_compute_extremum_graph_gto_gpu(md_topo_extremum_graph_t* out_graph, md_topo_gto_info_t* out_info,
