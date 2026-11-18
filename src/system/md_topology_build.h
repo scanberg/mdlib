@@ -26,17 +26,17 @@ typedef struct md_topology_desc_t {
     const char* format;             // for the log, "Amber topology"
 
     size_t num_atoms;
-    const md_str_t*   atom_name;       // required
-    const md_str_t*   atom_type;       // force field types, NULL for none
+    const md_str_t*   atom_name;    // required
+    const md_str_t*   atom_type;    // force field types, NULL for none
     const double*  charge;          // e, NULL for none
     const double*  mass;            // Da, NULL for none
     const int64_t* atomic_number;   // NULL for none: inferred from names and masses. <= 0: unknown
 
     size_t num_residues;
-    const md_str_t*    res_name;       // required
+    const md_str_t*    res_name;    // required
     const uint32_t* res_offset;     // num_residues + 1, required
     const int64_t*  res_number;     // NULL: numbered from 1
-    const md_str_t*    res_chain;      // the chain or segment of each residue, NULL for none
+    const md_str_t*    res_chain;   // the chain or segment of each residue, NULL for none
 
     size_t num_bonds;
     const struct md_atom_pair_t* bonds;
