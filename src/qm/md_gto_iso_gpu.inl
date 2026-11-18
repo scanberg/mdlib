@@ -16,7 +16,7 @@
 #include <gto_iso_gpu_shaders.inl>
 
 // BENCHMARK (temporary, branch gto-iso-gpu-opt): which round of changes this is, in every profile report
-#define ISOG_REVISION "r41 (switches tiled_cols, wide_cols for the variants' measurements; r40: the profile's left-out time by where)"
+#define ISOG_REVISION "r42 (the variants' wide cases to 1024 functions; r41: switches tiled_cols, wide_cols)"
 
 typedef struct isog_shell_t {        // mirrors IsoShell
     md_gpu_float4 c;
