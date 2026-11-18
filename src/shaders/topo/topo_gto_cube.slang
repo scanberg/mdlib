@@ -626,16 +626,19 @@ void ao_main(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
 
 // ================================================================================== gemm_main
 // dv[row][c] = sum_j X[row][j] phi[j][c] over the batch's local AOs j, X = D for the 160 columns of the
-// centre values and |D| for the 80 after them. One group per 64-row tile computes all 240 columns, so
-// each D tile is gathered once: 32 x 8 threads, thread (tx, ty) owns rows 8 ty .. 8 ty + 7 and columns
-// tx + 32 j, j = 0..7 (j < 5 with D, j >= 5 with |D|): 16 groupshared reads per 64 multiply-adds. The
-// sum over j runs in increasing j, so the result does not depend on the tiling.
+// centre values and |D| for the 80 after them, on the shared GEMM core (gto_gemm_core.slang, staged). One
+// group per 64-row tile computes all 240 columns, so each D tile is gathered once: 32 x 8 threads, thread
+// (tx, ty) owns rows 8 ty .. 8 ty + 7 and columns tx + 32 j, j = 0..7 (the core's strided column map; j < 5
+// with D, j >= 5 with |D|: its |A| slots): 16 groupshared reads per 64 multiply-adds, every chunk 16 rows
+// unrolled (kFull), no register prefetch. The sum over j runs in increasing j, so the result does not depend
+// on the tiling. (Its own loop until gemm-core r11, the same loads, multiply-adds and order: on an RTX 3080
+// the core's took 115 registers to its 127, the GEMM's time the same or 5% less.)
 // Of seven tilings measured (64/32/16 rows, 128/256 threads, 288 or 96 columns per group, 24-72
 // accumulators), this one was within 11% of the fastest on an M4 Pro, an RTX 3080 and a UHD 770 alike;
 // that was with 272 columns (9 groups of 32), before the Hessian remainders over the cube itself left.
 //
-// REGISTERS: keep gemm_main at 128 or fewer. An NVIDIA SM has 65536 registers, so a 256-thread group fits
-// twice at <= 128 per thread and once above. With 9 column groups (72 accumulators) the GTX 1060 compiled it
+// REGISTERS: keep gemm_main at 128 or fewer (on the core: 115 on an RTX 3080; the GTX 1060 is the one to check).
+// An NVIDIA SM has 65536 registers, so a 256-thread group fits twice at <= 128 per thread and once above. With 9 column groups (72 accumulators) the GTX 1060 compiled it
 // to 165 (one group per SM, 8 warps); with 8 (64 accumulators) to exactly 128 (two, 16 warps), and the
 // GEMM took 38% less time on a 72-atom system (4913 -> 3029 ms; per batch -40%), far more than the 11%
 // fewer columns. It sits at the limit: one register more, from any change here or a ninth column group,
@@ -649,75 +652,6 @@ void ao_main(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
 #define GR  8                   // rows per thread
 #define GEMM_WG 256
 
-groupshared float gs_A[GKC][GT];
-groupshared float gs_B[GKC][GCJ * 32];
-
-[shader("compute")]
-[numthreads(32, 8, 1)]
-void gemm_main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_GroupIndex) {
-    const uint rt = gid.x;
-    if (rt >= args.num_row_tiles) return;   // uniform per group
-    const uint2 rtd = args.row_tiles[rt];
-    const Batch bt = args.batches[min(rtd.x, args.num_batches - 1u)];
-    const uint n = bt.info.y, base = bt.info.z, r0 = rtd.y;
-    const uint tx = gtid.x, ty = gtid.y;
-    const uint N = args.num_ao;
-
-    float acc[GR][GCJ];
-    [ForceUnroll] for (int i = 0; i < GR; ++i) [ForceUnroll] for (int j = 0; j < GCJ; ++j) acc[i][j] = 0.0;
-    let row_ao = args.row_ao;
-    let Dm = args.D;
-    let phi = args.phi;
-    let dt_map = args.dt_map;
-    const uint dt_n = args.dt_n;
-
-    for (uint k0 = 0; k0 < n; k0 += GKC) {
-        // D tile: 32 rows x 16 j, 4 per thread, j fastest (consecutive AOs are mostly consecutive in D)
-        [ForceUnroll] for (int q = 0; q < (GT * GKC) / GEMM_WG; ++q) {
-            const uint e = tid + uint(GEMM_WG * q);
-            const uint r = e / GKC, kk = e % GKC;
-            float d = 0.0;
-            if (r0 + r < n && k0 + kk < n) {
-                const uint ai = min(row_ao[base + r0 + r], N - 1u);
-                const uint aj = min(row_ao[base + k0 + kk], N - 1u);
-                if (dt_n == 0u) d = Dm[ai * N + aj];
-                else d = Dm[dt_map[(ai >> 4) * dt_n + (aj >> 4)] * 256u + (ai & 15u) * 16u + (aj & 15u)];
-            }
-            gs_A[kk][r] = d;
-        }
-        // phi tile: 16 j x 256 columns, 16 per thread, columns fastest (coalesced rows)
-        [ForceUnroll] for (int q = 0; q < (GKC * GCJ * 32) / GEMM_WG; ++q) {
-            const uint e = tid + uint(GEMM_WG * q);
-            const uint kk = e / (GCJ * 32), c = e % (GCJ * 32);
-            float v = 0.0;
-            if (k0 + kk < n && c < DV_W) v = phi[(base + k0 + kk) * PHI_W + c];
-            gs_B[kk][c] = v;
-        }
-        GroupMemoryBarrierWithGroupSync();
-        [ForceUnroll] for (int kk = 0; kk < GKC; ++kk) {
-            float a[GR], aa[GR], bb[GCJ];
-            [ForceUnroll] for (int i = 0; i < GR; ++i) { a[i] = gs_A[kk][ty * GR + uint(i)]; aa[i] = abs(a[i]); }
-            [ForceUnroll] for (int j = 0; j < GCJ; ++j) bb[j] = gs_B[kk][tx + 32u * uint(j)];
-            [ForceUnroll] for (int i = 0; i < GR; ++i) [ForceUnroll] for (int j = 0; j < GCJ; ++j) acc[i][j] += (j < 5 ? a[i] : aa[i]) * bb[j];
-        }
-        GroupMemoryBarrierWithGroupSync();
-    }
-    [ForceUnroll] for (int i = 0; i < GR; ++i) {
-        const uint row = r0 + ty * GR + uint(i);
-        if (row >= n) continue;
-        [ForceUnroll] for (int j = 0; j < GCJ; ++j) {
-            const uint col = tx + 32u * uint(j);
-            if (col < DV_W) args.dv[(base + row) * DV_W + col] = acc[i][j];
-        }
-    }
-}
-
-// ================================================================================== gemm_core_main
-// gemm_main on the shared GEMM core (gto_gemm_core.slang, staged; beside gemm_main until measured:
-// MD_TOPO_GTO_GEMM=own takes gemm_main): the same tile (64 rows, 256 columns, 32 x 8 threads of 8 x 8), the
-// same chunks staged the same way (D 64 x 16, j fastest; phi 16 x 256), the same multiply-adds in the same
-// order (j increasing, every chunk 16 rows: kFull), the columns strided (tx + 32 j) and slots j >= 5 by |D|
-// (GC_MEM_MAP): the core's gc_mac is gemm_main's inner loop.
 #include "../gto/gto_gemm_core.slang"
 GC_MEM_MAP(TopoGc, GT, GCJ * 32, 1, 5)
 
@@ -774,7 +708,7 @@ struct TopoGemmEpilogue : IGemmEpilogue {
 
 [shader("compute")]
 [numthreads(32, 8, 1)]
-void gemm_core_main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_GroupIndex) {
+void gemm_main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_GroupIndex) {
     const uint rt = gid.x;
     if (rt >= args.num_row_tiles) return;   // uniform per group
     const uint2 rtd = args.row_tiles[rt];

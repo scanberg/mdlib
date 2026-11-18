@@ -2944,8 +2944,7 @@ static md_gpu_device_t k_topo_gto_device = NULL;
 
 #define CPG_GPU_GEMM_ROWS 64             // gemm_main: rows per group tile
 
-// gemm_main: on the shared GEMM core (gemm_core_main), or its own loop with MD_TOPO_GTO_GEMM=own (until measured)
-static const char* k_topo_gto_name[CPG_K_COUNT] = { "ao_main", "gemm_main (core)", "epi_main", "decide_main", "trace_main" };
+static const char* const k_topo_gto_name[CPG_K_COUNT] = { "ao_main", "gemm_main", "epi_main", "decide_main", "trace_main" };
 
 static void topo_gto_gpu_release(void) {
     for (int i = 0; i < CPG_K_COUNT; ++i) {
@@ -2960,12 +2959,9 @@ static void topo_gto_gpu_release(void) {
 static bool topo_gto_gpu_ensure(md_gpu_device_t device) {
     if (k_topo_gto_device == device && k_topo_gto[CPG_K_DECIDE]) return true;
     topo_gto_gpu_release();
-    const char* gemm_env = getenv("MD_TOPO_GTO_GEMM");
-    const bool gemm_own = gemm_env && strcmp(gemm_env, "own") == 0;
-    k_topo_gto_name[CPG_K_GEMM] = gemm_own ? "gemm_main (own)" : "gemm_main (core)";
     const md_gpu_kernel_desc_t kd[CPG_K_COUNT] = {
         md_shader_topo_gto_cube_ao_main_kernel(),
-        gemm_own ? md_shader_topo_gto_cube_gemm_main_kernel() : md_shader_topo_gto_cube_gemm_core_main_kernel(),
+        md_shader_topo_gto_cube_gemm_main_kernel(),
         md_shader_topo_gto_cube_epi_main_kernel(),
         md_shader_topo_gto_cube_decide_main_kernel(),
         md_shader_topo_gto_cube_trace_main_kernel(),

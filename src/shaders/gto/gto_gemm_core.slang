@@ -39,7 +39,7 @@
 // (eval_gto_localization_core.slang: symmetric, four rows a voxel), the orbitals (eval_gto_mo_gemm.slang: B the
 // orbitals' coefficients, ncols the orbitals), a density matrix's tiles from orbitals (gto_dmat.slang: P_I^T diag(w) P_J,
 // 16 x 128 per group of 16 x 4 threads), the isosurface GEMMs (gto_iso_gpu.slang, staged), the topology sweep's D and
-// |D| times the AO channels (topo_gto_cube.slang gemm_core_main: staged, strided columns, |A| slots, full chunks).
+// |D| times the AO channels (topo_gto_cube.slang gemm_main: staged, strided columns, |A| slots, full chunks).
 //
 // A SYMMETRIC product (B = w o D of a symmetric D, w 1 on the diagonal and 2 off it, k >= m only) sums
 // sum_{m <= k} w D[k][m] A[r][k] - half the multiply-adds - and is exact for a quadratic form a^T D a = sum_m a[m] X[m]

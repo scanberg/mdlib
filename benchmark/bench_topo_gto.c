@@ -517,9 +517,7 @@ int main(int argc, char** argv) {
     printf("rho_min %.3g | h_min 1e-4 | separatrices traced | %d timed run%s per configuration (GPU %s), median shown\n",
            rho_min, reps, reps == 1 ? "" : "s", warmup ? "after one warm-up" : "without a warm-up");
     printf("data %s\n", data_dir);
-    // the sweep's GEMM: on the shared GEMM core, or gemm_main's own loop (MD_TOPO_GTO_GEMM=own, until measured)
-    printf("GEMM %s | %s\n", (getenv("MD_TOPO_GTO_GEMM") && strcmp(getenv("MD_TOPO_GTO_GEMM"), "own") == 0) ? "gemm_main's own loop (MD_TOPO_GTO_GEMM=own)" : "on the GEMM core",
-           MD_GTO_GPU_GEMM_CORE_REVISION);
+    printf("GEMM %s\n", MD_GTO_GPU_GEMM_CORE_REVISION);     // the sweep's GEMM, on the shared GEMM core
     printf("formats .molden%s\n\n", HAVE_H5 ? ", .h5 (VeloxChem)" : " only: this mdlib was configured without MD_ENABLE_HDF5, so the .h5 inputs are skipped");
 
     result_t results[64];

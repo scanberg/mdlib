@@ -762,7 +762,7 @@ if (MD_ENABLE_GPU)
     NAMESPACE md_shader
     SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/${TOPO_GTO_SLANG_FILE}
     PRECISE_MATH      # the rounding margins of the certificate assume IEEE + - * (no fast-math rewrites)
-    ENTRIES   ao_main gemm_main gemm_core_main epi_main decide_main trace_main
+    ENTRIES   ao_main gemm_main epi_main decide_main trace_main
     DEPENDS   ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_gemm_core.slang
   )
   # md_topo.c includes one aggregate header rather than six.
