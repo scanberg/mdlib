@@ -147,13 +147,13 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_G
 // ELF or LOL of the terms of a batch's entries (or 0 for the empty blocks: terms_valid 0), into out_tex: one group per
 // block
 [shader("compute")]
-[numthreads(BLOCK_X, BLOCK_Y, BLOCK_Z)]
+[numthreads(BLOCK_TX, BLOCK_TY, BLOCK_TZ)]
 void finish_main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_GroupIndex) {
     const uint b = gid.x;
     if (b >= args.num_blocks) return;
     uint4 e0 = args.block_table[2u * b + 0u];
     uint4 e1 = args.block_table[2u * b + 1u];
-    const uint3 vox = e0.xyz * BLOCK_SHAPE + gtid;
+    const uint3 vox = e0.xyz * BLOCK_SHAPE + BLOCK_THREAD_VOXEL(gtid, tid);
     if (!all(vox < args.grid_dim.xyz)) return;
     float value = 0.0f;
     if (args.terms_valid != 0u) {

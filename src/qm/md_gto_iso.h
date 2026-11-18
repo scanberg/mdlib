@@ -487,10 +487,17 @@ typedef struct md_gto_iso_gpu_switches_t {
     int  eval_eps_exp;      // the AO cutoff 1e-N of the evaluations and the octree's culling (4..12, default 6)
     bool dform;             // sets of densities: corners and vertices as phi^T D phi (default off; on regardless past 1024 functions)
     int  flood;             // APPROXIMATE corners from seeds and a flood: 0 off, 1 densities whose maxima are at the atoms (default), 2 every field
+    // MEASUREMENT (temporary): the GEMMs' widths in place of the function count's choice, for choosing which mdlib keeps
+    int  tiled_cols;        // the tiled GEMM's columns: 0 by the count (16, 32, else 64), or 16, 32, 64
+    int  wide_cols;         // canonical sets of more than 64 functions: 0 by the count (128, 192, else 256), 128, 192 or
+                            // 256, or -1 none (the tiled GEMM)
 } md_gto_iso_gpu_switches_t;
 
 void md_gto_iso_gpu_switches(md_gto_iso_gpu_switches_t* out);
 void md_gto_iso_gpu_switches_set(const md_gto_iso_gpu_switches_t* in);
+
+// The extraction's revision and the switches it runs with, as one line: for a measurement's report
+const char* md_gto_iso_gpu_variant(void);
 #endif
 
 #ifdef __cplusplus

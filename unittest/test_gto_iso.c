@@ -3878,6 +3878,149 @@ UTEST(gto_iso_gpu_lib, benchmark) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// MEASUREMENT (temporary, GTO_ISO_VARIANTS=1): the isosurface GEMMs' widths against what would replace them
+// (md_gto_iso_gpu_switches_t.tiled_cols, wide_cols), for choosing which mdlib keeps. The density of the N highest
+// occupied orbitals (a canonical set of N functions, both spins' weights) at 0.002, extracted with each width of a
+// pair in turn: one untimed extraction of each (their meshes compared), then GTO_ISO_VARIANTS_ROUNDS rounds (default 7)
+// of both, the order alternating, with the stages timed. The ratio B / A of the totals and of the GEMMs' stages
+// (corners, project, relax) per round, their medians and the totals' range.
+//   tiled: N = 8 and 16, 16 against 32 columns; N = 24 and 32, 32 against 64 (mol.h5)
+//   wide:  N = 96, the tiled GEMM (64) against the wide one of 128; N = 96 and 128, 128 against 256; N = 160 and 192,
+//          192 against 256 (protein.h5, else tq.scf.results.h5: the first with as many occupied orbitals)
+// GTO_ISO_VARIANTS_H: the cell size (default 0.15; 0.2 on the protein), GTO_ISO_VARIANTS_ONLY: tiled or wide,
+// GTO_ISO_VARIANTS_FILE: the wide cases' file instead (one with fewer occupied orbitals than N: the lowest N orbitals,
+// the virtual ones weighted 0.5 - a check of the kernels on a small system, not a measurement).
+// ---------------------------------------------------------------------------------------------
+
+typedef struct iso_variant_case_t {
+    const char* group;
+    uint32_t    n;              // orbitals
+    int         a_tiled, a_wide, b_tiled, b_wide;   // the switches of A and B
+    bool        big;            // the wide cases' file
+} iso_variant_case_t;
+
+UTEST(gto_iso_gpu_lib, variants) {
+    const char* on = getenv("GTO_ISO_VARIANTS");
+    if (!on || on[0] != '1') UTEST_SKIP("set GTO_ISO_VARIANTS=1");
+    iso_gpu_t g;
+    if (!iso_gpu_init(&g)) { iso_gpu_free(&g); UTEST_SKIP(iso_gpu_no_device()); }
+    md_gpu_device_info_t info;
+    md_gpu_device_info(g.dev, &info);
+    md_gto_gpu_initialize(g.dev);
+    md_gto_iso_gpu_initialize(g.dev);
+    const int rounds = getenv("GTO_ISO_VARIANTS_ROUNDS") ? MD_CLAMP(atoi(getenv("GTO_ISO_VARIANTS_ROUNDS")), 1, 63) : 7;
+    const char* hs = getenv("GTO_ISO_VARIANTS_H");
+    const char* only = getenv("GTO_ISO_VARIANTS_ONLY");
+    md_gto_iso_gpu_switches_t base;
+    md_gto_iso_gpu_switches(&base);
+    base.tiled_cols = 0;
+    base.wide_cols = 0;
+
+    static const iso_variant_case_t cases[] = {
+        {"tiled",   8, 16, 0, 32, 0, false},
+        {"tiled",  16, 16, 0, 32, 0, false},
+        {"tiled",  24, 32, 0, 64, 0, false},
+        {"tiled",  32, 32, 0, 64, 0, false},
+        {"wide",   96, 64, -1, 0, 128, true},
+        {"wide",   96, 0, 128, 0, 256, true},
+        {"wide",  128, 0, 128, 0, 256, true},
+        {"wide",  160, 0, 192, 0, 256, true},
+        {"wide",  192, 0, 192, 0, 256, true},
+    };
+    printf("\n  device: %s, %s | %s | isosurface GEMMs: %s\n", info.name, info.driver, md_gto_iso_gpu_variant(), MD_GTO_GPU_GEMM_CORE_REVISION);
+    printf("  variants: %d rounds, the order alternating; B/A per round, median (min-max); gemm stages: corners + project + relax\n", rounds);
+
+    for (int big = 0; big < 2; ++big) {
+        if (only && strcmp(only, big ? "wide" : "tiled") != 0) continue;
+        static const char* small_files[] = { "mol.h5" };
+        const char* big_files[] = { "protein.h5", "tq.scf.results.h5" };
+        const char* forced = big ? getenv("GTO_ISO_VARIANTS_FILE") : NULL;
+        if (forced) big_files[0] = forced;
+        const char* const* files = big ? big_files : small_files;
+        const int nfiles = big ? (forced ? 1 : 2) : 1;
+        uint32_t need = 0;
+        for (size_t ci = 0; ci < sizeof(cases) / sizeof(cases[0]); ++ci) if (cases[ci].big == (big != 0)) need = MD_MAX(need, cases[ci].n);
+        iso_dens_src_t s;
+        bool loaded = false;
+        const char* file = NULL;
+        for (int fi = 0; fi < nfiles && !loaded; ++fi) {
+            if (!iso_dens_src_load_ex(&s, files[fi], false)) { iso_dens_src_free(&s); continue; }
+            size_t nocc = 0;
+            for (size_t m = 0; m < s.num_mo; ++m) nocc += s.occ[m] > 0.5 ? 1 : 0;
+            if (nocc < need && !(forced && s.num_mo >= need)) { iso_dens_src_free(&s); continue; }
+            loaded = true;
+            file = files[fi];
+        }
+        if (!loaded) { printf("  -- %s: no file with %u occupied orbitals\n", big ? "wide" : "tiled", need); continue; }
+        size_t homo = 0;
+        for (size_t m = 0; m < s.num_mo; ++m) if (s.occ[m] > 0.5) homo = m;
+        const double h = hs ? atof(hs) : (s.num_atoms > 500 ? 0.2 : 0.15);
+        printf("  -- %s: %zu atoms, %zu AOs, %zu MOs (HOMO %zu), cell %.3g\n", file, s.num_atoms, s.num_ao, s.num_mo, homo, h);
+
+        for (size_t ci = 0; ci < sizeof(cases) / sizeof(cases[0]); ++ci) {
+            const iso_variant_case_t* c = &cases[ci];
+            if (c->big != (big != 0)) continue;
+            const size_t first = homo + 1 >= c->n ? homo + 1 - c->n : 0;
+            double* w = (double*)malloc(sizeof(double) * c->n);
+            for (uint32_t k = 0; k < c->n; ++k) w[k] = s.occ[first + k] > 0.5 ? s.occ[first + k] : 0.5;
+            md_gto_iso_field_t* f = md_gto_iso_field_create_products(&s.basis, s.xyz, 0, s.C + first * s.num_ao, NULL, w, c->n, md_get_heap_allocator());
+            free(w);
+            md_gto_iso_gpu_set_t* set = f ? md_gto_iso_gpu_set_create(g.s, &s.basis, s.xyz, 0, (const md_gto_iso_field_t* const*)&f, 1, md_get_heap_allocator()) : NULL;
+            if (!set) { printf("  %-6s N %3u (could not make the set)\n", c->group, c->n); if (f) md_gto_iso_field_destroy(f); continue; }
+            md_gto_iso_gpu_switches_t sa = base, sb = base;
+            sa.tiled_cols = c->a_tiled; sa.wide_cols = c->a_wide;
+            sb.tiled_cols = c->b_tiled; sb.wide_cols = c->b_wide;
+            md_gto_iso_gpu_desc_t gd = {.cell_size = h, .project_iterations = 8, .relax_iterations = 3, .time_stages = true};
+            gd.iso[0] = 0.002;
+            md_gto_iso_gpu_mesh_t gm;
+            uint32_t va = 0, vb = 0;
+            bool ok = true;
+            md_gto_iso_gpu_switches_set(&sa);
+            ok &= md_gto_iso_gpu_extract(g.s, set, &gd, &gm);
+            if (ok) { va = gm.vertex_count; md_gto_iso_gpu_mesh_free(g.s, &gm); }
+            md_gto_iso_gpu_switches_set(&sb);
+            ok = ok && md_gto_iso_gpu_extract(g.s, set, &gd, &gm);
+            if (ok) { vb = gm.vertex_count; md_gto_iso_gpu_mesh_free(g.s, &gm); }
+            double ta[64], tb[64], r[64], ga[64], gb[64], rg[64];
+            for (int k = 0; ok && k < rounds; ++k) {
+                for (int o = 0; o < 2; ++o) {
+                    const bool b = (o == 0) == ((k & 1) != 0);     // A first in even rounds
+                    md_gto_iso_gpu_switches_set(b ? &sb : &sa);
+                    if (!md_gto_iso_gpu_extract(g.s, set, &gd, &gm)) { ok = false; break; }
+                    const double t = gm.seconds_total * 1e3;
+                    const double gs = (gm.seconds[MD_GTO_ISO_GPU_STAGE_CORNERS] + gm.seconds[MD_GTO_ISO_GPU_STAGE_PROJECT] + gm.seconds[MD_GTO_ISO_GPU_STAGE_RELAX]) * 1e3;
+                    if (b) { tb[k] = t; gb[k] = gs; } else { ta[k] = t; ga[k] = gs; }
+                    md_gto_iso_gpu_mesh_free(g.s, &gm);
+                }
+                if (ok) { r[k] = tb[k] / ta[k]; rg[k] = gb[k] / ga[k]; }
+            }
+            md_gto_iso_gpu_switches_set(&base);
+            char an[32], bn[32];
+            #define ISO_VAR_NAME(buf, tc, wc) ((wc) > 0 ? snprintf(buf, sizeof(buf), "wide %d", (wc)) : snprintf(buf, sizeof(buf), "tiled %d", (tc) ? (tc) : 64))
+            ISO_VAR_NAME(an, c->a_tiled, c->a_wide);
+            ISO_VAR_NAME(bn, c->b_tiled, c->b_wide);
+            #undef ISO_VAR_NAME
+            if (!ok) {
+                printf("  %-6s N %3u  A %-9s B %-9s (an extraction failed)\n", c->group, c->n, an, bn);
+            } else {
+                const double ra_lo = iso_percentile(r, rounds, 0.0), ra_hi = iso_percentile(r, rounds, 1.0);
+                printf("  %-6s N %3u  A %-9s %9.2f ms (gemm %8.2f) | B %-9s %9.2f ms (gemm %8.2f) | B/A %.3f (%.3f-%.3f), gemm %.3f | vertices %u %s %u\n",
+                       c->group, c->n, an, iso_median(ta, rounds), iso_median(ga, rounds), bn, iso_median(tb, rounds), iso_median(gb, rounds),
+                       iso_median(r, rounds), ra_lo, ra_hi, iso_median(rg, rounds), va, va == vb ? "=" : "vs", vb);
+            }
+            fflush(stdout);
+            md_gto_iso_gpu_set_destroy(g.s, set);
+            md_gto_iso_field_destroy(f);
+        }
+        iso_dens_src_free(&s);
+    }
+    md_gto_iso_gpu_switches_set(&base);
+    md_gto_iso_gpu_shutdown();
+    md_gto_gpu_shutdown();
+    iso_gpu_free(&g);
+}
+
+// ---------------------------------------------------------------------------------------------
 // EXPERIMENT (GTO_ISO_TM=1): a Taylor model of rho per brick, as TOPO_ANALYTIC builds per cube
 // (md_topo.c, cpg_box_eval / cpg_shell_rem): each AO expanded to order K-1 at the brick centre with a
 // rigorous separable remainder E_K over the brick, rho's polynomial sum D T T exact (D multiplies exact

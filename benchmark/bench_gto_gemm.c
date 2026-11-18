@@ -34,6 +34,15 @@
 //   --device <sel>   GPU adapter: an index from --list-devices or part of its name; --list-devices
 //   --data <dir>     test_data directory (default: the source tree's)
 //   --verbose        keep mdlib's log (the GEMM plans: batches, pieces, multiply-adds)
+//   --variants       instead of the above: the kernel variants against what would replace them (md_gto_gpu_switches_t),
+//                    for choosing which mdlib keeps. Each pair in one process, --rounds rounds (default 7) of both, the
+//                    order alternating, after one untimed run of each; the ratio is B / A per round, its median and
+//                    range shown, and B's output against A's. On the volume and the plane:
+//                      block shape: a kernel per shape (A) against one kernel, the shape an argument (B): the density's
+//                                   and ELF's GEMM paths, the orbitals' shell kernel at 1 and 8 orbitals, their GEMM at 32
+//                      AO tile:     32 against 64 with 32 for blocks of <= 32 AOs (the vendor's choice is one of the
+//                                   two: Apple 32, else 64): the density, ELF
+//                    and on the volume, orbitals: the shell kernel (8 a pass) against the GEMM path at 2, 4 and 8.
 //
 // A file is a path relative to <data>/vlx or an existing file. Without any: mol.h5, then protein.h5 if present.
 
@@ -59,7 +68,7 @@
 #include <string.h>
 
 // Bumped with every change to this program's measurement or output
-#define MD_GTO_GEMM_BENCH_REV "gemm-bench r4"
+#define MD_GTO_GEMM_BENCH_REV "gemm-bench r5 (--variants)"
 
 #define ANGSTROM_TO_BOHR 1.8897261246257702
 #define MAX_REPS 32
@@ -354,11 +363,132 @@ static void bench_grid(md_gpu_stream_t st, const src_t* s, const md_grid_t* grid
     free(out);
 }
 
+// ---------------------------------------------------------------------------------------------------- --variants
+
+typedef struct variant_t {
+    const char*           name;
+    kind_t                kind;
+    int                   algo;
+    size_t                num_mo;
+    md_gto_gpu_switches_t sw;
+} variant_t;
+
+static void variant_run(gpu_t* g, const variant_t* v, int spins) {
+    md_gto_gpu_switches_set(&v->sw);
+    run_once(g, v->kind, v->algo, spins, v->num_mo);
+    md_gpu_stream_sync(g->st);
+}
+
+static double variant_timed(gpu_t* g, const variant_t* v, int spins) {
+    const md_tick_t t0 = md_tick_now();
+    variant_run(g, v, spins);
+    return md_tick_to_milliseconds(md_tick_now() - t0);
+}
+
+static void variant_read(gpu_t* g, float* out) {
+    md_gpu_copy_from_texture(g->st, g->rb.gpu, g->tex, NULL);
+    md_gpu_stream_sync(g->st);
+    memcpy(out, g->rb.cpu, sizeof(float) * g->n);
+}
+
+// A against B: one untimed run of each, their outputs compared, then rounds of both in alternating order
+static void variants_pair(gpu_t* g, const char* what, const variant_t* a, const variant_t* b, int rounds, int spins, float* oa, float* ob) {
+    variant_run(g, a, spins);
+    variant_read(g, oa);
+    variant_run(g, b, spins);
+    variant_read(g, ob);
+    double dmax = 0.0, fmax_ = 0.0;
+    size_t bad = 0, differ = 0;
+    for (size_t i = 0; i < g->n; ++i) {
+        if (!(ob[i] == ob[i]) || !(oa[i] == oa[i])) { ++bad; continue; }
+        if (ob[i] != oa[i]) ++differ;
+        dmax = fmax(dmax, fabs((double)ob[i] - (double)oa[i]));
+        fmax_ = fmax(fmax_, fabs((double)oa[i]));
+    }
+    double ta[MAX_REPS], tb[MAX_REPS], r[MAX_REPS];
+    for (int k = 0; k < rounds; ++k) {
+        if (k & 1) { tb[k] = variant_timed(g, b, spins); ta[k] = variant_timed(g, a, spins); }
+        else       { ta[k] = variant_timed(g, a, spins); tb[k] = variant_timed(g, b, spins); }
+        r[k] = tb[k] / ta[k];
+    }
+    qsort(ta, (size_t)rounds, sizeof(double), dcmp);
+    qsort(tb, (size_t)rounds, sizeof(double), dcmp);
+    qsort(r, (size_t)rounds, sizeof(double), dcmp);
+    char cmp[96];
+    if (bad) snprintf(cmp, sizeof(cmp), "%zu NaN", bad);
+    else if (differ == 0) snprintf(cmp, sizeof(cmp), "the same bits");
+    else snprintf(cmp, sizeof(cmp), "max |B - A| / max |A| %.1e", fmax_ > 0 ? dmax / fmax_ : dmax);
+    printf("    %-14s A %-28s %9.2f ms | B %-30s %9.2f ms | B/A %.3f (%.3f-%.3f) | %s\n",
+           what, a->name, ta[rounds / 2], b->name, tb[rounds / 2], r[rounds / 2], r[0], r[rounds - 1], cmp);
+    fflush(stdout);
+    const md_gto_gpu_switches_t none = {0};
+    md_gto_gpu_switches_set(&none);
+}
+
+static void variants_grid(md_gpu_stream_t st, const src_t* s, const md_grid_t* grid, const char* label, bool volume, int rounds, int spins,
+                          double cutoff_density, double cutoff_elf) {
+    const size_t n = (size_t)grid->dim[0] * grid->dim[1] * grid->dim[2];
+    printf("  %s: %dx%dx%d = %zu voxels of %.3g bohr\n", label, grid->dim[0], grid->dim[1], grid->dim[2], n, grid->spacing.x);
+    float* oa = (float*)malloc(sizeof(float) * n);
+    float* ob = (float*)malloc(sizeof(float) * n);
+    const md_gto_gpu_switches_t shape = {0}, one = {.block_runtime = 1}, t32 = {.gemm_tile = 32}, t64 = {.gemm_tile = 64};
+    gpu_t g;
+
+    // the density's and ELF's GEMM paths: the block shape, the AO tile
+    for (int pass = 0; pass < 2; ++pass) {
+        const kind_t kind = pass == 0 ? KIND_DENSITY : KIND_ELF;
+        const int algo = pass == 0 ? (int)MD_GTO_GPU_DENSITY_ALGO_GEMM : (int)MD_GTO_GPU_LOCALIZATION_ALGO_GEMM;
+        const int sp = pass == 0 ? 1 : spins;
+        if (!gpu_init(&g, st, s, grid, pass == 0 ? cutoff_density : cutoff_elf, sp, false)) { fprintf(stderr, "    %s: could not set up\n", kind_name[kind]); gpu_free(&g); continue; }
+        const char* nm = pass == 0 ? "density" : "ELF";
+        char na[64], nb[64], n32[64], n64[64];
+        snprintf(na, sizeof(na), "%s, a kernel per shape", nm);
+        snprintf(nb, sizeof(nb), "%s, one kernel", nm);
+        snprintf(n32, sizeof(n32), "%s, 32-wide", nm);
+        snprintf(n64, sizeof(n64), "%s, 64 (32 for n<=32)", nm);
+        const variant_t va = { na, kind, algo, 0, shape }, vb = { nb, kind, algo, 0, one };
+        const variant_t v32 = { n32, kind, algo, 0, t32 }, v64 = { n64, kind, algo, 0, t64 };
+        variants_pair(&g, "block shape", &va, &vb, rounds, sp, oa, ob);
+        variants_pair(&g, "AO tile", &v32, &v64, rounds, sp, oa, ob);
+        gpu_free(&g);
+    }
+
+    // the orbitals: the block shape of the shell kernel (1 and 8 a pass) and of the GEMM path; on the volume, the shell
+    // kernel against the GEMM path at 2, 4 and 8
+    if (s->num_mo > 0 && gpu_init(&g, st, s, grid, cutoff_density, 0, true)) {
+        const size_t nmo[3] = { 1, MD_MIN((size_t)8, s->num_mo), s->num_mo };
+        const int algos[3] = { MD_GTO_GPU_ORBITAL_ALGO_SHELL, MD_GTO_GPU_ORBITAL_ALGO_SHELL, MD_GTO_GPU_ORBITAL_ALGO_GEMM };
+        for (int i = 0; i < 3; ++i) {
+            char na[64], nb[64];
+            snprintf(na, sizeof(na), "%zu orb, %s, per shape", nmo[i], algos[i] == MD_GTO_GPU_ORBITAL_ALGO_SHELL ? "shell" : "gemm");
+            snprintf(nb, sizeof(nb), "%zu orb, %s, one kernel", nmo[i], algos[i] == MD_GTO_GPU_ORBITAL_ALGO_SHELL ? "shell" : "gemm");
+            const variant_t va = { na, KIND_ORBITALS, algos[i], nmo[i], shape }, vb = { nb, KIND_ORBITALS, algos[i], nmo[i], one };
+            variants_pair(&g, "block shape", &va, &vb, rounds, 0, oa, ob);
+        }
+        if (volume) {
+            const size_t cross[3] = { 2, 4, 8 };
+            for (int i = 0; i < 3; ++i) {
+                if (cross[i] > s->num_mo) continue;
+                char na[64], nb[64];
+                snprintf(na, sizeof(na), "%zu orb, shell (8 a pass)", cross[i]);
+                snprintf(nb, sizeof(nb), "%zu orb, gemm", cross[i]);
+                const variant_t va = { na, KIND_ORBITALS, MD_GTO_GPU_ORBITAL_ALGO_SHELL, cross[i], shape };
+                const variant_t vb = { nb, KIND_ORBITALS, MD_GTO_GPU_ORBITAL_ALGO_GEMM, cross[i], shape };
+                variants_pair(&g, "orbitals", &va, &vb, rounds, 0, oa, ob);
+            }
+        }
+        gpu_free(&g);
+    }
+    free(oa);
+    free(ob);
+}
+
 int main(int argc, char** argv) {
     double h = 0.25, margin = 4.0, cutoff_density = 1.0e-6, cutoff_elf = 1.0e-7;
     int reps = 3, spins = 1;
     size_t want_mo = 32;
-    bool plane = false, reference = true, verbose = false, list_devices = false;
+    bool plane = false, reference = true, verbose = false, list_devices = false, variants = false;
+    int rounds = 7;
     bool kinds[KIND_COUNT] = { false, false, false };
     bool any_kind = false;
     const char* device_sel = NULL;
@@ -375,6 +505,8 @@ int main(int argc, char** argv) {
         else if (!strcmp(a, "--cutoff-density") && i + 1 < argc) cutoff_density = atof(argv[++i]);
         else if (!strcmp(a, "--cutoff-elf") && i + 1 < argc) cutoff_elf = atof(argv[++i]);
         else if (!strcmp(a, "--plane")) plane = true;
+        else if (!strcmp(a, "--variants")) variants = true;
+        else if (!strcmp(a, "--rounds") && i + 1 < argc) rounds = atoi(argv[++i]);
         else if (!strcmp(a, "--no-reference")) reference = false;
         else if (!strcmp(a, "--only") && i + 1 < argc) {
             const char* k = argv[++i];
@@ -392,7 +524,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(a, "--verbose")) verbose = true;
         else if (!strcmp(a, "-h") || !strcmp(a, "--help")) {
             printf("usage: %s [--h bohr] [--margin bohr] [--plane] [--spins 1|2] [--only density|elf|lol|orbitals|dmat]... [--orbitals n] [--no-reference] [--reps n] "
-                   "[--cutoff-density c] [--cutoff-elf c] [--device sel] [--list-devices] [--data dir] [--verbose] [file ...]\n", argv[0]);
+                   "[--cutoff-density c] [--cutoff-elf c] [--device sel] [--list-devices] [--data dir] [--verbose] [--variants [--rounds n]] [file ...]\n", argv[0]);
             return 0;
         }
         else if (a[0] == '-') { fprintf(stderr, "unknown option %s (see --help)\n", a); return 1; }
@@ -401,6 +533,8 @@ int main(int argc, char** argv) {
     if (!any_kind) for (int k = 0; k < KIND_COUNT; ++k) kinds[k] = true;
     if (reps < 1) reps = 1;
     if (reps > MAX_REPS) reps = MAX_REPS;
+    if (rounds < 1) rounds = 1;
+    if (rounds > MAX_REPS) rounds = MAX_REPS;
     if (!verbose && default_logger) {
         md_log_unregister(default_logger);
         md_log_register(&quiet_logger);
@@ -455,6 +589,17 @@ int main(int argc, char** argv) {
             .spacing = md_float3_set1((float)h),
             .dim     = { (int)ceil((hi.x - lo.x) / h), (int)ceil((hi.y - lo.y) / h), (int)ceil((hi.z - lo.z) / h) },
         };
+        if (variants) {
+            printf("  variants: %d rounds, the order alternating; B/A per round, median (min-max)\n", rounds);
+            variants_grid(st, &s, &cube, "volume", true, rounds, spins, cutoff_density, cutoff_elf);
+            md_grid_t pl = cube;
+            pl.origin.z = 0.5f * (lo.z + hi.z);
+            pl.dim[2] = 1;
+            variants_grid(st, &s, &pl, "plane through the centre", false, rounds, spins, cutoff_density, cutoff_elf);
+            printf("\n");
+            src_free(&s);
+            continue;
+        }
         bench_grid(st, &s, &cube, "volume", kinds, reference, reps, spins, cutoff_density, cutoff_elf);
         if (plane) {
             md_grid_t pl = cube;

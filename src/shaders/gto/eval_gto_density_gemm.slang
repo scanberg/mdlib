@@ -46,7 +46,7 @@ void block_aabb(uint3 blk, out float3 aabb_min, out float3 aabb_max) {
 // Pass 0: counts
 // ---------------------------------------------------------------------------
 [shader("compute")]
-[numthreads(BLOCK_X, BLOCK_Y, BLOCK_Z)]
+[numthreads(BLOCK_TX, BLOCK_TY, BLOCK_TZ)]
 void count_main(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
     float3 aabb_min, aabb_max;
     block_aabb(gid, aabb_min, aabb_max);
@@ -78,7 +78,7 @@ groupshared uint2 chunk_list[512];      // (global shell, local AO offset) of th
 groupshared uint  phi_na_written;
 
 [shader("compute")]
-[numthreads(BLOCK_X, BLOCK_Y, BLOCK_Z)]
+[numthreads(BLOCK_TX, BLOCK_TY, BLOCK_TZ)]
 void phi_main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_GroupIndex) {
     const uint b = gid.x;
     if (b >= args.num_blocks) return;   // uniform per group
@@ -93,7 +93,7 @@ void phi_main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : 
     float3 aabb_min, aabb_max;
     block_aabb(blk, aabb_min, aabb_max);
 
-    const uint3  vox   = blk * BLOCK_SHAPE + gtid;
+    const uint3  vox   = blk * BLOCK_SHAPE + BLOCK_THREAD_VOXEL(gtid, tid);
     const float3 coord = mul(args.index_to_world, float4(float3(vox), 1.0f)).xyz;
 
     if (tid == 0u) phi_na_written = 0u;
@@ -166,7 +166,7 @@ float gto_pow_le5(float x, float x2, uint n) {
 }
 
 [shader("compute")]
-[numthreads(BLOCK_X, BLOCK_Y, BLOCK_Z)]
+[numthreads(BLOCK_TX, BLOCK_TY, BLOCK_TZ)]
 void phi_grad_main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_GroupIndex) {
     const uint b = gid.x;
     if (b >= args.num_blocks) return;   // uniform per group
@@ -181,7 +181,7 @@ void phi_grad_main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint t
     float3 aabb_min, aabb_max;
     block_aabb(blk, aabb_min, aabb_max);
 
-    const uint3  vox   = blk * BLOCK_SHAPE + gtid;
+    const uint3  vox   = blk * BLOCK_SHAPE + BLOCK_THREAD_VOXEL(gtid, tid);
     const float3 coord = mul(args.index_to_world, float4(float3(vox), 1.0f)).xyz;
 
     if (tid == 0u) phi_na_written = 0u;
