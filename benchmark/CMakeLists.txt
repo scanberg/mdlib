@@ -121,10 +121,47 @@ target_include_directories(md_render_bench PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 
 # md_render_snap: a structure through md_render_mol and md_render, written as PNG images (headless; see
 # render_snap.c): for looking at what the renderer draws on real data.
-add_executable(md_render_snap render_snap.c)
+add_executable(md_render_snap render_snap.c render_scene.h)
 target_compile_definitions(md_render_snap PRIVATE ${MD_DEFINES})
 target_compile_options(md_render_snap PRIVATE ${MD_FLAGS} $<$<CONFIG:Debug>:${MD_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_FLAGS_REL}>)
 target_link_options(md_render_snap PRIVATE ${MD_LINK_FLAGS} $<$<CONFIG:Debug>:${MD_LINK_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_LINK_FLAGS_REL}>)
 target_link_libraries(md_render_snap PRIVATE mdlib)
-add_dependencies(md_render_snap md_topo_gto_bench_rev)
+add_dependencies(md_render_snap md_bench_rev)
 target_include_directories(md_render_snap PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+
+
+# md_render_window: md_render_snap's scene in a window, presented through md_gpu's surface (see
+# render_window.c): whether presentation works end to end on a machine, locally or remotely. Off by
+# default, since it fetches GLFW (X11 only on Linux: what remote desktops serve, and Wayland desktops
+# run it through XWayland).
+option(MD_RENDER_WINDOW "Build md_render_window, a presentation test (fetches GLFW)" OFF)
+if (MD_RENDER_WINDOW AND MD_ENABLE_GPU)
+  include(FetchContent)
+  set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+  set(GLFW_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
+  set(GLFW_BUILD_DOCS     OFF CACHE BOOL "" FORCE)
+  set(GLFW_INSTALL        OFF CACHE BOOL "" FORCE)
+  set(GLFW_BUILD_WAYLAND  OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(
+    glfw
+    GIT_REPOSITORY https://github.com/glfw/glfw.git
+    GIT_TAG        3.4
+    GIT_SHALLOW    TRUE
+  )
+  FetchContent_MakeAvailable(glfw)
+
+  add_executable(md_render_window render_window.c render_scene.h)
+  target_compile_definitions(md_render_window PRIVATE ${MD_DEFINES})
+  target_compile_options(md_render_window PRIVATE ${MD_FLAGS} $<$<CONFIG:Debug>:${MD_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_FLAGS_REL}>)
+  target_link_options(md_render_window PRIVATE ${MD_LINK_FLAGS} $<$<CONFIG:Debug>:${MD_LINK_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_LINK_FLAGS_REL}>)
+  target_link_libraries(md_render_window PRIVATE mdlib glfw)
+  add_dependencies(md_render_window md_bench_rev)
+  target_include_directories(md_render_window PRIVATE ${CMAKE_CURRENT_BINARY_DIR} ${CMAKE_CURRENT_BINARY_DIR}/gen)
+  compile_gpu_shaders(render_window_shaders.inl
+    TARGET    md_render_window
+    NAMESPACE md_shader
+    SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/render_window.slang
+    VERTEX    full_vs
+    FRAGMENT  compose_fs
+  )
+endif()
