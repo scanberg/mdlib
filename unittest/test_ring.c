@@ -410,7 +410,7 @@ UTEST(ring, rings_c60) {
 	md_system_t sys = { .alloc = alloc };
 	md_system_state_t sys_state = { .alloc = alloc };
 	md_pdb_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/c60.pdb"), NULL);
-	md_system_infer(&sys, &sys_state, MD_SYSTEM_INFER_ALL, NULL);
+	md_system_infer(&sys, &sys_state, NULL);
 
 	EXPECT_EQ(sys.atom.count, 60);
 	EXPECT_EQ(sys.bond.count, 90);
@@ -430,7 +430,7 @@ UTEST(ring, rings_c720) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
     md_xyz_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/c720.xyz"), NULL);
-    md_system_infer(&sys, &sys_state, MD_SYSTEM_INFER_ALL, NULL);
+    md_system_infer(&sys, &sys_state, NULL);
 
     EXPECT_EQ(sys.atom.count, 720);
     EXPECT_EQ(sys.bond.count, 1080);
@@ -450,7 +450,7 @@ UTEST(ring, rings_14kr) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
     md_pdb_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), NULL);
-    md_system_infer(&sys, &sys_state, MD_SYSTEM_INFER_ALL, NULL);
+    md_system_infer(&sys, &sys_state, NULL);
 
     const size_t num_rings = md_ring_data_count(&sys.ring);
     EXPECT_EQ(num_rings, 207);
@@ -464,7 +464,7 @@ UTEST(ring, rings_trytophan_pdb) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
     md_pdb_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.pdb"), NULL);
-    md_system_infer(&sys, &sys_state, MD_SYSTEM_INFER_ALL, NULL);
+    md_system_infer(&sys, &sys_state, NULL);
 
     const size_t num_rings = md_ring_data_count(&sys.ring);
     EXPECT_EQ(num_rings, 2);
@@ -481,7 +481,7 @@ UTEST(ring, rings_trytophan_xyz) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
     md_xyz_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.xyz"), NULL);
-    md_system_infer(&sys, &sys_state, MD_SYSTEM_INFER_ALL, NULL);
+    md_system_infer(&sys, &sys_state, NULL);
 
     const size_t num_rings = md_ring_data_count(&sys.ring);
     EXPECT_EQ(num_rings, 2);
@@ -498,7 +498,7 @@ UTEST(ring, rings_full) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
     md_xyz_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/full.xyz"), NULL);
-    md_system_infer(&sys, &sys_state, MD_SYSTEM_INFER_ALL, NULL);
+    md_system_infer(&sys, &sys_state, NULL);
 
     const size_t num_rings = md_ring_data_count(&sys.ring);
     EXPECT_EQ(num_rings, 195);
@@ -515,7 +515,7 @@ UTEST(ring, rings_ciprofloxacin) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
     md_pdb_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/ciprofloxacin.pdb"), NULL);
-    md_system_infer(&sys, &sys_state, MD_SYSTEM_INFER_ALL, NULL);
+    md_system_infer(&sys, &sys_state, NULL);
 
     const int64_t num_rings = md_ring_data_count(&sys.ring);
     ASSERT_EQ(num_rings, 4);
@@ -543,10 +543,9 @@ UTEST(ring, rings_coarse_grained) {
         ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &sys_state, md_str_from_cstr(path), NULL));
         ASSERT_TRUE(md_system_is_coarse_grained(&sys));
         // The bonds of the topology close cycles: more bonds than a forest of the molecules has
-        EXPECT_GT(sys.bond.count + sys.instance.count, sys.atom.count);
+        EXPECT_GT(md_bond_list_count(&sys.given_bond) + sys.instance.count, sys.atom.count);
 
-        md_infer_flags_t flags = MD_SYSTEM_INFER_ALL & ~MD_SYSTEM_INFER_BOND_BIT;
-        EXPECT_TRUE(md_system_infer(&sys, &sys_state, flags, NULL));
+        EXPECT_TRUE(md_system_infer(&sys, &sys_state, NULL));
         EXPECT_EQ(0, (int)md_ring_data_count(&sys.ring));
         md_temp_end(temp_scope);
     }

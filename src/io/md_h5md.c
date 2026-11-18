@@ -1047,9 +1047,7 @@ static bool h5md_system_from_core(md_system_t* sys, md_system_state_t* state, hi
 
     const size_t capacity = MD_ROUND_UP(N, 16);
     md_array_resize(sys->atom.type_idx, capacity, alloc);
-    md_array_resize(sys->atom.flags, capacity, md_system_derived_alloc(sys));
     md_memset(sys->atom.type_idx, 0, capacity * sizeof(md_particle_type_idx_t));
-    md_memset(sys->atom.flags, 0, capacity * sizeof(md_atom_flags_t));
     md_particle_type_find_or_add(&sys->atom.type, MD_STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, alloc);
 
     // Particles of one species are identical (the specification says so), so a type is a species
@@ -1075,15 +1073,19 @@ static bool h5md_system_from_core(md_system_t* sys, md_system_state_t* state, hi
     }
     sys->atom.count = N;
 
+    // Read in the scratch, the pairs of the file which name particles of the system, then given at once
     md_array(md_atom_pair_t) bonds = 0;
     h5md_read_bonds(&bonds, file, p, scratch);
-    for (size_t i = 0; i < md_array_size(bonds); ++i) {
-        md_array_push(sys->bond.pairs, bonds[i], md_system_derived_alloc(sys));
-        md_array_push(sys->bond.flags, md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_TOPOLOGY), md_system_derived_alloc(sys));
-    }
-    sys->bond.count = md_array_size(bonds);
-    if (sys->bond.count) {
-        md_bond_build_connectivity(&sys->bond, N, md_system_derived_alloc(sys));
+    const size_t num_bonds = md_array_size(bonds);
+    md_bond_list_t* given = &sys->given_bond;
+    md_array_resize(given->pairs, num_bonds, sys->alloc);
+    md_array_resize(given->flags, num_bonds, sys->alloc);
+    if (num_bonds) md_memcpy(given->pairs, bonds, num_bonds * sizeof(md_atom_pair_t));
+    const md_bond_flags_t topology = md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_TOPOLOGY);
+    for (size_t i = 0; i < num_bonds; ++i) given->flags[i] = topology;
+    // The connectivity of the topology, of every atom; without it (a file of coordinates alone) the bonds are inferred
+    if (num_bonds) {
+        md_system_set_bonds_complete(sys);
     }
 
     float* charge = md_alloc(scratch, N * sizeof(float));

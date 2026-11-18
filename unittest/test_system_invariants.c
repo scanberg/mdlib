@@ -35,7 +35,7 @@ static void check_file(int* utest_result, sys_load_fn load, md_str_t path) {
         return;
     }
 
-    md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL);
+    md_system_infer(&sys, &state, NULL);
     expect_valid_system(utest_result, __FILE__, __LINE__, &sys);
 
     md_system_free(&sys);
@@ -96,8 +96,8 @@ UTEST(system_invariants, copy) {
     EXPECT_NE((void*)sys.atom.type_idx, (void*)core.atom.type_idx);
     md_system_state_t core_state = { .alloc = a2 };
     md_system_state_copy(&core_state, &state);
-    ASSERT_TRUE(md_system_infer(&core, &core_state, MD_SYSTEM_INFER_ALL, NULL));
-    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&core, &core_state, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
     expect_valid_system(utest_result, __FILE__, __LINE__, &core);
     EXPECT_EQ(sys.bond.count, core.bond.count);
     EXPECT_EQ(0, memcmp(sys.bond.pairs, core.bond.pairs, sys.bond.count * sizeof(md_atom_pair_t)));
@@ -193,13 +193,13 @@ static void check_infer_write_set(int* utest_result, sys_load_fn load, md_str_t 
         const char* name = (const char*)path.ptr;
         // The colors of the types first, as a viewer has them to show the system with: of the types, which the work
         // does not publish (md_system_infer_run)
-        md_system_infer(&sys, &state, MD_SYSTEM_INFER_COLOR_BIT, NULL);
+        md_system_infer_type_colors(&sys);
         md_system_t snap = { .alloc = a_snap };
         md_system_copy(&snap, &sys);
 
         md_system_infer_work_t work;
         EXPECT_TRUE(md_system_infer_prepare(&work, &sys, &state, a_work));
-        EXPECT_TRUE(md_system_infer_run(&work, MD_SYSTEM_INFER_ALL, NULL));
+        EXPECT_TRUE(md_system_infer_run(&work, NULL));
 
         // Nothing of the system was written: not through what the work shares of it
         expect_same_core(utest_result, __FILE__, __LINE__, name, &sys, &snap);
@@ -211,8 +211,8 @@ static void check_infer_write_set(int* utest_result, sys_load_fn load, md_str_t 
         md_system_t ref = { .alloc = a_ref };
         md_system_state_t ref_state = { .alloc = a_ref };
         ASSERT_TRUE(load(&ref, &ref_state, path));
-        md_system_infer(&ref, &ref_state, MD_SYSTEM_INFER_COLOR_BIT, NULL);
-        md_system_infer(&ref, &ref_state, MD_SYSTEM_INFER_ALL & ~MD_SYSTEM_INFER_COLOR_BIT, NULL);
+        md_system_infer_type_colors(&ref);
+        md_system_infer(&ref, &ref_state, NULL);
 
         EXPECT_TRUE(md_system_infer_publish(&sys, &work));
         expect_valid_system(utest_result, __FILE__, __LINE__, &sys);
@@ -253,11 +253,12 @@ UTEST(system_invariants, infer_write_set) {
 
 // ### THE ALLOCATOR OF THE DERIVED ###
 //
-// What inference writes (MD_SYSTEM_DERIVED_*, and the reference state) is allocated with the system's derived allocator,
-// one which frees (md_system_derived_alloc), and the core with its allocator, an arena: what inference replaces is given
-// back. Checked with an allocator which knows its blocks: after loading and inferring, every derived array is one of its
-// blocks, and nothing of the core is; inferring again, publishing a work, adding and removing a bond leave as much of it
-// alive as before, and the core's arena where it was; freed, the system leaves none of it.
+// What inference writes (MD_SYSTEM_DERIVED_*, and the reference state) is in the system's derived arena, whose pages
+// come from where the system's alloc takes its own (md_system_t, ALLOCATORS), and the core is in alloc: an inference
+// replaces the derived arena whole. Checked with an arena of the core over a backing which knows its blocks: a loaded
+// system has no derived; after inferring, every derived array is within one of its blocks; inferring again, publishing
+// a work, adding and removing a bond leave as much of it alive as before; the derived freed, as much as the core alone
+// had (inference wrote nothing of the core); freed, the system leaves none of it.
 
 typedef struct tracked_t {
     md_allocator_i alloc;
@@ -342,15 +343,24 @@ static void tracked_free(tracked_t* t) {
     free(t->size);
 }
 
+// Within one of the blocks (the pages of an arena)
+static bool tracked_contains(const tracked_t* t, const void* ptr) {
+    const uintptr_t p = (uintptr_t)ptr;
+    for (size_t i = 0; i < t->cap; ++i) {
+        if (t->key[i] > 1 && p >= t->key[i] && p < t->key[i] + t->size[i]) return true;
+    }
+    return false;
+}
+
 static bool tracked_owns_array(const tracked_t* t, const void* arr) {
-    return !arr || tracked_find(t, (uintptr_t)md_array_header(arr)) != SIZE_MAX;
+    return !arr || tracked_contains(t, md_array_header(arr));
 }
 
 // Every derived array of the system a block of t, its strings too, and the reference state's coordinates
 static void expect_derived_owned(int* utest_result, const char* what, const md_system_t* sys, const tracked_t* t) {
 #define OWNED(f) if (!tracked_owns_array(t, sys->f)) { printf("%s: " #f " is not of the derived allocator\n", what); *utest_result = UTEST_TEST_FAILURE; }
 #define OWNED_STRINGS(f) OWNED(f) for (size_t i_ = 0; i_ < md_array_size(sys->f); ++i_) { \
-        if (sys->f[i_].ptr && tracked_find(t, (uintptr_t)sys->f[i_].ptr) == SIZE_MAX) { printf("%s: a string of " #f " is not of the derived allocator\n", what); *utest_result = UTEST_TEST_FAILURE; break; } }
+        if (sys->f[i_].ptr && !tracked_contains(t, sys->f[i_].ptr)) { printf("%s: a string of " #f " is not of the derived allocator\n", what); *utest_result = UTEST_TEST_FAILURE; break; } }
     MD_SYSTEM_DERIVED_ARRAYS(OWNED)
     MD_SYSTEM_DERIVED_STRINGS(OWNED_STRINGS)
     OWNED(reference.xyz)
@@ -370,115 +380,170 @@ static bool load_molden(md_system_t* sys, md_system_state_t* state, md_str_t pat
     return md_molden_system_init_from_file(sys, state, path, NULL);
 }
 
-static void check_derived_alloc(int* utest_result, sys_load_fn load, md_str_t path) {
+static void check_derived_arena(int* utest_result, sys_load_fn load, md_str_t path) {
     const char* what = (const char*)path.ptr;
     tracked_t t;
     tracked_init(&t);
-    md_allocator_i* core = md_vm_arena_create(MD_GIGABYTES(4));
-    md_system_t sys = { .alloc = core, .derived_alloc = &t.alloc };
-    md_system_state_t state = { .alloc = core };
+    md_allocator_i* core = md_arena_allocator_create(&t.alloc, MD_MEGABYTES(1));
+    md_allocator_i* coords = md_vm_arena_create(MD_GIGABYTES(4));
+    md_system_t sys = { .alloc = core };
+    md_system_state_t state = { .alloc = coords };
     if (!load(&sys, &state, path)) {
         printf("failed to load '%s'\n", what);
         *utest_result = UTEST_TEST_FAILURE;
-        md_vm_arena_destroy(core);
+        md_arena_allocator_destroy(core);
+        md_vm_arena_destroy(coords);
         tracked_free(&t);
         return;
     }
-    EXPECT_TRUE(sys.derived_alloc == &t.alloc);     // Kept by the loader
-    expect_derived_owned(utest_result, what, &sys, &t);
+    // A loader writes nothing of the derived
+    EXPECT_TRUE(sys.derived_arena == NULL);
+    const size_t base = t.live;
 
-    md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL);
+    md_system_infer(&sys, &state, NULL);
     expect_valid_system(utest_result, __FILE__, __LINE__, &sys);
     expect_derived_owned(utest_result, what, &sys, &t);
-    const size_t pos  = md_vm_arena_get_pos(core);
+    ASSERT_TRUE(sys.derived_arena != NULL);
+    EXPECT_TRUE(md_arena_allocator_backing(sys.derived_arena) == &t.alloc);    // Where the core's pages come from
     const size_t live = t.live;
+    EXPECT_GT(live, base);
 
-    // Inferred again: the same, replaced
-    md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL);
+    // Inferred again: the same, in an arena of its own, and the one before given back
+    md_system_infer(&sys, &state, NULL);
     expect_derived_owned(utest_result, what, &sys, &t);
-    EXPECT_EQ(pos, md_vm_arena_get_pos(core));
     EXPECT_EQ(live, t.live);
 
-    // In the background: the work's derived arrays are of the system's derived allocator, the rest of the work's
-    // (gone with its arena once published)
-    {
-        // Published twice: as much alive after each, about as much as inferred on the system itself (the copies of the
-        // work are of the size of what they copy, where arrays grown in place have room to spare)
-        size_t live_published = 0;
-        for (int k = 0; k < 2; ++k) {
-            md_allocator_i* a_work = md_vm_arena_create(MD_GIGABYTES(4));
-            md_system_infer_work_t work;
-            EXPECT_TRUE(md_system_infer_prepare(&work, &sys, &state, a_work));
-            EXPECT_TRUE(md_system_infer_run(&work, MD_SYSTEM_INFER_ALL, NULL));
-            EXPECT_TRUE(md_system_infer_publish(&sys, &work));
-            md_vm_arena_destroy(a_work);
-            expect_derived_owned(utest_result, what, &sys, &t);
-            expect_valid_system(utest_result, __FILE__, __LINE__, &sys);
-            EXPECT_EQ(pos, md_vm_arena_get_pos(core));
-            EXPECT_LE(t.live, live + live / 16 + 64);
-            if (k == 0) live_published = t.live;
-            else        EXPECT_EQ(live_published, t.live);
-        }
-        // A work not published is given back whole
+    // In the background: the work's arena becomes the system's, the rest of the work's is gone with its own arena
+    for (int k = 0; k < 2; ++k) {
         md_allocator_i* a_work = md_vm_arena_create(MD_GIGABYTES(4));
         md_system_infer_work_t work;
         EXPECT_TRUE(md_system_infer_prepare(&work, &sys, &state, a_work));
-        EXPECT_TRUE(md_system_infer_run(&work, MD_SYSTEM_INFER_ALL, NULL));
+        EXPECT_TRUE(md_arena_allocator_backing(work.sys.derived_arena) == &t.alloc);    // The system's, not the work's
+        EXPECT_TRUE(md_system_infer_run(&work, NULL));
+        EXPECT_TRUE(md_system_infer_publish(&sys, &work));
+        md_vm_arena_destroy(a_work);
+        expect_derived_owned(utest_result, what, &sys, &t);
+        expect_valid_system(utest_result, __FILE__, __LINE__, &sys);
+        EXPECT_EQ(live, t.live);
+    }
+    // A work not published is given back whole
+    {
+        md_allocator_i* a_work = md_vm_arena_create(MD_GIGABYTES(4));
+        md_system_infer_work_t work;
+        EXPECT_TRUE(md_system_infer_prepare(&work, &sys, &state, a_work));
+        EXPECT_TRUE(md_system_infer_run(&work, NULL));
         md_system_infer_discard(&work);
         md_vm_arena_destroy(a_work);
-        EXPECT_EQ(live_published, t.live);
+        EXPECT_EQ(live, t.live);
     }
 
-    // A bond added by hand between the first and the last atom, and removed: the molecules, rings and fragments with it
+    // The derived freed: as much alive as the core alone had, which inference wrote nothing of
+    md_system_derived_free(&sys);
+    EXPECT_EQ(base, t.live);
+    md_system_infer(&sys, &state, NULL);
+    EXPECT_EQ(live, t.live);
+
+    // A bond added by hand between the first and the last atom, and removed: the molecules, rings and fragments with it.
+    // The bond is of the core (bond_edit), which may grow by a page; the derived is inferred anew.
     if (sys.atom.count > 1) {
         const md_atom_idx_t a = 0, b = (md_atom_idx_t)(sys.atom.count - 1);
         if (md_system_bond_find(&sys, a, b) == -1) {
-            md_system_bond_insert(&sys, a, b, md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_USER));
-            md_system_bond_build_connectivity(&sys);
-            md_system_infer(&sys, &state, MD_SYSTEM_INFER_MOLECULE_BIT | MD_SYSTEM_INFER_FRAGMENT_BIT, NULL);
+            EXPECT_TRUE(md_system_bond_insert(&sys, a, b, md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_USER)));
+            md_system_infer(&sys, &state, NULL);
             expect_derived_owned(utest_result, what, &sys, &t);
-            md_system_bond_remove(&sys, md_system_bond_find(&sys, a, b));
-            md_system_bond_build_connectivity(&sys);
-            md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL);
+            EXPECT_NE(-1, md_system_bond_find(&sys, a, b));
+            EXPECT_TRUE(md_system_bond_remove(&sys, a, b, md_system_bond_flags(&sys, md_system_bond_find(&sys, a, b))));
+            md_system_infer(&sys, &state, NULL);
             expect_derived_owned(utest_result, what, &sys, &t);
-            EXPECT_EQ(pos, md_vm_arena_get_pos(core));
-            // As much alive as before, give or take the capacity the bond arrays grew to
-            EXPECT_LE(t.live, live + live / 8);
+            EXPECT_EQ(-1, md_system_bond_find(&sys, a, b));
+            EXPECT_LE(t.live, live + MD_MEGABYTES(2));
         }
     }
 
-    // A copy has its derived arrays in its own derived allocator
+    // A copy has its derived in an arena of its own, of its own core's pages
     {
         tracked_t t2;
         tracked_init(&t2);
-        md_allocator_i* core2 = md_vm_arena_create(MD_GIGABYTES(4));
-        md_system_t copy = { .alloc = core2, .derived_alloc = &t2.alloc };
+        md_allocator_i* core2 = md_arena_allocator_create(&t2.alloc, MD_MEGABYTES(1));
+        md_system_t copy = { .alloc = core2 };
         EXPECT_TRUE(md_system_copy(&copy, &sys));
+        EXPECT_TRUE(copy.derived_arena != NULL && copy.derived_arena != sys.derived_arena);
+        EXPECT_TRUE(md_arena_allocator_backing(copy.derived_arena) == &t2.alloc);
         expect_derived_owned(utest_result, what, &copy, &t2);
         md_system_free(&copy);
+        md_arena_allocator_destroy(core2);
         EXPECT_EQ((size_t)0, t2.live);
-        md_vm_arena_destroy(core2);
         tracked_free(&t2);
     }
 
+    // Freed, and its arena: none of it left
     md_system_free(&sys);
+    md_arena_allocator_destroy(core);
     EXPECT_EQ((size_t)0, t.live);
-    if (t.live) printf("%s: %zu bytes of the derived left in %zu blocks\n", what, t.live, t.count);
-    md_vm_arena_destroy(core);
+    if (t.live) printf("%s: %zu bytes left in %zu blocks\n", what, t.live, t.count);
+    md_vm_arena_destroy(coords);
     tracked_free(&t);
 }
 
-UTEST(system_invariants, derived_alloc) {
-    check_derived_alloc(utest_result, load_pdb, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"));
-    check_derived_alloc(utest_result, load_pdb, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/dppc64.pdb"));
-    check_derived_alloc(utest_result, load_pdb, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/ciprofloxacin.pdb"));
-    check_derived_alloc(utest_result, load_mmcif, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif"));
-    check_derived_alloc(utest_result, load_mmcif, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/2or2.cif"));
-    check_derived_alloc(utest_result, load_gro, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"));
-    check_derived_alloc(utest_result, load_gro, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini3_membrane.gro"));
-    check_derived_alloc(utest_result, load_lammps, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/Water_Ethane_Cubic_Init.data"));
-    check_derived_alloc(utest_result, load_tpr, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/peptide_tip3p.tpr"));
-    check_derived_alloc(utest_result, load_tpr, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini3_membrane.tpr"));
-    check_derived_alloc(utest_result, load_xyz, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/extended.xyz"));
-    check_derived_alloc(utest_result, load_molden, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden"));
+UTEST(system_invariants, derived_arena) {
+    check_derived_arena(utest_result, load_pdb, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"));
+    check_derived_arena(utest_result, load_pdb, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/dppc64.pdb"));
+    check_derived_arena(utest_result, load_pdb, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/ciprofloxacin.pdb"));
+    check_derived_arena(utest_result, load_mmcif, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif"));
+    check_derived_arena(utest_result, load_mmcif, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/2or2.cif"));
+    check_derived_arena(utest_result, load_gro, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"));
+    check_derived_arena(utest_result, load_gro, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini3_membrane.gro"));
+    check_derived_arena(utest_result, load_lammps, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/Water_Ethane_Cubic_Init.data"));
+    check_derived_arena(utest_result, load_tpr, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/peptide_tip3p.tpr"));
+    check_derived_arena(utest_result, load_tpr, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini3_membrane.tpr"));
+    check_derived_arena(utest_result, load_xyz, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/extended.xyz"));
+    check_derived_arena(utest_result, load_molden, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden"));
+}
+
+// ### THE DERIVED FROM THE CORE ALONE ###
+//
+// Everything inference writes (MD_SYSTEM_DERIVED_*) follows from the core: what the data gives (md_system_fields.h) and
+// the coordinates. So the derived freed (md_system_derived_free) and inferred again is what it was: nothing the data
+// gives is kept only in the derived, where inference had to carry it over from what it replaces. That is what lets the
+// derived be replaced whole (an arena of its own, reset) rather than array by array.
+
+static void check_derived_from_core(int* utest_result, sys_load_fn load, md_str_t path) {
+    const char* what = (const char*)path.ptr;
+    md_allocator_i* a_sys = md_vm_arena_create(MD_GIGABYTES(4));
+    md_allocator_i* a_ref = md_vm_arena_create(MD_GIGABYTES(4));
+    md_system_t sys = { .alloc = a_sys };
+    md_system_state_t state = { .alloc = a_sys };
+    md_system_t ref = { .alloc = a_ref };
+    md_system_state_t ref_state = { .alloc = a_ref };
+    if (!load(&sys, &state, path) || !load(&ref, &ref_state, path)) {
+        printf("failed to load '%s'\n", what);
+        *utest_result = UTEST_TEST_FAILURE;
+    } else {
+        md_system_infer(&ref, &ref_state, NULL);
+        md_system_derived_free(&sys);
+        md_system_infer(&sys, &state, NULL);
+        expect_same_core(utest_result, __FILE__, __LINE__, what, &sys, &ref);
+        expect_same_derived(utest_result, __FILE__, __LINE__, what, &sys, &ref);
+        // And once more, from what was inferred
+        md_system_derived_free(&sys);
+        md_system_infer(&sys, &state, NULL);
+        expect_same_derived(utest_result, __FILE__, __LINE__, what, &sys, &ref);
+    }
+    md_vm_arena_destroy(a_sys);
+    md_vm_arena_destroy(a_ref);
+}
+
+UTEST(system_invariants, derived_from_core) {
+    check_derived_from_core(utest_result, load_pdb, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"));
+    check_derived_from_core(utest_result, load_pdb, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/ciprofloxacin.pdb"));     // CONECT
+    check_derived_from_core(utest_result, load_pdb, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/c60.pdb"));
+    check_derived_from_core(utest_result, load_mmcif, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif"));            // Entities
+    check_derived_from_core(utest_result, load_mmcif, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif"));
+    check_derived_from_core(utest_result, load_gro, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"));
+    check_derived_from_core(utest_result, load_gro, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini3_membrane.gro"));
+    check_derived_from_core(utest_result, load_lammps, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/Water_Ethane_Cubic_Init.data"));
+    check_derived_from_core(utest_result, load_tpr, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/peptide_tip3p.tpr"));     // Topology
+    check_derived_from_core(utest_result, load_tpr, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/martini/martini3_membrane.tpr"));
+    check_derived_from_core(utest_result, load_xyz, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/extended.xyz"));
+    check_derived_from_core(utest_result, load_molden, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden"));  // QM
 }

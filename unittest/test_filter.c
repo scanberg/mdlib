@@ -25,7 +25,7 @@ UTEST(filter, centered) {
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, gro_file, NULL));
-    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
     
     md_bitset_t bf = {0};
     const md_filter_context_t fctx = {&sys, &state, NULL};
@@ -33,6 +33,7 @@ UTEST(filter, centered) {
 
     EXPECT_TRUE(TEST("resname('ALA')"));
     EXPECT_TRUE(TEST("within(10, residue(1))"));
+    md_system_free(&sys);
 
     md_arena_allocator_destroy(alloc);
 }
@@ -45,7 +46,7 @@ UTEST(filter, variable_length) {
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, gro_file, NULL));
-    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
 
     const md_filter_context_t fctx = {&sys, &state, NULL};
 
@@ -76,6 +77,7 @@ UTEST(filter, variable_length) {
     md_array(md_bitset_t) arr = 0;
     EXPECT_TRUE(md_filter_sets(&arr, MD_STR_LIT("residue(within(5, residue(1)))"), &fctx, alloc).success);
     EXPECT_EQ(num_residues, md_array_size(arr));
+    md_system_free(&sys);
 
     md_arena_allocator_destroy(alloc);
 }
@@ -89,7 +91,7 @@ UTEST(filter, qm_regions_need_a_qm_system) {
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, gro_file, NULL));
-    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
 
     md_bitset_t bf = {0};
     const md_filter_context_t fctx = {&sys, &state, NULL};
@@ -100,6 +102,7 @@ UTEST(filter, qm_regions_need_a_qm_system) {
     EXPECT_FALSE(TEST("environment"));
     EXPECT_TRUE(strstr(res.error, "no QM region") != NULL);
     EXPECT_FALSE(TEST("within(5, qm)"));
+    md_system_free(&sys);
 
     md_arena_allocator_destroy(alloc);
 }
@@ -112,7 +115,7 @@ UTEST(filter, errors_say_where) {
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, gro_file, NULL));
-    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
 
     md_bitset_t bf = {0};
     const md_filter_context_t fctx = {&sys, &state, NULL};
@@ -161,6 +164,7 @@ UTEST(filter, errors_say_where) {
     res = md_filter(&bf, MD_STR_LIT("resname('ALA')"), &reference, alloc);
     EXPECT_TRUE(res.success);
     EXPECT_FALSE(res.is_dynamic);
+    md_system_free(&sys);
 
     md_arena_allocator_destroy(alloc);
 }
@@ -175,7 +179,7 @@ UTEST(filter, in_context) {
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, gro_file, NULL));
-    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
 
     const md_filter_context_t whole = {&sys, &state, NULL, NULL};
 
@@ -242,6 +246,7 @@ UTEST(filter, in_context) {
     EXPECT_TRUE(md_filter(&bf, MD_STR_LIT("element('C')"), &around, alloc).success);
     EXPECT_TRUE(md_bitset_count(bf) > 0);
     EXPECT_TRUE(md_bitset_equal(carbons, bf));
+    md_system_free(&sys);
 
     md_arena_allocator_destroy(alloc);
 }
@@ -261,7 +266,7 @@ UTEST(filter, completion_within_context) {
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, gro_file, NULL));
-    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
 
     const md_filter_context_t whole = {&sys, &state, NULL, NULL};
     md_bitset_t context = {0};
@@ -278,6 +283,7 @@ UTEST(filter, completion_within_context) {
     c = md_filter_complete(expr, cursor, &chain, alloc);
     EXPECT_FALSE(completes_with(c, "\"PFT\""));
     EXPECT_TRUE(completes_with(c, "\"ALA\""));
+    md_system_free(&sys);
 
     md_arena_allocator_destroy(alloc);
 }
@@ -318,10 +324,11 @@ UTEST(filter, bonds) {
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(filter_bonds_pdb), NULL));
-    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
     // C1-C2, C2-O1, C2-O2, Mg-O1, O-H1, O-H2, Cu-Cu
     ASSERT_EQ(7, (int)sys.bond.count);
     md_system_bond_insert(&sys, 6, 3, md_bond_flags_set_origin(md_bond_flags_set_kind(MD_BOND_FLAG_KIND_GIVEN, MD_BOND_KIND_HYDROGEN), MD_BOND_ORIGIN_USER));
+    ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
     ASSERT_EQ(1, (int)sys.bond.noncovalent_count);
 
     const md_filter_context_t fctx = {&sys, &state, NULL, NULL};
@@ -409,6 +416,7 @@ UTEST(filter, bonds) {
         EXPECT_TRUE(res.success);
         EXPECT_FALSE(has_pair(pairs, 8, 9));
     }
+    md_system_free(&sys);
 
     md_arena_allocator_destroy(alloc);
 }
@@ -420,8 +428,8 @@ UTEST(filter, bonds_as_atoms) {
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(filter_bonds_pdb), NULL));
-    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
     md_system_bond_insert(&sys, 6, 3, md_bond_flags_set_origin(md_bond_flags_set_kind(MD_BOND_FLAG_KIND_GIVEN, MD_BOND_KIND_HYDROGEN), MD_BOND_ORIGIN_USER));
+    ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
 
     const md_filter_context_t fctx = {&sys, &state, NULL, NULL};
     md_bitset_t atoms = {0};
@@ -475,6 +483,7 @@ UTEST(filter, bonds_as_atoms) {
     EXPECT_TRUE(strstr(res.error, "atom(b)") != NULL);
     res = md_filter(&atoms, MD_STR_LIT("within(3.0, atom(bond(kind='hydrogen')))"), &fctx, alloc);
     EXPECT_TRUE(res.success);
+    md_system_free(&sys);
 
     md_arena_allocator_destroy(alloc);
 }
@@ -487,7 +496,7 @@ UTEST(filter, chains_by_author_id) {
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif"), NULL));
-    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
     const md_filter_context_t fctx = {&sys, &state, NULL, NULL};
 
     // The atoms whose instance the author filed under A
@@ -568,6 +577,7 @@ UTEST(filter, chains_by_author_id) {
     md_array(md_bitset_t) per_chain = 0;
     ASSERT_TRUE(md_filter_sets(&per_chain, MD_STR_LIT("smiles('NCC=O', level='chain', mode='one_per_unit')"), &fctx, alloc).success);
     EXPECT_EQ(2, (int)md_array_size(per_chain));
+    md_system_free(&sys);
 
     md_arena_allocator_destroy(alloc);
 }
@@ -580,7 +590,7 @@ UTEST(filter, chains_without_ids) {
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL));
-    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
     const md_filter_context_t fctx = {&sys, &state, NULL, NULL};
     ASSERT_EQ(md_system_chain_count(&sys), 0);
 
@@ -616,6 +626,7 @@ UTEST(filter, chains_without_ids) {
     EXPECT_EQ(r.end - r.beg, md_bitset_count(bf));
     res = md_filter(&bf, MD_STR_LIT("nucleic(1)"), &fctx, alloc);
     EXPECT_FALSE(res.success);
+    md_system_free(&sys);
 
     md_arena_allocator_destroy(alloc);
 }
@@ -628,7 +639,7 @@ UTEST(filter, molecules) {
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL));
-    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
     const md_filter_context_t fctx = {&sys, &state, NULL, NULL};
     const size_t num = md_system_molecule_count(&sys);
     ASSERT_GT(num, 1);
@@ -658,6 +669,7 @@ UTEST(filter, molecules) {
     md_filter_result_t res = md_filter(&bf, md_str_from_cstr("molecule(100000)"), &fctx, alloc);
     EXPECT_FALSE(res.success);
     EXPECT_TRUE(strstr(res.error, "past the last molecule") != NULL);
+    md_system_free(&sys);
 
     md_arena_allocator_destroy(alloc);
 }
@@ -724,7 +736,7 @@ UTEST(filter, parts_and_glycans) {
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(pdb), NULL));
-    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
     ASSERT_EQ(4u, md_system_residue_count(&sys));
     EXPECT_EQ(1u, md_system_molecule_count(&sys));
     ASSERT_EQ(2u, md_system_part_count(&sys));
@@ -748,5 +760,6 @@ UTEST(filter, parts_and_glycans) {
     md_script_ir_t* ir = md_script_ir_create(alloc);
     EXPECT_TRUE(md_script_ir_compile_from_source(ir, MD_STR_LIT("n = count(all(), \"part\");"), &sys, NULL));
     md_script_ir_free(ir);
+    md_system_free(&sys);
     md_arena_allocator_destroy(alloc);
 }

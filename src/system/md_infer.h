@@ -15,75 +15,65 @@ struct md_system_state_t;
 extern "C" {
 #endif
 
-typedef enum {
-    MD_SYSTEM_INFER_NONE                = 0,
-    MD_SYSTEM_INFER_COLOR_BIT           = 1u << 1,
-    MD_SYSTEM_INFER_BOND_BIT            = 1u << 2,
-    MD_SYSTEM_INFER_PART_BIT            = 1u << 3,     // The chains and the parts with their types (md_chain_infer, _parts)
-    MD_SYSTEM_INFER_BACKBONE_BIT        = 1u << 4,
-    MD_SYSTEM_INFER_MOLECULE_BIT        = 1u << 5,
-    MD_SYSTEM_INFER_RESIDUE_BIT         = 1u << 6,     // The kinds of the residues and the roles of their atoms (md_system_infer_residue_flags), after the bonds which tell them
-	//MD_SYSTEM_INFER_SECONDARY_STRUCTURE_BIT = 0x0400,
-	MD_SYSTEM_INFER_UNWRAP_MOLECULE_BIT = 1u << 7,
-    MD_SYSTEM_INFER_CHEMISTRY_BIT       = 1u << 8,     // Bond orders, aromaticity, formal charges, hydrogen counts and hybridization, see md_chem.h
-    MD_SYSTEM_INFER_LIPID_BIT           = 1u << 9,     // The heads and tails of the lipids (md_lipid_infer), and the kinds of their residues
-    MD_SYSTEM_INFER_FRAGMENT_BIT        = 1u << 10,    // Ring systems, functional groups, backbones (md_system_infer_fragments, md_fragment.h), last
-
-    MD_SYSTEM_INFER_ALL                 = -1,
-} md_infer_flags_t;
-
-MD_ENUM_FLAGS(md_infer_flags_t)
-
-// Attempts to generate missing data such as covalent bonds, chains, secondary structures, backbone angles etc.
-// Infers the derivable parts of a system (covalent bonds, rings, molecules, backbones, hydrogen
-// bond roles) from the supplied state, and records that state as sys->reference. A system without residues has its
-// backbones found from the covalent bonds alone (md_protein_backbone_data_t).
+// Infers the derived of a system (md_system_fields.h), all of it anew, from its core and the supplied state, and
+// records that state as sys->reference: the bonds, the coordination, the kinds of the residues and the roles of their
+// atoms, the chains and the parts, the molecules, the rings, the backbones, the chemistry, the lipids, the kinds of the
+// residues and the fragments, in that order. Into a new derived arena (md_system_t, ALLOCATORS): the one before, and so
+// every pointer into the derived the system had (its bonds, its molecules, ...), is destroyed once it is done. state may
+// be the system's reference.
 //
-// The state is an explicit parameter rather than read off the system so that the recorded
-// reference is by construction the input which produced the topology. Requires coordinates for
-// anything geometric; a state without them (a topology only format such as PSF) still yields the
-// purely graph derived parts, provided the bonds were supplied by the format.
+// The bonds are those given (md_system_t::given_bond) with the user's edits of them (md_system_t::bond_edit) and those
+// inferred from the coordinates between the atoms whose bonds are not given complete (md_atom_data_t::bonds_complete,
+// md_bond_merge): of a system a topology describes whole, none is inferred, and of one without bonds given (most
+// structure files) all of them are.
+//
+// The state is an explicit parameter rather than read off the system so that the recorded reference is by
+// construction the input which produced the topology. Requires coordinates for anything geometric; a state without
+// them (a topology only format such as PSF) still yields the purely graph derived parts, from the bonds the format
+// gives.
 //
 // The phases run one after the other, each on the threads of the executor where it spreads its work (NULL: the calling
 // thread); the result is the same whatever the threads.
 //
-// The chemistry (MD_SYSTEM_INFER_CHEMISTRY_BIT) is perceived for the molecules it infers, and a molecule which is a copy
-// of another (md_molecule_data_t, STRUCTURES) with all of its hydrogens explicit takes the chemistry of its reference:
-// where the geometry chooses between equivalent forms (the double bond of a carboxylate, the charge of a guanidinium,
-// the Kekule structure of a ring), every copy has the form of its reference. md_chem_perceive does the same while the
-// structures are of the system (md_system_molecule_structures_valid).
-bool md_system_infer(struct md_system_t* sys, const struct md_system_state_t* state, md_infer_flags_t flags, const struct md_executor_t* executor);
+// The chemistry is perceived for the molecules it infers, and a molecule which is a copy of another
+// (md_molecule_data_t, STRUCTURES) with all of its hydrogens explicit takes the chemistry of its reference: where the
+// geometry chooses between equivalent forms (the double bond of a carboxylate, the charge of a guanidinium, the Kekule
+// structure of a ring), every copy has the form of its reference. md_chem_perceive does the same while the structures
+// are of the system (md_system_molecule_structures_valid).
+bool md_system_infer(struct md_system_t* sys, const struct md_system_state_t* state, const struct md_executor_t* executor);
+
+// The colors of the particle types which have none: that of the element (CPK), or one of the index of the type. Of
+// the core (the types are what the data gives), so not of md_system_infer: on the thread which owns the system, once
+// it is loaded.
+void md_system_infer_type_colors(struct md_system_t* sys);
 
 // INFERENCE WHILE THE SYSTEM IS IN USE. Inference reads the CORE of a system (the atoms, their types, the residues, the
-// instances, the assemblies) and writes the rest, the DERIVED (md_system_fields.h). So a system can be shown and used
-// while it is inferred on another thread, without a copy of it:
+// instances, the assemblies, the bonds given) and writes the rest, the DERIVED (md_system_fields.h), anew. So a system
+// can be shown and used while it is inferred on another thread, without a copy of it:
 //
-//   md_system_infer_prepare   The work: of the system, what inference writes, copied into alloc; the coordinates
-//                                  in state, which become its reference; the per atom arrays of the core shared. On
+//   md_system_infer_prepare   The work: a derived arena of its own, with the coordinates in state, which become its
+//                                  reference; the per atom arrays of the core shared, nothing of the derived. On
 //                                  the thread which owns the system.
 //   md_system_infer_run       Inference on the work: on any thread, while the system is read (and its core
 //                                  is not written: what changes the topology waits for the work, or discards it).
-//                                  All but MD_SYSTEM_INFER_COLOR_BIT, which is of the types of the atoms: the system
-//                                  is given its colors before, md_system_infer with that bit alone.
-//   md_system_infer_publish   The derived arrays of the work become the system's, which keeps its core, its
-//                                  attributes and its force field. On the thread which owns the system, nothing
+//   md_system_infer_publish   The derived arena of the work becomes the system's, the one it had destroyed; the
+//                                  system keeps its core, its attributes and its force field. On the thread which owns
+//                                  the system, nothing
 //                                  else reading it. False, and nothing done, when the topology of the system changed
 //                                  after the work was prepared: the work is of a system which is no more.
 //
-// What the work infers (its DERIVED arrays and its reference state) is allocated with the system's allocator of the
-// derived (md_system_t, ALLOCATORS), which must allow several threads (the heap does), and becomes the system's when
-// published, or is freed with md_system_infer_discard. The rest of the work, the types of the atoms (copied, a few per
-// system, so that the system's may be changed meanwhile: their colors, their radii), is in alloc, which the caller
-// frees after either. Of a system without an allocator of the derived, all of the work is in alloc, which the caller
-// then keeps with the system once published (its arrays become the system's). The work is never md_system_free'd: it
-// shares arrays of the system.
+// What the work infers (its DERIVED arrays and its reference state) is in its derived arena (md_system_t, ALLOCATORS),
+// whose pages come from where the system's alloc takes its own, on the thread which runs it (the heap allows that), and
+// which becomes the system's when published, or is destroyed with md_system_infer_discard. The rest of the work, the types of
+// the atoms (copied, a few per system, so that the system's may be changed meanwhile: their colors, their radii), is in
+// alloc, which the caller frees after either. The work is never md_system_free'd: it shares arrays of the system.
 typedef struct md_system_infer_work_t {
     struct md_system_t sys;     // Inferred on: md_system_infer_run
     uint64_t base_version;      // The topology version of the system it was prepared of
 } md_system_infer_work_t;
 
 bool md_system_infer_prepare(md_system_infer_work_t* work, const struct md_system_t* sys, const struct md_system_state_t* state, struct md_allocator_i* alloc);
-bool md_system_infer_run(md_system_infer_work_t* work, md_infer_flags_t flags, const struct md_executor_t* executor);
+bool md_system_infer_run(md_system_infer_work_t* work, const struct md_executor_t* executor);
 bool md_system_infer_publish(struct md_system_t* sys, md_system_infer_work_t* work);
 // A work not published (cancelled, or false from md_system_infer_publish): what it inferred freed
 void md_system_infer_discard(md_system_infer_work_t* work);

@@ -143,10 +143,12 @@ UTEST(tpr, system_tip3p) {
     EXPECT_EQ(1577u, sys.atom.count);
     EXPECT_EQ(1577u, state.num_atoms);
     EXPECT_EQ(2u + 509u + 4u, sys.residue.count);
-    EXPECT_EQ((size_t)PEPTIDE_BONDS + 509 * 2, sys.bond.count);
-    for (size_t i = 0; i < sys.bond.count; ++i) {
-        EXPECT_EQ(MD_BOND_ORIGIN_TOPOLOGY, md_bond_origin(sys.bond.flags[i]));
+    // The topology's bonds, given, and every atom has those alone
+    EXPECT_EQ((size_t)PEPTIDE_BONDS + 509 * 2, md_bond_list_count(&sys.given_bond));
+    for (size_t i = 0; i < md_bond_list_count(&sys.given_bond); ++i) {
+        EXPECT_EQ(MD_BOND_ORIGIN_TOPOLOGY, md_bond_origin(sys.given_bond.flags[i]));
     }
+    for (size_t i = 0; i < sys.atom.count; ++i) EXPECT_TRUE(md_atom_bonds_complete(&sys.atom, i));
 
     // Every atom has its element from the topology
     size_t unknown = 0;
@@ -172,10 +174,11 @@ UTEST(tpr, system_tip3p) {
     // Residue names, numbers (the waters and ions renumbered the way gmx does) and coordinates
     compare_with_gro(utest_result, &sys, &state, MD_STR_LIT(TPR_DIR "peptide_tip3p.gro"));
 
-    // What a caller does next: everything but the bonds is derived. One structure per molecule.
-    md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL & ~MD_SYSTEM_INFER_BOND_BIT, NULL);
+    // What a caller does next: the bonds are those given, none inferred. One structure per molecule.
+    md_system_infer(&sys, &state, NULL);
     EXPECT_EQ((size_t)PEPTIDE_BONDS + 509 * 2, sys.bond.count);
     EXPECT_EQ(1u + 509u + 4u, md_system_molecule_count(&sys));
+    md_system_free(&sys);
 
     md_arena_allocator_destroy(arena);
 }
@@ -209,7 +212,7 @@ UTEST(tpr, virtual_sites) {
     ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &state, MD_STR_LIT(TPR_DIR "peptide_tip4p.tpr"), NULL));
     EXPECT_EQ(2074u, sys.atom.count);
     // TIP4P: the two O-H bonds of the SETTLE. The charge site is not bonded, as when read from coordinates.
-    EXPECT_EQ((size_t)PEPTIDE_BONDS + 506 * 2, sys.bond.count);
+    EXPECT_EQ((size_t)PEPTIDE_BONDS + 506 * 2, md_bond_list_count(&sys.given_bond));
 
     // The first water: OW HW1 HW2 MW, the virtual site with no element, no radius and no bond
     const size_t ow = PEPTIDE_ATOMS;
@@ -217,16 +220,18 @@ UTEST(tpr, virtual_sites) {
     EXPECT_EQ(0, md_particle_type_atomic_number(&sys.atom.type, sys.atom.type_idx[ow + 3]));
     EXPECT_EQ(MD_PARTICLE_VIRTUAL_SITE, md_atom_particle_kind(&sys.atom, ow + 3));
     EXPECT_EQ(0.0f, md_atom_radius(&sys.atom, ow + 3));
-    for (size_t i = 0; i < sys.bond.count; ++i) {
-        EXPECT_NE((md_atom_idx_t)(ow + 3), sys.bond.pairs[i].idx[0]);
-        EXPECT_NE((md_atom_idx_t)(ow + 3), sys.bond.pairs[i].idx[1]);
+    for (size_t i = 0; i < md_bond_list_count(&sys.given_bond); ++i) {
+        EXPECT_NE((md_atom_idx_t)(ow + 3), sys.given_bond.pairs[i].idx[0]);
+        EXPECT_NE((md_atom_idx_t)(ow + 3), sys.given_bond.pairs[i].idx[1]);
     }
 
-    // The site still belongs to its water's structure: one per molecule
-    md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL & ~MD_SYSTEM_INFER_BOND_BIT, NULL);
+    // None is inferred to it, and the site still belongs to its water's structure: one per molecule
+    md_system_infer(&sys, &state, NULL);
+    EXPECT_EQ((size_t)PEPTIDE_BONDS + 506 * 2, sys.bond.count);
     EXPECT_EQ(1u + 506u + 4u, md_system_molecule_count(&sys));
 
     compare_with_gro(utest_result, &sys, &state, MD_STR_LIT(TPR_DIR "peptide_tip4p.gro"));
+    md_system_free(&sys);
     md_arena_allocator_destroy(arena);
 }
 
@@ -383,10 +388,14 @@ UTEST(tpr, martini) {
     EXPECT_EQ(MD_PARTICLE_BEAD, md_atom_particle_kind(&sys.atom, 3));
 
     // The bead tables know the protein backbone: one BB bead in each residue, and every other bead side chain, Trp's
-    // SC4 and SC5 (Martini 3 has five) included
+    // SC4 and SC5 (Martini 3 has five) included: the roles once inferred (md_system_infer_particle_roles), the kinds
+    // told by the typing (typed_kind)
+    ASSERT_TRUE(sys.residue.typed_kind != NULL);
+    md_system_infer(&sys, &state, NULL);
     EXPECT_TRUE(md_atom_flags(&sys.atom, 0) & MD_ATOM_FLAG_BACKBONE);
     EXPECT_FALSE(md_atom_flags(&sys.atom, 1) & MD_ATOM_FLAG_BACKBONE);
     for (size_t c = 0; c < 2; ++c) {
+        EXPECT_EQ(MD_RESIDUE_KIND_AMINO_ACID, (md_residue_kind_t)sys.residue.typed_kind[c]);
         EXPECT_EQ(MD_RESIDUE_KIND_AMINO_ACID, md_system_residue_kind(&sys, c));
         const md_urange_t range = md_system_residue_atom_range(&sys, c);
         size_t num_backbone = 0;
@@ -408,18 +417,21 @@ UTEST(tpr, martini) {
         md_system_t gro = { .alloc = arena };
         md_system_state_t gro_state = { .alloc = arena };
         ASSERT_TRUE(md_gro_system_init_from_file(&gro, &gro_state, MD_STR_LIT(TPR_DIR "martini3.gro"), NULL));
+        ASSERT_TRUE(md_system_infer(&gro, &gro_state, NULL));
+        const uint32_t roles = MD_ATOM_FLAG_BACKBONE | MD_ATOM_FLAG_SIDE_CHAIN | MD_ATOM_FLAG_NUCLEOSIDE | MD_ATOM_FLAG_NUCLEOBASE;
         for (size_t i = 0; i < 8; ++i) {
             EXPECT_EQ(md_atom_mass(&sys.atom, i), md_atom_mass(&gro.atom, i));
             EXPECT_NEAR(md_atom_radius(&sys.atom, i), md_atom_radius(&gro.atom, i), 0.01f);
             EXPECT_EQ(md_atom_particle_kind(&sys.atom, i), md_atom_particle_kind(&gro.atom, i));
-            EXPECT_EQ(md_atom_flags(&sys.atom, i), md_atom_flags(&gro.atom, i));
+            EXPECT_EQ(md_atom_flags(&sys.atom, i) & roles, md_atom_flags(&gro.atom, i) & roles);
             EXPECT_EQ(0, md_atom_atomic_number(&gro.atom, i));
         }
+        md_system_free(&gro);
     }
 
     // One structure per molecule: the peptide, two lipids, four ions, 583 waters
-    md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL & ~MD_SYSTEM_INFER_BOND_BIT, NULL);
     EXPECT_EQ(1u + 2u + 4u + 583u, md_system_molecule_count(&sys));
+    md_system_free(&sys);
 
     md_arena_allocator_destroy(arena);
 }
@@ -613,8 +625,10 @@ UTEST(tpr, martini_no_elastic_bonds) {
         char path[512];
         snprintf(path, sizeof(path), MD_UNITTEST_DATA_DIR "/martini/%s.tpr", files[f]);
         ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &state, md_str_from_cstr(path), NULL));
+        ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
         EXPECT_EQ(0u, count_elastic(&sys));
         if (count_elastic(&sys)) printf("%s: %zu bonds taken for elastic ones\n", files[f], count_elastic(&sys));
+        md_system_free(&sys);
         md_arena_allocator_destroy(arena);
     }
 }
@@ -630,6 +644,7 @@ UTEST(tpr, elastic_bonds) {
     md_system_t base = { .alloc = arena };
     md_system_state_t base_state = { .alloc = arena };
     ASSERT_TRUE(md_tpr_system_init_from_data(&base, &base_state, &data));
+    ASSERT_TRUE(md_system_infer(&base, &base_state, NULL));
     EXPECT_EQ(0u, count_elastic(&base));
 
     md_tpr_moltype_t* bpti = (md_tpr_moltype_t*)find_moltype(&data, "PEP1_0");
@@ -656,6 +671,8 @@ UTEST(tpr, elastic_bonds) {
     md_system_t sys = { .alloc = arena };
     md_system_state_t state = { .alloc = arena };
     ASSERT_TRUE(md_tpr_system_init_from_data(&sys, &state, &data));
+    // The plain bond is told elastic by inference, once the residues are known
+    ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
     EXPECT_EQ(base.bond.count + 3, sys.bond.count);
     EXPECT_EQ(2u, count_elastic(&sys));
 
@@ -683,21 +700,17 @@ UTEST(tpr, elastic_bonds) {
     }
 
     // Structures, rings and chemistry go by the molecules alone
-    md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL & ~MD_SYSTEM_INFER_BOND_BIT, NULL);
-    md_system_infer(&base, &base_state, MD_SYSTEM_INFER_ALL & ~MD_SYSTEM_INFER_BOND_BIT, NULL);
+    md_system_infer(&sys, &state, NULL);
+    md_system_infer(&base, &base_state, NULL);
     EXPECT_EQ(md_system_molecule_count(&base), md_system_molecule_count(&sys));
     EXPECT_EQ(0, (int)md_ring_data_count(&sys.ring));
     EXPECT_EQ(2u, count_elastic(&sys));
 
     // Inferring the bonds anew keeps the elastic bonds: nothing infers them
-    {
-        md_bond_data_t inferred = {0};
-        md_bond_data_t merged = {0};
-        md_bond_infer(&inferred, &sys, &state, sys.alloc, NULL);
-        md_bond_merge(&merged, &sys.bond, &inferred, sys.atom.count, sys.alloc);
-        sys.bond = merged;
-    }
+    md_system_infer(&sys, &state, NULL);
     EXPECT_EQ(2u, count_elastic(&sys));
+    md_system_free(&sys);
+    md_system_free(&base);
 
     md_arena_allocator_destroy(arena);
 }

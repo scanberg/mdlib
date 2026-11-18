@@ -100,6 +100,17 @@ static inline bool allocator_matches(md_allocator_i* allocator, md_allocator_i* 
     return allocator && conflict && (allocator == conflict || allocator->inst == conflict->inst);
 }
 
+// What the memory of alloc comes from: through the arenas of md_arena_allocator_create, their backings (an arena over a
+// temporary arena takes its pages from it, so a scope of that temporary arena is no place to grow it in)
+static const md_allocator_i* allocator_source(const md_allocator_i* alloc) {
+    for (int depth = 0; alloc && depth < 8; ++depth) {
+        const md_allocator_i* backing = md_arena_allocator_backing_of(alloc);
+        if (!backing) break;
+        alloc = backing;
+    }
+    return alloc;
+}
+
 static struct md_allocator_i _heap_allocator = {
     NULL,
     realloc_internal,
@@ -179,6 +190,7 @@ static md_allocator_i* thread_temp_allocator_avoid(const md_allocator_i* conflic
     if (!conflict) {
         return thread_temp_allocator_at(0);
     }
+    conflict = allocator_source(conflict);
 
     for (size_t i = 0; i < MD_TEMP_ALLOCATOR_COUNT; ++i) {
         md_allocator_i* allocator = thread_temp_allocator_at(i);
@@ -228,6 +240,7 @@ md_temp_scope_t md_temp_begin_avoid(const md_allocator_i* avoid) {
 }
 
 bool md_temp_is_thread_arena(const md_allocator_i* alloc) {
+    alloc = allocator_source(alloc);
     if (!alloc) return false;
     thread_local_data_t* thread_data = thread_local_data_get();
     if (!thread_data) return false;

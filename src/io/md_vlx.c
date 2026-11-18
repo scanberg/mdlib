@@ -3709,7 +3709,6 @@ static void vlx_system_append_mm(vlx_t* vlx, md_system_state_t* state, size_t of
 	md_array_push(sys->residue.atom_offset, 0u, sys->alloc);
 	md_array_push(sys->residue.name,     md_label_make(MD_STR_LIT("QM")), sys->alloc);
 	md_array_push(sys->residue.seq_id, (md_sequence_id_t)0, sys->alloc);
-	md_array_push(sys->residue.flags,    MD_RESIDUE_FLAG_NONE, md_system_derived_alloc(sys));
 	sys->residue.count += 1;
 
 	for (size_t k = 0; k < pot->num_sites; ++k) {
@@ -3733,8 +3732,7 @@ static void vlx_system_append_mm(vlx_t* vlx, md_system_state_t* state, size_t of
 			md_array_push(sys->residue.atom_offset, (uint32_t)atom_idx, sys->alloc);
 			md_array_push(sys->residue.name,     md_label_make(vlx_mm_residue_name(site->fragment_name)), sys->alloc);
 			md_array_push(sys->residue.seq_id, (md_sequence_id_t)site->fragment_id, sys->alloc);
-			md_array_push(sys->residue.flags,    MD_RESIDUE_FLAG_NONE, md_system_derived_alloc(sys));
-			sys->residue.count += 1;
+					sys->residue.count += 1;
 		}
 	}
 	md_array_push(sys->residue.atom_offset, (uint32_t)(offset + pot->num_sites), sys->alloc);	// Sentinel
@@ -5904,10 +5902,11 @@ static bool vlx_system_begin(vlx_t* vlx, md_system_state_t* state) {
 	size_t capacity = MD_ROUND_UP(num_atoms, 16);
 
     md_array_resize(sys->atom.type_idx, capacity, sys->alloc);
-    md_array_resize(sys->atom.flags,    capacity, md_system_derived_alloc(sys));
-
 	md_memset(sys->atom.type_idx,  0, md_array_bytes(sys->atom.type_idx));
-    md_memset(sys->atom.flags,		0, md_array_bytes(sys->atom.flags));
+    // The calculation's own atoms are its QM region (md_atom_data_t::qm); the sites of an embedding, appended after them,
+    // are its environment
+    md_array_resize(sys->atom.qm, num_atoms, sys->alloc);
+    md_memset(sys->atom.qm, 0, num_atoms);
 
     md_particle_type_find_or_add(&sys->atom.type, MD_STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
 
@@ -5922,8 +5921,7 @@ static bool vlx_system_begin(vlx_t* vlx, md_system_state_t* state) {
 
 		md_particle_type_idx_t type_idx = md_particle_type_find_or_add(&sys->atom.type, sym, z, mass, radius, color, 0, sys->alloc);
 		sys->atom.type_idx[i] = type_idx;
-		// The calculation's own atoms; the sites of an embedding, appended after them, are its environment
-		sys->atom.flags[i] |= MD_ATOM_FLAG_QM;
+		sys->atom.qm[i] = 1;
 	}
 
 	if (vlx->mm.count > 0) {
@@ -5934,7 +5932,7 @@ static bool vlx_system_begin(vlx_t* vlx, md_system_state_t* state) {
     state->num_atoms = sys->atom.count;
 
 	// The fragments are residues, and what kind of residue (water, above all) is read from their atoms and bonds, by
-	// md_system_infer (MD_SYSTEM_INFER_BOND_BIT, _RESIDUE_BIT) as for a structure file.
+	// md_system_infer as for a structure file.
 
 	if (!vlx_publish_core(vlx)) {
 		return false;
@@ -6004,20 +6002,14 @@ static void vlx_flag_supplemental_qm_region(md_system_t* sys, const vlx_t* vlx) 
 	if (num_atoms == 0 || num_qm_atoms == 0) {
 		return;
 	}
-	if (md_array_size(sys->atom.flags) < num_atoms) {
-		const size_t size = md_array_size(sys->atom.flags);
-		md_array_resize(sys->atom.flags, num_atoms, md_system_derived_alloc(sys));
-		md_memset(sys->atom.flags + size, 0, (num_atoms - size) * sizeof(md_atom_flags_t));
-	}
-	for (size_t i = 0; i < num_atoms; ++i) {
-		sys->atom.flags[i] &= ~MD_ATOM_FLAG_QM;
-	}
+	md_array_resize(sys->atom.qm, num_atoms, sys->alloc);
+	md_memset(sys->atom.qm, 0, num_atoms);
 
 	const int* local_to_global = vlx_local_to_global_atom_idx(vlx);
 	for (size_t i = 0; i < num_qm_atoms; ++i) {
 		const int idx = local_to_global ? local_to_global[i] : (int)i;
 		if (idx >= 0 && (size_t)idx < num_atoms) {
-			sys->atom.flags[idx] |= MD_ATOM_FLAG_QM;
+			sys->atom.qm[idx] = 1;
 		}
 	}
 }

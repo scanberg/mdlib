@@ -377,14 +377,6 @@ static void cov_bond_candidates(md_array(md_array(bond_pair_t))* spans, const md
     md_free(heap, param, num_threads * sizeof(cov_bond_callback_param_t));
 }
 
-static int compare_atom_pair(const void* a, const void* b) {
-    const md_atom_pair_t* pa = (const md_atom_pair_t*)a;
-    const md_atom_pair_t* pb = (const md_atom_pair_t*)b;
-    if (pa->idx[0] != pb->idx[0]) return pa->idx[0] < pb->idx[0] ? -1 : 1;
-    if (pa->idx[1] != pb->idx[1]) return pa->idx[1] < pb->idx[1] ? -1 : 1;
-    return 0;
-}
-
 // The most covalent bonds an atom of the element takes, 0 for no limit. Generous: the limit is there to catch
 // atoms that clash (a hydrogen within bonding distance of two atoms), not to judge chemistry.
 static inline int max_covalent_bonds(md_atomic_number_t z) {
@@ -765,7 +757,7 @@ static void sort_candidates(bond_pair_t* out, bond_pair_t* const* in, size_t num
     md_temp_reset(temp, mark);
 }
 
-static void infer_bonds(md_bond_data_t* bond, const md_system_state_t* state, const md_system_t* sys, md_allocator_i* alloc, const md_executor_t* executor) {
+static void infer_bonds(md_bond_list_t* bond, const md_system_state_t* state, const md_system_t* sys, md_allocator_i* alloc, const md_executor_t* executor) {
     md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
     md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
     const md_bond_flags_t inferred = md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_INFERRED);
@@ -791,7 +783,6 @@ static void infer_bonds(md_bond_data_t* bond, const md_system_state_t* state, co
             };
             md_array_push_no_grow(bond->pairs, pair);
             md_array_push_no_grow(bond->flags, inferred);
-            bond->count += 1;
         }
 	} else {
         // The atoms by how far they reach: most (H, C, N, O) are small, and a few (a metal: 2.0 Å for potassium; S, P, Cl:
@@ -1136,121 +1127,129 @@ static void infer_bonds(md_bond_data_t* bond, const md_system_state_t* state, co
             n += 1;
         }
         MD_ASSERT(n == num_valid_bonds);
-        bond->count = n;
         mdi_infer_profile_step(&prof_t, "  bonds: out");
     }
 
     md_temp_end(temp_scope);
 }
 
-bool md_bond_infer(md_bond_data_t* out, const md_system_t* sys, const md_system_state_t* state, md_allocator_i* alloc, const md_executor_t* executor) {
+bool md_bond_infer(md_bond_list_t* out, const md_system_t* sys, const md_system_state_t* state, md_allocator_i* alloc, const md_executor_t* executor) {
     MD_ASSERT(out);
     MD_ASSERT(sys);
     MD_ASSERT(state);
     MD_ASSERT(alloc);
-    MD_ASSERT(out != &sys->bond);
-    md_bond_data_clear(out);
+    md_bond_list_clear(out);
     if (!state->xyz) {
         MD_LOG_ERROR("Missing atom coordinates");
         return false;
     }
     infer_bonds(out, state, sys, alloc, executor);
-    int64_t prof_t = mdi_infer_profile ? md_tick_now() : 0;
-    md_bond_build_connectivity(out, state->num_atoms, alloc);
-    mdi_infer_profile_step(&prof_t, "  bonds: connectivity");
     return true;
 }
 
-void md_bond_merge(md_bond_data_t* out, const md_bond_data_t* given, const md_bond_data_t* inferred, size_t atom_count, md_allocator_i* alloc) {
+md_bond_idx_t md_bond_list_find(const md_bond_list_t* list, md_atom_idx_t atom_idx_a, md_atom_idx_t atom_idx_b, md_bond_flags_t flags) {
+    MD_ASSERT(list);
+    const md_atom_pair_t pair = {{ atom_idx_a, atom_idx_b }};
+    const uint64_t key = md_bond_key(pair, flags);
+    const md_bond_flags_t inactive = flags & MD_BOND_FLAG_INACTIVE;
+    const size_t count = md_array_size(list->pairs);
+    for (size_t i = 0; i < count; ++i) {
+        if ((list->flags[i] & MD_BOND_FLAG_INACTIVE) == inactive && md_bond_key(list->pairs[i], list->flags[i]) == key) return (md_bond_idx_t)i;
+    }
+    return -1;
+}
+
+static int compare_key(const void* a, const void* b) {
+    const uint64_t x = *(const uint64_t*)a, y = *(const uint64_t*)b;
+    return (x > y) - (x < y);
+}
+
+static bool key_found(const uint64_t* keys, size_t num_keys, uint64_t key) {
+    return num_keys && bsearch(&key, keys, num_keys, sizeof(uint64_t), compare_key) != NULL;
+}
+
+// A pair as one, the atoms in either order: of no range, as a pair has one bond
+static uint64_t pair_key(md_atom_pair_t pair) {
+    const uint32_t lo = (uint32_t)MD_MIN(pair.idx[0], pair.idx[1]);
+    const uint32_t hi = (uint32_t)MD_MAX(pair.idx[0], pair.idx[1]);
+    return ((uint64_t)lo << 32) | hi;
+}
+
+void md_bond_merge(md_bond_data_t* out, const md_bond_list_t* given, const md_bond_list_t* edits, const md_bond_list_t* inferred, const uint8_t* complete, size_t atom_count, md_allocator_i* alloc) {
     MD_ASSERT(out);
-    MD_ASSERT(given);
-    MD_ASSERT(inferred);
     MD_ASSERT(alloc);
-    MD_ASSERT(out != given && out != inferred);
     md_bond_data_clear(out);
 
     md_temp_scope_t temp_scope = md_temp_begin_avoid(alloc);
-    md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
+    const md_bond_list_t* lists[3] = { inferred, given, edits };
+    size_t num[3] = {0};
+    for (int k = 0; k < 3; ++k) num[k] = lists[k] ? md_bond_list_count(lists[k]) : 0;
 
-    // Every given bond which was not inferred is kept, in its order, after the inferred ones
-    md_array(md_atom_pair_t)  bond_pairs = 0;
-    md_array(md_bond_flags_t) bond_flags = 0;
-    for (size_t i = 0; i < given->count; ++i) {
-        if (md_bond_origin(given->flags[i]) != MD_BOND_ORIGIN_INFERRED) {
-            md_array_push(bond_pairs, given->pairs[i], temp_arena);
-            md_array_push(bond_flags, given->flags[i], temp_arena);
-        }
+    // The edits: what they remove, by pair and range, and the pairs of the bonds they add
+    uint64_t* removed = md_temp_alloc_array(temp_scope, uint64_t, num[2] + 1);
+    uint64_t* added   = md_temp_alloc_array(temp_scope, uint64_t, num[2] + 1);
+    size_t num_removed = 0, num_added = 0;
+    for (size_t i = 0; i < num[2]; ++i) {
+        const md_bond_flags_t f = edits->flags[i];
+        if (f & MD_BOND_FLAG_INACTIVE) removed[num_removed++] = md_bond_key(edits->pairs[i], f);
+        else if (md_bond_kind(f) != MD_BOND_KIND_ELASTIC) added[num_added++] = pair_key(edits->pairs[i]);
     }
-    // The non-covalent bonds are not inferred: they are kept as they are, after the graph (md_bond_data_t)
-    const size_t num_noncovalent = given->noncovalent_count;
-    const md_atom_pair_t*  noncovalent_pairs = given->pairs + given->count;
-    const md_bond_flags_t* noncovalent_flags = given->flags + given->count;
+    qsort(removed, num_removed, sizeof(uint64_t), compare_key);
+    qsort(added, num_added, sizeof(uint64_t), compare_key);
 
-    md_bond_data_t* bond = out;
-    if (inferred->count) {
-        md_array_push_array(bond->pairs, inferred->pairs, inferred->count, alloc);
-        md_array_push_array(bond->flags, inferred->flags, inferred->count, alloc);
-        bond->count = inferred->count;
+    // What is kept of each: of the given, but what an edit removes or adds a bond of its pair instead of
+    uint8_t* keep[3] = {0};
+    for (int k = 0; k < 2; ++k) {
+        keep[k] = md_temp_alloc_array(temp_scope, uint8_t, num[k] + 1);
+        md_memset(keep[k], 1, num[k]);
     }
-
-    // Reconcile the fresh inferred bonds with the kept ones:
-    // - an inferred bond naming a pair that is already kept is a duplicate, the kept one wins
-    // - where a topology (md_itp) defines the connectivity it is authoritative, so inferred bonds between two
-    //   atoms it covers are dropped, or re-inferring would add the distance guesses back on top of it
-    // - a pair with a non-covalent bond keeps it: an atom pair has one bond, and that one was given
-    {
-        const size_t num_kept  = md_array_size(bond_pairs);
-        const size_t num_saved = num_kept + num_noncovalent;
-        if (num_saved > 0 && bond->count > 0) {
-            const size_t num_atoms = atom_count;
-            uint64_t* covered = make_bitfield(num_atoms, temp_arena);
-
-            // An elastic bond is no bond of the molecule: it neither stands in for an inferred bond nor says that a
-            // topology covers its atoms
-            md_atom_pair_t* saved_sorted = md_temp_alloc_array(temp_scope, md_atom_pair_t, num_saved);
-            size_t num_sorted = 0;
-            for (size_t i = 0; i < num_saved; ++i) {
-                const md_bond_flags_t f = i < num_kept ? bond_flags[i] : noncovalent_flags[i - num_kept];
-                if (md_bond_kind(f) == MD_BOND_KIND_ELASTIC) continue;
-                md_atom_pair_t pair = i < num_kept ? bond_pairs[i] : noncovalent_pairs[i - num_kept];
-                if (pair.idx[0] > pair.idx[1]) { md_atom_idx_t t = pair.idx[0]; pair.idx[0] = pair.idx[1]; pair.idx[1] = t; }
-                saved_sorted[num_sorted++] = pair;
-                if (i < num_kept && md_bond_origin(f) == MD_BOND_ORIGIN_TOPOLOGY) {
-                    for (int k = 0; k < 2; ++k) {
-                        if (pair.idx[k] >= 0 && (size_t)pair.idx[k] < num_atoms) bitfield_set_bit(covered, pair.idx[k]);
-                    }
-                }
-            }
-            qsort(saved_sorted, num_sorted, sizeof(md_atom_pair_t), compare_atom_pair);
-
-            size_t w = 0;
-            for (size_t i = 0; i < bond->count; ++i) {
-                const md_atom_pair_t pair = bond->pairs[i];
-                if (bitfield_test_bit(covered, pair.idx[0]) && bitfield_test_bit(covered, pair.idx[1])) continue;
-                md_atom_pair_t key = pair;
-                if (key.idx[0] > key.idx[1]) { md_atom_idx_t t = key.idx[0]; key.idx[0] = key.idx[1]; key.idx[1] = t; }
-                if (num_sorted && bsearch(&key, saved_sorted, num_sorted, sizeof(md_atom_pair_t), compare_atom_pair)) continue;
-                bond->pairs[w] = pair;
-                bond->flags[w] = bond->flags[i];
-                w += 1;
-            }
-            bond->count = w;
-            md_array_shrink(bond->pairs, w);
-            md_array_shrink(bond->flags, w);
+    keep[2] = md_temp_alloc_array(temp_scope, uint8_t, num[2] + 1);
+    for (size_t i = 0; i < num[2]; ++i) keep[2][i] = !(edits->flags[i] & MD_BOND_FLAG_INACTIVE);
+    if (num_removed || num_added) {
+        for (size_t i = 0; i < num[1]; ++i) {
+            const md_atom_pair_t p = given->pairs[i];
+            const md_bond_flags_t f = given->flags[i];
+            keep[1][i] = !key_found(removed, num_removed, md_bond_key(p, f)) &&
+                         (md_bond_kind(f) == MD_BOND_KIND_ELASTIC || !key_found(added, num_added, pair_key(p)));
         }
     }
 
-    for (size_t i = 0; i < md_array_size(bond_pairs); ++i) {
-        md_array_push(bond->pairs, bond_pairs[i], alloc);
-        md_array_push(bond->flags, bond_flags[i], alloc);
-        bond->count += 1;
+    // Of the inferred, but those between two atoms whose bonds are given complete, those an edit removes, and those of
+    // a pair given or added a bond (an elastic bond is no bond of the molecule: it does not stand in for one)
+    if (num[0] && (num[1] || num[2] || complete)) {
+        uint64_t* taken = md_temp_alloc_array(temp_scope, uint64_t, num[1] + num_added + 1);
+        size_t num_taken = 0;
+        for (size_t i = 0; i < num[1]; ++i) {
+            if (keep[1][i] && md_bond_kind(given->flags[i]) != MD_BOND_KIND_ELASTIC) taken[num_taken++] = pair_key(given->pairs[i]);
+        }
+        if (num_added) md_memcpy(taken + num_taken, added, num_added * sizeof(uint64_t));
+        num_taken += num_added;
+        qsort(taken, num_taken, sizeof(uint64_t), compare_key);
+        for (size_t i = 0; i < num[0]; ++i) {
+            const md_atom_pair_t p = inferred->pairs[i];
+            if (complete && (size_t)p.idx[0] < atom_count && (size_t)p.idx[1] < atom_count && complete[p.idx[0]] && complete[p.idx[1]]) {
+                keep[0][i] = 0;
+                continue;
+            }
+            keep[0][i] = !key_found(removed, num_removed, md_bond_key(p, inferred->flags[i])) && !key_found(taken, num_taken, pair_key(p));
+        }
     }
-    for (size_t i = 0; i < num_noncovalent; ++i) {
-        md_array_push(bond->pairs, noncovalent_pairs[i], alloc);
-        md_array_push(bond->flags, noncovalent_flags[i], alloc);
+
+    // The bonds of the first range, then the non-covalent ones: of each the inferred, the given and the user's
+    md_array_ensure(out->pairs, num[0] + num[1] + num[2], alloc);
+    md_array_ensure(out->flags, num[0] + num[1] + num[2], alloc);
+    for (int range = 0; range < 2; ++range) {
+        for (int k = 0; k < 3; ++k) {
+            for (size_t i = 0; i < num[k]; ++i) {
+                if (!keep[k][i] || md_bond_is_noncovalent(lists[k]->flags[i]) != (range == 1)) continue;
+                md_array_push_no_grow(out->pairs, lists[k]->pairs[i]);
+                md_array_push_no_grow(out->flags, lists[k]->flags[i]);
+            }
+        }
+        if (range == 0) out->count = md_array_size(out->pairs);
     }
-    bond->noncovalent_count = num_noncovalent;
-    md_bond_build_connectivity(bond, atom_count, alloc);
+    out->noncovalent_count = md_array_size(out->pairs) - out->count;
+    md_bond_build_connectivity(out, atom_count, alloc);
 
     md_temp_end(temp_scope);
 }

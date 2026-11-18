@@ -23,6 +23,8 @@ static void clear_instances(md_system_t* sys, md_allocator_i* alloc) {
     md_array_free(sys->instance.res_offset, alloc);
     md_array_free(sys->instance.part_type_idx, alloc);
     md_array_free(sys->instance.mol_type_idx, alloc);
+    md_part_type_data_free(&sys->instance.part_type, alloc);
+    md_molecule_type_data_free(&sys->instance.mol_type, alloc);
     md_memset(&sys->instance, 0, sizeof(sys->instance));
 }
 
@@ -188,11 +190,10 @@ static md_part_kind_t classify_part(const md_system_t* sys, md_urange_t res_rang
     return MD_PART_KIND_NON_POLYMER;
 }
 
-// The given part types are kept, the inferred ones (which come after them) dropped: the parts are about to infer them anew
-// The types the data gave (those before the inferred ones), copied into out
+// The types the data gives (md_instance_data_t::part_type), copied into out: the first types of the parts, which
+// keep their indices
 static void copy_given_part_types(md_part_type_data_t* out, const md_part_type_data_t* type, md_allocator_i* alloc) {
-    size_t n = type->count;
-    while (n > 0 && (type->flags[n - 1] & MD_PART_TYPE_FLAG_INFERRED)) --n;
+    const size_t n = type->count;
     for (size_t i = 0; i < n; ++i) {
         md_array_push(out->id, type->id[i], alloc);
         md_array_push(out->flags, type->flags[i], alloc);
@@ -250,7 +251,7 @@ bool md_part_infer(md_part_data_t* out, const md_system_t* sys, md_allocator_i* 
     MD_ASSERT(alloc);
     MD_ASSERT(out != &sys->part);
     md_part_data_free(out, alloc);
-    copy_given_part_types(&out->type, &sys->part.type, alloc);
+    copy_given_part_types(&out->type, &sys->instance.part_type, alloc);
 
     const size_t num_res = sys->residue.count;
     if (num_res == 0) return true;
@@ -682,14 +683,11 @@ static void molecule_type_name(char* buf, size_t cap, const md_system_t* sys, co
 // The types of the molecules (md_molecule_type_data_t). The molecule which is all of an instance of a given type (a
 // molecule of a topology) is of that type. The others are of inferred types, one for the molecules made alike: of the
 // same part types in the same order, as many atoms of each particle type, and as many bonds between each pair of
-// particle types. The inferred types of the last inference are dropped first.
+// particle types. The given types come first (md_instance_data_t::mol_type), keeping their indices.
 static void infer_molecule_types(md_molecule_data_t* mol, const md_system_t* sys, md_allocator_i* alloc) {
-    // The types the data gave (those before the inferred ones)
     {
-        const md_molecule_type_data_t* type = &sys->molecule.type;
-        size_t n = type->count;
-        while (n > 0 && (type->flags[n - 1] & MD_MOLECULE_TYPE_FLAG_INFERRED)) --n;
-        for (size_t i = 0; i < n; ++i) md_molecule_type_data_push(&mol->type, type->name[i], type->flags[i], alloc);
+        const md_molecule_type_data_t* type = &sys->instance.mol_type;
+        for (size_t i = 0; i < type->count; ++i) md_molecule_type_data_push(&mol->type, type->name[i], type->flags[i], alloc);
     }
     md_array_resize(mol->type_idx, mol->count, alloc);
     if (mol->count == 0) return;

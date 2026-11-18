@@ -14,7 +14,7 @@
 // Without files it runs a default set from test_data (default_files).
 //
 // .gro, .pdb, .cif and .tpr files are loaded once, then each run infers into a copy of the system as loaded
-// (md_system_infer with MD_SYSTEM_INFER_ALL; the copy is not timed), or its bonds alone (--bonds). Each line is a thread
+// (md_system_infer; the copy is not timed), or its bonds alone (--bonds). Each line is a thread
 // count: the best and median wall time of a run, the speedup over one thread and the page faults of the best run. What a
 // run infers is summarized by a hash of the bonds, the chemistry, the molecules and their structures, the rings and the
 // fragments (of the bonds alone with --bonds), which every count must agree on ('!' marks one that does not). The header
@@ -43,7 +43,7 @@
 #include <string.h>
 
 // The benchmark's own revision: bumped with every change of it, so that a result names the build it came from
-#define MD_INFER_BENCH_REV "R3"
+#define MD_INFER_BENCH_REV "R6"
 
 #define MAX_COUNTS 32
 
@@ -115,6 +115,17 @@ static uint64_t bonds_hash(uint64_t h, const md_bond_data_t* b) {
     if (b->count) {
         h = fnv(h, b->pairs, b->count * sizeof(md_atom_pair_t));
         h = fnv(h, b->flags, b->count * sizeof(md_bond_flags_t));
+    }
+    return h;
+}
+
+// What md_bond_infer gives: the same bytes as bonds_hash of the bonds of one range, so the hash is as it was
+static uint64_t bond_list_hash(uint64_t h, const md_bond_list_t* b) {
+    const size_t count = md_bond_list_count(b);
+    h = fnv(h, &count, sizeof(count));
+    if (count) {
+        h = fnv(h, b->pairs, count * sizeof(md_atom_pair_t));
+        h = fnv(h, b->flags, count * sizeof(md_bond_flags_t));
     }
     return h;
 }
@@ -230,7 +241,7 @@ int main(int argc, char** argv) {
     md_log_unregister(default_logger);
     md_log_register(&logger);
 
-    printf("md_infer_bench %s: %s over threads\n", MD_INFER_BENCH_REV, bonds_only ? "md_bond_infer" : "md_system_infer (MD_SYSTEM_INFER_ALL)");
+    printf("md_infer_bench %s: %s over threads\n", MD_INFER_BENCH_REV, bonds_only ? "md_bond_infer" : "md_system_infer");
     printf("mdlib %s\n", MD_BENCH_SOURCE_REV);
     printf("CPU %d logical cores | %d timed run%s per count | %s\n\n", cores, reps, reps == 1 ? "" : "s",
            reuse ? "into the same memory (faulted in once)" : "into fresh memory each run");
@@ -270,13 +281,13 @@ int main(int argc, char** argv) {
                 md_allocator_i* alloc = shared ? shared : md_vm_arena_create(MD_GIGABYTES(64));
                 if (shared) md_vm_arena_reset(shared);
                 md_system_t sys = { .alloc = alloc };
-                md_bond_data_t bonds = {0};
+                md_bond_list_t bonds = {0};
                 if (!bonds_only) ok = md_system_copy(&sys, &base);
                 mdi_infer_profile_t prof = {0};
                 if (profile) mdi_infer_profile = &prof;
                 const uint64_t f0 = page_faults();
                 const md_tick_t t0 = md_tick_now();
-                if (ok) ok = bonds_only ? md_bond_infer(&bonds, &base, &st, alloc, ex) : md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, ex);
+                if (ok) ok = bonds_only ? md_bond_infer(&bonds, &base, &st, alloc, ex) : md_system_infer(&sys, &st, ex);
                 const md_tick_t t1 = md_tick_now();
                 const uint64_t f1 = page_faults();
                 mdi_infer_profile = NULL;
@@ -289,8 +300,8 @@ int main(int argc, char** argv) {
                     }
                 }
                 if (ok && r == -1) {
-                    hash = bonds_only ? bonds_hash(1469598103934665603ull, &bonds) : inferred_hash(&sys);
-                    num_bonds = bonds_only ? bonds.count : sys.bond.count;
+                    hash = bonds_only ? bond_list_hash(1469598103934665603ull, &bonds) : inferred_hash(&sys);
+                    num_bonds = bonds_only ? md_bond_list_count(&bonds) : sys.bond.count;
                 }
                 if (!shared) md_vm_arena_destroy(alloc);
             }

@@ -31,13 +31,13 @@ UTEST(martini, infer_bonds_coarse_grained) {
     md_float3_t xyz[6];
     md_system_state_t state = { .num_atoms = 6, .xyz = pack_xyz(xyz, x, y, z, 6) };
 
-    md_bond_data_t bond = {0};
+    md_bond_list_t bond = {0};
     md_bond_infer(&bond, &sys, &state, alloc, NULL);
 
     // (0,1) (1,2) (3,4) (4,5) within residues, (0,3) between backbones. 0-2 is 6A, over the cutoff.
-    EXPECT_EQ(bond.count, 5u);
+    EXPECT_EQ(md_bond_list_count(&bond), 5u);
     bool has[6][6] = {0};
-    for (size_t i = 0; i < bond.count; ++i) {
+    for (size_t i = 0; i < md_bond_list_count(&bond); ++i) {
         const int a = bond.pairs[i].idx[0];
         const int b = bond.pairs[i].idx[1];
         EXPECT_NE(a, b);
@@ -45,7 +45,7 @@ UTEST(martini, infer_bonds_coarse_grained) {
         has[a][b] = true;
     }
     EXPECT_TRUE(has[0][1] && has[1][2] && has[3][4] && has[4][5] && has[0][3]);
-    for (size_t i = 0; i < bond.count; ++i) {
+    for (size_t i = 0; i < md_bond_list_count(&bond); ++i) {
         EXPECT_EQ((int)bond.flags[i], (int)md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_INFERRED));
     }
 
@@ -139,7 +139,7 @@ static void check_martini_peptide(int* utest_result, md_system_t* sys, md_system
         EXPECT_EQ((size_t)1, num_backbone);
     }
 
-    ASSERT_TRUE(md_system_infer(sys, state, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(sys, state, NULL));
     ASSERT_EQ((size_t)1, md_system_part_count(sys));
     EXPECT_EQ(num_residues, md_system_part_residue_range(sys, 0).end - md_system_part_residue_range(sys, 0).beg);
     EXPECT_EQ(MD_PART_KIND_PEPTIDE, md_system_part_kind(sys, 0));
@@ -477,7 +477,7 @@ UTEST(martini, martini2_dna) {
     };
     check_bonds_against_topology(utest_result, &sys, topology, MD_COUNTOF(topology), NULL, 0);
 
-    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
     ASSERT_EQ(1u, md_system_part_count(&sys));
     EXPECT_EQ(MD_PART_KIND_DNA, md_system_part_kind(&sys, 0));
     md_vm_arena_destroy(alloc);
@@ -523,7 +523,7 @@ UTEST(martini, martini2_dna_strands_under_one_chain_id) {
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(text), NULL));
     ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
-    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
     ASSERT_EQ(8u, md_system_residue_count(&sys));
     ASSERT_EQ(51u, (unsigned)sys.atom.count);
     EXPECT_TRUE(md_system_is_coarse_grained(&sys));
@@ -635,6 +635,7 @@ UTEST(martini, martini_reference_systems) {
         md_system_state_t top_state = { .alloc = alloc }, gro_state = { .alloc = alloc };
         ASSERT_TRUE(md_tpr_system_init_from_file(&top, &top_state, md_str_from_cstr(tpr_path), NULL));
         ASSERT_TRUE(md_gro_system_init_from_file(&gro, &gro_state, md_str_from_cstr(gro_path), NULL));
+        ASSERT_TRUE(md_system_infer(&top, &top_state, NULL));
         ASSERT_TRUE(test_infer_as_loaded(&gro, &gro_state));
         ASSERT_EQ(top.atom.count, gro.atom.count);
         ASSERT_EQ(top.residue.count, gro.residue.count);
@@ -691,7 +692,7 @@ UTEST(martini, martini_nucleic_backbones) {
             md_system_t sys = { .alloc = alloc };
             md_system_state_t state = { .alloc = alloc };
             ASSERT_TRUE(with_tpr ? md_tpr_system_init_from_file(&sys, &state, md_str_from_cstr(path), NULL) : md_gro_system_init_from_file(&sys, &state, md_str_from_cstr(path), NULL));
-            ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+            ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
 
             const md_nucleic_backbone_data_t* bb = &sys.nucleic_backbone;
             ASSERT_EQ_MSG((size_t)2, bb->range.count, path);
@@ -774,7 +775,7 @@ UTEST(martini, martini_nucleic_break) {
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(martini2_dna_gap_pdb), NULL));
     ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
-    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
     ASSERT_EQ((size_t)6, md_system_residue_count(&sys));
     EXPECT_EQ(-1, md_bond_find(&sys.bond, 14, 18));    // BB3 of 3 and BB1 of 5
     EXPECT_NE(-1, md_bond_find(&sys.bond, 7, 12));     // BB3 of 2 and BB1 of 3

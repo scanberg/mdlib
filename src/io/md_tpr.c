@@ -1754,9 +1754,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     // The predefined bead tables then add what they know about the beads (backbone, side chain...).
     const size_t capacity = MD_ROUND_UP(num_atoms, 16);
     md_array_resize(sys->atom.type_idx, capacity, alloc);
-    md_array_resize(sys->atom.flags, capacity, md_system_derived_alloc(sys));
     md_memset(sys->atom.type_idx, 0, capacity * sizeof(md_particle_type_idx_t));
-    md_memset(sys->atom.flags, 0, capacity * sizeof(md_atom_flags_t));
 
     sys->atom.type.count = 0;
     md_particle_type_find_or_add(&sys->atom.type, MD_STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, alloc);
@@ -1922,7 +1920,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         if (mb->nmol <= 0 || mt->num_atoms == 0) continue;
 
         if (moltype_mol_type[mb->moltype] == -1) {
-            moltype_mol_type[mb->moltype] = md_molecule_type_data_push(&sys->molecule.type, mt->name, MD_MOLECULE_TYPE_FLAG_NONE, md_system_derived_alloc(sys));
+            moltype_mol_type[mb->moltype] = md_molecule_type_data_push(&sys->instance.mol_type, mt->name, MD_MOLECULE_TYPE_FLAG_NONE, alloc);
         }
 
         for (int32_t m = 0; m < mb->nmol; ++m) {
@@ -1942,7 +1940,6 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
                     md_array_push(sys->residue.atom_offset, (uint32_t)ai, alloc);
                     md_array_push(sys->residue.name, md_label_make(res->name), alloc);
                     md_array_push(sys->residue.seq_id, seq_id, alloc);
-                    md_array_push(sys->residue.flags, MD_RESIDUE_FLAG_NONE, md_system_derived_alloc(sys));
                     sys->residue.count += 1;
                     prev_res = atom->residue;
                 }
@@ -1991,8 +1988,9 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
             const md_tpr_moltype_t* mt = &data->moltypes[data->molblocks[b].moltype];
             count += (size_t)data->molblocks[b].nmol * (mt->num_bonds + mt->num_elastic_bonds);
         }
-        md_array_resize(sys->bond.pairs, count, md_system_derived_alloc(sys));
-        md_array_resize(sys->bond.flags, count, md_system_derived_alloc(sys));
+        md_bond_list_t* given = &sys->given_bond;
+        md_array_resize(given->pairs, count, sys->alloc);
+        md_array_resize(given->flags, count, sys->alloc);
 
         const md_bond_flags_t flags = md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_TOPOLOGY);
         const md_bond_flags_t elastic_flags = md_bond_flags_set_kind(flags, MD_BOND_KIND_ELASTIC);
@@ -2002,25 +2000,25 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
             const md_tpr_moltype_t* mt = &data->moltypes[data->molblocks[b].moltype];
             for (int32_t m = 0; m < data->molblocks[b].nmol; ++m) {
                 for (size_t k = 0; k < mt->num_bonds; ++k, ++bi) {
-                    sys->bond.pairs[bi].idx[0] = offset + mt->bonds[k].idx[0];
-                    sys->bond.pairs[bi].idx[1] = offset + mt->bonds[k].idx[1];
-                    sys->bond.flags[bi] = flags;
+                    given->pairs[bi].idx[0] = offset + mt->bonds[k].idx[0];
+                    given->pairs[bi].idx[1] = offset + mt->bonds[k].idx[1];
+                    given->flags[bi] = flags;
                 }
                 for (size_t k = 0; k < mt->num_elastic_bonds; ++k, ++bi) {
-                    sys->bond.pairs[bi].idx[0] = offset + mt->elastic_bonds[k].idx[0];
-                    sys->bond.pairs[bi].idx[1] = offset + mt->elastic_bonds[k].idx[1];
-                    sys->bond.flags[bi] = elastic_flags;
+                    given->pairs[bi].idx[0] = offset + mt->elastic_bonds[k].idx[0];
+                    given->pairs[bi].idx[1] = offset + mt->elastic_bonds[k].idx[1];
+                    given->flags[bi] = elastic_flags;
                 }
                 offset += (md_atom_idx_t)mt->num_atoms;
             }
         }
         for (size_t k = 0; k < data->num_intermolecular_bonds; ++k, ++bi) {
-            sys->bond.pairs[bi] = data->intermolecular_bonds[k];
-            sys->bond.flags[bi] = flags;
+            given->pairs[bi] = data->intermolecular_bonds[k];
+            given->flags[bi] = flags;
         }
         for (size_t k = 0; k < data->num_intermolecular_elastic_bonds; ++k, ++bi) {
-            sys->bond.pairs[bi] = data->intermolecular_elastic_bonds[k];
-            sys->bond.flags[bi] = elastic_flags;
+            given->pairs[bi] = data->intermolecular_elastic_bonds[k];
+            given->flags[bi] = elastic_flags;
         }
         MD_ASSERT(bi == count);
 
@@ -2034,26 +2032,18 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
         }
         size_t kept = any_site ? 0 : count;
         for (size_t k = 0; any_site && k < count; ++k) {
-            const md_atom_pair_t pair = sys->bond.pairs[k];
+            const md_atom_pair_t pair = given->pairs[k];
             if (md_atom_particle_kind(&sys->atom, pair.idx[0]) == MD_PARTICLE_VIRTUAL_SITE ||
                 md_atom_particle_kind(&sys->atom, pair.idx[1]) == MD_PARTICLE_VIRTUAL_SITE) continue;
-            sys->bond.pairs[kept] = pair;
-            sys->bond.flags[kept] = sys->bond.flags[k];
+            given->pairs[kept] = pair;
+            given->flags[kept] = given->flags[k];
             kept += 1;
         }
-        md_array_shrink(sys->bond.pairs, kept);
-        md_array_shrink(sys->bond.flags, kept);
-        sys->bond.count = kept;
-        md_bond_build_connectivity(&sys->bond, num_atoms, md_system_derived_alloc(sys));
-    }
-
-    md_system_infer_residue_flags(sys, state);
-
-    // An elastic network written as plain bonds, which most Martini proteins have: elastic too, now that the residues
-    // know what they are
-    const size_t num_elastic = md_system_infer_elastic_bonds(sys);
-    if (num_elastic) {
-        MD_LOG_INFO("TPR: %zu bonds between the residues of coarse grained chains are an elastic network, not bonds of the chains", num_elastic);
+        md_array_shrink(given->pairs, kept);
+        md_array_shrink(given->flags, kept);
+        // The topology is of every atom: they have its bonds and no others (an elastic network written as plain bonds
+        // is told by md_system_infer)
+        md_system_set_bonds_complete(sys);
     }
 
     // ## Attributes

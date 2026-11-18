@@ -70,7 +70,7 @@ UTEST(mmcif, 8g7u) {
     md_system_state_t sys_state = { .alloc = md_get_heap_allocator() };
     bool result = md_mmcif_system_init_from_file(&sys, &sys_state, path, NULL);
     EXPECT_TRUE(result);
-    md_system_infer(&sys, &sys_state, MD_SYSTEM_INFER_ALL, NULL);
+    md_system_infer(&sys, &sys_state, NULL);
 
     if (result) {
         EXPECT_EQ(14229, sys.atom.count);
@@ -655,7 +655,7 @@ UTEST(mmcif, chain_breaks) {
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
     ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/9gfu.cif"), NULL));
-    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
 
     const struct {
         const char* chain;

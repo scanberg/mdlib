@@ -297,7 +297,6 @@ typedef struct gro_load_t {
     float*                velocity;         // NULL when the file has none
     md_label_t*           atom_names;
     md_particle_type_idx_t* type_idx;       // none yet: typed by the names once all are read
-    md_atom_flags_t*      atom_flags;
 } gro_load_t;
 
 static void gro_count_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thread_idx) {
@@ -350,7 +349,6 @@ static void gro_parse_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thre
             }
             L->atom_names[atom] = gro_label5(line, 10);
             L->type_idx[atom] = 0;
-            L->atom_flags[atom] = 0;
             ++atom;
         }
         if (piece->num_atoms < piece->num_lines) {
@@ -386,7 +384,6 @@ static void gro_build_residues(void* arg, uint32_t beg, uint32_t end, uint32_t t
         rb->residue->atom_offset[r] = rb->starts[r].atom;
         rb->residue->name[r]   = rb->starts[r].name;
         rb->residue->seq_id[r] = rb->starts[r].seq_id;
-        rb->residue->flags[r]  = MD_RESIDUE_FLAG_NONE;
     }
 }
 
@@ -499,9 +496,7 @@ static bool gro_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
         // The atoms' own are written as they are read (gro_parse_lines), the padding past them here
         const size_t capacity = MD_ROUND_UP(num_atoms, 16);
         md_array_resize(sys->atom.type_idx, capacity, sys->alloc);
-        md_array_resize(sys->atom.flags, capacity, md_system_derived_alloc(sys));
         md_memset(sys->atom.type_idx + num_atoms, 0, (capacity - num_atoms) * sizeof(md_particle_type_idx_t));
-        md_memset(sys->atom.flags + num_atoms, 0, (capacity - num_atoms) * sizeof(md_atom_flags_t));
         sys->atom.count = num_atoms;
         md_particle_type_find_or_add(&sys->atom.type, MD_STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
     }
@@ -517,7 +512,6 @@ static bool gro_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
     L.res = res;
     L.atom_names = md_alloc(temp, num_atoms * sizeof(md_label_t));
     L.type_idx = sys->atom.type_idx;
-    L.atom_flags = sys->atom.flags;
     {
         const char* fc = c;
         const md_str_t first = md_text_next_line(&fc, e);
@@ -570,7 +564,6 @@ static bool gro_load(md_system_t* sys, md_system_state_t* state, md_reader_i* sr
     md_array_resize(sys->residue.atom_offset, num_res + 1, sys->alloc);
     md_array_resize(sys->residue.name,   num_res, sys->alloc);
     md_array_resize(sys->residue.seq_id, num_res, sys->alloc);
-    md_array_resize(sys->residue.flags,  num_res, md_system_derived_alloc(sys));
     sys->residue.count = num_res;
     {
         gro_residues_t rb = { &sys->residue, res, num_res };

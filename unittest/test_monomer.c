@@ -139,7 +139,7 @@ UTEST(monomer, residue_types_nucleosome) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"), NULL));
-    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
     EXPECT_VALID_SYSTEM(&sys);
 
     const md_residue_type_data_t* type = &sys.residue.type;
@@ -196,7 +196,7 @@ UTEST(monomer, residue_types_without_monomer) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(ligand_water_ion_pdb), NULL));
-    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
     EXPECT_VALID_SYSTEM(&sys);
 
     const md_residue_type_data_t* type = &sys.residue.type;
@@ -226,7 +226,7 @@ UTEST(monomer, residue_types_without_monomer) {
     md_system_t sys2 = { .alloc = alloc };
     md_system_state_t state2 = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys2, &state2, md_str_from_cstr(ligand_water_ion_pdb), NULL));
-    ASSERT_TRUE(md_system_infer(&sys2, &state2, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys2, &state2, NULL));
     EXPECT_EQ(md_residue_type_color(type, lig), md_residue_type_color(&sys2.residue.type, type_of_name(&sys2, "LIG")));
 
     md_vm_arena_destroy(alloc);
@@ -373,7 +373,7 @@ UTEST(monomer, extended_ccd_ligand_is_not_nucleotide) {
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
     ASSERT_TRUE(md_mmcif_system_init_from_str(&sys, &state, (md_str_t){a1jb9_cif, sizeof(a1jb9_cif) - 1}, NULL));
-    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
     ASSERT_EQ(1u, md_system_residue_count(&sys));
     EXPECT_TRUE(md_str_eq_cstr(md_system_residue_name(&sys, 0), "A1JB9"));
     EXPECT_EQ((int)MD_RESIDUE_KIND_OTHER, (int)md_system_residue_kind(&sys, 0));
@@ -393,7 +393,7 @@ UTEST(monomer, t3p_is_water) {
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
     ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, (md_str_t){gro, sizeof(gro) - 1}, NULL));
-    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
     ASSERT_EQ(1u, md_system_residue_count(&sys));
     EXPECT_EQ((int)MD_RESIDUE_KIND_WATER, (int)md_system_residue_kind(&sys, 0));
     md_vm_arena_destroy(alloc);
@@ -405,7 +405,7 @@ UTEST(monomer, amino_acid_of_any_size) {
     md_system_state_t state = {.alloc = alloc};
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(palmitoyl_cys_pdb), NULL));
     ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
-    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
     ASSERT_EQ(1u, md_system_residue_count(&sys));
     ASSERT_EQ(58u, (unsigned)sys.atom.count);
     EXPECT_EQ((int)MD_RESIDUE_KIND_AMINO_ACID, (int)md_system_residue_kind(&sys, 0));
@@ -431,7 +431,7 @@ UTEST(monomer, atom_roles_stay_in_their_residue) {
         md_system_state_t state = {.alloc = alloc};
         ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1a64.pdb"), NULL));
         ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
-        ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+        ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
         size_t num_pro = 0, num_with_side_chain = 0, num_aa = 0;
         for (size_t c = 0; c < sys.residue.count; ++c) {
             if (md_system_residue_kind(&sys, c) != MD_RESIDUE_KIND_AMINO_ACID) continue;
@@ -460,7 +460,7 @@ UTEST(monomer, atom_roles_stay_in_their_residue) {
         md_system_state_t state = {.alloc = alloc};
         ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif"), NULL));
         ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
-        ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+        ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
         size_t num_mg = 0;
         for (size_t i = 0; i < sys.atom.count; ++i) {
             if (md_atom_atomic_number(&sys.atom, i) != MD_Z_Mg) continue;
@@ -474,7 +474,7 @@ UTEST(monomer, atom_roles_stay_in_their_residue) {
         md_system_state_t state = {.alloc = alloc};
         ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"), NULL));
         ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
-        ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+        ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
         size_t num_nuc = 0, num_with_base = 0;
         for (size_t c = 0; c < sys.residue.count; ++c) {
             if (md_system_residue_kind(&sys, c) != MD_RESIDUE_KIND_NUCLEOTIDE) continue;
@@ -525,7 +525,7 @@ UTEST(monomer, lone_atom_ion_only_without_covalent_bonds) {
     ASSERT_TRUE(md_system_infer_residue_flags(&sys, &state));
     for (size_t r = 1; r < 10; ++r) EXPECT_EQ(MD_RESIDUE_KIND_ION, md_system_residue_kind(&sys, r));
 
-    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
     EXPECT_EQ(8u, sys.bond.count);
     for (size_t r = 1; r < 9; ++r) EXPECT_EQ(MD_RESIDUE_KIND_OTHER, md_system_residue_kind(&sys, r));
     EXPECT_EQ(MD_RESIDUE_KIND_ION, md_system_residue_kind(&sys, 9));
@@ -540,7 +540,7 @@ UTEST(monomer, residue_classified_anew) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.gro"), NULL));
-    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
     size_t trp = SIZE_MAX;
     for (size_t r = 0; r < sys.residue.count && trp == SIZE_MAX; ++r) {
         if (md_str_eq_cstr(md_system_residue_name(&sys, r), "TRP")) trp = r;
@@ -552,7 +552,7 @@ UTEST(monomer, residue_classified_anew) {
 
     sys.residue.name[trp] = md_label_make(MD_STR_LIT("LIG"));
     md_system_topology_changed(&sys);
-    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
     EXPECT_EQ(MD_RESIDUE_KIND_OTHER, md_system_residue_kind(&sys, trp));
     EXPECT_EQ(0u, (unsigned)md_system_residue_flags(&sys, trp) & (MD_RESIDUE_FLAG_RESOLVED | MD_RESIDUE_FLAG_TERMINAL_BEG | MD_RESIDUE_FLAG_TERMINAL_END));
     // The waters are classified anew too, the same

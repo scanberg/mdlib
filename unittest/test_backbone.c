@@ -61,7 +61,7 @@ UTEST(backbone, caps_are_of_their_strand) {
     md_system_state_t state = {.alloc = alloc};
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(pdb), NULL));
     ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
-    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
     ASSERT_EQ(3u, md_system_residue_count(&sys));
     EXPECT_EQ((int)MD_RESIDUE_KIND_AMINO_ACID, (int)md_system_residue_kind(&sys, 1));
     EXPECT_EQ(1u, md_system_part_count(&sys));
@@ -84,7 +84,7 @@ UTEST(backbone, coarse_grained_strand_over_a_gap) {
     md_system_state_t state = {.alloc = alloc};
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_writer_to_str(&sb), NULL));
     ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
-    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
     EXPECT_TRUE(md_system_is_coarse_grained(&sys));
     EXPECT_VALID_SYSTEM(&sys);
     ASSERT_EQ(1u, md_system_part_count(&sys));
@@ -109,7 +109,7 @@ UTEST(backbone, topology_supplement_reinfers_backbones) {
     md_system_state_t state = {.alloc = alloc};
     ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, md_str_writer_to_str(&sb), NULL));
     ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
-    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
     EXPECT_EQ(1u, md_system_part_count(&sys));
 
     md_str_writer_t top = md_str_writer_create(alloc);
@@ -148,7 +148,7 @@ UTEST(backbone, state_backbone) {
     md_system_state_t st = {.alloc = alloc};
     ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), NULL));
     ASSERT_TRUE(test_infer_as_loaded(&sys, &st));
-    ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
     const size_t n = sys.protein_backbone.segment.count;
     ASSERT_GT(n, 0);
 
@@ -194,7 +194,7 @@ UTEST(backbone, state_backbone) {
     md_system_state_t other_st = {.alloc = alloc};
     ASSERT_TRUE(md_gro_system_init_from_file(&other, &other_st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"), NULL));
     ASSERT_TRUE(test_infer_as_loaded(&other, &other_st));
-    ASSERT_TRUE(md_system_infer(&other, &other_st, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&other, &other_st, NULL));
     EXPECT_TRUE(md_system_state_secondary_structure(&st, &other) == NULL);
 
     md_vm_arena_destroy(alloc);
@@ -290,7 +290,7 @@ static void expect_backbones_from_bonds(int* utest_result, const char* path, boo
     if (md_str_ends_with(file, MD_STR_LIT(".gro"))) loaded = md_gro_system_init_from_file(&ref, &ref_state, file, NULL);
     if (md_str_ends_with(file, MD_STR_LIT(".cif"))) loaded = md_mmcif_system_init_from_file(&ref, &ref_state, file, NULL);
     ASSERT_TRUE(loaded);
-    ASSERT_TRUE(md_system_infer(&ref, &ref_state, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&ref, &ref_state, NULL));
 
     int32_t* xyz_to_ref = md_alloc(alloc, sizeof(int32_t) * ref.atom.count);
     md_str_t text;
@@ -300,7 +300,7 @@ static void expect_backbones_from_bonds(int* utest_result, const char* path, boo
     ASSERT_TRUE(md_xyz_system_init_from_str(&sys, &state, text, NULL));
     ASSERT_EQ(num_xyz, sys.atom.count);
     ASSERT_EQ(0, sys.residue.count);
-    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
 
     // An atom of the reference as an atom of the XYZ
     int32_t* to_xyz = md_alloc(alloc, sizeof(int32_t) * ref.atom.count);
@@ -447,8 +447,8 @@ UTEST(backbone, backbones_from_bonds_with_residues) {
             if (rename_residues) {
                 for (size_t r = 0; r < sys.residue.count; ++r) sys.residue.name[r] = md_label_make(MD_STR_LIT("MOL"));
             }
-            ASSERT_TRUE(md_system_infer(&ref, &ref_state, MD_SYSTEM_INFER_ALL, NULL));
-            ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+            ASSERT_TRUE(md_system_infer(&ref, &ref_state, NULL));
+            ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
 
             const md_protein_backbone_data_t* ra = &ref.protein_backbone;
             const md_protein_backbone_data_t* pa = &sys.protein_backbone;
@@ -476,7 +476,7 @@ static void expect_segment_atoms_by_roles(int* utest_result, const char* path, b
     const md_str_t file = md_str_from_cstr(path);
     const bool gro = md_str_ends_with(file, MD_STR_LIT(".gro"));
     ASSERT_TRUE(gro ? md_gro_system_init_from_file(&ref, &ref_state, file, NULL) : md_pdb_system_init_from_file(&ref, &ref_state, file, NULL));
-    ASSERT_TRUE(md_system_infer(&ref, &ref_state, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&ref, &ref_state, NULL));
 
     int32_t* xyz_to_ref = md_alloc(alloc, sizeof(int32_t) * ref.atom.count);
     md_str_t text;
@@ -484,7 +484,7 @@ static void expect_segment_atoms_by_roles(int* utest_result, const char* path, b
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_xyz_system_init_from_str(&sys, &state, text, NULL));
-    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
     ASSERT_EQ(ref.protein_backbone.segment.count, sys.protein_backbone.segment.count);
 
     int32_t* ref_seg = segment_of_atom(ref.atom.count, alloc);
@@ -563,7 +563,7 @@ UTEST(backbone, backbones_named_as_their_atoms) {
         if (md_str_ends_with(file, MD_STR_LIT(".gro"))) loaded = md_gro_system_init_from_file(&sys, &state, file, NULL);
         if (md_str_ends_with(file, MD_STR_LIT(".cif"))) loaded = md_mmcif_system_init_from_file(&sys, &state, file, NULL);
         ASSERT_TRUE(loaded);
-        ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+        ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
 
         const md_protein_backbone_data_t* pb = &sys.protein_backbone;
         EXPECT_EQ(refs[i].protein, pb->segment.count);
@@ -603,7 +603,7 @@ UTEST(backbone, backbones_from_bonds_none) {
         md_system_t sys = { .alloc = alloc };
         md_system_state_t state = { .alloc = alloc };
         ASSERT_TRUE(md_xyz_system_init_from_file(&sys, &state, md_str_from_cstr(files[i]), NULL));
-        ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+        ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
         EXPECT_TRUE(sys.bond.count > 0);
         EXPECT_EQ(0, sys.protein_backbone.range.count);
         EXPECT_EQ(0, sys.protein_backbone.segment.count);

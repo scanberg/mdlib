@@ -27,14 +27,18 @@
 // It may of course be modified through some special operations, though it is not expected to change frequently.
 typedef struct md_system_t {
     // ALLOCATORS. What the data gives, the CORE of the system (md_system_fields.h: the atoms, their types, the residues,
-    // the instances, the assemblies), is allocated with alloc. What inference writes, the DERIVED (the bonds, the
-    // molecules, the rings, the chemistry, the fragments, ...) and the reference state, with derived_alloc: it is
-    // replaced whenever the system is inferred again or its bonds are changed, and what is replaced is freed with it. So
-    // alloc may be an arena, which frees nothing (the core is there as long as the system), while derived_alloc is one
-    // which frees (the heap): the system then holds one copy of the derived, however often it changes. NULL is alloc:
-    // the derived is allocated with it too (md_system_derived_alloc).
+    // the instances, the assemblies, the bonds given), is allocated with alloc, which may be an arena: the core is there
+    // as long as the system. What inference writes, the DERIVED (the bonds, the molecules, the rings, the chemistry, the
+    // fragments, ...), and the reference state are in derived_arena, the system's own: md_system_infer infers into a
+    // new arena and destroys the one before, so the derived is replaced whole and the system holds one copy of it,
+    // however often it is inferred. NULL until something of the derived is written (md_system_derived_alloc); destroyed
+    // with the system. Its pages come from where alloc takes its own: the backing of alloc when that is an arena of
+    // md_arena_allocator_create (the heap, for one over the heap: the pages of an inference replaced are given back),
+    // else alloc itself (an arena of the OS, md_vm_arena_create, which keeps them until it is reset). A system of the
+    // former needs md_system_free to give the derived back; one of the latter is gone with its arena. Whatever it is
+    // allows another thread, for an inference in the background (md_system_infer_prepare).
     md_allocator_i*             alloc;
-    md_allocator_i*             derived_alloc;
+    md_allocator_i*             derived_arena;
 
     // TOPOLOGY VERSION. Changes whenever the topology does: the atoms, their types (what the particles are), their
     // flags, the residues, the instances, the parts and their types, the bonds, and what is derived from them (rings,
@@ -70,7 +74,19 @@ typedef struct md_system_t {
     md_nucleic_backbone_data_t  nucleic_backbone;
     md_lipid_data_t             lipid;              // The heads and tails of the lipids, see md_lipid_data_t
     
-    md_bond_data_t              bond;               // Persistent bonds: the bond graph, then the non-covalent bonds (md_bond_data_t)
+    // Of the core, what md_system_infer makes the bonds from, with those it infers between the atoms whose bonds are not
+    // given complete (md_atom_data_t::bonds_complete, md_bond_merge): the bonds the data gives (a topology, the CONECT
+    // records of a PDB file), written by the loaders and the supplements, and the user's edits of them, few
+    // (md_system_bond_insert, md_system_bond_remove, md_system_bond_restore): a bond added, or one removed
+    // (MD_BOND_FLAG_INACTIVE), which takes away the bond the data gives or inference finds of its pair and range, as
+    // neither is certain. Apart, as they change apart: an edit leaves the data's as they were given. Lists, without
+    // ranges or connectivity (md_bond_list_t); md_system_bond_find and the iterators are of bond.
+    md_bond_list_t              given_bond;
+    md_bond_list_t              bond_edit;
+    // The bonds, inferred (md_system_infer): those given, and those found between the atoms whose bonds are not given
+    // complete; the bond graph, then the non-covalent bonds (md_bond_data_t), with their connectivity and the orders the
+    // chemistry perceives. Empty until inferred.
+    md_bond_data_t              bond;
     
     md_ring_data_t              ring;               // Rings formed by persistent bonds: 3 to 7 ordered atoms and their flags
     md_molecule_data_t          molecule;           // The molecules: connected by persistent bonds, within residues and along polymer chains (md_molecule_t)
@@ -98,10 +114,8 @@ typedef struct md_system_t {
     md_str_t                    description;
 } md_system_t;
 
-// The allocator of the system's DERIVED arrays and its reference state (md_system_t, ALLOCATORS)
-static inline md_allocator_i* md_system_derived_alloc(const md_system_t* sys) {
-    return sys->derived_alloc ? sys->derived_alloc : sys->alloc;
-}
+// The arena of the system's DERIVED arrays and its reference state (md_system_t, ALLOCATORS), created when it has none
+md_allocator_i* md_system_derived_alloc(md_system_t* sys);
 
 #ifdef __cplusplus
 extern "C" {
@@ -551,17 +565,27 @@ static inline md_bond_idx_t md_system_bond_find(const md_system_t* sys, md_atom_
     return md_bond_find(&sys->bond, atom_idx_a, atom_idx_b);
 }
 
-static inline void md_system_bond_insert(md_system_t* sys, md_atom_idx_t atom_idx_a, md_atom_idx_t atom_idx_b, md_bond_flags_t flags) {
-    MD_ASSERT(sys);
-    md_bond_insert(&sys->bond, atom_idx_a,  atom_idx_b, flags, md_system_derived_alloc(sys));
-    md_system_topology_changed(sys);
-}
+// Every atom of the system has its bonds given complete (md_atom_data_t::bonds_complete): what a loader of a topology
+// which describes the whole system says (a TPR, a prmtop, a PSF, the bonds of a LAMMPS data file)
+void md_system_set_bonds_complete(md_system_t* sys);
 
-static inline void md_system_bond_remove(md_system_t* sys, md_bond_idx_t bond_idx) {
-    MD_ASSERT(sys);
-    md_bond_remove(&sys->bond, bond_idx);
-    md_system_topology_changed(sys);
-}
+// Adds a bond of the user (md_system_t::bond_edit), of origin MD_BOND_ORIGIN_USER whatever flags says, unless the two
+// atoms have one the user added already, or one the data gives which is not removed (but for an elastic bond, which
+// stands in for no bond of the molecule). An edit of the core: the bonds (sys->bond) and all that follows from them are of it once the system is inferred again
+// (md_system_infer). False when nothing was added.
+bool md_system_bond_insert(md_system_t* sys, md_atom_idx_t atom_idx_a, md_atom_idx_t atom_idx_b, md_bond_flags_t flags);
+
+// Removes the bond between the two atoms in the range of a bond of flags (md_bond_key: the graph or the non-covalent
+// bonds, an elastic bond apart): one the user added is gone, and one the data gives or inference finds is removed by an
+// edit (MD_BOND_FLAG_INACTIVE, md_system_t::bond_edit), whether there is one now or not. An edit of the core, as
+// md_system_bond_insert. False when it was removed already.
+bool md_system_bond_remove(md_system_t* sys, md_atom_idx_t atom_idx_a, md_atom_idx_t atom_idx_b, md_bond_flags_t flags);
+
+// Undoes md_system_bond_remove of a bond the data gives or inference finds: the edit which removed the bond between the
+// two atoms in the range of a bond of flags goes, and the bond is there again once the system is inferred again, if the
+// data gives it or inference finds it. An edit of the core, as md_system_bond_insert. False when
+// nothing of it was removed.
+bool md_system_bond_restore(md_system_t* sys, md_atom_idx_t atom_idx_a, md_atom_idx_t atom_idx_b, md_bond_flags_t flags);
 
 // Flags of ring ring_idx of sys->ring, NONE when they have not been inferred
 static inline md_ring_flags_t md_system_ring_flags(const md_system_t* sys, size_t ring_idx) {
@@ -585,9 +609,13 @@ static inline md_bond_flags_t md_system_bond_flags(const md_system_t* sys, md_bo
 void md_system_reset(md_system_t* sys); // Reset to empty state, maintain allocators
 void md_system_free(md_system_t* sys); // Free all memory associated with the system, including the allocator if set.
 
-// The DERIVED arrays of the system (md_system_fields.h) and its reference state freed, with md_system_derived_alloc, and
-// emptied: the rest of the system as it was. What replaces them is given to the system after.
+// The DERIVED arrays of the system (md_system_fields.h) and its reference state freed (its derived arena destroyed),
+// and emptied: the rest of the system as it was.
 void md_system_derived_free(md_system_t* sys);
+
+// The DERIVED arrays of the system and its reference state emptied, without freeing them: what holds them (its derived
+// arena) is the caller's to destroy, which takes them from the system (md_system_infer, md_system_infer_publish).
+void md_system_derived_clear(md_system_t* sys);
 
 // A copy of src in dst's allocator, which dst keeps: every array of the system, its reference state and description,
 // and its topology version (it is the same topology). Not the attribute table, which dst gets empty, nor the force

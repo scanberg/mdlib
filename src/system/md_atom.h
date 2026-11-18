@@ -63,11 +63,7 @@ typedef enum {
     MD_ATOM_FLAG_HYBRIDIZATION_MASK     = 0x300,    // md_hybridization_t, see md_atom_flags_hybridization
     MD_ATOM_FLAG_AROMATIC               = 0x400,    // In an aromatic ring
 
-    // Treated quantum mechanically: an atom of the QM calculation the system was loaded from, set by its loader.
-    // A system from a QM calculation alone is QM throughout; one with an embedding or a QM/MM partition has its
-    // QM region flagged, and the atoms without the flag are its environment. Nothing infers it: a system no
-    // loader said it of has no QM region. Selected in scripts by 'qm' and 'environment'.
-    MD_ATOM_FLAG_QM                     = 0x800,
+    // 0x800 unused: the QM region is what the data gives, not inferred (md_atom_data_t::qm, md_atom_is_qm)
 
     // Hydrogen bond roles are not flags: they depend on the hydrogen bond model and its options, and a donor is a
     // D-H pair rather than an atom. See md_hbond_perceive_roles and md_hbond_query_t.
@@ -129,7 +125,18 @@ typedef struct md_atom_data_t {
     // Coordinates live in md_system_state_t, not here. A system is time invariant; where the atoms
     // are is not.
     md_particle_type_idx_t* type_idx;
-    md_atom_flags_t* flags;     // Role in the residue and chemistry, see md_atom_flags_t above
+    md_atom_flags_t* flags;     // Role in the residue and chemistry, see md_atom_flags_t above (inferred)
+
+    // Treated quantum mechanically: an atom of the QM calculation the system was loaded from, as its loader says.
+    // A system from a QM calculation alone is QM throughout; one with an embedding or a QM/MM partition has its
+    // QM region marked, and the other atoms are its environment. Nothing infers it: a system no loader said it of
+    // has no QM region (NULL). Of the core: what the data gives. Selected in scripts by 'qm' and 'environment'.
+    uint8_t* qm;                // [count] 1 in the QM region, 0 not; NULL: no QM region
+
+    // The atoms whose bonds the data gives all of: those a topology describes (a TPR, a prmtop, a PSF, the molecules
+    // of an ITP). No bond is inferred between two of them (md_system_infer): their bonds are those given
+    // (md_system_t::given_bond), and a metal ion a non-bonded force field leaves without any has none. Of the core.
+    uint8_t* bonds_complete;    // [count] 1 its bonds are given complete, 0 not; NULL: of no atom
 
     // Chemistry of each atom, as given by the file or perceived by md_chem_perceive. NULL when unknown. Per atom
     // and not per type, as particle types are shared by name (the OD1 of Asp and of Asn).
@@ -142,6 +149,16 @@ typedef struct md_atom_data_t {
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+// Whether the atom is in the QM region of the calculation the system was loaded from (md_atom_data_t::qm)
+static inline bool md_atom_is_qm(const md_atom_data_t* atom, size_t atom_idx) {
+    return atom && atom->qm && atom_idx < atom->count && atom->qm[atom_idx];
+}
+
+// Whether the data gives all of the bonds of the atom (md_atom_data_t::bonds_complete)
+static inline bool md_atom_bonds_complete(const md_atom_data_t* atom, size_t atom_idx) {
+    return atom && atom->bonds_complete && atom_idx < atom->count && atom->bonds_complete[atom_idx];
+}
 
 // Particle type table helper functions
 static inline size_t md_particle_type_count(const md_particle_type_data_t* particle_type) {
@@ -382,7 +399,8 @@ md_particle_type_idx_t md_system_particle_type_find_or_add(struct md_system_t* s
 // come from predefined tables. Martini beads of amino acids (BB, SC#) and nucleotides (BB#, SC#) are recognized in any
 // residue named as one, and get the masses and sizes of the version of Martini (2, polarizable 2 or 3) the names of
 // the system's residues and beads tell (Martini 3 when they tell nothing); a massless bead is a virtual site. Atoms of
-// one label with a different element, mass, size or particle kind are of different types.
+// one label with a different element, mass, size or particle kind are of different types. The kinds the tables and
+// the Martini molecules give the residues are md_residue_data_t::typed_kind.
 void md_system_infer_particle_types(struct md_system_t* sys, const md_str_t atom_labels[], const struct md_executor_t* ex);
 // The same, with the labels as labels (8 characters): what a loader keeps per atom at half the size of a string.
 void md_system_infer_particle_types_from_labels(struct md_system_t* sys, const md_label_t atom_labels[], const struct md_executor_t* ex);
@@ -390,10 +408,16 @@ void md_system_infer_particle_types_from_labels(struct md_system_t* sys, const m
 // Applies the predefined particle type tables (coarse grained beads) to atoms that already have a type,
 // for loaders that know more about their atoms than a name does (a tpr carries the mass and the LJ
 // parameters of every bead). Only types without an element (z == 0) are considered. The table gives
-// the atoms their role (backbone, side chain), the residues their kind (amino acid, water) where
-// they have none, and the types their particle kind where the loader did not say. Mass and radius
+// the residues their kind (amino acid, water: typed_kind) where they have none, and the types their particle kind
+// where the loader did not say. Mass and radius
 // are left alone: they are the loader's.
 void md_system_augment_particle_types(struct md_system_t* sys);
+
+// The roles of the beads (atoms of types without an element) the predefined types give them by the names of their
+// types and residues, ORed into the flags of the atoms (which the system has, sized to its atoms): the backbone bead of
+// an amino acid (BB) and of a nucleotide (BB1, BB2, BB3), the side chain beads (SC1, ...), the nucleobase. A system
+// of atoms alone has none. Of the derived: md_system_infer does it first.
+void md_system_infer_particle_roles(struct md_system_t* sys);
 
 #ifdef __cplusplus
 }
