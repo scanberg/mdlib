@@ -203,6 +203,8 @@ static bool isog_kernels_make(void) {
     if (isog_ready) return true;
     if (isog_failed) return false;
     if (!isog_device) { MD_LOG_ERROR("md_gto_iso_gpu_extract: md_gto_iso_gpu_initialize not called"); return false; }
+    const char* own_env = getenv("MD_GTO_ISO_GEMM");
+    const bool own = own_env && strcmp(own_env, "own") == 0;
     const md_gpu_kernel_desc_t d[ISOG_K_COUNT] = {
         md_shader_gto_iso_gpu_iso_grid_kernel(),
         md_shader_gto_iso_gpu_iso_scan_kernel(),
@@ -215,12 +217,13 @@ static bool isog_kernels_make(void) {
         md_shader_gto_iso_gpu_iso_points_kernel(),
         md_shader_gto_iso_gpu_iso_corners_fill_kernel(),
         md_shader_gto_iso_gpu_iso_corners_list_f1v4_kernel(),
-        md_shader_gto_iso_gpu_iso_gcorners_f16_kernel(),
-        md_shader_gto_iso_gpu_iso_gcorners_f32_kernel(),
-        md_shader_gto_iso_gpu_iso_gcorners_f64_kernel(),
-        md_shader_gto_iso_gpu_iso_geval_f16_kernel(),
-        md_shader_gto_iso_gpu_iso_geval_f32_kernel(),
-        md_shader_gto_iso_gpu_iso_geval_f64_kernel(),
+        // the tiled GEMM on the GEMM core (iso_*_c*), or its own loop (iso_*_f*, MD_GTO_ISO_GEMM=own) until measured
+        own ? md_shader_gto_iso_gpu_iso_gcorners_f16_kernel() : md_shader_gto_iso_gpu_iso_gcorners_c16_kernel(),
+        own ? md_shader_gto_iso_gpu_iso_gcorners_f32_kernel() : md_shader_gto_iso_gpu_iso_gcorners_c32_kernel(),
+        own ? md_shader_gto_iso_gpu_iso_gcorners_f64_kernel() : md_shader_gto_iso_gpu_iso_gcorners_c64_kernel(),
+        own ? md_shader_gto_iso_gpu_iso_geval_f16_kernel()    : md_shader_gto_iso_gpu_iso_geval_c16_kernel(),
+        own ? md_shader_gto_iso_gpu_iso_geval_f32_kernel()    : md_shader_gto_iso_gpu_iso_geval_c32_kernel(),
+        own ? md_shader_gto_iso_gpu_iso_geval_f64_kernel()    : md_shader_gto_iso_gpu_iso_geval_c64_kernel(),
         md_shader_gto_iso_gpu_iso_gcorners_w128_kernel(),
         md_shader_gto_iso_gpu_iso_gcorners_w192_kernel(),
         md_shader_gto_iso_gpu_iso_gcorners_y256_kernel(),

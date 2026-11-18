@@ -1550,6 +1550,285 @@ void gemm_eval<let F : int, B : IKBuf, let VERT : int>(uint3 gid, uint tid) {
 [shader("compute")] [numthreads(G_GROUP, 1, 1)] void iso_geval_f64(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_eval<64, GBuf64, 1>(gid, tid); }
 
 // ------------------------------------------------------------------------------------------
+// The tiled GEMM on the GEMM core (gto_gemm_core.slang, staged): gemm_eval's chunks, products and epilogues, with
+// the multiply-adds the core's (iso_gcorners_c*, iso_geval_c*; gemm_eval's own loop beside it until the two are
+// measured: MD_GTO_ISO_GEMM=own). 128 rows per group as gemm_eval's, F columns per tile; thread (pg, cg) =
+// (tid >> 2, tid & 3) is the core's (ty, tx): rows 4 pg .. 4 pg + 3, columns cg F / 4 .. (R = 4, M = F / 4). A chunk:
+// A [kk][r] the rows' AO values (row r = tid: the thread's own point, or its vertex's channel), B [kk][F] the chunk's
+// rows of C times the AO normalization (k_load_chunk's).
+// ------------------------------------------------------------------------------------------
+#include "../gto/gto_gemm_core.slang"
+GC_MEM(IsoGc16, 128, 16)
+GC_MEM(IsoGc32, 128, 32)
+GC_MEM(IsoGc64, 128, 64)
+
+// k_load_chunk with the rows of C into the core's B chunk
+void k_load_chunk_gc<let F : int, Mem : IGcMem>(uint c, uint f0, uint tid, uint gs) {
+    IsoArgs a = MD_ARGS;
+    uint i0 = k_chunk[c], i1 = k_chunk[c + 1];
+    uint i = min(i0 + tid, i1 - 1u);       // clamped: see k_list
+    IsoShell sh = a.shells[min(k_sh[i], a.num_shells - 1u)];
+    uint ao0 = sh.info2.x;
+    if (tid < i1 - i0) {
+        uint np = sh.info.z, po = k_poff[i];
+        for (uint n = 0u; n < k_nc[i]; ++n) k_row_ao[k_row[i] + n] = ao0 + n;
+        k_cs[tid] = sh.c;
+        k_ci[tid] = sh.info.x | (sh.info.y << 4) | (np << 8) | (po << 16);
+        for (uint q = 0u; q < np; ++q) k_pr[min(po + q, uint(K_PR) - 1u)] = a.prims[sh.info.w + q];
+    }
+    GroupMemoryBarrierWithGroupSync();
+    uint nrows = k_nrows[c];
+    for (uint e = tid; e < nrows * uint(F); e += gs) {
+        uint row = e / uint(F), col = e % uint(F);
+        uint ao = min(k_row_ao[min(row, uint(K_CK) - 1u)], a.num_ao - 1u);
+        float v = a.C[ao * a.fn_stride + min(f0 + col, a.fn_stride - 1u)] * a.ao_nrm[ao];
+        Mem::st(uint(GK * G_GROUP) + e, f0 + col < a.num_fn ? v : 0.0);
+    }
+    GroupMemoryBarrierWithGroupSync();
+}
+
+// The chunks: the shells that reach the group's box, K_LIST listed at a time, packed into chunks of whole shells of at
+// most G_CK rows; each staged and its AO values made at the thread's row
+struct IsoGemmStager<let F : int, Mem : IGcMem, let VERT : int> : IGemmStager {
+    float3 glo, ghi, p;
+    uint   ch, ax;
+    uint   s0, c, nchunk;
+    bool   listed;
+    [mutating] void begin(uint m0, uint tid) { s0 = 0u; c = 0u; nchunk = 0u; listed = false; }
+    [mutating] uint stage(uint m0, uint tid) {
+        IsoArgs a = MD_ARGS;
+        while (c >= nchunk) {                              // uniform
+            if (listed) s0 += uint(K_LIST);
+            if (s0 >= a.num_shells) return GC_END;
+            k_list(s0, glo, ghi, tid, G_GROUP, G_CK);      // barriers inside
+            listed = true;
+            nchunk = k_nchunk;
+            c = 0u;
+        }
+        k_load_chunk_gc<F, Mem>(c, m0, tid, G_GROUP);
+        uint i0 = k_chunk[c], i1 = k_chunk[c + 1];
+        // this row's AO values of the chunk's shells (zero beyond a shell's cutoff)
+        for (uint i = i0; i < i1; ++i) {
+            float3 d;
+            float R, R1 = 0.0;
+            uint l, nc;
+            if (VERT == 0) k_shell(i - i0, p, d, R, l, nc);
+            else           k_shell_d(i - i0, p, d, R, R1, l, nc);
+            float m[15];
+            cart_monomials(l, d, m);
+            float A = R, Bg = 0.0;
+            float g[15];
+            if (VERT != 0) {
+                cart_monomials_d(l, d, ax, g);
+                // channel 0: m R; channel 1 + ax: g R + m 2 d[ax] R1
+                float da = ax == 0u ? d.x : (ax == 1u ? d.y : d.z);
+                A = ch == 0u ? R : 2.0 * da * R1;
+                Bg = ch == 0u ? 0.0 : R;
+            }
+            uint rb = k_row[i] * uint(G_GROUP) + tid;
+            [ForceUnroll] for (int n = 0; n < 15; ++n) {
+                if (uint(n) < nc) {                         // uniform
+                    float phi = m[n] * A;
+                    if (VERT != 0) phi += g[n] * Bg;
+                    Mem::st(rb + uint(n) * uint(G_GROUP), phi);
+                }
+            }
+        }
+        const uint nrows = k_nrows[c];
+        c += 1u;
+        return nrows;
+    }
+};
+
+// gemm_eval's epilogues: X[v][c] is its acc[v FC + c] (rows 4 pg + v, columns m0 + cg FC + c)
+struct IsoGemmEpilogue<let F : int, Mem : IGcMem, let VERT : int> : IGemmEpilogue {
+    uint   pg, cg, pt, slot0, mask, v0, vl, ch, stride;
+    bool   active;
+    float  res;
+    float4 res4;
+    [mutating] void take<let R : int, let M : int>(uint f0, uint ncols, uint tx, uint ty, float X[R][M]) {
+        IsoArgs a = MD_ARGS;
+        const int FC = M;
+        const uint tid = pg * 4u + cg;
+        uint col0 = f0 + cg * uint(FC);
+        if (a.canon != 0u) {
+            for (uint f = 0u; f < (VERT == 0 ? a.num_fields : 1u); ++f) {
+                uint fw = f;
+                if (VERT != 0) fw = min(a.vinfo[min(v0 + pg, a.count - 1u)].z, 15u);   // the vertex's field
+                uint wb = fw * 3u * stride + col0;
+                float part[4] = {0.0, 0.0, 0.0, 0.0};
+                [ForceUnroll] for (int c = 0; c < FC; ++c) {
+                    float wl = a.wts[wb + uint(c)], wd = a.wts[wb + stride + uint(c)];
+                    float wp = (c & 1) == 0 ? a.wts[wb + 2u * stride + uint(c)] : 0.0;
+                    if (VERT == 0) {
+                        [ForceUnroll] for (int v = 0; v < 4; ++v) {
+                            float x = X[v][c];
+                            part[v] += x * (wl + wd * x);
+                            if ((c & 1) == 0) part[v] += wp * x * X[v][c + 1];
+                        }
+                    } else {
+                        float x = X[0][c];
+                        part[0] += x * (wl + wd * x);
+                        [ForceUnroll] for (int k = 1; k < 4; ++k) part[k] += X[k][c] * (wl + 2.0 * wd * x);
+                        if ((c & 1) == 0) {
+                            float x1 = X[0][c + 1];
+                            part[0] += wp * x * x1;
+                            [ForceUnroll] for (int k = 1; k < 4; ++k) part[k] += wp * (x * X[k][c + 1] + x1 * X[k][c]);
+                        }
+                    }
+                }
+                GroupMemoryBarrierWithGroupSync();         // g_red free
+                [ForceUnroll] for (int v = 0; v < 4; ++v) g_red[cg * uint(G_GROUP) + pg * 4u + uint(v)] = part[v];
+                GroupMemoryBarrierWithGroupSync();
+                float sum = g_red[tid] + g_red[uint(G_GROUP) + tid] + g_red[2u * uint(G_GROUP) + tid] + g_red[3u * uint(G_GROUP) + tid];
+                if (VERT == 0) {
+                    if (active && ((field_bits(mask) >> (2u * f)) & 1u) != 0u) {
+                        uint ci = (slot0 + field_slot(mask, f)) * 125u + pt;
+                        a.corners[ci] = f0 == 0u ? sum : a.corners[ci] + sum;
+                    }
+                } else {
+                    res += sum;
+                }
+            }
+        } else {
+            // other terms: the rows staged RR at a time (in the A chunk's memory), then the terms of each row's field(s)
+            const uint RR = uint(4 * G_CK * 32) / uint(F);
+            for (uint r0 = 0u; r0 < uint(G_GROUP); r0 += RR) {
+                GroupMemoryBarrierWithGroupSync();
+                [ForceUnroll] for (int v = 0; v < 4; ++v) {
+                    uint rr = pg * 4u + uint(v) - r0;
+                    if (rr < RR) {
+                        [ForceUnroll] for (int c = 0; c < FC; ++c) Mem::st(rr * uint(F) + cg * uint(FC) + uint(c), X[v][c]);
+                    }
+                }
+                GroupMemoryBarrierWithGroupSync();
+                uint rr = tid - r0;
+                if (rr >= RR || !active) continue;
+                if (VERT == 0) {
+                    uint rb = rr * uint(F);
+                    for (uint f = 0u; f < a.num_fields; ++f) {
+                        if (((field_bits(mask) >> (2u * f)) & 1u) == 0u) continue;
+                        IsoField fd = a.fields[f];
+                        float v = 0.0;
+                        for (uint t = 0u; t < fd.term_count; ++t) {
+                            IsoTerm tm = a.terms[fd.term_off + t];
+                            if (tm.a < f0 || tm.a >= f0 + uint(F)) continue;
+                            float xa = Mem::ld(rb + tm.a - f0);
+                            if (tm.b == INVALID) { v += tm.w * xa; continue; }
+                            v += tm.w * xa * Mem::ld(rb + tm.b - f0);
+                        }
+                        uint ci = (slot0 + field_slot(mask, f)) * 125u + pt;
+                        a.corners[ci] = f0 == 0u ? v : a.corners[ci] + v;
+                    }
+                } else if (ch == 0u) {
+                    uint rb = rr * uint(F);                // rows rr .. rr + 3: value, d/dx, d/dy, d/dz
+                    IsoField fd = a.fields[min(a.vinfo[v0 + vl].z, 15u)];
+                    float4 r = float4(0.0);
+                    for (uint t = 0u; t < fd.term_count; ++t) {
+                        IsoTerm tm = a.terms[fd.term_off + t];
+                        if (tm.a < f0 || tm.a >= f0 + uint(F)) continue;
+                        uint ia = tm.a - f0;
+                        float xa = Mem::ld(rb + ia);
+                        float3 ga = float3(Mem::ld(rb + uint(F) + ia), Mem::ld(rb + 2u * uint(F) + ia), Mem::ld(rb + 3u * uint(F) + ia));
+                        if (tm.b == INVALID) { r += tm.w * float4(ga, xa); continue; }
+                        uint ib = tm.b - f0;
+                        float xb = Mem::ld(rb + ib);
+                        float3 gb = float3(Mem::ld(rb + uint(F) + ib), Mem::ld(rb + 2u * uint(F) + ib), Mem::ld(rb + 3u * uint(F) + ib));
+                        r += tm.w * float4(xa * gb + xb * ga, xa * xb);
+                    }
+                    res4 += r;
+                }
+            }
+        }
+    }
+};
+
+void gemm_eval_core<let F : int, Mem : IGcMem, let VERT : int>(uint3 gid, uint tid) {
+    IsoArgs a = MD_ARGS;
+    uint pg = tid >> 2, cg = tid & 3u;
+    uint b = 0u, pt = 0u, slot0 = 0u, mask = 0u, v0 = 0u;
+    uint vl = tid >> 2, ch = tid & 3u;
+    bool active;
+    float3 p;
+    if (VERT == 0) {
+        uint total = a.count_in[0];
+        uint e0 = node_index(gid) * uint(G_GROUP);
+        if (e0 >= total) return;                           // uniform per group
+        uint e = e0 + tid;
+        active = e < total;
+        uint ent = a.plist[min(e, total - 1u)];
+        b = ent >> 7;
+        pt = ent & 127u;
+        uint4 brick = a.bricks[b];
+        mask = brick.w;
+        slot0 = a.brick_slot[b];
+        p = corner_point(brick, pt);
+    } else {
+        v0 = node_index(gid) * 32u;
+        if (v0 >= a.count) return;                         // uniform per group
+        active = v0 + vl < a.count;
+        if (tid == 0u) {
+            uint done = 1u;
+            for (uint k = 0u; k < 32u && v0 + k < a.count; ++k) done &= a.vdone[v0 + k] != 0u ? 1u : 0u;   // 1 converged, 2 predicted
+            g_done = done;
+        }
+        GroupMemoryBarrierWithGroupSync();
+        if (g_done != 0u) return;                          // uniform: every vertex here has converged
+        p = a.vpos[min(v0 + vl, a.count - 1u)].xyz;
+    }
+    // the group's box: its rows' points
+    {
+        uint lanes = WaveGetLaneCount();
+        uint w = min(iso_wave_index(tid, lanes), 31u);
+        float3 lo = WaveActiveMin(active ? p : float3(3.0e38));
+        float3 hi = WaveActiveMax(active ? p : float3(-3.0e38));
+        if (WaveIsFirstLane()) { g_lohi[2u * w] = float4(lo, 0.0); g_lohi[2u * w + 1u] = float4(hi, 0.0); }
+        GroupMemoryBarrierWithGroupSync();
+        if (tid == 0u) {
+            uint nw = min(iso_num_waves(G_GROUP, lanes), 32u);
+            float3 glo = g_lohi[0].xyz, ghi = g_lohi[1].xyz;
+            for (uint k = 1u; k < nw; ++k) { glo = min(glo, g_lohi[2u * k].xyz); ghi = max(ghi, g_lohi[2u * k + 1u].xyz); }
+            g_lohi[0] = float4(glo, 0.0);
+            g_lohi[1] = float4(ghi, 0.0);
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+    IsoGemmStager<F, Mem, VERT> st;
+    st.glo = g_lohi[0].xyz;
+    st.ghi = g_lohi[1].xyz;
+    st.p   = p;
+    st.ch  = ch;
+    st.ax  = ch > 0u ? ch - 1u : 0u;
+    st.s0 = 0u; st.c = 0u; st.nchunk = 0u; st.listed = false;
+    IsoGemmEpilogue<F, Mem, VERT> epi;
+    epi.pg = pg; epi.cg = cg; epi.pt = pt; epi.slot0 = slot0; epi.mask = mask; epi.v0 = v0; epi.vl = vl; epi.ch = ch;
+    epi.stride = a.fn_stride;
+    epi.active = active;
+    epi.res = 0.0;
+    epi.res4 = float4(0.0);
+
+    gemm_core_staged<G_GROUP, F, 4, 32, Mem, IsoGemmStager<F, Mem, VERT>, IsoGemmEpilogue<F, Mem, VERT> >(st, epi, a.num_fn, tid, cg, pg);
+
+    if (VERT != 0) {
+        if (a.canon != 0u) {
+            GroupMemoryBarrierWithGroupSync();
+            g_red[tid] = epi.res;
+            GroupMemoryBarrierWithGroupSync();
+            if (tid < 32u && v0 + tid < a.count) a.vval[v0 + tid] = float4(g_red[4u * tid + 1u], g_red[4u * tid + 2u], g_red[4u * tid + 3u], g_red[4u * tid]);
+        } else if (ch == 0u && active) {
+            a.vval[v0 + vl] = epi.res4;
+        }
+    }
+}
+
+[shader("compute")] [numthreads(G_GROUP, 1, 1)] void iso_gcorners_c16(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_eval_core<16, IsoGc16, 0>(gid, tid); }
+[shader("compute")] [numthreads(G_GROUP, 1, 1)] void iso_gcorners_c32(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_eval_core<32, IsoGc32, 0>(gid, tid); }
+[shader("compute")] [numthreads(G_GROUP, 1, 1)] void iso_gcorners_c64(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_eval_core<64, IsoGc64, 0>(gid, tid); }
+[shader("compute")] [numthreads(G_GROUP, 1, 1)] void iso_geval_c16(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_eval_core<16, IsoGc16, 1>(gid, tid); }
+[shader("compute")] [numthreads(G_GROUP, 1, 1)] void iso_geval_c32(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_eval_core<32, IsoGc32, 1>(gid, tid); }
+[shader("compute")] [numthreads(G_GROUP, 1, 1)] void iso_geval_c64(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_eval_core<64, IsoGc64, 1>(gid, tid); }
+
+// ------------------------------------------------------------------------------------------
 // The wide GEMM (canonical terms only): 64 rows per group of 256 threads and F = 128, 192 or 256
 // function columns per pass, so a set of up to 256 functions lists its shells, stages its chunks
 // and makes its AO values once (gemm_eval: once per tile of 64). Thread (pg, cg), pg = tid % 16,

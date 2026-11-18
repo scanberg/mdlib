@@ -3771,6 +3771,9 @@ UTEST(gto_iso_gpu_lib, benchmark) {
         {"tq.scf.results.h5",   "tq 16 MOs",  -16,       0.05},
     };
     printf("\n  device: %s, %s | display meshes (project 8, relax 3) | median of %d\n", info.name, info.driver, reps);
+    // the tiled GEMM of the corners and vertices: on the GEMM core, or its own loop (MD_GTO_ISO_GEMM=own)
+    printf("  tiled GEMM (iso_gcorners_*, iso_geval_*): %s | " MD_GTO_GPU_GEMM_CORE_REVISION "\n",
+           (getenv("MD_GTO_ISO_GEMM") && strcmp(getenv("MD_GTO_ISO_GEMM"), "own") == 0) ? "its own loop (MD_GTO_ISO_GEMM=own)" : "on the GEMM core");
     printf("  %-12s %5s | %4s %6s %6s %7s | %8s %7s %7s %7s %7s %7s %7s | %9s %8s %13s", "field", "h", "fn", "bricks", "slots", "verts",
         "total ms", "octree", "corners", "nets", "project", "relax", "output", "dense ms", "dense/tot", "dense grid");
     if (with_cpu) printf(" | %8s", "CPU s");
