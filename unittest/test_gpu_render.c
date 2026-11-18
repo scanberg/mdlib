@@ -843,6 +843,57 @@ UTEST(gpu_render, draw_at_with_a_table_of_arguments) {
     r_close(&f);
 }
 
+/* A pipeline's specialization constants reach its fragment stage. */
+UTEST(gpu_render, pipeline_specialization_constants) {
+    rfix_t f;
+    if (!r_open(&f)) UTEST_SKIP(r_skip_reason());
+
+    md_gpu_texture_t u = r_target(&f, MD_GPU_FORMAT_R32_UINT, W, H, 0);
+    md_gpu_addr_t vb = r_buffer(&f, full_tri, sizeof(full_tri));
+    ASSERT_TRUE(u && vb);
+
+    md_gpu_pipeline_desc_t pd = {0};
+    pd.vertex       = md_shader_gpu_render_test_basic_vs_shader();
+    pd.fragment     = md_shader_gpu_render_test_spec_fs_shader();
+    pd.topology     = MD_GPU_TOPOLOGY_TRIANGLES;
+    pd.color_count  = 1;
+    pd.color[0].format = MD_GPU_FORMAT_R32_UINT;
+    pd.label        = "spec pipeline";
+    md_gpu_pipeline_t p0 = md_gpu_pipeline_create(f.dev, &pd);
+    const uint32_t id_add = 40;
+    pd.constants      = &id_add;
+    pd.constants_size = sizeof(id_add);
+    md_gpu_pipeline_t p1 = md_gpu_pipeline_create(f.dev, &pd);
+    ASSERT_TRUE(p0 && p1);
+    pd.constants_size = 3;
+    EXPECT_TRUE(md_gpu_pipeline_create(f.dev, &pd) == NULL);
+
+    rargs_t a = {0};
+    a.pos = vb;
+    a.id  = 1000;
+    static uint32_t ids[W * H];
+    md_gpu_render_desc_t rd = {0};
+    rd.color_count = 1;
+    rd.color[0].texture = u; rd.color[0].load = MD_GPU_LOAD_CLEAR;
+    ASSERT_TRUE(md_gpu_render_begin(f.gfx, &rd));
+    EXPECT_TRUE(MD_GPU_DRAW(f.gfx, p0, 3, 1, a));
+    ASSERT_TRUE(md_gpu_render_end(f.gfx));
+    ASSERT_TRUE(r_read(&f, u, 0, 0, ids, sizeof(ids)));
+    EXPECT_EQ(1007u, ids[5 * W + 5]);           /* the default, 7 */
+
+    ASSERT_TRUE(md_gpu_render_begin(f.gfx, &rd));
+    EXPECT_TRUE(MD_GPU_DRAW(f.gfx, p1, 3, 1, a));
+    ASSERT_TRUE(md_gpu_render_end(f.gfx));
+    ASSERT_TRUE(r_read(&f, u, 0, 0, ids, sizeof(ids)));
+    EXPECT_EQ(1040u, ids[5 * W + 5]);
+
+    md_gpu_pipeline_destroy(p0);
+    md_gpu_pipeline_destroy(p1);
+    md_gpu_free(f.gfx, vb);
+    md_gpu_texture_destroy(u);
+    r_close(&f);
+}
+
 /* =========================================================================
    Attachments at mips and layers; ordering between passes and kernels
    ========================================================================= */

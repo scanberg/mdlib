@@ -102,7 +102,7 @@ if (MD_ENABLE_GPU AND (MD_GPU_BACKEND STREQUAL "VULKAN" OR MD_GPU_BACKEND STREQU
     TARGET    md_unittest
     NAMESPACE md_shader
     SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/gpu_test.slang
-    ENTRIES   fill scale_add sum_reduce tex_write tex_read bump layout_probe tex_probe sample_read spin
+    ENTRIES   fill scale_add sum_reduce tex_write tex_read bump layout_probe tex_probe sample_read spin spec_const
   )
   compile_gpu_shaders(gpu_render_test_shaders.inl
     TARGET    md_unittest
@@ -110,7 +110,7 @@ if (MD_ENABLE_GPU AND (MD_GPU_BACKEND STREQUAL "VULKAN" OR MD_GPU_BACKEND STREQU
     SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/gpu_render_test.slang
     ENTRIES   read_tex gen_pos
     VERTEX    basic_vs indirect_vs point_vs table_vs
-    FRAGMENT  color_fs mrt_fs id_fs depth_fs table_fs
+    FRAGMENT  color_fs mrt_fs id_fs depth_fs table_fs spec_fs
   )
   if (MD_ENABLE_HDF5)
     # test_gto_iso.c: gridless GTO isosurface extraction (prototype)

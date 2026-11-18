@@ -812,7 +812,34 @@ typedef struct md_gpu_kernel_desc_t {
        was compiled with -fno-fast-math already). No effect on Vulkan. Set by
        the generated descriptor of a shader compiled with PRECISE_MATH. */
     bool        precise_math;
+
+    /* Specialization constants, compiled into the kernel at creation so that
+       one shader serves several variants (a width, a mode, an unrolled count)
+       and the compiler folds and removes what they decide. See
+       MD_GPU_MAX_CONSTANTS. */
+    const void* constants;
+    uint32_t    constants_size;
 } md_gpu_kernel_desc_t;
+
+/* A constants block is an array of 32-bit words: word i is the value of the
+   i-th constant the shader file declares with [SpecializationConstant] -- an
+   int, uint, float or bool (bool as 0 or 1). Slang numbers them in
+   declaration order across the file, whichever an entry point uses, so a C
+   struct of 32-bit scalars in that order is such a block:
+
+       [SpecializationConstant] const uint  WIDTH = 64;    // word 0
+       [SpecializationConstant] const float SCALE = 1.0;   // word 1
+
+       struct { uint32_t width; float scale; } c = {128, 0.5f};
+
+   A constant without a word keeps the default its declaration gives; a word
+   without a constant is ignored. constants_size is in bytes, a multiple of
+   4, at most 4 * MD_GPU_MAX_CONSTANTS. Vulkan passes the block as
+   specialization constants, Metal as function constants, which is what
+   Slang lowers [SpecializationConstant] to on each. Not [vk::constant_id]:
+   it moves Slang's bindless heap off its descriptor set, which the shader
+   build rejects. */
+#define MD_GPU_MAX_CONSTANTS 64
 
 /* Normally fed straight from the generated descriptor:
 
@@ -1033,6 +1060,10 @@ typedef struct md_gpu_pipeline_desc_t {
     uint32_t              color_count;
     md_gpu_format_t       depth_format;  /* MD_GPU_FORMAT_INVALID: no depth
                                             attachment                         */
+    /* Specialization constants, as md_gpu_kernel_desc_t's, given to both
+       stages: they share one block as they share one argument struct. */
+    const void*           constants;
+    uint32_t              constants_size;
     const char*           label;
 } md_gpu_pipeline_desc_t;
 

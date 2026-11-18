@@ -2273,6 +2273,61 @@ static id<MTLLibrary> md_mtl_library_from_blob(md_gpu_device_t dev, const void* 
     return lib;
 }
 
+/* The entry point of a library: the name asked for, its Slang-mangled form, or
+   the library's only function -- specialized with `constants` (word i: function
+   constant i, as [vk::constant_id(i)] lowers) when it declares any. +1 or nil;
+   a failure is reported. */
+static id<MTLFunction> md_mtl_new_function(id<MTLLibrary> lib, const char* entry, const void* constants, uint32_t constants_size,
+                                           const char* label) {
+    if (constants_size % 4 != 0 || constants_size / 4 > MD_GPU_MAX_CONSTANTS || (constants_size && !constants)) {
+        md_mtl_fail("'%s': constants_size %u is not a multiple of 4 up to %u", label, constants_size, 4 * MD_GPU_MAX_CONSTANTS);
+        return nil;
+    }
+    /* Metal reserves 'main', so Slang renames entry points to '<name>_0'. */
+    id<MTLFunction> fn = [lib newFunctionWithName:[NSString stringWithUTF8String:entry]];
+    if (!fn) fn = [lib newFunctionWithName:[NSString stringWithFormat:@"%s_0", entry]];
+    if (!fn && lib.functionNames.count == 1) fn = [lib newFunctionWithName:lib.functionNames[0]];
+    if (!fn) { md_mtl_fail("entry point '%s' not found in shader library for '%s'", entry, label); return nil; }
+
+    /* A function with function constants is specialized even when none is
+       given: Slang's are optional (each falls back to its declared default),
+       and a pipeline is made from the specialized function. */
+    NSDictionary<NSString*, MTLFunctionConstant*>* fcs = fn.functionConstantsDictionary;
+    if (fcs.count == 0) return fn;
+    const uint32_t* words = (const uint32_t*)constants;
+    const uint32_t  n     = constants_size / 4;
+    MTLFunctionConstantValues* vals = [[MTLFunctionConstantValues alloc] init];
+    bool ok = true;
+    for (MTLFunctionConstant* fc in fcs.allValues) {
+        const NSUInteger i = fc.index;
+        if (i >= n) continue;
+        switch (fc.type) {
+        case MTLDataTypeInt:
+        case MTLDataTypeUInt:
+        case MTLDataTypeFloat:
+            [vals setConstantValue:&words[i] type:fc.type atIndex:i];
+            break;
+        case MTLDataTypeBool: {
+            const bool b = words[i] != 0;
+            [vals setConstantValue:&b type:MTLDataTypeBool atIndex:i];
+        } break;
+        default:
+            ok = md_mtl_fail("'%s': constant %u ('%s') is not an int, uint, float or bool", label, (uint32_t)i, [fc.name UTF8String]);
+            break;
+        }
+    }
+    id<MTLFunction> spec = nil;
+    if (ok) {
+        NSError* err = nil;
+        spec = [lib newFunctionWithName:fn.name constantValues:vals error:&err];
+        if (!spec) md_mtl_fail("'%s': specializing '%s' failed: %s", label, [fn.name UTF8String],
+                               err ? [[err localizedDescription] UTF8String] : "?");
+    }
+    MD_MTL_DROP_NEW(vals);
+    MD_MTL_DROP_NEW(fn);
+    return spec;
+}
+
 /* A kernel takes exactly one buffer -- the root -- so the first buffer binding
    reflection reports is the one wanted. */
 static uint32_t md_mtl_reflect_arg_buffer_index(MTLComputePipelineReflection* refl, const char* label) {
@@ -2291,13 +2346,10 @@ static uint32_t md_mtl_reflect_arg_buffer_index(MTLComputePipelineReflection* re
 
 /* Build a pipeline from a library entry point. Caller registers the kernel. */
 static md_gpu_kernel_t md_mtl_kernel_from_library(md_gpu_device_t dev, id<MTLLibrary> lib, const char* entry,
-                                                  const char* label, const uint32_t group_size[3], uint32_t args_size) {
-    /* Metal reserves 'main', so Slang renames entry points to '<name>_0'. Try
-       the requested name, then the Slang-mangled form, then the sole function. */
-    id<MTLFunction> fn = [lib newFunctionWithName:[NSString stringWithUTF8String:entry]];
-    if (!fn) fn = [lib newFunctionWithName:[NSString stringWithFormat:@"%s_0", entry]];
-    if (!fn && lib.functionNames.count == 1) fn = [lib newFunctionWithName:lib.functionNames[0]];
-    if (!fn) { md_mtl_fail("entry point '%s' not found in shader library for '%s'", entry, label); return NULL; }
+                                                  const char* label, const uint32_t group_size[3], uint32_t args_size,
+                                                  const void* constants, uint32_t constants_size) {
+    id<MTLFunction> fn = md_mtl_new_function(lib, entry, constants, constants_size, label);
+    if (!fn) return NULL;
 
     NSError* err = nil;
     MTLComputePipelineReflection* refl = nil;
@@ -2359,7 +2411,7 @@ md_gpu_kernel_t md_gpu_kernel_create(md_gpu_device_t dev, const md_gpu_kernel_de
         id<MTLLibrary> lib = md_mtl_library_from_blob(dev, desc->code, desc->code_size, label, desc->precise_math);
         if (lib) {
             k = md_mtl_kernel_from_library(dev, lib, desc->entry_point ? desc->entry_point : "main",
-                                           label, desc->group_size, desc->args_size);
+                                           label, desc->group_size, desc->args_size, desc->constants, desc->constants_size);
             MD_MTL_DROP_NEW(lib);
         }
     }
@@ -2637,15 +2689,6 @@ static MTLBlendOperation md_mtl_blend_op(md_gpu_blend_op_t op, bool* ok) {
     }
 }
 
-/* The entry point of a vertex or fragment library: the name asked for, its
-   Slang-mangled form, or the library's only function. +1 or nil. */
-static id<MTLFunction> md_mtl_find_function(id<MTLLibrary> lib, const char* entry) {
-    id<MTLFunction> fn = [lib newFunctionWithName:[NSString stringWithUTF8String:entry]];
-    if (!fn) fn = [lib newFunctionWithName:[NSString stringWithFormat:@"%s_0", entry]];
-    if (!fn && lib.functionNames.count == 1) fn = [lib newFunctionWithName:lib.functionNames[0]];
-    return fn;
-}
-
 /* The first buffer a stage binds is its root; with MD_SHADER_ARGS it is the
    only one. UINT32_MAX when the stage binds none (no argument struct). */
 static uint32_t md_mtl_reflect_root(NSArray<id<MTLBinding>>* bindings) {
@@ -2723,12 +2766,12 @@ md_gpu_pipeline_t md_gpu_pipeline_create(md_gpu_device_t dev, const md_gpu_pipel
     @autoreleasepool {
         id<MTLLibrary>  vlib = md_mtl_library_from_blob(dev, desc->vertex.code, desc->vertex.code_size, label, desc->vertex.precise_math);
         id<MTLLibrary>  flib = has_fs && vlib ? md_mtl_library_from_blob(dev, desc->fragment.code, desc->fragment.code_size, label, desc->fragment.precise_math) : nil;
-        id<MTLFunction> vfn  = vlib ? md_mtl_find_function(vlib, desc->vertex.entry_point ? desc->vertex.entry_point : "main") : nil;
-        id<MTLFunction> ffn  = flib ? md_mtl_find_function(flib, desc->fragment.entry_point ? desc->fragment.entry_point : "main") : nil;
-        if (!vlib || (has_fs && !flib)) {
-            ok = false;   /* reported by md_mtl_library_from_blob */
-        } else if (!vfn || (has_fs && !ffn)) {
-            ok = md_mtl_fail("pipeline '%s': %s entry point not found", label, vfn ? "fragment" : "vertex");
+        id<MTLFunction> vfn  = vlib ? md_mtl_new_function(vlib, desc->vertex.entry_point ? desc->vertex.entry_point : "main",
+                                                          desc->constants, desc->constants_size, label) : nil;
+        id<MTLFunction> ffn  = flib && vfn ? md_mtl_new_function(flib, desc->fragment.entry_point ? desc->fragment.entry_point : "main",
+                                                                 desc->constants, desc->constants_size, label) : nil;
+        if (!vlib || (has_fs && !flib) || !vfn || (has_fs && !ffn)) {
+            ok = false;   /* reported by md_mtl_library_from_blob or md_mtl_new_function */
         }
 
         if (ok) {
@@ -3607,14 +3650,14 @@ static bool md_mtl_create_builtin_kernels(md_gpu_device_t dev) {
         if (!lib) return false;
         const uint32_t gs[3] = {1, 1, 1};
         dev->make_grid_kernel = md_mtl_kernel_from_library(dev, lib, "md_gpu_make_grid", "md_gpu make_grid",
-                                                           gs, (uint32_t)sizeof(md_mtl_make_grid_args_t));
+                                                           gs, (uint32_t)sizeof(md_mtl_make_grid_args_t), NULL, 0);
         MD_MTL_DROP_NEW(lib);
 
         id<MTLLibrary> blib = md_mtl_library_from_blob(dev, md_gpu_byte_op_msl, strlen(md_gpu_byte_op_msl), "md_gpu byte_op", false);
         if (!blib) return false;
         const uint32_t bgs[3] = {MD_MTL_BYTE_OP_GROUP, 1, 1};
         dev->byte_op_kernel = md_mtl_kernel_from_library(dev, blib, "md_gpu_byte_op", "md_gpu byte_op",
-                                                         bgs, (uint32_t)sizeof(md_mtl_byte_op_args_t));
+                                                         bgs, (uint32_t)sizeof(md_mtl_byte_op_args_t), NULL, 0);
         MD_MTL_DROP_NEW(blib);
     }
     return dev->make_grid_kernel != NULL && dev->byte_op_kernel != NULL;

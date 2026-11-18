@@ -137,6 +137,14 @@ uint table_fs(VOut i) : SV_Target0 {
     return MD_ARGS_AT(i.inst % 16u).id + i.inst / 16u;
 }
 
+// The id plus a specialization constant set at pipeline creation.
+[SpecializationConstant] const uint SPEC_ID = 7;     // constant 0
+
+[shader("fragment")]
+uint spec_fs(VOut i) : SV_Target0 {
+    return MD_ARGS.id + SPEC_ID;
+}
+
 struct DepthOut {
     float4 color : SV_Target0;
     float  depth : SV_Depth;

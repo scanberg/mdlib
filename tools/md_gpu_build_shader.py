@@ -11,6 +11,8 @@ point, and the one run does everything the entry point needs:
      per target. The output is byte-identical to two separate slangc runs.
   2. check_gpu_arg_layout.check_entry() compares the argument-struct layouts of
      the two targets; a mismatch is a build error (see that script for why).
+     Every descriptor the SPIR-V declares must sit in the bindless set, where
+     md_gpu's heap is (check_descriptor_sets).
   3. On Vulkan, spirv_deforward reorders the SPIR-V type section for drivers
      that reject forward-declared buffer pointers (see that script).
   4. The kernel or shader descriptor -- group size and argument-struct size --
@@ -79,6 +81,31 @@ def compile_both(slangc, source, entry, bindless_space, debug_info=False):
         return spv.read_bytes(), msl.read_bytes()
 
 
+def check_descriptor_sets(spv, bindless_space):
+    """The DescriptorSet of every descriptor in the SPIR-V, if one is not the
+    bindless space -- a problem md_gpu would otherwise only meet at pipeline
+    creation (the heap missing from the layout). Slang moves its heap off the
+    requested space when the file declares [vk::constant_id] constants (it
+    warns E39012, which the build silences for the Metal target's sake), so
+    that is what the message points at."""
+    words = struct.unpack("<%dI" % (len(spv) // 4), spv)
+    sets = set()
+    i = 5
+    while i < len(words):
+        op, n = words[i] & 0xFFFF, words[i] >> 16
+        if n == 0:
+            break
+        if op == 71 and n >= 4 and words[i + 2] == 34:      # OpDecorate <id> DescriptorSet <set>
+            sets.add(words[i + 3])
+        i += n
+    wrong = sorted(x for x in sets if x != int(bindless_space))
+    if not wrong:
+        return None
+    return (f"descriptors in set {', '.join(map(str, wrong))}, not the bindless set {bindless_space}; "
+            "declare specialization constants with [SpecializationConstant], not [vk::constant_id] "
+            "(which moves Slang's bindless heap)")
+
+
 def write_atomic(path, data):
     path = Path(path)
     tmp = path.with_name(path.name + ".tmp")
@@ -112,6 +139,10 @@ def main():
         src.name, entry, args.stage != "compute", spv, msl.decode("utf8", "replace"))
     if problems:
         layout.report(problems)
+        return 1
+    problem = check_descriptor_sets(spv, args.bindless_space)
+    if problem:
+        sys.stderr.write(f"{src.name}:{entry}: {problem}\n")
         return 1
 
     if args.backend == "VULKAN":

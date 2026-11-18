@@ -3764,6 +3764,36 @@ static void md_vk_kernel_stats(md_gpu_device_t dev, md_gpu_kernel_t k) {
 static bool md_vk_debug_labels(md_gpu_device_t dev);
 static void md_vk_set_name(md_gpu_device_t dev, VkObjectType type, uint64_t handle, const char* name);
 
+/* A constants block as specialization info: word i is constant_id i. */
+typedef struct md_vk_spec_t {
+    VkSpecializationInfo     info;
+    VkSpecializationMapEntry entries[MD_GPU_MAX_CONSTANTS];
+} md_vk_spec_t;
+
+/* NULL when there are no constants, the info otherwise; fails on a malformed
+   block. */
+static bool md_vk_spec_init(md_vk_spec_t* sp, const void* data, uint32_t size, const char* label,
+                            const VkSpecializationInfo** out) {
+    *out = NULL;
+    if (size == 0) return true;
+    if (!data) return md_vk_fail("'%s': %u bytes of constants but no data", label, size);
+    if (size % 4 != 0 || size / 4 > MD_GPU_MAX_CONSTANTS) {
+        return md_vk_fail("'%s': constants_size %u is not a multiple of 4 up to %u", label, size, 4 * MD_GPU_MAX_CONSTANTS);
+    }
+    const uint32_t n = size / 4;
+    for (uint32_t i = 0; i < n; ++i) {
+        sp->entries[i].constantID = i;
+        sp->entries[i].offset     = 4 * i;
+        sp->entries[i].size       = 4;
+    }
+    sp->info.mapEntryCount = n;
+    sp->info.pMapEntries   = sp->entries;
+    sp->info.dataSize      = size;
+    sp->info.pData         = data;
+    *out = &sp->info;
+    return true;
+}
+
 md_gpu_kernel_t md_gpu_kernel_create(md_gpu_device_t dev, const md_gpu_kernel_desc_t* desc) {
     if (!dev || !desc || !desc->code || desc->code_size == 0) {
         md_vk_fail("md_gpu_kernel_create: missing code");
@@ -3789,6 +3819,9 @@ md_gpu_kernel_t md_gpu_kernel_create(md_gpu_device_t dev, const md_gpu_kernel_de
                    label, (unsigned long long)threads, dev->props.limits.maxComputeWorkGroupInvocations);
         return NULL;
     }
+    md_vk_spec_t spec;
+    const VkSpecializationInfo* spec_info = NULL;
+    if (!md_vk_spec_init(&spec, desc->constants, desc->constants_size, label, &spec_info)) return NULL;
 
     md_gpu_kernel_t k = (md_gpu_kernel_t)md_alloc(dev->alloc, sizeof(md_gpu_kernel));
     if (!k) { md_vk_fail("out of memory"); return NULL; }
@@ -3813,6 +3846,7 @@ md_gpu_kernel_t md_gpu_kernel_create(md_gpu_device_t dev, const md_gpu_kernel_de
     cpci.stage.stage  = VK_SHADER_STAGE_COMPUTE_BIT;
     cpci.stage.module = k->module;
     cpci.stage.pName  = desc->entry_point ? desc->entry_point : "main";
+    cpci.stage.pSpecializationInfo = spec_info;
     cpci.layout       = dev->pipeline_layout;
     if (dev->pipeline_stats) cpci.flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
     if (!md_vk_check(vkCreateComputePipelines(dev->device, VK_NULL_HANDLE, 1, &cpci, NULL, &k->pipeline), "vkCreateComputePipelines")) {
@@ -4231,6 +4265,10 @@ md_gpu_pipeline_t md_gpu_pipeline_create(md_gpu_device_t dev, const md_gpu_pipel
         depth_format = fi.format;
     }
 
+    md_vk_spec_t spec;
+    const VkSpecializationInfo* spec_info = NULL;
+    if (!md_vk_spec_init(&spec, desc->constants, desc->constants_size, label, &spec_info)) return NULL;
+
     md_gpu_pipeline_t p = (md_gpu_pipeline_t)md_alloc(dev->alloc, sizeof(md_gpu_pipeline));
     if (!p) { md_vk_fail("out of memory"); return NULL; }
     memset(p, 0, sizeof(*p));
@@ -4259,6 +4297,7 @@ md_gpu_pipeline_t md_gpu_pipeline_create(md_gpu_device_t dev, const md_gpu_pipel
         /* A single-entry SPIR-V module from compile_gpu_shaders names its
            entry "main"; the generated descriptors leave entry_point NULL. */
         stages[i].pName  = sh[i]->entry_point ? sh[i]->entry_point : "main";
+        stages[i].pSpecializationInfo = spec_info;
     }
 
     if (ok) {

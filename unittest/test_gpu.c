@@ -1870,6 +1870,63 @@ UTEST(gpu, kernel_group_size_is_required_and_checked) {
 
 /* A launch whose argument block is not the size the kernel was built for is
    rejected before anything is recorded. */
+/* Specialization constants: word i of the block is [vk::constant_id(i)]; a
+   constant without a word keeps its default; a malformed block is rejected. */
+UTEST(gpu, kernel_specialization_constants) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
+
+    enum { N = 300 };
+    static uint32_t host[N];
+    md_gpu_addr_t d = gpu_alloc(&f, f.compute, N * sizeof(uint32_t));
+    ASSERT_TRUE(d != 0);
+    typedef struct { uint32_t n, pad0, pad1, pad2; md_gpu_addr_t dst; } spec_args_t;
+    spec_args_t a = {0};
+    a.n = N; a.dst = d;
+
+    /* Defaults: i * 1 + 2. */
+    md_gpu_kernel_desc_t kd = md_shader_gpu_test_spec_const_kernel();
+    md_gpu_kernel_t k0 = md_gpu_kernel_create(f.dev, &kd);
+    ASSERT_TRUE(k0 != NULL);
+    ASSERT_TRUE(MD_GPU_LAUNCH(f.compute, k0, grid1(k0, N), a));
+    ASSERT_TRUE(gpu_read(&f, f.compute, host, d, sizeof(host)));
+    for (int i = 0; i < N; ++i) EXPECT_EQ((uint32_t)(i + 2), host[i]);
+
+    /* All three: a uint, a float and a bool. */
+    struct { uint32_t mul; float add; uint32_t invert; } c = {3, 8.0f, 1};
+    kd.constants      = &c;
+    kd.constants_size = sizeof(c);
+    md_gpu_kernel_t k1 = md_gpu_kernel_create(f.dev, &kd);
+    ASSERT_TRUE(k1 != NULL);
+    ASSERT_TRUE(MD_GPU_LAUNCH(f.compute, k1, grid1(k1, N), a));
+    ASSERT_TRUE(gpu_read(&f, f.compute, host, d, sizeof(host)));
+    for (int i = 0; i < N; ++i) EXPECT_EQ(~(uint32_t)(3 * i + 8), host[i]);
+
+    /* The first word only: the others keep their defaults. */
+    const uint32_t mul = 5;
+    kd.constants      = &mul;
+    kd.constants_size = sizeof(mul);
+    md_gpu_kernel_t k2 = md_gpu_kernel_create(f.dev, &kd);
+    ASSERT_TRUE(k2 != NULL);
+    ASSERT_TRUE(MD_GPU_LAUNCH(f.compute, k2, grid1(k2, N), a));
+    ASSERT_TRUE(gpu_read(&f, f.compute, host, d, sizeof(host)));
+    for (int i = 0; i < N; ++i) EXPECT_EQ((uint32_t)(5 * i + 2), host[i]);
+
+    /* Not whole words, or more than MD_GPU_MAX_CONSTANTS. */
+    kd.constants_size = 6;
+    EXPECT_TRUE(md_gpu_kernel_create(f.dev, &kd) == NULL);
+    static uint32_t many[MD_GPU_MAX_CONSTANTS + 1];
+    kd.constants      = many;
+    kd.constants_size = sizeof(many);
+    EXPECT_TRUE(md_gpu_kernel_create(f.dev, &kd) == NULL);
+
+    md_gpu_kernel_destroy(k0);
+    md_gpu_kernel_destroy(k1);
+    md_gpu_kernel_destroy(k2);
+    md_gpu_free(f.compute, d);
+    gpu_close(&f);
+}
+
 UTEST(gpu, launch_rejects_wrong_argument_size) {
     gpu_fixture_t f;
     if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
