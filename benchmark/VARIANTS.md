@@ -7,7 +7,8 @@ it, and the others need not measure it. This file goes with the switches once de
 
 Ratios are B / A, the median of 7 rounds in alternating order; below 1, B is faster. Two runs on the M4 Pro
 (gemm-bench r5 and r6, isosurface r41 and r42): both shown where both measured it. The GTX 1060 (Windows, Vulkan,
-driver 582.66; gemm-bench r6): a few of its lines were lost to the console (-).
+driver 582.66; gemm-bench r6): a few of its lines were lost to the console (-). The HD 530 (the same machine, Vulkan
+1.3.215; gemm-bench r6).
 
 ## Grid kernels (md_gto)
 
@@ -25,9 +26,15 @@ driver 582.66; gemm-bench r6): a few of its lines were lost to the console (-).
 | orbitals shell 1 | 1060    | 0.995       | -           | 1.002           | -             |
 | orbitals shell 8 | 1060    | 1.088       | 0.994       | **1.176**       | **1.189**     |
 | orbitals GEMM 32 | 1060    | 1.022       | 1.065       | 0.992           | 1.009         |
+| density GEMM     | HD 530  | 1.000       | 0.997       | 1.000           | 0.996         |
+| ELF GEMM         | HD 530  | 1.000       | 1.000       | 1.000           | 1.002         |
+| orbitals shell 1 | HD 530  | 0.998       | 1.002       | 0.970           | 0.967         |
+| orbitals shell 8 | HD 530  | 0.996       | 0.997       | 0.956           | 0.964         |
+| orbitals GEMM 32 | HD 530  | 1.001       | 1.031       | 1.000           | 0.996         |
 
 (The planes' runs are 0.2-1.6 ms: their spread is noise - the protein plane's 1.091 and 1.129 had ranges of
-0.93-1.25 and 0.98-1.18.) Every pair the same bits.
+0.93-1.25 and 0.98-1.18.) Every pair the same bits, but the shell kernel on the HD 530 (2e-7 to 7e-7 of the largest
+value: its compiler contracts the runtime shape's arithmetic otherwise).
 
 ### AO tile: 32 (A) against 64 with 32 for blocks of <= 32 AOs (B); the vendor's choice today: Apple 32, else 64
 
@@ -37,21 +44,25 @@ driver 582.66; gemm-bench r6): a few of its lines were lost to the console (-).
 | ELF     | M4 Pro | 0.985 0.998 | 1.043 1.105 | 0.970 0.963 | 0.958 0.957   |
 | density | 1060   | 1.209       | 1.063       | 1.137       | 1.134         |
 | ELF     | 1060   | 0.983       | 0.999       | **0.935**   | **0.936**     |
+| density | HD 530 | **0.854**   | **0.817**   | **0.766**   | **0.733**     |
+| ELF     | HD 530 | 0.951       | **0.898**   | **0.823**   | **0.784**     |
 
 ### Orbitals: the shell kernel, 8 a pass (A), against the GEMM path (B), volume
 
-| orbitals | M4 Pro mol  | M4 Pro protein | 1060 mol | 1060 protein |
-|----------|-------------|----------------|----------|--------------|
-| 2        | 3.238 3.375 | 4.805 4.752    | 4.980    | 2.030        |
-| 4        | 2.707 2.750 | 3.691 3.713    | 3.975    | 1.556        |
-| 8        | 2.400 2.421 | 2.780 2.750    | 3.643    | 1.091        |
-| 16       | 1.304       | 1.396          | 1.894    | 0.545        |
-| 24       | 0.903       | 0.949          | 1.234    | 0.365        |
-| 32       | 0.671       | 0.728          | 0.912    | -            |
+| orbitals | M4 Pro mol  | M4 Pro protein | 1060 mol | 1060 protein | HD 530 mol | HD 530 protein |
+|----------|-------------|----------------|----------|--------------|------------|----------------|
+| 2        | 3.238 3.375 | 4.805 4.752    | 4.980    | 2.030        | 5.166      | 2.382          |
+| 4        | 2.707 2.750 | 3.691 3.713    | 3.975    | 1.556        | 3.640      | 1.941          |
+| 8        | 2.400 2.421 | 2.780 2.750    | 3.643    | 1.091        | 2.768      | 1.457          |
+| 16       | 1.304       | 1.396          | 1.894    | 0.545        | 1.390      | 0.738          |
+| 24       | 0.903       | 0.949          | 1.234    | 0.365        | 0.938      | 0.507          |
+| 32       | 0.671       | 0.728          | 0.912    | -            | 0.714      | 0.392          |
 
-(The GEMM path's time is flat from 2 to 32 orbitals: on the protein 124 ms on the M4 Pro, 194 ms on the 1060; the
-shell kernel per pass of 8: 45 and 178 ms. The crossover is not the vendor's alone: on the 1060 at 24-32 orbitals on
-mol, at 8-10 on the protein.)
+(The GEMM path's time is flat from 2 to 32 orbitals: on the protein 124 ms on the M4 Pro, 194 ms on the 1060, 2.4 s
+on the HD 530; the shell kernel per pass of 8: 45, 178 ms and 1.66 s. The crossover - GEMM over the shell kernel's
+passes - is not the vendor's alone: on mol at 19-29 orbitals on all three, on the protein at 22 on the M4 Pro, 9 on
+the 1060, 12 on the HD 530. Past 8 today: at most 40% lost at 9-16 orbitals on mol, against up to 84% that 16 would
+lose on the 1060's protein. Left as it is.)
 
 ## Isosurface GEMMs (md_gto_iso_gpu)
 
@@ -100,16 +111,16 @@ over Windows' 2 s watchdog. Isosurface r43 chunks by the GEMMs' columns, the blo
 - The 8-orbital shell kernel stays (the GEMM path 2.4-4.8x behind at 2-8 orbitals).
 - The shell kernel keeps a kernel per shape, at 1 orbital (one kernel 5.1% behind on the M4 Pro's volume, twice) and
   at 8 (9-19% behind on the 1060).
-- The density's 32-wide GEMM stays (64: 4-11% behind on the M4 Pro, 6-21% on the 1060 - where NVIDIA's 64 today
-  is the wrong choice for the density).
-- ELF/LOL's 64-wide GEMM stays (6.5% ahead of 32 on the 1060's protein), and its 32 (the small blocks').
+- The density's GEMM keeps both tiles: 32 (64 4-11% behind on the M4 Pro, 6-21% on the 1060) and 64 (15-27% ahead
+  of 32 on the HD 530). NVIDIA's 64 today is the wrong choice for the density on the 1060.
+- ELF/LOL's GEMM keeps both: 64 ahead of 32 everywhere (3-4% on the M4 Pro, 6.5% on the 1060's protein, 5-22% on
+  the HD 530), 32 for the small blocks.
+- So the tile becomes a choice per pass and vendor, not per vendor: ELF/LOL 64; the density 32 on Apple and (the
+  1060; the 3080 to see) NVIDIA, 64 on Intel.
 
 ## Open (the 1060, the Intel iGPU, the 3080)
 
 - One kernel for both shapes: the counting and Phi passes, the density's GEMM pass, ELF/LOL's finish and Phi with
-  gradients, the orbitals' GEMM pass (neutral on the M4 Pro and the 1060).
-- The density's 64-wide GEMM: behind 32 on both so far; it goes unless the Intel iGPU or the 3080 have it more than
-  5% ahead. Either way the AO tile is better chosen per pass than per vendor: the density 32, ELF/LOL 64.
-- Tiled 16 against 32: 4.8-4.9% on the M4 Pro's totals (6.5-7.8% on the GEMMs' stages); the 1060's not run yet.
-- Not pruning, but measured here: the orbitals' crossover from the shell kernel to the GEMM path, past 8 today: on
-  the M4 Pro between 16 and 24 on both systems; on the 1060 between 24 and 32 on mol, about 8-10 on the protein.
+  gradients, the orbitals' GEMM pass (neutral on the M4 Pro, the 1060 and the HD 530): the 3080 to see.
+- Tiled 16 against 32: 4.8-4.9% on the M4 Pro's totals (6.5-7.8% on the GEMMs' stages); the 1060's, the HD 530's
+  and the 3080's to run (GTO_ISO_VARIANTS_ONLY=tiled).
