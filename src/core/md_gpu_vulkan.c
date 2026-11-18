@@ -5,13 +5,13 @@ Structure of this file:
 
     1.  Configuration, error handling, small utilities
     2.  Types
-    3.  Allocation registry (device address -> allocation lookup)
+    3.  Address lookup (device address -> buffer)
     4.  Raw buffers and transient arenas (argument blocks and staging)
     5.  Deferred destruction
     6.  Device creation
     7.  Bindless descriptor set
     8.  Streams, command buffers, submission, ordering
-    9.  Memory: heaps, malloc/free, temp arenas, copies, uploads
+    9.  Memory: chunks for md_gpu_heap, malloc/free, temp scopes, copies, uploads
     10. Textures and samplers
     11. Kernels and launches
     12. Rendering: pipelines, passes, dynamic state, draws
@@ -44,7 +44,7 @@ written on one and read on another needs no queue-family ownership transfer.
 */
 
 #include "md_gpu.h"
-#include "md_gpu_tlsf.h"
+#include "md_gpu_heap.h"
 
 #include <core/md_allocator.h>
 #include <core/md_format.h>
@@ -113,14 +113,7 @@ written on one and read on another needs no queue-family ownership transfer.
    and keep it for the stream's lifetime. */
 #define MD_VK_ARENA_DEDICATED   (16ull * 1024u * 1024u)
 #define MD_VK_ARG_ALIGN            64u
-#define MD_VK_HEAP_ALIGN          256u              /* every md_gpu_malloc / temp allocation */
-#define MD_VK_HEAP_CHUNK_MIN     (4ull << 20)       /* first heap chunk of a kind            */
-#define MD_VK_HEAP_CHUNK_MAX    (64ull << 20)       /* chunks grow by doubling up to this    */
-#define MD_VK_HEAP_LARGE_ALIGN  (64ull << 10)       /* granularity of oversized chunks       */
-#define MD_VK_HEAP_CACHE_DEFAULT (256ull << 20)
 #define MD_VK_DEBUG_GUARD        (64ull << 10)     /* each side of a debug memory allocation */
-#define MD_VK_TEMP_CHUNK_MIN     (4ull << 20)
-#define MD_VK_TEMP_KINDS            2u              /* DEVICE, HOST_WRITE                    */
 #define MD_VK_ERROR_BUF           2560u   /* room for an adapter list with missing features */
 
 #if defined(_MSC_VER)
@@ -242,74 +235,23 @@ static void md_vk_vec_free(md_vk_vec_t* v, struct md_allocator_i* alloc) {
    2. Types
    ========================================================================= */
 
-/* One VkBuffer: a region of a heap, or a chunk of a stream's temp arena. */
+/* One VkBuffer with its memory: a chunk of a heap or of a temp arena
+   (md_gpu_heap.h), or one debug memory allocation. */
 typedef struct md_vk_chunk_t {
+    md_gpu_chunk_t    base;          /* first: md_gpu_heap hands out &base      */
     VkBuffer          buffer;
     VkDeviceMemory    memory;
     uint32_t          memory_type;   /* of `memory`                             */
     uint64_t          memory_offset; /* of the buffer in `memory`               */
-    uint64_t          address;
-    uint8_t*          host;          /* mapped pointer, or NULL                 */
-    uint64_t          size;
-    md_gpu_mem_kind_t kind;
-    /* Heap chunks. */
-    bool              empty;         /* no live allocation in it                */
-    md_tlsf_node_t*   empty_node;    /* its single free node while empty        */
-    /* Temp chunks. */
-    uint64_t          cursor;
-    uint32_t          owner_depth;   /* scope depth that acquired it            */
-    uint64_t          retire_value;  /* reusable once the stream reaches this   */
-    struct md_vk_range_t* range;     /* registry entry                          */
 } md_vk_chunk_t;
-
-/* A registry entry: one live md_gpu_malloc allocation, or one whole temp
-   chunk. What md_vk_resolve checks addresses against. */
-typedef struct md_vk_range_t {
-    uint64_t          address;
-    uint64_t          size;          /* requested bytes, or the chunk's size    */
-    md_vk_chunk_t*    chunk;
-    uint64_t          chunk_offset;  /* of `address` within chunk->buffer       */
-    md_tlsf_node_t*   node;          /* heap allocation; NULL for a temp chunk  */
-    md_vk_chunk_t*    own;           /* debug memory: the allocation's own chunk */
-    md_gpu_mem_kind_t kind;
-} md_vk_range_t;
 
 /* A resolved address: where to point a command at. */
 typedef struct md_vk_span_t {
-    VkBuffer buffer;
-    uint64_t offset;                 /* within `buffer`                         */
-    uint8_t* host;                   /* host pointer of the address, or NULL    */
-    struct md_vk_chunk_t* chunk;     /* the chunk `buffer` is                   */
+    VkBuffer       buffer;
+    uint64_t       offset;           /* within `buffer`                         */
+    uint8_t*       host;             /* host pointer of the address, or NULL    */
+    md_vk_chunk_t* chunk;            /* the chunk `buffer` is                   */
 } md_vk_span_t;
-
-/* The device-wide heap for one memory kind. */
-typedef struct md_vk_heap_t {
-    md_tlsf_t   tlsf;
-    md_vk_vec_t chunks;              /* md_vk_chunk_t*                          */
-    uint64_t    reserved;
-    uint64_t    empty_bytes;         /* bytes of chunks with nothing in them    */
-    uint64_t    in_use;
-    uint64_t    peak_in_use;
-    uint32_t    allocations;
-    uint64_t    temp_bytes;          /* temp arenas of every stream, this kind  */
-} md_vk_heap_t;
-
-/* A heap allocation freed at a point its stream has not yet reached. */
-typedef struct md_vk_pending_free_t {
-    md_tlsf_node_t*   node;          /* a heap allocation, or               */
-    struct md_vk_chunk_t* own;       /* a debug memory allocation's chunk   */
-    md_gpu_mem_kind_t kind;
-    md_gpu_stream_t   stream;
-    uint64_t          value;
-} md_vk_pending_free_t;
-
-/* One memory kind of a stream's temp arena. `active` is a stack: chunks the
-   open scopes are filling, in the order they were acquired (so owner_depth
-   never decreases towards the top). `spare` holds retired chunks. */
-typedef struct md_vk_temp_arena_t {
-    md_vk_vec_t active;              /* md_vk_chunk_t* */
-    md_vk_vec_t spare;               /* md_vk_chunk_t* */
-} md_vk_temp_arena_t;
 
 /* One page of host-visible, device-addressable transient memory. */
 typedef struct md_vk_page_t {
@@ -373,8 +315,7 @@ typedef struct md_gpu_stream {
 
     md_vk_arena_t        arena;
 
-    md_vk_temp_arena_t   temp[MD_VK_TEMP_KINDS];
-    uint32_t             temp_depth;       /* open temp scopes */
+    md_gpu_heap_temps_t  temps;            /* md_gpu_temp_* scopes */
 
     /* Binary semaphores for the next submit: swapchain acquire and present. */
     VkSemaphore          bin_waits[4];
@@ -626,12 +567,7 @@ typedef struct md_gpu_device {
     md_vk_sampler_entry_t samplers[MD_VK_MAX_SAMPLERS];
     uint32_t              sampler_count;   /* slots 1..sampler_count used */
 
-    /* Address -> allocation registry, sorted ascending by address. */
-    md_vk_vec_t     registry;   /* md_vk_range_t* */
-
-    md_vk_heap_t    heaps[MD_GPU_MEM_KIND_COUNT];
-    md_vk_vec_t     pending_frees;   /* md_vk_pending_free_t */
-    uint64_t        heap_cache_limit;
+    md_gpu_heap_t   heap;       /* md_gpu_malloc, md_gpu_free, temp scopes, address lookup */
     md_vk_vec_t     textures;   /* md_gpu_texture_t, live */
     uint64_t        texture_bytes;
     md_vk_vec_t     kernels;    /* md_gpu_kernel_t */
@@ -653,7 +589,6 @@ typedef struct md_gpu_device {
     uint32_t        adapter_index;
     uint64_t        warned_storage_read;   /* md_gpu_format_t bits already warned about */
     bool            validation;
-    bool            debug_memory;          /* md_gpu_device_desc_t.debug_memory */
     bool            debug_utils;        /* VK_EXT_debug_utils enabled: object names and labels for GPU tools */
     bool            supports_graphics;
     bool            supports_present;   /* surface + swapchain extensions enabled */
@@ -672,82 +607,24 @@ static void     md_vk_texture_free(md_gpu_device_t dev, md_gpu_texture_t t);
 static void     md_vk_kernel_free(md_gpu_device_t dev, md_gpu_kernel_t k);
 static void     md_vk_pipeline_free(md_gpu_device_t dev, md_gpu_pipeline_t p);
 static void     md_vk_swapchain_free(md_gpu_device_t dev, md_vk_swapchain_t* sc);
-static void     md_vk_heap_release_node_locked(md_gpu_device_t dev, md_gpu_mem_kind_t kind, md_tlsf_node_t* node);
-static void     md_vk_release_free_locked(md_gpu_device_t dev, const md_vk_pending_free_t* pf);
-static void     md_vk_temp_free_all(md_gpu_stream_t s);
+static void     md_vk_heap_init(md_gpu_device_t dev, uint64_t cache_limit, bool debug);
 static void     md_vk_abandon_pass(md_gpu_stream_t s);
 
 /* =========================================================================
-   3. Allocation registry
+   3. Address lookup
    ========================================================================= */
 
-/* Binary search for the range containing `address`. Caller holds device_mutex. */
-static md_vk_range_t* md_vk_registry_find_locked(md_gpu_device_t dev, uint64_t address) {
-    size_t lo = 0, hi = dev->registry.count;
-    md_vk_range_t** arr = (md_vk_range_t**)dev->registry.data;
-    while (lo < hi) {
-        size_t mid = (lo + hi) / 2;
-        md_vk_range_t* r = arr[mid];
-        if (address < r->address) {
-            hi = mid;
-        } else if (address >= r->address + r->size) {
-            lo = mid + 1;
-        } else {
-            return r;
-        }
-    }
-    return NULL;
-}
-
-static bool md_vk_registry_insert_locked(md_gpu_device_t dev, md_vk_range_t* r) {
-    if (!md_vk_vec_reserve(&dev->registry, dev->alloc, dev->registry.count + 1)) return false;
-    md_vk_range_t** arr = (md_vk_range_t**)dev->registry.data;
-    /* Binary search for the insertion point, then one memmove. */
-    size_t lo = 0, hi = dev->registry.count;
-    while (lo < hi) {
-        size_t mid = (lo + hi) / 2;
-        if (arr[mid]->address < r->address) lo = mid + 1; else hi = mid;
-    }
-    memmove(arr + lo + 1, arr + lo, (dev->registry.count - lo) * sizeof(*arr));
-    arr[lo] = r;
-    dev->registry.count++;
-    return true;
-}
-
-static void md_vk_registry_remove_locked(md_gpu_device_t dev, md_vk_range_t* r) {
-    size_t lo = 0, hi = dev->registry.count;
-    md_vk_range_t** arr = (md_vk_range_t**)dev->registry.data;
-    while (lo < hi) {
-        size_t mid = (lo + hi) / 2;
-        if (arr[mid]->address < r->address) lo = mid + 1; else hi = mid;
-    }
-    if (lo < dev->registry.count && arr[lo] == r) md_vk_vec_remove(&dev->registry, lo);
-}
-
-/* Resolve [addr, addr + size) to where it lives. Takes the device lock for
-   the lookup: the registry is mutated by malloc on other threads, so an
-   unlocked binary search is a data race. `what` names the calling function
-   for the error message. */
+/* Resolve [addr, addr + size) to the buffer it lives in (md_gpu_heap.h keeps
+   the registry). `what` names the calling function for the error message. */
 static bool md_vk_resolve(md_gpu_device_t dev, md_gpu_addr_t addr, uint64_t size,
                           md_vk_span_t* out, const char* what) {
-    md_mutex_lock(&dev->device_mutex);
-    md_vk_range_t* r = md_vk_registry_find_locked(dev, addr);
-    md_vk_range_t  copy;
-    if (r) copy = *r;
-    md_mutex_unlock(&dev->device_mutex);
-    if (!r) {
-        return md_vk_fail("%s: 0x%llx is not a live md_gpu allocation", what, (unsigned long long)addr);
-    }
-    const uint64_t off = addr - copy.address;
-    if (size > copy.size || off > copy.size - size) {
-        return md_vk_fail("%s: range [0x%llx, +%llu) overruns its %llu-byte allocation",
-                          what, (unsigned long long)addr, (unsigned long long)size, (unsigned long long)copy.size);
-    }
+    md_gpu_heap_span_t sp;
+    if (!md_gpu_heap_resolve(&dev->heap, addr, size, &sp, what)) return false;
     if (out) {
-        out->buffer = copy.chunk->buffer;
-        out->offset = copy.chunk_offset + off;
-        out->host   = copy.chunk->host ? copy.chunk->host + copy.chunk_offset + off : NULL;
-        out->chunk  = copy.chunk;
+        out->chunk  = (md_vk_chunk_t*)sp.chunk;
+        out->buffer = out->chunk->buffer;
+        out->offset = sp.offset;
+        out->host   = sp.host;
     }
     return true;
 }
@@ -1165,15 +1042,7 @@ static void md_vk_process_retires_locked(md_gpu_device_t dev, bool force) {
    releases memory it freed -- the free points would otherwise never be
    reached. Caller holds device_mutex. */
 static void md_vk_forget_stream_locked(md_gpu_device_t dev, md_gpu_stream_t s) {
-    for (size_t i = 0; i < dev->pending_frees.count;) {
-        md_vk_pending_free_t pf = MD_VK_VEC_AT(dev->pending_frees, md_vk_pending_free_t, i);
-        if (pf.stream == s) {
-            md_vk_vec_remove(&dev->pending_frees, i);
-            md_vk_release_free_locked(dev, &pf);
-        } else {
-            ++i;
-        }
-    }
+    md_gpu_heap_forget_stream_locked(&dev->heap, s);
     /* Clearing the sync makes a pending callback unconditionally ready, so it
        still fires on the next md_gpu_device_poll, on the polling thread. */
     for (size_t i = 0; i < dev->hostfns.count; ++i) {
@@ -1511,17 +1380,11 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
     dev->validation = desc && desc->enable_validation;
     {
         const char* env = getenv("MD_GPU_DEBUG_MEMORY");
-        dev->debug_memory = (desc && desc->debug_memory) || (env && env[0] && strcmp(env, "0") != 0);
+        const bool debug_memory = (desc && desc->debug_memory) || (env && env[0] && strcmp(env, "0") != 0);
+        md_vk_heap_init(dev, desc ? desc->heap_cache_limit : 0, debug_memory);
     }
 
-    md_vk_vec_init(&dev->registry, sizeof(md_vk_range_t*));
-    md_vk_vec_init(&dev->pending_frees, sizeof(md_vk_pending_free_t));
     md_vk_vec_init(&dev->textures, sizeof(md_gpu_texture_t));
-    for (uint32_t k = 0; k < MD_GPU_MEM_KIND_COUNT; ++k) {
-        md_tlsf_init(&dev->heaps[k].tlsf, alloc, MD_VK_HEAP_ALIGN);
-        md_vk_vec_init(&dev->heaps[k].chunks, sizeof(md_vk_chunk_t*));
-    }
-    dev->heap_cache_limit = (desc && desc->heap_cache_limit) ? desc->heap_cache_limit : MD_VK_HEAP_CACHE_DEFAULT;
     md_vk_vec_init(&dev->kernels,  sizeof(md_gpu_kernel_t));
     md_vk_vec_init(&dev->pipelines, sizeof(md_gpu_pipeline_t));
     md_vk_vec_init(&dev->surfaces, sizeof(md_gpu_surface_t));
@@ -1947,7 +1810,7 @@ bool md_gpu_device_info(md_gpu_device_t dev, md_gpu_device_info_t* info) {
     info->atomic_float_add     = dev->caps.atomic_float.shaderBufferFloat32AtomicAdd;
     info->atomic_float_min_max = dev->caps.atomic_float2.shaderBufferFloat32AtomicMinMax;
     info->timestamps           = dev->ts_bits_compute > 0;
-    info->debug_memory         = dev->debug_memory;
+    info->debug_memory         = dev->heap.debug;
     return true;
 }
 
@@ -2247,10 +2110,7 @@ static md_gpu_stream_t md_vk_stream_create_internal(md_gpu_device_t dev, md_gpu_
     md_vk_vec_init(&s->cmds, sizeof(md_vk_cmd_t));
     md_vk_vec_init(&s->waits, sizeof(md_vk_wait_t));
     md_vk_vec_init(&s->arena.pages, sizeof(md_vk_page_t*));
-    for (uint32_t k = 0; k < MD_VK_TEMP_KINDS; ++k) {
-        md_vk_vec_init(&s->temp[k].active, sizeof(md_vk_chunk_t*));
-        md_vk_vec_init(&s->temp[k].spare,  sizeof(md_vk_chunk_t*));
-    }
+    md_gpu_heap_temps_init(&s->temps);
 
     VkSemaphoreTypeCreateInfo stci = {VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO};
     stci.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
@@ -2735,7 +2595,7 @@ static void md_vk_stream_free(md_gpu_stream_t s) {
     md_vk_vec_free(&s->cmds, dev->alloc);
     md_vk_vec_free(&s->waits, dev->alloc);
     md_vk_arena_free(dev, &s->arena);
-    md_vk_temp_free_all(s);
+    md_gpu_heap_temps_free(&dev->heap, &s->temps);
     if (s->ts_pool) vkDestroyQueryPool(dev->device, s->ts_pool, NULL);
     vkDestroyCommandPool(dev->device, s->cmd_pool, NULL);
     vkDestroySemaphore(dev->device, s->timeline, NULL);
@@ -2764,42 +2624,20 @@ void md_gpu_stream_destroy(md_gpu_stream_t s) {
    9. Memory
    =========================================================================
 
-   md_gpu_malloc draws from one heap per memory kind: a TLSF sub-allocator
-   (md_gpu_tlsf.c) over large chunks, each chunk one VkBuffer with its own
-   VkDeviceMemory. Chunks start at MD_VK_HEAP_CHUNK_MIN and double up to
-   MD_VK_HEAP_CHUNK_MAX; a request bigger than that gets a chunk of its own.
-   So a thousand small buffers cost a handful of driver allocations, not a
-   thousand -- the driver's limit (maxMemoryAllocationCount, commonly 4096)
-   is never in reach.
+   md_gpu_malloc, md_gpu_free and the temp scopes are md_gpu_heap.c's, shared
+   with the Metal backend. What is Vulkan's is a chunk: one VkBuffer with
+   VkDeviceMemory of its own, every buffer usage md_gpu needs and a device
+   address -- guarded in debug memory, so that GPU-assisted validation sees an
+   access past either end. Reusing freed memory early needs a barrier, which
+   cannot be placed inside a render pass. */
 
-   md_gpu_free is stream-ordered. At a point the GPU has already passed, the
-   node goes straight back to the heap. Otherwise it waits on pending_frees
-   until the stream gets there (checked at malloc and poll). While it waits,
-   the freeing stream itself may reuse it for DEVICE memory: stream order
-   puts the new work after the old, and force_barrier covers EXPLICIT mode.
-   Host-visible memory is never reused early, because the CPU would write
-   it at once.
-
-   A chunk whose last allocation is released counts as empty. Empty chunks
-   are kept, up to heap_cache_limit bytes per kind, and beyond that returned
-   to the driver. That is safe at once, because a node is released only
-   after the GPU has passed its free. */
-
-static uint64_t md_vk_heap_chunk_size(const md_vk_heap_t* h, uint64_t need) {
-    uint64_t size = MD_VK_HEAP_CHUNK_MIN;
-    for (size_t i = 0; i < h->chunks.count && size < MD_VK_HEAP_CHUNK_MAX; ++i) size *= 2;
-    if (need > size) size = md_vk_align_up(need, MD_VK_HEAP_LARGE_ALIGN);
-    return size;
-}
-
-/* A chunk of `size` bytes. In debug memory it is one allocation's own,
-   exactly `size` and guarded. */
-static md_vk_chunk_t* md_vk_chunk_create(md_gpu_device_t dev, md_gpu_mem_kind_t kind, uint64_t size) {
+static md_gpu_chunk_t* md_vk_chunk_create(void* user, md_gpu_mem_kind_t kind, uint64_t size) {
+    md_gpu_device_t dev = (md_gpu_device_t)user;
     md_vk_chunk_t* c = (md_vk_chunk_t*)md_alloc(dev->alloc, sizeof(md_vk_chunk_t));
     if (!c) { md_vk_fail("out of memory"); return NULL; }
     memset(c, 0, sizeof(*c));
     md_vk_raw_t raw;
-    if (!md_vk_raw_create(dev, size, kind, dev->debug_memory ? MD_VK_RAW_GUARDED : 0, &raw)) {
+    if (!md_vk_raw_create(dev, size, kind, dev->heap.debug ? MD_VK_RAW_GUARDED : 0, &raw)) {
         md_free(dev->alloc, c, sizeof(*c));
         return NULL;
     }
@@ -2807,413 +2645,77 @@ static md_vk_chunk_t* md_vk_chunk_create(md_gpu_device_t dev, md_gpu_mem_kind_t 
     c->memory        = raw.memory;
     c->memory_type   = raw.memory_type;
     c->memory_offset = raw.memory_offset;
-    c->address       = raw.address;
-    c->host          = raw.host;
-    c->size          = size;
-    c->kind          = kind;
-    return c;
+    c->base.address  = raw.address;
+    c->base.host     = raw.host;
+    c->base.size     = size;
+    c->base.kind     = kind;
+    return &c->base;
 }
 
-static void md_vk_chunk_destroy(md_gpu_device_t dev, md_vk_chunk_t* c) {
+static void md_vk_chunk_destroy(void* user, md_gpu_chunk_t* chunk) {
+    md_gpu_device_t dev = (md_gpu_device_t)user;
+    md_vk_chunk_t* c = (md_vk_chunk_t*)chunk;
     md_vk_destroy_raw_buffer(dev, c->buffer, c->memory);
     md_free(dev->alloc, c, sizeof(*c));
 }
 
-/* Give a heap node back to its heap: the GPU is done with it. Caller holds
-   device_mutex. */
-static void md_vk_heap_release_node_locked(md_gpu_device_t dev, md_gpu_mem_kind_t kind, md_tlsf_node_t* node) {
-    md_vk_heap_t* h = &dev->heaps[kind];
-    md_tlsf_node_t* f = md_tlsf_free(&h->tlsf, node);
-    if (!md_tlsf_region_empty(f)) return;
-    md_vk_chunk_t* c = (md_vk_chunk_t*)f->region;
-    c->empty      = true;
-    c->empty_node = f;
-    h->empty_bytes += c->size;
-    if (h->empty_bytes > dev->heap_cache_limit) {
-        md_tlsf_remove_region(&h->tlsf, f);
-        md_vk_vec_remove_ptr(&h->chunks, c);
-        h->empty_bytes -= c->size;
-        h->reserved    -= c->size;
-        md_vk_chunk_destroy(dev, c);
-    }
+static bool md_vk_reuse_early(md_gpu_stream_t s) {
+    if (s->in_pass) return false;
+    s->force_barrier = true;
+    return true;
 }
 
-/* Give a debug memory allocation's chunk back to the driver: the GPU is
-   done with it. Caller holds device_mutex. */
-static void md_vk_own_release_locked(md_gpu_device_t dev, md_gpu_mem_kind_t kind, md_vk_chunk_t* c) {
-    md_vk_heap_t* h = &dev->heaps[kind];
-    md_vk_vec_remove_ptr(&h->chunks, c);
-    h->reserved -= c->size;
-    md_vk_chunk_destroy(dev, c);
+static void md_vk_heap_fail(const char* message) {
+    md_vk_fail("%s", message);
 }
 
-/* Caller holds device_mutex. */
-static void md_vk_release_free_locked(md_gpu_device_t dev, const md_vk_pending_free_t* pf) {
-    if (pf->own) md_vk_own_release_locked(dev, pf->kind, pf->own);
-    else         md_vk_heap_release_node_locked(dev, pf->kind, pf->node);
+static void md_vk_heap_init(md_gpu_device_t dev, uint64_t cache_limit, bool debug) {
+    const md_gpu_heap_backend_t backend = {
+        dev, md_vk_chunk_create, md_vk_chunk_destroy,
+        md_vk_stream_position, md_vk_stream_completed, md_vk_reuse_early, md_vk_heap_fail,
+    };
+    md_gpu_heap_init(&dev->heap, dev->alloc, &dev->device_mutex, &backend, cache_limit, debug);
 }
 
-/* Release pending frees whose point has been reached. Caller holds device_mutex. */
-static void md_vk_process_pending_frees_locked(md_gpu_device_t dev) {
-    for (size_t i = 0; i < dev->pending_frees.count;) {
-        md_vk_pending_free_t pf = MD_VK_VEC_AT(dev->pending_frees, md_vk_pending_free_t, i);
-        if (md_vk_stream_completed(pf.stream) >= pf.value) {
-            md_vk_vec_remove(&dev->pending_frees, i);
-            md_vk_release_free_locked(dev, &pf);
-        } else {
-            ++i;
-        }
-    }
+md_gpu_mem_t md_gpu_malloc(md_gpu_stream_t s, md_gpu_mem_kind_t kind, size_t size) {
+    const md_gpu_mem_t none = {0, NULL};
+    if (!s) { md_vk_fail("md_gpu_malloc: null stream"); return none; }
+    return md_gpu_heap_malloc(&s->device->heap, s, kind, size);
 }
 
-/* A node for `need` bytes: the stream's own pending frees first (DEVICE only,
-   and only when little of the node would be wasted), then the heap, then a new
-   chunk. Caller holds device_mutex. */
-static md_tlsf_node_t* md_vk_heap_alloc_locked(md_gpu_device_t dev, md_gpu_stream_t s,
-                                               md_gpu_mem_kind_t kind, uint64_t need) {
-    md_vk_heap_t* h = &dev->heaps[kind];
-    md_tlsf_node_t* node = NULL;
-
-    /* Not inside a render pass: the barrier that makes early reuse safe
-       cannot be placed there. */
-    if (kind == MD_GPU_MEM_DEVICE && !s->in_pass) {
-        for (size_t i = 0; i < dev->pending_frees.count; ++i) {
-            md_vk_pending_free_t* pf = &MD_VK_VEC_AT(dev->pending_frees, md_vk_pending_free_t, i);
-            if (pf->stream != s || pf->kind != kind || pf->own) continue;
-            if (pf->node->size < need || pf->node->size > need + need / 4 + MD_VK_HEAP_ALIGN) continue;
-            node = pf->node;
-            md_vk_vec_remove(&dev->pending_frees, i);
-            s->force_barrier = true;
-            break;
-        }
-    }
-    if (!node) node = md_tlsf_alloc(&h->tlsf, need);
-    if (!node) {
-        const uint64_t size = md_vk_heap_chunk_size(h, need);
-        md_vk_chunk_t* c = md_vk_chunk_create(dev, kind, size);
-        if (!c) return NULL;
-        md_vk_chunk_t** slot = (md_vk_chunk_t**)md_vk_vec_push(&h->chunks, dev->alloc);
-        if (!slot || !md_tlsf_add_region(&h->tlsf, c, size)) {
-            if (slot) h->chunks.count--;
-            md_vk_chunk_destroy(dev, c);
-            md_vk_fail("out of memory");
-            return NULL;
-        }
-        *slot = c;
-        h->reserved += size;
-        node = md_tlsf_alloc(&h->tlsf, need);
-        if (!node) { md_vk_fail("md_gpu_malloc: internal error, a fresh chunk did not fit"); return NULL; }
-    }
-    md_vk_chunk_t* c = (md_vk_chunk_t*)node->region;
-    if (c->empty) {
-        c->empty      = false;
-        c->empty_node = NULL;
-        h->empty_bytes -= c->size;
-    }
-    return node;
-}
-
-md_gpu_mem_t md_gpu_malloc(md_gpu_stream_t stream, md_gpu_mem_kind_t kind, size_t size) {
-    md_gpu_mem_t out = {0, NULL};
-    if (!stream) { md_vk_fail("md_gpu_malloc: null stream"); return out; }
-    if ((unsigned)kind >= (unsigned)MD_GPU_MEM_KIND_COUNT) { md_vk_fail("md_gpu_malloc: invalid memory kind %d", (int)kind); return out; }
-    if (size == 0) return out;
-    md_gpu_device_t dev = stream->device;
-    const uint64_t need = md_vk_align_up(size, MD_VK_HEAP_ALIGN);
-
-    md_vk_range_t* r = (md_vk_range_t*)md_alloc(dev->alloc, sizeof(md_vk_range_t));
-    if (!r) { md_vk_fail("out of memory"); return out; }
-
-    md_mutex_lock(&dev->device_mutex);
-    md_vk_process_pending_frees_locked(dev);
-    md_vk_heap_t* h = &dev->heaps[kind];
-    md_tlsf_node_t* node = NULL;
-    md_vk_chunk_t* c = NULL;
-    if (dev->debug_memory) {
-        /* Memory of its own, exactly `size`, guarded, never reused. */
-        c = md_vk_chunk_create(dev, kind, size);
-        md_vk_chunk_t** slot = c ? (md_vk_chunk_t**)md_vk_vec_push(&h->chunks, dev->alloc) : NULL;
-        if (slot) { *slot = c; h->reserved += size; }
-        else if (c) { md_vk_chunk_destroy(dev, c); c = NULL; md_vk_fail("out of memory"); }
-    } else {
-        node = md_vk_heap_alloc_locked(dev, stream, kind, need);
-        c = node ? (md_vk_chunk_t*)node->region : NULL;
-    }
-    if (!c) {
-        md_mutex_unlock(&dev->device_mutex);
-        md_free(dev->alloc, r, sizeof(*r));
-        return out;
-    }
-    const uint64_t offset = node ? node->offset : 0;
-    r->address      = c->address + offset;
-    r->size         = size;
-    r->chunk        = c;
-    r->chunk_offset = offset;
-    r->node         = node;
-    r->own          = node ? NULL : c;
-    r->kind         = kind;
-    if (!md_vk_registry_insert_locked(dev, r)) {
-        if (node) md_vk_heap_release_node_locked(dev, kind, node);
-        else      md_vk_own_release_locked(dev, kind, c);
-        md_mutex_unlock(&dev->device_mutex);
-        md_free(dev->alloc, r, sizeof(*r));
-        md_vk_fail("out of memory");
-        return out;
-    }
-    h->in_use += node ? node->size : size;
-    if (h->in_use > h->peak_in_use) h->peak_in_use = h->in_use;
-    h->allocations++;
-    md_mutex_unlock(&dev->device_mutex);
-
-    out.gpu = r->address;
-    out.cpu = c->host ? c->host + offset : NULL;
-    return out;
-}
-
-void md_gpu_free(md_gpu_stream_t stream, md_gpu_addr_t addr) {
+void md_gpu_free(md_gpu_stream_t s, md_gpu_addr_t addr) {
     if (!addr) return;
-    if (!stream) { md_vk_fail("md_gpu_free: a stream is required"); return; }
-    md_gpu_device_t dev = stream->device;
-
-    md_mutex_lock(&dev->device_mutex);
-    md_vk_range_t* r = md_vk_registry_find_locked(dev, addr);
-    if (!r || !(r->node || r->own) || r->address != addr) {
-        md_mutex_unlock(&dev->device_mutex);
-        md_vk_fail("md_gpu_free: 0x%llx is not the start of a live md_gpu_malloc allocation", (unsigned long long)addr);
-        return;
-    }
-    md_vk_registry_remove_locked(dev, r);
-    md_vk_heap_t* h = &dev->heaps[r->kind];
-    const uint64_t bytes = r->node ? r->node->size : r->size;
-    h->in_use -= bytes;
-    h->allocations--;
-
-    const md_vk_pending_free_t free_ = {r->node, r->own, r->kind, stream, md_vk_stream_position(stream)};
-    bool queued = false;
-    if (free_.value != 0 && md_vk_stream_completed(stream) < free_.value) {
-        md_vk_pending_free_t* pf = (md_vk_pending_free_t*)md_vk_vec_push(&dev->pending_frees, dev->alloc);
-        if (pf) {
-            *pf = free_;
-        } else {
-            /* Cannot remember it: leak the memory rather than free it under the GPU. */
-            md_vk_fail("out of memory recording a free; %llu bytes leaked", (unsigned long long)bytes);
-        }
-        queued = true;
-    }
-    if (!queued) md_vk_release_free_locked(dev, &free_);
-    md_mutex_unlock(&dev->device_mutex);
-    md_free(dev->alloc, r, sizeof(*r));
+    if (!s) { md_vk_fail("md_gpu_free: a stream is required"); return; }
+    md_gpu_heap_free(&s->device->heap, s, addr);
 }
 
-/* ---- Temp arenas ----------------------------------------------------------------
-
-   Per stream and per kind, a stack of chunks being filled by the open scopes.
-   A chunk belongs to the scope depth that acquired it. Inner scopes bump into
-   an outer scope's chunk as well; when an inner scope ends, only chunks it
-   acquired itself are retired, and what it used of an outer chunk stays used
-   until the outer scope ends. That costs at most one chunk's tail per level
-   and needs no per-allocation bookkeeping. A retired chunk is stamped with
-   the stream's position and reused only once the GPU has passed it -- the CPU
-   may write it at once, so stream order alone is not enough. */
-
-static int md_vk_temp_index(md_gpu_mem_kind_t kind) {
-    return kind == MD_GPU_MEM_DEVICE ? 0 : (kind == MD_GPU_MEM_HOST_WRITE ? 1 : -1);
-}
-
-/* Caller holds device_mutex. */
-static void md_vk_temp_chunk_destroy_locked(md_gpu_device_t dev, md_vk_chunk_t* c) {
-    if (c->range) {
-        md_vk_registry_remove_locked(dev, c->range);
-        md_free(dev->alloc, c->range, sizeof(md_vk_range_t));
-    }
-    dev->heaps[c->kind].temp_bytes -= c->size;
-    md_vk_chunk_destroy(dev, c);
-}
-
-static md_vk_chunk_t* md_vk_temp_acquire(md_gpu_stream_t s, md_gpu_mem_kind_t kind, uint64_t need) {
-    md_gpu_device_t dev = s->device;
-    md_vk_temp_arena_t* a = &s->temp[md_vk_temp_index(kind)];
-    const uint64_t done = md_vk_stream_completed(s);
-
-    /* 1. A retired chunk the GPU is done with: start it over.
-       2. A retired chunk with room left after its cursor: carry on filling it.
-          The bytes before the cursor may still be in use, but the tail never
-          was; the chunk is restamped when this scope ends, and only a later,
-          complete retirement ever rewinds it. Small scopes (a frame's worth of
-          constants) thus share a chunk instead of taking one each.
-       3. A new chunk. */
-    md_vk_chunk_t* c = NULL;
-    if (dev->debug_memory) {
-        /* Debug memory: a chunk per allocation, exactly `need`, never reused;
-           those the GPU is done with go back to the driver. */
-        md_mutex_lock(&dev->device_mutex);
-        for (size_t i = 0; i < a->spare.count;) {
-            md_vk_chunk_t* sp = MD_VK_VEC_AT(a->spare, md_vk_chunk_t*, i);
-            if (sp->retire_value <= done) { md_vk_vec_remove(&a->spare, i); md_vk_temp_chunk_destroy_locked(dev, sp); }
-            else ++i;
-        }
-        md_mutex_unlock(&dev->device_mutex);
-    }
-    for (size_t i = 0; i < a->spare.count && !c && !dev->debug_memory; ++i) {
-        md_vk_chunk_t* sp = MD_VK_VEC_AT(a->spare, md_vk_chunk_t*, i);
-        if (sp->retire_value <= done && sp->size >= need) {
-            c = sp;
-            c->cursor = 0;
-            md_vk_vec_remove(&a->spare, i);
-        }
-    }
-    for (size_t i = a->spare.count; i-- > 0 && !c && !dev->debug_memory;) {
-        md_vk_chunk_t* sp = MD_VK_VEC_AT(a->spare, md_vk_chunk_t*, i);
-        if (sp->cursor + need <= sp->size) {
-            c = sp;
-            md_vk_vec_remove(&a->spare, i);
-        }
-    }
-    if (!c) {
-        const uint64_t size = dev->debug_memory ? need
-                            : need > MD_VK_TEMP_CHUNK_MIN ? md_vk_align_up(need, MD_VK_HEAP_LARGE_ALIGN) : MD_VK_TEMP_CHUNK_MIN;
-        c = md_vk_chunk_create(dev, kind, size);
-        if (!c) return NULL;
-        md_vk_range_t* r = (md_vk_range_t*)md_alloc(dev->alloc, sizeof(md_vk_range_t));
-        if (!r) { md_vk_chunk_destroy(dev, c); md_vk_fail("out of memory"); return NULL; }
-        r->address      = c->address;
-        r->size         = c->size;
-        r->chunk        = c;
-        r->chunk_offset = 0;
-        r->node         = NULL;
-        r->kind         = kind;
-        md_mutex_lock(&dev->device_mutex);
-        const bool ok = md_vk_registry_insert_locked(dev, r);
-        if (ok) { c->range = r; dev->heaps[kind].temp_bytes += c->size; }
-        md_mutex_unlock(&dev->device_mutex);
-        if (!ok) { md_free(dev->alloc, r, sizeof(*r)); md_vk_chunk_destroy(dev, c); md_vk_fail("out of memory"); return NULL; }
-    }
-    md_vk_chunk_t** slot = (md_vk_chunk_t**)md_vk_vec_push(&a->active, dev->alloc);
-    if (!slot) {
-        md_mutex_lock(&dev->device_mutex);
-        md_vk_temp_chunk_destroy_locked(dev, c);
-        md_mutex_unlock(&dev->device_mutex);
-        md_vk_fail("out of memory");
-        return NULL;
-    }
-    *slot = c;
-    c->retire_value = 0;
-    c->owner_depth  = s->temp_depth;
-    return c;
-}
-
-md_gpu_temp_t md_gpu_temp_begin(md_gpu_stream_t stream) {
-    md_gpu_temp_t t = {NULL, 0};
-    if (!stream) { md_vk_fail("md_gpu_temp_begin: null stream"); return t; }
-    t.stream = stream;
-    t.depth  = ++stream->temp_depth;
-    return t;
+md_gpu_temp_t md_gpu_temp_begin(md_gpu_stream_t s) {
+    const md_gpu_temp_t none = {NULL, 0};
+    if (!s) { md_vk_fail("md_gpu_temp_begin: null stream"); return none; }
+    return md_gpu_heap_temp_begin(&s->temps, s);
 }
 
 md_gpu_mem_t md_gpu_temp_alloc(md_gpu_temp_t scope, md_gpu_mem_kind_t kind, size_t size) {
-    md_gpu_mem_t out = {0, NULL};
+    const md_gpu_mem_t none = {0, NULL};
     md_gpu_stream_t s = scope.stream;
-    if (!s) { md_vk_fail("md_gpu_temp_alloc: null scope"); return out; }
-    /* Chunks belong to the innermost scope, so memory for an outer one would be
-       reclaimed by the inner one's end. */
-    if (scope.depth == 0 || scope.depth != s->temp_depth) {
-        md_vk_fail("md_gpu_temp_alloc: stream '%s': the scope (depth %u) is not the innermost open one (%u)",
-                   s->label, scope.depth, s->temp_depth);
-        return out;
-    }
-    const int ti = md_vk_temp_index(kind);
-    if (ti < 0) { md_vk_fail("md_gpu_temp_alloc: only MD_GPU_MEM_DEVICE and MD_GPU_MEM_HOST_WRITE memory is temporary"); return out; }
-    if (size == 0) return out;
-    /* Debug memory: every allocation takes a chunk of exactly its size. */
-    const bool own = s->device->debug_memory;
-    const uint64_t need = own ? size : md_vk_align_up(size, MD_VK_HEAP_ALIGN);
-
-    md_vk_temp_arena_t* a = &s->temp[ti];
-    md_vk_chunk_t* c = a->active.count ? MD_VK_VEC_AT(a->active, md_vk_chunk_t*, a->active.count - 1) : NULL;
-    if (!c || c->cursor + need > c->size || own) {
-        c = md_vk_temp_acquire(s, kind, need);
-        if (!c) return out;
-    }
-    out.gpu = c->address + c->cursor;
-    out.cpu = c->host ? c->host + c->cursor : NULL;
-    c->cursor += need;
-    return out;
+    if (!s) { md_vk_fail("md_gpu_temp_alloc: null scope"); return none; }
+    return md_gpu_heap_temp_alloc(&s->device->heap, &s->temps, scope, kind, size, s->label);
 }
 
 void md_gpu_temp_end(md_gpu_temp_t scope) {
     md_gpu_stream_t s = scope.stream;
     if (!s) { md_vk_fail("md_gpu_temp_end: null scope"); return; }
-    if (scope.depth == 0 || scope.depth != s->temp_depth) {
-        md_vk_fail("md_gpu_temp_end: scopes must end in reverse order (ending depth %u, innermost open is %u)",
-                   scope.depth, s->temp_depth);
-        return;
-    }
-    const uint64_t at = md_vk_stream_position(s);
-    for (uint32_t k = 0; k < MD_VK_TEMP_KINDS; ++k) {
-        md_vk_temp_arena_t* a = &s->temp[k];
-        while (a->active.count > 0) {
-            md_vk_chunk_t* c = MD_VK_VEC_AT(a->active, md_vk_chunk_t*, a->active.count - 1);
-            if (c->owner_depth < scope.depth) break;
-            a->active.count--;
-            c->retire_value = at;
-            md_vk_chunk_t** slot = (md_vk_chunk_t**)md_vk_vec_push(&a->spare, s->device->alloc);
-            if (slot) {
-                *slot = c;
-            } else {
-                /* Cannot keep it for reuse, and cannot free it under the GPU: leak. */
-                md_vk_fail("out of memory retiring a temp chunk; %llu bytes leaked", (unsigned long long)c->size);
-            }
-        }
-    }
-    s->temp_depth--;
-}
-
-/* Every chunk of a stream's temp arenas. The stream must be idle. */
-static void md_vk_temp_free_all(md_gpu_stream_t s) {
-    md_gpu_device_t dev = s->device;
-    md_mutex_lock(&dev->device_mutex);
-    for (uint32_t k = 0; k < MD_VK_TEMP_KINDS; ++k) {
-        md_vk_temp_arena_t* a = &s->temp[k];
-        for (size_t i = 0; i < a->active.count; ++i) md_vk_temp_chunk_destroy_locked(dev, MD_VK_VEC_AT(a->active, md_vk_chunk_t*, i));
-        for (size_t i = 0; i < a->spare.count;  ++i) md_vk_temp_chunk_destroy_locked(dev, MD_VK_VEC_AT(a->spare,  md_vk_chunk_t*, i));
-        md_vk_vec_free(&a->active, dev->alloc);
-        md_vk_vec_free(&a->spare,  dev->alloc);
-    }
-    md_mutex_unlock(&dev->device_mutex);
-    s->temp_depth = 0;
+    md_gpu_heap_temp_end(&s->device->heap, &s->temps, scope);
 }
 
 bool md_gpu_memory_stats(md_gpu_device_t dev, md_gpu_mem_kind_t kind, md_gpu_memory_stats_t* out) {
     if (!dev || !out || (unsigned)kind >= (unsigned)MD_GPU_MEM_KIND_COUNT) return md_vk_fail("md_gpu_memory_stats: invalid argument");
     memset(out, 0, sizeof(*out));
     md_mutex_lock(&dev->device_mutex);
-    const md_vk_heap_t* h = &dev->heaps[kind];
-    out->bytes_in_use      = h->in_use;
-    out->bytes_peak_in_use = h->peak_in_use;
-    out->bytes_reserved    = h->reserved;
-    out->bytes_temp        = h->temp_bytes;
-    out->bytes_textures    = kind == MD_GPU_MEM_DEVICE ? dev->texture_bytes : 0;
-    out->allocations       = h->allocations;
-    out->chunks            = (uint32_t)h->chunks.count;
+    md_gpu_heap_stats_locked(&dev->heap, kind, out);
+    out->bytes_textures = kind == MD_GPU_MEM_DEVICE ? dev->texture_bytes : 0;
     md_mutex_unlock(&dev->device_mutex);
     return true;
-}
-
-/* Everything left in the heaps at device destruction. Caller holds device_mutex;
-   every stream is idle and every temp chunk already gone. */
-static void md_vk_heaps_free_locked(md_gpu_device_t dev) {
-    for (size_t i = 0; i < dev->registry.count; ++i) {
-        md_free(dev->alloc, MD_VK_VEC_AT(dev->registry, md_vk_range_t*, i), sizeof(md_vk_range_t));
-    }
-    dev->registry.count = 0;
-    dev->pending_frees.count = 0;
-    for (uint32_t k = 0; k < MD_GPU_MEM_KIND_COUNT; ++k) {
-        md_vk_heap_t* h = &dev->heaps[k];
-        for (size_t i = 0; i < h->chunks.count; ++i) md_vk_chunk_destroy(dev, MD_VK_VEC_AT(h->chunks, md_vk_chunk_t*, i));
-        md_vk_vec_free(&h->chunks, dev->alloc);
-        md_tlsf_destroy(&h->tlsf);
-    }
-    md_vk_vec_free(&dev->pending_frees, dev->alloc);
 }
 
 /* ---- Copies ------------------------------------------------------------------ */
@@ -3609,7 +3111,7 @@ static md_gpu_texture_t md_vk_texture_create(md_gpu_stream_t s, const md_gpu_tex
         md_vk_placement(dev, &req, &pl);
         md_vk_span_t sp;
         if (!md_vk_resolve(dev, at, pl.total, &sp, what)) goto fail;
-        if (sp.chunk->kind != MD_GPU_MEM_DEVICE) {
+        if (sp.chunk->base.kind != MD_GPU_MEM_DEVICE) {
             md_vk_fail("%s '%s': textures are placed in MD_GPU_MEM_DEVICE memory", what, label);
             goto fail;
         }
@@ -5731,7 +5233,7 @@ uint32_t md_gpu_device_poll(md_gpu_device_t dev) {
 
     md_mutex_lock(&dev->device_mutex);
     md_vk_process_retires_locked(dev, false);
-    md_vk_process_pending_frees_locked(dev);
+    md_gpu_heap_poll_locked(&dev->heap);
     md_mutex_unlock(&dev->device_mutex);
     return fired;
 }
@@ -5769,9 +5271,7 @@ void md_gpu_device_destroy(md_gpu_device_t dev) {
             md_vk_stream_free(MD_VK_VEC_AT(dev->streams, md_gpu_stream_t, i));
         }
         md_vk_vec_free(&dev->streams, alloc);
-        md_mutex_lock(&dev->device_mutex);
-        md_vk_heaps_free_locked(dev);
-        md_mutex_unlock(&dev->device_mutex);
+        md_gpu_heap_destroy(&dev->heap);
         md_vk_vec_free(&dev->textures, alloc);
         md_vk_vec_free(&dev->kernels, alloc);
         md_vk_vec_free(&dev->pipelines, alloc);
@@ -5784,7 +5284,6 @@ void md_gpu_device_destroy(md_gpu_device_t dev) {
         if (dev->dummy_sampler) vkDestroySampler(dev->device, dev->dummy_sampler, NULL);
         md_vk_vec_free(&dev->hostfns,  alloc);
         md_vk_vec_free(&dev->retires,  alloc);
-        md_vk_vec_free(&dev->registry, alloc);
         if (dev->pipeline_layout) vkDestroyPipelineLayout(dev->device, dev->pipeline_layout, NULL);
         if (dev->raster_layout)   vkDestroyPipelineLayout(dev->device, dev->raster_layout, NULL);
         if (dev->desc_pool)       vkDestroyDescriptorPool(dev->device, dev->desc_pool, NULL);
