@@ -11,6 +11,10 @@
 //
 // r2. (r1: 256 threads, 2 x 4 per thread, 2 groupshared loads per 8 multiply-adds: bound by groupshared
 // bandwidth, 108 G multiply-adds/s on a GTX 1060.)
+//
+// r3: dmat_tiles_core, the same block on the GEMM core (gto_gemm_core.slang): 16 x 4 threads, 4 x 8 per thread, the
+// chunk read as float4 (3 groupshared loads per 32 multiply-adds, as r2). dmat_tiles (r2) stays until the two are
+// measured against each other (MD_GTO_GPU_DMAT_KERNEL=r2).
 
 #include "../md_gpu.slang"
 
@@ -104,4 +108,58 @@ void dmat_tiles(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
             row[4] = acc[i][1].x; row[5] = acc[i][1].y; row[6] = acc[i][1].z; row[7] = acc[i][1].w;
         }
     }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// r3: the same work items on the GEMM core. Rows: the row tile's 16 AOs (A = w o P_I^T), columns: the item's up to 8
+// column tiles, 16 AOs each (B = P_J), k: the orbitals.
+// ---------------------------------------------------------------------------------------------------------------------
+#define GP  16
+#define GM  128
+#define TPX 16
+#define TPY 4
+#include "gto_gemm_core.slang"
+
+#define dargs (*dmat_root.args)
+groupshared uint dc_cols[8];        // the column tile of each of the item's slots
+
+struct DmatOperands : IGemmOperands {
+    uint I;
+    float a(uint row, uint k) {
+        return dargs.w[k] * dargs.P[k * dargs.ntao + I * 16u + row];
+    }
+    float b(uint k, uint m) {
+        return dargs.P[k * dargs.ntao + dc_cols[m >> 4] * 16u + (m & 15u)];
+    }
+};
+
+// X is the item's 16 x (16 cnt) block: tile (I, J of slot) entry e0 + slot, [a][c] at 16 a + c
+struct DmatEpilogue : IGemmEpilogue {
+    uint e0;
+    [mutating] void take(uint m0, uint ncols, uint tx, uint ty, float X[RP][RM]) {
+        [ForceUnroll] for (int j = 0; j < RM; ++j) {
+            const uint m = m0 + tx * RM + uint(j);
+            if (m < ncols) {
+                float* dst = dargs.tiles + (e0 + (m >> 4)) * 256u + (m & 15u);
+                [ForceUnroll] for (int i = 0; i < RP; ++i) dst[(ty * RP + uint(i)) * 16u] = X[i][j];
+            }
+        }
+    }
+};
+
+[shader("compute")]
+[numthreads(TPX, TPY, 1)]
+void dmat_tiles_core(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_GroupIndex) {
+    const uint item = gid.y * dargs.items_x + gid.x;
+    if (item >= dargs.num_items) return;                    // uniform per group
+    const uint4 it = dargs.items[item];
+    const uint cnt = it.z;
+    if (tid < 8u) dc_cols[tid] = tid < cnt ? dargs.cols[it.y + tid] : 0u;
+    GroupMemoryBarrierWithGroupSync();
+
+    DmatOperands ops;
+    ops.I = it.x;
+    DmatEpilogue epi;
+    epi.e0 = it.y;
+    gemm_core<DmatOperands, DmatEpilogue>(ops, epi, dargs.num_mo, 16u * cnt, false, tid, gtid.x, gtid.y);
 }

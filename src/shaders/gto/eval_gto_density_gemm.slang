@@ -261,7 +261,12 @@ void phi_grad_main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint t
 // ---------------------------------------------------------------------------
 // D_b[i][j] = D[ao_list[i]][ao_list[j]] for i >= j (the only part the GEMM pass reads),
 // so that the GEMM pass streams it with coalesced loads instead of gathering from the
-// packed global triangle in each of its 8 groups per block.
+// packed global triangle in each of its groups per block.
+//
+// The triangle's n (n + 1) / 2 entries in row order, 256 a round: every thread busy and the rounds independent (r2;
+// r1 went row by row, i + 1 threads of 256 on row i and n dependent rounds: 10.8 ms of the density's 74 on a protein,
+// RTX 3080, at 1.87 GB).
+#define GTO_DGATHER_REVISION 2
 [shader("compute")]
 [numthreads(256, 1, 1)]
 void dgather_main(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
@@ -272,10 +277,13 @@ void dgather_main(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
     const uint n      = e0.w;
     const uint ao_off = e1.y;
     const uint db_off = e1.z;
-    for (uint i = 0u; i < n; ++i) {             // uniform loop over rows
-        const uint gi = args.ao_list[ao_off + i];
-        for (uint j = tid; j <= i; j += 256u) {
-            args.D_blocks[args.d_spin_offset + db_off + i * n + j] = gto_d(gi, args.ao_list[ao_off + j]);
-        }
+    const uint total  = n * (n + 1u) / 2u;
+    for (uint t = tid; t < total; t += 256u) {
+        // row i of entry t: i (i + 1) / 2 <= t < (i + 1) (i + 2) / 2, from the float root, then made exact
+        uint i = uint((sqrt(8.0f * float(t) + 1.0f) - 1.0f) * 0.5f);
+        if (i * (i + 1u) / 2u > t) i -= 1u;
+        if ((i + 1u) * (i + 2u) / 2u <= t) i += 1u;
+        const uint j = t - i * (i + 1u) / 2u;
+        args.D_blocks[args.d_spin_offset + db_off + i * n + j] = gto_d(args.ao_list[ao_off + i], args.ao_list[ao_off + j]);
     }
 }

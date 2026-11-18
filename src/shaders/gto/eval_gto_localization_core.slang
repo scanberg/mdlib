@@ -117,11 +117,11 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_G
     }
     GroupMemoryBarrierWithGroupSync();
     const uint RS = GP * TPX;           // past what gemm_row_sums used
-    if (tid < GP) [ForceUnroll] for (int q = 0; q < 4; ++q) gc_smem[RS + tid * 4u + uint(q)] = s[q];
+    if (tid < GP) [ForceUnroll] for (int q = 0; q < 4; ++q) gc_st(RS + tid * 4u + uint(q), s[q]);
     GroupMemoryBarrierWithGroupSync();
     if (tid < LC_VOX) {
         const uint v = tid;
-        #define LC_RS(c, q) gc_smem[RS + ((c) * LC_VOX + v) * 4u + (q)]
+        #define LC_RS(c, q) gc_ld(RS + ((c) * LC_VOX + v) * 4u + (q))
         const float rho = LC_RS(0u, 0u);
         const float gx  = LC_RS(0u, 1u) + LC_RS(1u, 0u);
         const float gy  = LC_RS(0u, 2u) + LC_RS(2u, 0u);

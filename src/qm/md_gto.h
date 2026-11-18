@@ -446,8 +446,10 @@ typedef enum md_gto_gpu_density_algo_t {
 } md_gto_gpu_density_algo_t;
 
 // The revision of the GEMM core (gto_gemm_core.slang) and of what is evaluated on it, for measurements. r1: the
-// density's own loop (gemm2) beside the core, the same bits and time (RTX 3080); r2: gemm2 gone, the orbitals on the core.
-#define MD_GTO_GPU_GEMM_CORE_REVISION "gemm-core r2 (density, orbitals, ELF/LOL on one core; ELF/LOL: [phi; grad phi] (32 voxels x 4 rows) x w o D_s, symmetric, 4 terms per row, then finish)"
+// density's own loop (gemm2) beside the core, the same bits and time (RTX 3080); r2: gemm2 gone, the orbitals on the
+// core; r3: the chunks read as float4, the thread grid a kernel's own (the dmat tiles on it, 16 x 4), the D_b gather
+// over the flat triangle.
+#define MD_GTO_GPU_GEMM_CORE_REVISION "gemm-core r3 (density, orbitals, ELF/LOL, dmat tiles on one core; float4 groupshared reads; D_b gather r2: the flat triangle)"
 
 // Unified descriptor struct for density evaluation.
 typedef struct md_gto_gpu_density_desc_t {

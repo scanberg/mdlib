@@ -821,7 +821,8 @@ if (MD_ENABLE_GPU)
     TARGET    mdlib
     NAMESPACE md_shader
     SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_dmat.slang
-    ENTRIES   dmat_tiles
+    ENTRIES   dmat_tiles dmat_tiles_core
+    DEPENDS   ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_gemm_core.slang
   )
   # md_gto_int: the potential of a Hermite charge distribution. One entry point per Hermite order,
   # so each kernel is sized for its own unrolled recursion, and the resolve pass.
