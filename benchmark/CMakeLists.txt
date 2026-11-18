@@ -54,6 +54,18 @@ target_link_libraries(md_topo_gto_bench PRIVATE mdlib)
 add_dependencies(md_topo_gto_bench md_bench_rev)
 target_include_directories(md_topo_gto_bench PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 
+# The shared GEMM core against what it replaces, on the GPU: the density (reference, gemm2, core) and ELF and LOL
+# (reference, GEMM), as viamd evaluates them (see bench_gto_gemm.c). Its own executable, which takes options.
+if (MD_ENABLE_HDF5 AND MD_ENABLE_GPU)
+    add_executable(md_gto_gemm_bench bench_gto_gemm.c)
+    target_compile_definitions(md_gto_gemm_bench PRIVATE MD_BENCHMARK_DATA_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/../test_data\" ${MD_DEFINES})
+    target_compile_options(md_gto_gemm_bench PRIVATE ${MD_FLAGS} $<$<CONFIG:Debug>:${MD_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_FLAGS_REL}>)
+    target_link_options(md_gto_gemm_bench PRIVATE ${MD_LINK_FLAGS} $<$<CONFIG:Debug>:${MD_LINK_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_LINK_FLAGS_REL}>)
+    target_link_libraries(md_gto_gemm_bench PRIVATE mdlib)
+    add_dependencies(md_gto_gemm_bench md_bench_rev)
+    target_include_directories(md_gto_gemm_bench PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+endif()
+
 # How structure files (PDB, GRO) load over threads: best and median per thread count, the speedup, and a hash of the
 # system each count loads (see bench_load.c). Its own executable, which takes the files to load.
 add_executable(md_load_bench bench_load.c bench_common.h)

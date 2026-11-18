@@ -426,7 +426,8 @@ void md_gto_gpu_dmat_view(md_gto_gpu_dmat_view_t* out, md_gto_gpu_dmat_t dmat);
 typedef enum md_gto_gpu_density_algo_t {
     // The recommended algorithm, currently MD_GTO_GPU_DENSITY_ALGO_GEMM, which
     // blocks the calling thread (see below). Pick REFERENCE explicitly where a fully
-    // asynchronous launch matters more than speed.
+    // asynchronous launch matters more than speed. MD_GTO_GPU_DENSITY_ALGO (set in the
+    // environment to reference, gemm or core) overrides what DEFAULT means, to compare.
     MD_GTO_GPU_DENSITY_ALGO_DEFAULT = 0,
 
     // Original kernel (eval_gto_density.slang): per-AO tiles of 16, the radial part
@@ -440,8 +441,16 @@ typedef enum md_gto_gpu_density_algo_t {
     // until the counting pass has completed.
     MD_GTO_GPU_DENSITY_ALGO_GEMM,
 
+    // GEMM with its GEMM pass on the GEMM core (gto_gemm_core.slang, the loop ELF and LOL are
+    // evaluated with too, MD_GTO_GPU_LOCALIZATION_ALGO_GEMM) instead of a loop of its own: the same
+    // product in the same order. To measure what the shared core costs against the density's own.
+    MD_GTO_GPU_DENSITY_ALGO_GEMM_CORE,
+
     MD_GTO_GPU_DENSITY_ALGO_COUNT
 } md_gto_gpu_density_algo_t;
+
+// The revision of the GEMM core (gto_gemm_core.slang) and of what is evaluated on it, for measurements
+#define MD_GTO_GPU_GEMM_CORE_REVISION "gemm-core r1 (density: the gemm2 product as the core's; ELF/LOL: [phi; grad phi] (32 voxels x 4 rows) x w o D_s, symmetric, 4 terms per row, then finish)"
 
 // Unified descriptor struct for density evaluation.
 typedef struct md_gto_gpu_density_desc_t {
@@ -515,7 +524,7 @@ void md_gto_gpu_job_end(md_gto_gpu_job_t* job);
 // pair and spin.
 //
 // The basis's radii decide which AOs are summed at a voxel: ELF is made of small differences in the tails, and
-// wants a basis made with the cutoff 1e-8 (md_gto_gpu_basis_desc_t.cutoff), and dmats made with it.
+// wants a basis made with a cutoff of 1e-7 to 1e-8 (md_gto_gpu_basis_desc_t.cutoff), and dmats made with it.
 //
 // The tails: d_min is added to D as md_qm_elf has it, MD_QM_ELF_D_MIN for Multiwfn's convention (ELF to 0 by rho 1e-4);
 // 0 for the function as defined, which in float is good to about its noise (md_qm_elf_noise, 1e-2 by rho 1e-7).
@@ -524,6 +533,27 @@ typedef enum md_gto_gpu_localization_t {
     MD_GTO_GPU_ELF = 0,
     MD_GTO_GPU_LOL = 1,
 } md_gto_gpu_localization_t;
+
+typedef enum md_gto_gpu_localization_algo_t {
+    // REFERENCE for now, until GEMM is measured on real hardware. MD_GTO_GPU_LOCALIZATION_ALGO (set in the
+    // environment to reference or gemm) overrides what DEFAULT means, to compare.
+    MD_GTO_GPU_LOCALIZATION_ALGO_DEFAULT = 0,
+
+    // One kernel per group of 8^3 voxels (eval_gto_localization.slang): per voxel, the pairs of the AOs that reach
+    // the group, about 12 multiply-adds each per spin, the AOs' values and gradients made again for every pair of
+    // tiles of them.
+    MD_GTO_GPU_LOCALIZATION_ALGO_REFERENCE,
+
+    // The density's two passes (MD_GTO_GPU_DENSITY_ALGO_GEMM) on the GEMM core: Phi with the AOs' gradients, four
+    // rows per AO, made once per voxel; then per spin the symmetric product [phi; grad phi] x w o D_b, 2 n^2
+    // multiply-adds a voxel for n AOs at its block - four times the density's - and its terms (rho, grad rho, tau);
+    // then ELF or LOL of them (eval_gto_localization_core.slang). Blocks of 8^3 (32x16x1 for a grid of one layer) as
+    // the density's, the counts read back to plan the batches as the density's: a job (md_gto_gpu_job_t) waits for
+    // them without blocking anyone. Phi takes four times the density's scratch.
+    MD_GTO_GPU_LOCALIZATION_ALGO_GEMM,
+
+    MD_GTO_GPU_LOCALIZATION_ALGO_COUNT
+} md_gto_gpu_localization_algo_t;
 
 typedef struct md_gto_gpu_localization_desc_t {
     md_gto_gpu_basis_t basis;
@@ -539,7 +569,8 @@ typedef struct md_gto_gpu_localization_desc_t {
     md_gpu_texture_t   out_tex;       // R32F, needs MD_GPU_TEX_STORAGE; mip 0 is written
     const struct md_grid_t*   grid;
     float              sample_offset[3];
-    uint64_t           piece_work;    // the work of a submission, in voxel x AO pair x spin; 0 = 2^30
+    uint64_t           piece_work;    // the work of a submission, in voxel x AO pair x spin; 0 = 2^30 (GEMM: as the density's, 0 = 2^34)
+    md_gto_gpu_localization_algo_t algorithm;   // 0 = MD_GTO_GPU_LOCALIZATION_ALGO_DEFAULT
 } md_gto_gpu_localization_desc_t;
 
 // The revision of the kernel (eval_gto_localization.slang), for measurements: bumped with every change to it

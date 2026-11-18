@@ -21,6 +21,7 @@
 #include <math.h>
 #include <stddef.h>
 #include <stdlib.h>
+#include <string.h>
 
 typedef struct {
     float coeff;
@@ -1056,6 +1057,11 @@ static md_gpu_kernel_t gto_k_mo_shell[GTO_SHAPE_COUNT][2]      = {{0}};   // [1,
 static md_gpu_kernel_t gto_k_mo_gemm[GTO_SHAPE_COUNT]          = {0};     // 32 orbitals per tile
 static md_gpu_kernel_t gto_k_dmat_tiles       = NULL;  // md_gto_gpu_dmat_build
 static md_gpu_kernel_t gto_k_localization[GTO_SHAPE_COUNT] = {0};          // md_gto_gpu_localization_launch
+// The GEMM core (gto_gemm_core.slang): the density's GEMM pass on it, and ELF's and LOL's with their Phi pass and finish
+static md_gpu_kernel_t gto_k_density_core[GTO_SHAPE_COUNT][2] = {{0}};      // [32, 64 AO tile], 128 voxels per group
+static md_gpu_kernel_t gto_k_loc_core[GTO_SHAPE_COUNT][2] = {{0}};          // [32, 64 AO tile], 128 rows (32 voxels) per group
+static md_gpu_kernel_t gto_k_loc_core_finish[GTO_SHAPE_COUNT] = {0};
+static md_gpu_kernel_t gto_k_density_gemm_phi_grad[GTO_SHAPE_COUNT] = {0};
 // Held while a kernel is made: the evaluations and the dmat may be driven from different threads, each on a
 // stream of its own, and both make kernels on first use
 static md_mutex_t      gto_kernel_mutex;
@@ -1092,9 +1098,13 @@ void md_gto_gpu_shutdown(void) {
         destroy_kernel(&gto_k_density_gemm_count[sh]);
         destroy_kernel(&gto_k_density_gemm_phi[sh]);
         destroy_kernel(&gto_k_density_gemm_dgather[sh]);
+        destroy_kernel(&gto_k_density_gemm_phi_grad[sh]);
+        destroy_kernel(&gto_k_loc_core_finish[sh]);
         for (int i = 0; i < 2; ++i) {
             destroy_kernel(&gto_k_density_gemm2[sh][i]);
             destroy_kernel(&gto_k_mo_shell[sh][i]);
+            destroy_kernel(&gto_k_density_core[sh][i]);
+            destroy_kernel(&gto_k_loc_core[sh][i]);
         }
         destroy_kernel(&gto_k_mo_gemm[sh]);
     }
@@ -1114,6 +1124,45 @@ static bool gto_density_gemm_kernels(int sh) {
         ensure_kernel(gto_gpu_device, &gto_k_density_gemm_dgather[sh], md_shader_eval_gto_density_gemm_dgather_main_kernel());
     }
     return gto_k_density_gemm_count[sh] && gto_k_density_gemm_phi[sh] && gto_k_density_gemm_dgather[sh];
+}
+
+// The density's GEMM pass on the GEMM core, as gto_density_gemm2_kernel
+static md_gpu_kernel_t gto_density_core_kernel(uint32_t gm, int sh) {
+    const int im = gm == 32 ? 0 : gm == 64 ? 1 : -1;
+    if (im < 0 || !gto_gpu_device) return NULL;
+    md_gpu_kernel_t* slot = &gto_k_density_core[sh][im];
+    if (!*slot) {
+        md_gpu_kernel_desc_t d = sh == GTO_SHAPE_2D ? (im == 0 ? md_shader_eval_gto_density_core_128x32_2d_main_kernel()
+                                                               : md_shader_eval_gto_density_core_128x64_2d_main_kernel())
+                                                    : (im == 0 ? md_shader_eval_gto_density_core_128x32_main_kernel()
+                                                               : md_shader_eval_gto_density_core_128x64_main_kernel());
+        ensure_kernel(gto_gpu_device, slot, d);
+    }
+    return *slot;
+}
+
+// ELF's and LOL's GEMM pass on the GEMM core (32 voxels, 128 rows, per group), its finish, and the Phi pass with gradients
+static md_gpu_kernel_t gto_loc_core_kernel(uint32_t gm, int sh) {
+    const int im = gm == 32 ? 0 : gm == 64 ? 1 : -1;
+    if (im < 0 || !gto_gpu_device) return NULL;
+    md_gpu_kernel_t* slot = &gto_k_loc_core[sh][im];
+    if (!*slot) {
+        md_gpu_kernel_desc_t d = sh == GTO_SHAPE_2D ? (im == 0 ? md_shader_eval_gto_localization_core_128x32_2d_main_kernel()
+                                                               : md_shader_eval_gto_localization_core_128x64_2d_main_kernel())
+                                                    : (im == 0 ? md_shader_eval_gto_localization_core_128x32_main_kernel()
+                                                               : md_shader_eval_gto_localization_core_128x64_main_kernel());
+        ensure_kernel(gto_gpu_device, slot, d);
+    }
+    return *slot;
+}
+
+static bool gto_loc_core_aux_kernels(int sh) {
+    if (!gto_gpu_device) return false;
+    ensure_kernel(gto_gpu_device, &gto_k_loc_core_finish[sh], sh == GTO_SHAPE_2D ? md_shader_eval_gto_localization_core_128x32_2d_finish_main_kernel()
+                                                                                 : md_shader_eval_gto_localization_core_128x32_finish_main_kernel());
+    ensure_kernel(gto_gpu_device, &gto_k_density_gemm_phi_grad[sh], sh == GTO_SHAPE_2D ? md_shader_eval_gto_density_gemm_2d_phi_grad_main_kernel()
+                                                                                       : md_shader_eval_gto_density_gemm_phi_grad_main_kernel());
+    return gto_k_loc_core_finish[sh] && gto_k_density_gemm_phi_grad[sh];
 }
 
 // The GEMM pass, 128 voxels per group, with a 32- or 64-wide AO tile.
@@ -1205,8 +1254,14 @@ typedef struct {
     uint32_t        has_weights;
     uint32_t        dm_tiled;
     uint32_t        dm_nt;
-    uint32_t        _dm_pad0;
-    uint32_t        _dm_pad1;
+    uint32_t        d_spin_offset;
+    uint32_t        spin;
+    uint32_t        num_spins;
+    uint32_t        lol;
+    float           rho_min;
+    float           d_min;
+    uint32_t        terms_stride;
+    uint32_t        terms_valid;
     md_gpu_addr_t   shell_atom_idx;
     md_gpu_addr_t   shell_r;
     md_gpu_addr_t   shell_info;
@@ -1221,6 +1276,7 @@ typedef struct {
     md_gpu_addr_t   mo_weights;
     md_gpu_addr_t   dm_tao;
     md_gpu_addr_t   dm_map;
+    md_gpu_addr_t   terms;
     md_gpu_storage_tex_t out_tex;
 } gto_density_gemm_args_t;
 
@@ -2052,7 +2108,26 @@ static void gto_loc_plan_log(const gto_loc_plan_t* P) {
                  P->a.lol ? "LOL" : "ELF", P->num_groups, P->group_voxels, P->num_pieces, (double)P->work_total * 1.0e-9, P->max_aos, P->t_count);
 }
 
+static md_gto_gpu_localization_algo_t gto_loc_algo(const md_gto_gpu_localization_desc_t* desc) {
+    md_gto_gpu_localization_algo_t algo = desc ? desc->algorithm : MD_GTO_GPU_LOCALIZATION_ALGO_DEFAULT;
+    if (algo == MD_GTO_GPU_LOCALIZATION_ALGO_DEFAULT) {
+        algo = MD_GTO_GPU_LOCALIZATION_ALGO_REFERENCE;
+        const char* env = getenv("MD_GTO_GPU_LOCALIZATION_ALGO");
+        if (env) {
+            if      (strcmp(env, "reference") == 0) algo = MD_GTO_GPU_LOCALIZATION_ALGO_REFERENCE;
+            else if (strcmp(env, "gemm") == 0)      algo = MD_GTO_GPU_LOCALIZATION_ALGO_GEMM;
+            else MD_LOG_ERROR("MD_GTO_GPU_LOCALIZATION_ALGO: '%s' is neither reference nor gemm; the default is taken", env);
+        }
+    }
+    return algo;
+}
+
+static bool gto_loc_launch_gemm(md_gpu_stream_t stream, const md_gto_gpu_localization_desc_t* desc);
+
 bool md_gto_gpu_localization_launch(md_gpu_stream_t stream, const md_gto_gpu_localization_desc_t* desc) {
+    if (gto_loc_algo(desc) == MD_GTO_GPU_LOCALIZATION_ALGO_GEMM) {
+        return gto_loc_launch_gemm(stream, desc);
+    }
     gto_loc_plan_t* P = gto_loc_begin(stream, desc);
     if (!P) return false;
     double waited = 0.0;
@@ -2104,32 +2179,50 @@ static void gto_gemm_auto_config(uint32_t* gm, int32_t* small_n) {
     }
 }
 
-static bool gto_gemm_config(gto_gemm_cfg_t* cfg, const md_gto_gpu_density_desc_t* desc) {
+/* Which GEMM pass: the density's own loop (gemm2), the density on the GEMM core, or ELF's and LOL's on it */
+typedef enum { GTO_GEMM_PASS_DENSITY, GTO_GEMM_PASS_DENSITY_CORE, GTO_GEMM_PASS_LOC_CORE } gto_gemm_pass_t;
+
+/* Voxels per group of the ELF and LOL GEMM pass: 128 rows of four channels */
+#define GTO_LOC_CORE_GROUP_VOXELS 32u
+
+static md_gpu_kernel_t gto_gemm_pass_kernel(gto_gemm_pass_t pass, uint32_t gm, int sh) {
+    switch (pass) {
+    case GTO_GEMM_PASS_DENSITY_CORE: return gto_density_core_kernel(gm, sh);
+    case GTO_GEMM_PASS_LOC_CORE:     return gto_loc_core_kernel(gm, sh);
+    default:                         return gto_density_gemm2_kernel(gm, sh);
+    }
+}
+
+static bool gto_gemm_config_pass(gto_gemm_cfg_t* cfg, gto_gemm_pass_t pass, uint32_t gm, int32_t sn, int sh) {
     md_memset(cfg, 0, sizeof(*cfg));
-    uint32_t gm = desc->gemm_tile;
-    int32_t  sn = desc->gemm_small_block;
     uint32_t agm; int32_t asn;
     gto_gemm_auto_config(&agm, &asn);
     if (gm == 0) gm = agm;
     if (sn == 0) sn = asn;
     if (gm == 32) sn = -1;   // already the small tile
 
-    const int sh = gto_shape_of_dim((uint32_t)desc->grid->dim[2]);
-    cfg->large    = gto_density_gemm2_kernel(gm, sh);
-    cfg->large_gp = GTO_GEMM_GROUP_VOXELS;
+    const uint32_t gp = pass == GTO_GEMM_PASS_LOC_CORE ? GTO_LOC_CORE_GROUP_VOXELS : GTO_GEMM_GROUP_VOXELS;
+    const char* what = pass == GTO_GEMM_PASS_DENSITY_CORE ? "core " : pass == GTO_GEMM_PASS_LOC_CORE ? "core, 4 rows a voxel, " : "";
+    cfg->large    = gto_gemm_pass_kernel(pass, gm, sh);
+    cfg->large_gp = gp;
     if (!cfg->large) {
-        MD_LOG_ERROR("md_gto_gpu_density_launch: no GEMM kernel for a %u-wide AO tile (32 or 64)", gm);
+        MD_LOG_ERROR("md_gto_gpu: no GEMM kernel for a %u-wide AO tile (32 or 64)", gm);
         return false;
     }
     if (sn > 0) {
-        cfg->small    = gto_density_gemm2_kernel(32, sh);
-        cfg->small_gp = GTO_GEMM_GROUP_VOXELS;
+        cfg->small    = gto_gemm_pass_kernel(pass, 32, sh);
+        cfg->small_gp = gp;
         cfg->small_n  = (uint32_t)sn;
-        md_snprintf(cfg->label, sizeof(cfg->label), "%ux%u, %ux32 for n<=%d", GTO_GEMM_GROUP_VOXELS, gm, GTO_GEMM_GROUP_VOXELS, sn);
+        md_snprintf(cfg->label, sizeof(cfg->label), "%s%ux%u, %ux32 for n<=%d", what, GTO_GEMM_GROUP_VOXELS, gm, GTO_GEMM_GROUP_VOXELS, sn);
     } else {
-        md_snprintf(cfg->label, sizeof(cfg->label), "%ux%u", GTO_GEMM_GROUP_VOXELS, gm);
+        md_snprintf(cfg->label, sizeof(cfg->label), "%s%ux%u", what, GTO_GEMM_GROUP_VOXELS, gm);
     }
     return true;
+}
+
+static bool gto_gemm_config(gto_gemm_cfg_t* cfg, const md_gto_gpu_density_desc_t* desc, bool core) {
+    return gto_gemm_config_pass(cfg, core ? GTO_GEMM_PASS_DENSITY_CORE : GTO_GEMM_PASS_DENSITY, desc->gemm_tile, desc->gemm_small_block,
+                                gto_shape_of_dim((uint32_t)desc->grid->dim[2]));
 }
 
 // Fills the parts of the GEMM-path argument block shared by density and orbitals.
@@ -2154,6 +2247,16 @@ static void gto_gemm_args_init(gto_density_gemm_args_t* a, const md_grid_t* grid
     a->out_tex        = out;
 }
 
+/* ELF or LOL through the two passes (MD_GTO_GPU_LOCALIZATION_ALGO_GEMM): Phi with gradients (four rows per AO), a
+   D_b and a GEMM pass per spin, each spin's terms per voxel, and the finish that makes ELF or LOL of them */
+typedef struct gto_gemm_loc_t {
+    uint32_t        on;
+    uint32_t        num_spins;
+    md_gpu_addr_t   D[2], tao[2], map[2];   /* each spin's matrix: packed, or a dmat's tiles (tiled) */
+    uint32_t        nt, tiled;
+    md_gpu_kernel_t phi_grad, finish;
+} gto_gemm_loc_t;
+
 // The two-pass path: count, plan batches (blocks the calling thread for the counts),
 // then per batch the Phi pass, optionally the D_b gather, and the consumer kernel(s)
 // in cfg. `a` must be initialised (gto_gemm_args_init) with the consumer's fields set.
@@ -2164,6 +2267,7 @@ typedef struct gto_gemm_pending_t {
     md_gpu_stream_t         stream;
     gto_density_gemm_args_t a;
     gto_gemm_cfg_t          cfg;
+    gto_gemm_loc_t          loc;
     size_t                  scratch_bytes;
     bool                    pregather_D;
     uint32_t                num_blocks;
@@ -2245,6 +2349,8 @@ typedef struct gto_gemm_plan_t {
     md_gpu_stream_t         stream;
     gto_density_gemm_args_t a;
     gto_gemm_cfg_t          cfg;
+    gto_gemm_loc_t          loc;
+    md_gpu_addr_t           terms_buf;      /* loc: the batch's terms */
     bool                    pregather_D;
     bool                    profile;        /* MD_GTO_GEMM_PROFILE: synchronised after every pass */
     uint64_t                piece_work;
@@ -2266,18 +2372,30 @@ typedef struct gto_gemm_plan_t {
     double                  t_phi, t_gemm;  /* profile only */
 } gto_gemm_plan_t;
 
+/* Rows of Phi per AO: 4 for ELF and LOL (the value and the gradient), else 1 */
+static inline uint64_t gto_gemm_channels(const gto_gemm_plan_t* P) {
+    return P->loc.on ? 4 : 1;
+}
+
+/* Spins of D_b (ELF and LOL of an open shell: 2) */
+static inline uint64_t gto_gemm_spins(const gto_gemm_plan_t* P) {
+    return P->loc.on ? P->loc.num_spins : 1;
+}
+
 static inline uint64_t gto_gemm_phi_work(const gto_gemm_plan_t* P, uint64_t na) {
-    return GTO_GEMM_BLOCK_VOXELS * na * GTO_GEMM_PHI_WORK + (P->pregather_D ? na * na : 0);
+    return GTO_GEMM_BLOCK_VOXELS * na * GTO_GEMM_PHI_WORK * gto_gemm_channels(P) + (P->pregather_D ? na * na * gto_gemm_spins(P) : 0);
 }
 
 static inline uint64_t gto_gemm_gemm_work(const gto_gemm_plan_t* P, uint64_t na) {
     const uint64_t k = P->a.num_mos ? P->a.num_mos : na;
-    return GTO_GEMM_BLOCK_VOXELS * (na * k + 1);    /* + 1: an empty block still writes its voxels */
+    /* ELF and LOL: four rows a voxel, per spin; + 1: an empty block still writes its voxels */
+    return GTO_GEMM_BLOCK_VOXELS * (na * k * gto_gemm_channels(P) * gto_gemm_spins(P) + 1);
 }
 
 static void gto_gemm_plan_free(gto_gemm_plan_t* P) {
     if (!P) return;
     /* stream-ordered: what is in flight reads them first */
+    md_gpu_free(P->stream, P->terms_buf);
     md_gpu_free(P->stream, P->db_buf);
     md_gpu_free(P->stream, P->ao_buf);
     md_gpu_free(P->stream, P->phi_buf);
@@ -2312,6 +2430,7 @@ static gto_gemm_plan_t* gto_gemm_plan(gto_gemm_pending_t* p) {
     P->stream      = stream;
     P->a           = p->a;
     P->cfg         = p->cfg;
+    P->loc         = p->loc;
     P->pregather_D = p->pregather_D;
     P->profile     = getenv("MD_GTO_GEMM_PROFILE") != NULL;
     P->piece_work  = p->piece_work ? p->piece_work : GTO_GEMM_PIECE_WORK;
@@ -2331,7 +2450,8 @@ static gto_gemm_plan_t* gto_gemm_plan(gto_gemm_pending_t* p) {
     gto_gemm_batch_t* batches = P->batches;
     uint32_t num_batches = 0;
     uint32_t num_entries = 0;
-    uint64_t max_ao = 0, max_db = 0;
+    uint64_t max_ao = 0, max_db = 0, max_count = 0;
+    const uint64_t channels = gto_gemm_channels(P), spins = gto_gemm_spins(P);
     md_temp_scope_t temp = md_temp_begin();
     uint32_t* order = (uint32_t*)md_temp_alloc(temp, sizeof(uint32_t) * MD_MAX(1, num_blocks));
     {
@@ -2346,7 +2466,9 @@ static gto_gemm_plan_t* gto_gemm_plan(gto_gemm_pending_t* p) {
             uint32_t i1 = i0;
             while (i1 < num_nonempty) {
                 const uint64_t na = cnt[2 * order[i1] + 1];
-                const uint64_t bb = sizeof(float) * (na * GTO_GEMM_BLOCK_VOXELS + (pregather_D ? na * na : 0));
+                /* Phi (four rows per AO for ELF and LOL), D_b per spin, and ELF's and LOL's terms (5 per voxel and spin) */
+                const uint64_t bb = sizeof(float) * (na * GTO_GEMM_BLOCK_VOXELS * channels + (pregather_D ? na * na * spins : 0) +
+                                                     (P->loc.on ? 5 * spins * GTO_GEMM_BLOCK_VOXELS : 0));
                 if (i1 > i0 && bytes + bb > budget) break;
                 bytes += bb;
                 i1++;
@@ -2363,10 +2485,10 @@ static gto_gemm_plan_t* gto_gemm_plan(gto_gemm_pending_t* p) {
                     e[1] = (b / a->block_dim.x) % a->block_dim.y;
                     e[2] = b / (a->block_dim.x * a->block_dim.y);
                     e[3] = na;
-                    e[4] = (uint32_t)(bt.n_ao * GTO_GEMM_BLOCK_VOXELS);   // phi offset (floats)
+                    e[4] = (uint32_t)(bt.n_ao * GTO_GEMM_BLOCK_VOXELS * channels);   // phi offset (floats)
                     e[5] = (uint32_t)bt.n_ao;                             // ao_list offset
-                    e[6] = (uint32_t)bt.n_db;                             // D_b offset (floats)
-                    e[7] = 0;
+                    e[6] = (uint32_t)bt.n_db;                             // D_b offset (floats), of each spin
+                    e[7] = bt.count;                                      // the entry in its batch: its terms (ELF, LOL)
                     bt.count     += 1;
                     bt.num_small += is_small ? 1 : 0;
                     bt.n_ao      += na;
@@ -2377,6 +2499,7 @@ static gto_gemm_plan_t* gto_gemm_plan(gto_gemm_pending_t* p) {
             }
             max_ao = MD_MAX(max_ao, bt.n_ao);
             max_db = MD_MAX(max_db, bt.n_db);
+            max_count = MD_MAX(max_count, bt.count);
             batches[num_batches++] = bt;
             i0 = i1;
         }
@@ -2404,12 +2527,14 @@ static gto_gemm_plan_t* gto_gemm_plan(gto_gemm_pending_t* p) {
 
     const size_t table_size = sizeof(uint32_t) * 8 * MD_MAX(1, num_entries);
     P->table_buf = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, table_size).gpu;
-    P->phi_buf   = max_ao ? md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, sizeof(float) * GTO_GEMM_BLOCK_VOXELS * max_ao).gpu : 0;
+    P->phi_buf   = max_ao ? md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, sizeof(float) * GTO_GEMM_BLOCK_VOXELS * max_ao * channels).gpu : 0;
     P->ao_buf    = max_ao ? md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, sizeof(uint32_t) * max_ao).gpu : 0;
-    P->db_buf    = max_db ? md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, sizeof(float) * max_db).gpu : 0;
-    if (!P->table_buf || (max_ao && (!P->phi_buf || !P->ao_buf)) || (max_db && !P->db_buf)) {
-        MD_LOG_ERROR("md_gto_gpu_density_launch: failed to allocate GEMM scratch (%.1f MB)",
-                     (double)(sizeof(float) * (GTO_GEMM_BLOCK_VOXELS * max_ao + max_db)) / (1024.0 * 1024.0));
+    P->db_buf    = max_db ? md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, sizeof(float) * max_db * spins).gpu : 0;
+    P->terms_buf = P->loc.on && max_count ? md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, sizeof(float) * 5 * spins * GTO_GEMM_BLOCK_VOXELS * max_count).gpu : 0;
+    if (!P->table_buf || (max_ao && (!P->phi_buf || !P->ao_buf)) || (max_db && !P->db_buf) || (P->loc.on && max_count && !P->terms_buf)) {
+        MD_LOG_ERROR("md_gto_gpu: failed to allocate GEMM scratch (%.1f MB)",
+                     (double)(sizeof(float) * (GTO_GEMM_BLOCK_VOXELS * max_ao * channels + max_db * spins +
+                                               (P->loc.on ? 5 * spins * GTO_GEMM_BLOCK_VOXELS * max_count : 0))) / (1024.0 * 1024.0));
         gto_gemm_plan_free(P);
         return NULL;
     }
@@ -2419,12 +2544,26 @@ static gto_gemm_plan_t* gto_gemm_plan(gto_gemm_pending_t* p) {
     a->ao_list  = P->ao_buf;
     a->phi      = P->phi_buf;
     a->D_blocks = P->db_buf;
+    a->terms        = P->terms_buf;
+    a->terms_stride = (uint32_t)max_count;
     if (P->profile) md_gpu_stream_sync(stream);
     return P;
 }
 
 static inline bool gto_gemm_plan_issued(const gto_gemm_plan_t* P) {
     return P->bi > P->num_batches;
+}
+
+/* ELF and LOL: the arguments of spin sp's D_b (its gather and its GEMM pass): its matrix, its part of D_blocks */
+static void gto_gemm_loc_spin(gto_gemm_plan_t* P, uint32_t sp) {
+    gto_density_gemm_args_t* a = &P->a;
+    a->spin          = sp;
+    a->d_spin_offset = (uint32_t)(sp * P->max_db);
+    a->D_matrix      = P->loc.D[sp];
+    a->dm_tiled      = P->loc.tiled;
+    a->dm_nt         = P->loc.nt;
+    a->dm_tao        = P->loc.tao[sp];
+    a->dm_map        = P->loc.map[sp];
 }
 
 static void gto_gemm_launch_entries(gto_gemm_plan_t* P, md_gpu_kernel_t k, uint32_t per_block_groups, uint32_t first, uint32_t count) {
@@ -2448,8 +2587,14 @@ static void gto_gemm_issue_piece(gto_gemm_plan_t* P) {
         if (P->bi < P->num_batches && !P->phi_issued) {
             const md_tick_t t0 = md_tick_now();
             const int sh = gto_shape_of_dim(P->a.grid_dim.z);
-            gto_gemm_launch_entries(P, gto_k_density_gemm_phi[sh], 1, bt->first, bt->count);
-            if (P->pregather_D) {
+            gto_gemm_launch_entries(P, P->loc.on ? P->loc.phi_grad : gto_k_density_gemm_phi[sh], 1, bt->first, bt->count);
+            if (P->loc.on) {
+                /* each spin's D_b, from its matrix */
+                for (uint32_t sp = 0; sp < P->loc.num_spins; ++sp) {
+                    gto_gemm_loc_spin(P, sp);
+                    gto_gemm_launch_entries(P, gto_k_density_gemm_dgather[sh], 1, bt->first, bt->count);
+                }
+            } else if (P->pregather_D) {
                 gto_gemm_launch_entries(P, gto_k_density_gemm_dgather[sh], 1, bt->first, bt->count);
             }
             if (P->profile) { md_gpu_stream_sync(stream); P->t_phi += md_tick_to_milliseconds(md_tick_now() - t0); }
@@ -2463,11 +2608,27 @@ static void gto_gemm_issue_piece(gto_gemm_plan_t* P) {
             end++;
         } while (end < bt->count && w < P->piece_work);
         const md_tick_t t0 = md_tick_now();
+        if (P->loc.on) {
+            /* ELF and LOL: a GEMM pass per spin into the terms, then the values of them; the empty blocks only the latter */
+            const bool empty = P->bi == P->num_batches;
+            if (!empty) {
+                for (uint32_t sp = 0; sp < P->loc.num_spins; ++sp) {
+                    gto_gemm_loc_spin(P, sp);
+                    const uint32_t s0 = P->cursor, s1 = MD_MIN(end, bt->num_small);
+                    if (s1 > s0) gto_gemm_launch_entries(P, cfg->small, GTO_GEMM_BLOCK_VOXELS / cfg->small_gp, bt->first + s0, s1 - s0);
+                    const uint32_t l0 = MD_MAX(P->cursor, bt->num_small);
+                    if (end > l0) gto_gemm_launch_entries(P, cfg->large, GTO_GEMM_BLOCK_VOXELS / cfg->large_gp, bt->first + l0, end - l0);
+                }
+            }
+            P->a.terms_valid = empty ? 0u : 1u;
+            gto_gemm_launch_entries(P, P->loc.finish, 1, bt->first + P->cursor, end - P->cursor);
+        } else {
         /* the small kernel's entries first, as the batch holds them */
         const uint32_t s0 = P->cursor, s1 = MD_MIN(end, bt->num_small);
         if (s1 > s0) gto_gemm_launch_entries(P, cfg->small, GTO_GEMM_BLOCK_VOXELS / cfg->small_gp, bt->first + s0, s1 - s0);
         const uint32_t l0 = MD_MAX(P->cursor, bt->num_small);
         if (end > l0) gto_gemm_launch_entries(P, cfg->large, GTO_GEMM_BLOCK_VOXELS / cfg->large_gp, bt->first + l0, end - l0);
+        }
         if (P->profile) { md_gpu_stream_sync(stream); P->t_gemm += md_tick_to_milliseconds(md_tick_now() - t0); }
         P->cursor = end;
         if (end == bt->count) {
@@ -2487,12 +2648,12 @@ static void gto_gemm_plan_log(const gto_gemm_plan_t* P) {
         uint64_t total_ao = 0, total_small = 0;
         for (uint32_t i = 0; i < P->num_batches; ++i) { total_ao += P->batches[i].n_ao; total_small += P->batches[i].num_small; }
         MD_LOG_INFO("GTO %s (GEMM) profile: count+plan %.2f ms, phi%s %.2f ms, gemm[%s] %.2f ms | %u batches, %u pieces, avg %.0f AOs per non-empty block, %.0f%% small",
-                    a->num_mos ? "orbitals" : "density", P->t_count, P->pregather_D ? "+dgather" : "", P->t_phi, P->cfg.label, P->t_gemm, P->num_batches, P->pieces,
+                    P->loc.on ? (a->lol ? "LOL" : "ELF") : a->num_mos ? "orbitals" : "density", P->t_count, P->pregather_D ? "+dgather" : "", P->t_phi, P->cfg.label, P->t_gemm, P->num_batches, P->pieces,
                     (double)total_ao / MD_MAX(1, nonempty), 100.0 * (double)total_small / MD_MAX(1, nonempty));
     }
-    MD_LOG_DEBUG("GTO %s (GEMM, " MD_GTO_GPU_GEMM_PIECES_REVISION "): %u blocks, %u non-empty, %u batches in %u pieces (%.1f G multiply-adds), max %.1f MB Phi per batch; the calling thread spent %.1f ms on the counts (waiting for them, and what the stream held before them, unless a job) and the plan",
-                 a->num_mos ? "orbitals" : "density", P->num_blocks, nonempty, P->num_batches, P->pieces, (double)P->work_total * 1.0e-9,
-                 (double)(sizeof(float) * GTO_GEMM_BLOCK_VOXELS * P->max_ao) / (1024.0 * 1024.0), P->t_count);
+    MD_LOG_DEBUG("GTO %s (GEMM [%s], " MD_GTO_GPU_GEMM_PIECES_REVISION "; " MD_GTO_GPU_GEMM_CORE_REVISION "): %u blocks, %u non-empty, %u batches in %u pieces (%.1f G multiply-adds), max %.1f MB Phi per batch; the calling thread spent %.1f ms on the counts (waiting for them, and what the stream held before them, unless a job) and the plan",
+                 P->loc.on ? (a->lol ? "LOL" : "ELF") : a->num_mos ? "orbitals" : "density", P->cfg.label, P->num_blocks, nonempty, P->num_batches, P->pieces, (double)P->work_total * 1.0e-9,
+                 (double)(sizeof(float) * GTO_GEMM_BLOCK_VOXELS * P->max_ao * gto_gemm_channels(P)) / (1024.0 * 1024.0), P->t_count);
 }
 
 static void gto_gemm_execute(md_gpu_stream_t stream, gto_density_gemm_args_t* ap, size_t scratch_bytes, bool pregather_D, const gto_gemm_cfg_t* cfgp, uint64_t piece_work) {
@@ -2515,12 +2676,95 @@ static void gto_gemm_execute(md_gpu_stream_t stream, gto_density_gemm_args_t* ap
     gto_gemm_plan_free(P);
 }
 
-static bool gto_density_gemm_setup(gto_density_gemm_args_t* a, gto_gemm_cfg_t* cfg, const md_gto_gpu_density_desc_t* desc, md_gpu_storage_tex_t out) {
+/* ELF or LOL on the GEMM core: its counting pass issued into p (as the density's): 1; 0 when there is nothing to
+   evaluate (an empty grid), -1 (logged) for invalid input or what could not be issued */
+static int gto_loc_gemm_count(gto_gemm_pending_t* p, md_gpu_stream_t stream, const md_gto_gpu_localization_desc_t* desc) {
+    md_memset(p, 0, sizeof(*p));
+    if (!stream || !desc || !desc->basis || !desc->atom_xyz || !desc->grid || !desc->out_tex ||
+        (desc->num_spins != 1 && desc->num_spins != 2)) {
+        MD_LOG_ERROR("md_gto_gpu_localization: invalid arguments");
+        return -1;
+    }
+    const bool tiled = desc->dmat[0] != NULL;
+    for (uint32_t s = 0; s < desc->num_spins; ++s) {
+        if (tiled ? (!desc->dmat[s] || desc->coeff[s]) : (!desc->coeff[s] || desc->dmat[s])) {
+            MD_LOG_ERROR("md_gto_gpu_localization: every spin's matrix packed (coeff) or in tiles (dmat), not both");
+            return -1;
+        }
+        if (tiled && desc->dmat[s]->num_ao != desc->basis->layout.num_cgtos) {
+            MD_LOG_ERROR("md_gto_gpu_localization: the dmat spans %u AOs, the basis %u", desc->dmat[s]->num_ao, desc->basis->layout.num_cgtos);
+            return -1;
+        }
+    }
+    md_gpu_storage_tex_t out = md_gpu_texture_storage(desc->out_tex, 0);
+    if (!out.handle) {
+        MD_LOG_ERROR("md_gto_gpu_localization: out_tex needs MD_GPU_TEX_STORAGE usage");
+        return -1;
+    }
+    const int sh = gto_shape_of_dim((uint32_t)desc->grid->dim[2]);
+    if (!gto_density_gemm_kernels(sh) || !gto_loc_core_aux_kernels(sh)) {
+        MD_LOG_ERROR("md_gto_gpu_localization: GEMM kernels not available (md_gto_gpu_initialize not called?)");
+        return -1;
+    }
+    gto_gemm_cfg_t cfg;
+    if (!gto_gemm_config_pass(&cfg, GTO_GEMM_PASS_LOC_CORE, 0, 0, sh)) return -1;
+
+    gto_density_gemm_args_t a;
+    gto_gemm_args_init(&a, desc->grid, desc->sample_offset, desc->basis, desc->atom_xyz, MD_GTO_OP_SET, out);
+    a.num_spins = desc->num_spins;
+    a.lol       = desc->kind == MD_GTO_GPU_LOL ? 1u : 0u;
+    a.rho_min   = (float)desc->rho_min;
+    a.d_min     = desc->d_min > 0.0 ? (float)desc->d_min : 0.0f;
+
+    gto_gemm_loc_t loc = {0};
+    loc.on        = 1;
+    loc.num_spins = desc->num_spins;
+    loc.tiled     = tiled ? 1u : 0u;
+    loc.nt        = tiled ? desc->dmat[0]->nt : 0u;
+    for (uint32_t s = 0; s < desc->num_spins; ++s) {
+        loc.D[s]   = tiled ? desc->dmat[s]->tiles : desc->coeff[s];
+        loc.tao[s] = tiled ? desc->dmat[s]->tao : 0;
+        loc.map[s] = tiled ? desc->dmat[s]->map : 0;
+    }
+    loc.phi_grad = gto_k_density_gemm_phi_grad[sh];
+    loc.finish   = gto_k_loc_core_finish[sh];
+    /* spin 0's matrix in the arguments for the count (which reads none) */
+    a.D_matrix = loc.D[0]; a.dm_tiled = loc.tiled; a.dm_nt = loc.nt; a.dm_tao = loc.tao[0]; a.dm_map = loc.map[0];
+
+    /* D_b gathered (d_mode 1): the core's B operand reads it */
+    if (a.block_dim.x * a.block_dim.y * a.block_dim.z == 0) return 0;
+    if (!gto_gemm_count(p, stream, &a, 0, true, &cfg)) return -1;
+    p->loc = loc;
+    p->piece_work = desc->piece_work;
+    return 1;
+}
+
+static bool gto_loc_launch_gemm(md_gpu_stream_t stream, const md_gto_gpu_localization_desc_t* desc) {
+    gto_gemm_pending_t p;
+    const int r = gto_loc_gemm_count(&p, stream, desc);
+    if (r <= 0) return r == 0;
+    md_gpu_sync_wait(p.sync);
+    p.waited_ms = md_tick_to_milliseconds(md_tick_now() - p.t_count0);
+    gto_gemm_plan_t* P = gto_gemm_plan(&p);
+    if (!P) return false;
+    const md_gpu_ordering_t prev_ordering = md_gpu_stream_ordering(stream);
+    md_gpu_stream_set_ordering(stream, MD_GPU_ORDER_IMPLICIT);
+    while (!gto_gemm_plan_issued(P)) {
+        gto_gemm_issue_piece(P);
+        md_gpu_stream_flush(stream);    /* a submission of its own */
+    }
+    md_gpu_stream_set_ordering(stream, prev_ordering);
+    gto_gemm_plan_log(P);
+    gto_gemm_plan_free(P);
+    return true;
+}
+
+static bool gto_density_gemm_setup(gto_density_gemm_args_t* a, gto_gemm_cfg_t* cfg, const md_gto_gpu_density_desc_t* desc, md_gpu_storage_tex_t out, bool core) {
     if (!gto_density_gemm_kernels(gto_shape_of_dim((uint32_t)desc->grid->dim[2]))) {
         MD_LOG_ERROR("md_gto_gpu_density_launch: GEMM kernels not available (md_gto_gpu_initialize not called?)");
         return false;
     }
-    if (!gto_gemm_config(cfg, desc)) return false;
+    if (!gto_gemm_config(cfg, desc, core)) return false;
     gto_gemm_args_init(a, desc->grid, desc->sample_offset, desc->basis, desc->atom_xyz, desc->op, out);
     a->D_matrix = desc->dmat ? desc->dmat->tiles : desc->coeff;
     if (desc->dmat) {
@@ -2532,10 +2776,10 @@ static bool gto_density_gemm_setup(gto_density_gemm_args_t* a, gto_gemm_cfg_t* c
     return true;
 }
 
-static void gto_density_launch_gemm(md_gpu_stream_t stream, const md_gto_gpu_density_desc_t* desc, md_gpu_storage_tex_t out) {
+static void gto_density_launch_gemm(md_gpu_stream_t stream, const md_gto_gpu_density_desc_t* desc, md_gpu_storage_tex_t out, bool core) {
     gto_gemm_cfg_t cfg;
     gto_density_gemm_args_t a;
-    if (!gto_density_gemm_setup(&a, &cfg, desc, out)) return;
+    if (!gto_density_gemm_setup(&a, &cfg, desc, out, core)) return;
     /* D_b is gathered once per block before the GEMM pass (d_mode 1), so the GEMM
        streams it with coalesced loads instead of gathering from the packed triangle. */
     gto_gemm_execute(stream, &a, desc->scratch_bytes, true, &cfg, desc->piece_work);
@@ -2559,8 +2803,16 @@ static bool gto_density_check(md_gpu_storage_tex_t* out, md_gto_gpu_density_algo
     *algo = desc->algorithm;
     if (*algo == MD_GTO_GPU_DENSITY_ALGO_DEFAULT) {
         *algo = MD_GTO_GPU_DENSITY_ALGO_GEMM;   // 1.8-2.6x faster than the reference on large systems
+        /* to measure one against another without rebuilding the caller */
+        const char* env = getenv("MD_GTO_GPU_DENSITY_ALGO");
+        if (env) {
+            if      (strcmp(env, "reference") == 0) *algo = MD_GTO_GPU_DENSITY_ALGO_REFERENCE;
+            else if (strcmp(env, "gemm") == 0)      *algo = MD_GTO_GPU_DENSITY_ALGO_GEMM;
+            else if (strcmp(env, "core") == 0)      *algo = MD_GTO_GPU_DENSITY_ALGO_GEMM_CORE;
+            else MD_LOG_ERROR("MD_GTO_GPU_DENSITY_ALGO: '%s' is none of reference, gemm, core; the default is taken", env);
+        }
     }
-    if (*algo != MD_GTO_GPU_DENSITY_ALGO_REFERENCE && *algo != MD_GTO_GPU_DENSITY_ALGO_GEMM) {
+    if (*algo != MD_GTO_GPU_DENSITY_ALGO_REFERENCE && *algo != MD_GTO_GPU_DENSITY_ALGO_GEMM && *algo != MD_GTO_GPU_DENSITY_ALGO_GEMM_CORE) {
         MD_LOG_ERROR("md_gto_gpu_density_launch: unknown algorithm %d", (int)*algo);
         return false;
     }
@@ -2574,7 +2826,7 @@ void md_gto_gpu_density_launch(md_gpu_stream_t stream, const md_gto_gpu_density_
     if (algo == MD_GTO_GPU_DENSITY_ALGO_REFERENCE) {
         gto_density_launch_reference(stream, desc, out);
     } else {
-        gto_density_launch_gemm(stream, desc, out);
+        gto_density_launch_gemm(stream, desc, out, algo == MD_GTO_GPU_DENSITY_ALGO_GEMM_CORE);
     }
 }
 
@@ -2640,13 +2892,28 @@ md_gto_gpu_job_t* md_gto_gpu_density_job_begin(md_gpu_stream_t stream, const md_
     gto_gemm_cfg_t cfg;
     gto_density_gemm_args_t a;
     // nothing to evaluate, or what could not be issued (logged): done, as the launch would be
-    job->counting = gto_density_gemm_setup(&a, &cfg, desc, out) && gto_gemm_count(&job->p, stream, &a, desc->scratch_bytes, true, &cfg);
+    job->counting = gto_density_gemm_setup(&a, &cfg, desc, out, algo == MD_GTO_GPU_DENSITY_ALGO_GEMM_CORE) &&
+                    gto_gemm_count(&job->p, stream, &a, desc->scratch_bytes, true, &cfg);
     job->p.piece_work = desc->piece_work;
     job->issued = !job->counting;
     return job;
 }
 
 md_gto_gpu_job_t* md_gto_gpu_localization_job_begin(md_gpu_stream_t stream, const md_gto_gpu_localization_desc_t* desc) {
+    if (gto_loc_algo(desc) == MD_GTO_GPU_LOCALIZATION_ALGO_GEMM) {
+        md_gto_gpu_job_t* job = (md_gto_gpu_job_t*)calloc(1, sizeof(md_gto_gpu_job_t));
+        if (!job) return NULL;
+        job->stream = stream;
+        job->in_flight = GTO_GEMM_JOB_IN_FLIGHT_0;
+        const int r = gto_loc_gemm_count(&job->p, stream, desc);
+        if (r < 0) {
+            free(job);
+            return NULL;
+        }
+        job->counting = r > 0;
+        job->issued = !job->counting;
+        return job;
+    }
     gto_loc_plan_t* P = gto_loc_begin(stream, desc);
     if (!P) return NULL;
     md_gto_gpu_job_t* job = (md_gto_gpu_job_t*)calloc(1, sizeof(md_gto_gpu_job_t));
