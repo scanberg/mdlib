@@ -538,8 +538,8 @@ enum {
     MD_GPU_STAGE_FRAGMENT   = 1 << 4, /* fragment shading                        */
     MD_GPU_STAGE_ATTACHMENT = 1 << 5, /* depth test, colour output, attachment
                                           load and store                         */
-    MD_GPU_STAGE_ALL        = -1,
 };
+#define MD_GPU_STAGE_ALL (~(md_gpu_stage_flags_t)0)   /* every stage, present and future */
 
 void md_gpu_stream_set_ordering(md_gpu_stream_t stream, md_gpu_ordering_t ordering);
 md_gpu_ordering_t md_gpu_stream_ordering(md_gpu_stream_t stream);

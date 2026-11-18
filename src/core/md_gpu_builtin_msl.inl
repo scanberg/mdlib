@@ -7,7 +7,7 @@
 
    Being hand-written, it has to imitate Slang's lowering rather than inherit
    it: the bound buffer holds a *pointer* to the argument struct, matching what
-   MD_KERNEL_ARGS produces for every other kernel. It previously took the struct
+   MD_SHADER_ARGS produces for every other kernel. It previously took the struct
    by reference, which quietly made this the one kernel the old
    struct-at-buffer-0 binding was correct for.
 

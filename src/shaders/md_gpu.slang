@@ -84,8 +84,8 @@
 //         md_gpu_uint4 dim;
 //         float        scale;
 //         uint32_t     _pad;
-//         md_gpu_tex_t vol;
-//         uint64_t     dst;
+//         md_gpu_storage_tex_t vol;
+//         md_gpu_addr_t dst;
 //     } my_args_t;
 //
 // Scalars and device pointers place themselves. Texture and sampler handles do

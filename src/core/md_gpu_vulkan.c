@@ -396,7 +396,8 @@ typedef struct md_gpu_stream {
     bool                 upload_open;
     bool                 upload_direct;
     md_gpu_addr_t        upload_dst;
-    uint64_t             upload_src_addr;
+    VkBuffer             upload_src;           /* staging: an arena page        */
+    uint64_t             upload_src_offset;
     size_t               upload_size;
 
     /* The GPU time of the last MD_VK_TS_RING submissions: a pair of timestamps
@@ -437,8 +438,6 @@ typedef struct md_gpu_texture {
     uint32_t              attach_view_count, attach_view_cap;
     bool                  external;        /* a swapchain image: md_gpu owns
                                               neither the image nor memory */
-    bool                  placed;          /* in the caller's memory, which md_gpu
-                                              does not free                */
     char                  label[64];
 } md_gpu_texture;
 
@@ -757,18 +756,6 @@ static bool md_vk_resolve(md_gpu_device_t dev, md_gpu_addr_t addr, uint64_t size
    4. Raw buffers and transient arenas
    ========================================================================= */
 
-static uint32_t md_vk_find_memory_type(md_gpu_device_t dev, uint32_t type_bits, VkMemoryPropertyFlags required, VkMemoryPropertyFlags preferred) {
-    uint32_t best = UINT32_MAX;
-    for (uint32_t i = 0; i < dev->mem_props.memoryTypeCount; ++i) {
-        if (!(type_bits & (1u << i))) continue;
-        VkMemoryPropertyFlags f = dev->mem_props.memoryTypes[i].propertyFlags;
-        if ((f & required) != required) continue;
-        if (preferred && (f & preferred) == preferred) return i;
-        if (best == UINT32_MAX) best = i;
-    }
-    return best;
-}
-
 /* The memory types to allocate from, in the order to try them: those with every preferred flag and
    none of the avoided ones, then those with every preferred flag, then the rest with the required
    flags. Each is tried in turn when allocating from the one before fails - a heap can be full (the
@@ -789,6 +776,22 @@ static uint32_t md_vk_memory_types(md_gpu_device_t dev, uint32_t type_bits, VkMe
         }
     }
     return n;
+}
+
+/* Device local memory of its own for `image`, bound. */
+static bool md_vk_image_memory(md_gpu_device_t dev, VkImage image, VkDeviceMemory* out_mem, uint64_t* out_size) {
+    VkMemoryRequirements req;
+    vkGetImageMemoryRequirements(dev->device, image, &req);
+    uint32_t types[VK_MAX_MEMORY_TYPES];
+    uint32_t n = md_vk_memory_types(dev, req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, 0, types);
+    if (n == 0) n = md_vk_memory_types(dev, req.memoryTypeBits, 0, 0, 0, types);   /* UMA */
+    if (n == 0) return md_vk_fail("no memory type for an image");
+    VkMemoryAllocateInfo mai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    mai.allocationSize  = req.size;
+    mai.memoryTypeIndex = types[0];
+    if (!md_vk_check(vkAllocateMemory(dev->device, &mai, NULL, out_mem), "vkAllocateMemory (image)")) return false;
+    if (out_size) *out_size = req.size;
+    return md_vk_check(vkBindImageMemory(dev->device, image, *out_mem, 0), "vkBindImageMemory");
 }
 
 static void md_vk_set_sharing(md_gpu_device_t dev, VkSharingMode* mode, uint32_t* count, const uint32_t** families) {
@@ -1971,16 +1974,7 @@ static bool md_vk_create_dummies(md_gpu_device_t dev) {
 
     if (!md_vk_check(vkCreateImage(dev->device, &ici, NULL, &dev->dummy_image), "vkCreateImage (dummy)")) return false;
 
-    VkMemoryRequirements req;
-    vkGetImageMemoryRequirements(dev->device, dev->dummy_image, &req);
-    uint32_t type = md_vk_find_memory_type(dev, req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0);
-    if (type == UINT32_MAX) type = md_vk_find_memory_type(dev, req.memoryTypeBits, 0, 0);
-
-    VkMemoryAllocateInfo mai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-    mai.allocationSize  = req.size;
-    mai.memoryTypeIndex = type;
-    if (!md_vk_check(vkAllocateMemory(dev->device, &mai, NULL, &dev->dummy_mem), "vkAllocateMemory (dummy)")) return false;
-    vkBindImageMemory(dev->device, dev->dummy_image, dev->dummy_mem, 0);
+    if (!md_vk_image_memory(dev, dev->dummy_image, &dev->dummy_mem, NULL)) return false;
 
     VkImageViewCreateInfo vci = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     vci.image    = dev->dummy_image;
@@ -2150,26 +2144,48 @@ static bool md_vk_immediate(md_gpu_device_t dev, void (*record)(VkCommandBuffer,
     return md_vk_check(r, "vkQueueSubmit2 (immediate)");
 }
 
-static void md_vk_record_to_general(VkCommandBuffer cmd, void* user) {
-    VkImage image = *(VkImage*)user;
+/* A layout transition of every subresource of `image`, with the given scopes.
+   The only image barrier md_gpu records: images live in GENERAL, and change
+   layout only when they start (UNDEFINED, at creation and discards) and
+   around a present. */
+static void md_vk_cmd_image_barrier(VkCommandBuffer cmd, VkImage image, VkImageAspectFlags aspect,
+                                    VkImageLayout from, VkImageLayout to,
+                                    VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
+                                    VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access) {
     VkImageMemoryBarrier2 b = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
-    b.srcStageMask  = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
-    b.srcAccessMask = 0;
-    b.dstStageMask  = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-    b.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
-    b.oldLayout     = VK_IMAGE_LAYOUT_UNDEFINED;
-    b.newLayout     = VK_IMAGE_LAYOUT_GENERAL;
+    b.srcStageMask  = src_stage;
+    b.srcAccessMask = src_access;
+    b.dstStageMask  = dst_stage;
+    b.dstAccessMask = dst_access;
+    b.oldLayout     = from;
+    b.newLayout     = to;
     b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     b.image = image;
-    b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    b.subresourceRange.levelCount = 1;
-    b.subresourceRange.layerCount = 1;
-
+    b.subresourceRange.aspectMask = aspect;
+    b.subresourceRange.levelCount = VK_REMAINING_MIP_LEVELS;
+    b.subresourceRange.layerCount = VK_REMAINING_ARRAY_LAYERS;
     VkDependencyInfo di = {VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
     di.imageMemoryBarrierCount = 1;
     di.pImageMemoryBarriers    = &b;
     vkCmdPipelineBarrier2(cmd, &di);
+}
+
+/* The same, into a stream: a barrier, not an operation. */
+static bool md_vk_record_image_barrier(md_gpu_stream_t s, VkImage image, VkImageAspectFlags aspect,
+                                       VkImageLayout from, VkImageLayout to,
+                                       VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
+                                       VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access) {
+    if (!md_vk_stream_ensure_cmd(s)) return false;
+    md_vk_cmd_image_barrier(s->open, image, aspect, from, to, src_stage, src_access, dst_stage, dst_access);
+    s->has_work = true;
+    return true;
+}
+
+static void md_vk_record_to_general(VkCommandBuffer cmd, void* user) {
+    md_vk_cmd_image_barrier(cmd, *(VkImage*)user, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+                            VK_PIPELINE_STAGE_2_NONE, 0,
+                            VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
 }
 
 static void md_vk_write_image_slot(md_gpu_device_t dev, uint32_t slot, VkImageView view, VkDescriptorType type) {
@@ -3308,12 +3324,11 @@ void* md_gpu_upload_begin(md_gpu_stream_t s, md_gpu_addr_t dst, size_t size) {
     }
 
     uint64_t addr; void* host;
-    if (!md_vk_arena_alloc(s, size, &addr, &host, NULL, NULL)) return NULL;
-    s->upload_open     = true;
-    s->upload_direct   = false;
-    s->upload_dst      = dst;
-    s->upload_src_addr = addr;
-    s->upload_size     = size;
+    if (!md_vk_arena_alloc(s, size, &addr, &host, &s->upload_src, &s->upload_src_offset)) return NULL;
+    s->upload_open   = true;
+    s->upload_direct = false;
+    s->upload_dst    = dst;
+    s->upload_size   = size;
     return host;
 }
 
@@ -3324,15 +3339,7 @@ bool md_gpu_upload_end(md_gpu_stream_t s) {
 
     md_vk_span_t d;
     if (!md_vk_resolve(s->device, s->upload_dst, s->upload_size, &d, "md_gpu_upload_end")) return false;
-    /* Find the staging page again; it is one of this stream's arena pages. */
-    for (size_t i = 0; i < s->arena.pages.count; ++i) {
-        md_vk_page_t* p = MD_VK_VEC_AT(s->arena.pages, md_vk_page_t*, i);
-        if (s->upload_src_addr >= p->address && s->upload_src_addr < p->address + p->capacity) {
-            return md_vk_record_buffer_copy(s, p->buffer, s->upload_src_addr - p->address,
-                                            d.buffer, d.offset, s->upload_size);
-        }
-    }
-    return md_vk_fail("md_gpu_upload_end: staging page not found");
+    return md_vk_record_buffer_copy(s, s->upload_src, s->upload_src_offset, d.buffer, d.offset, s->upload_size);
 }
 
 /* =========================================================================
@@ -3530,18 +3537,15 @@ static bool md_vk_texture_image_info(md_gpu_device_t dev, const md_gpu_texture_d
    bufferImageGranularity so that it shares no granularity page with the
    linear resources around it, and its size rounded to whole pages. */
 typedef struct md_vk_placement_t {
-    VkMemoryRequirements req;
-    uint64_t             align;
-    uint64_t             size;      /* the texture's pages */
-    uint64_t             total;     /* what md_gpu_texture_placement_size reports */
+    uint64_t align;
+    uint64_t total;     /* the texture's pages, plus room to align any start address:
+                           what md_gpu_texture_placement_size reports */
 } md_vk_placement_t;
 
 static void md_vk_placement(md_gpu_device_t dev, const VkMemoryRequirements* req, md_vk_placement_t* out) {
     const uint64_t gran = dev->props.limits.bufferImageGranularity > 1 ? dev->props.limits.bufferImageGranularity : 1;
-    out->req   = *req;
     out->align = req->alignment > gran ? req->alignment : gran;
-    out->size  = md_vk_align_up(req->size, gran);
-    out->total = out->size + out->align - 1;     /* room to align any start address */
+    out->total = md_vk_align_up(req->size, gran) + out->align - 1;
 }
 
 uint64_t md_gpu_texture_placement_size(md_gpu_device_t dev, const md_gpu_texture_desc_t* desc) {
@@ -3565,28 +3569,12 @@ uint64_t md_gpu_texture_placement_size(md_gpu_device_t dev, const md_gpu_texture
    GENERAL. A barrier, not an operation: it orders itself after everything
    before it and before everything after it, in either ordering mode. */
 static bool md_vk_texture_init(md_gpu_stream_t s, md_gpu_texture_t t) {
-    if (!md_vk_stream_ensure_cmd(s)) return false;
-    VkImageMemoryBarrier2 b = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
-    b.srcStageMask  = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-    b.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
-    b.dstStageMask  = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-    b.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
-    b.oldLayout     = VK_IMAGE_LAYOUT_UNDEFINED;
-    b.newLayout     = VK_IMAGE_LAYOUT_GENERAL;
-    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    b.image = t->image;
-    b.subresourceRange.aspectMask = t->fi.depth
+    const VkImageAspectFlags aspect = t->fi.depth
         ? (VK_IMAGE_ASPECT_DEPTH_BIT | (t->desc.format == MD_GPU_FORMAT_D32_FLOAT_S8_UINT ? VK_IMAGE_ASPECT_STENCIL_BIT : 0))
         : VK_IMAGE_ASPECT_COLOR_BIT;
-    b.subresourceRange.levelCount = VK_REMAINING_MIP_LEVELS;
-    b.subresourceRange.layerCount = VK_REMAINING_ARRAY_LAYERS;
-    VkDependencyInfo di = {VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-    di.imageMemoryBarrierCount = 1;
-    di.pImageMemoryBarriers    = &b;
-    vkCmdPipelineBarrier2(s->open, &di);
-    s->has_work = true;
-    return true;
+    return md_vk_record_image_barrier(s, t->image, aspect, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+                                      VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
+                                      VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
 }
 
 /* Both texture creations: in memory of its own (`at` 0), or placed at `at`. */
@@ -3610,37 +3598,28 @@ static md_gpu_texture_t md_vk_texture_create(md_gpu_stream_t s, const md_gpu_tex
     t->desc.label = t->label;
 
     if (!md_vk_check(vkCreateImage(dev->device, &ici, NULL, &t->image), "vkCreateImage")) goto fail;
-    {
+    if (!at) {
+        if (!md_vk_image_memory(dev, t->image, &t->memory, &t->bytes)) goto fail;
+    } else {
+        /* Placed: the texture's pages lie inside [at, at + placement size) of
+           a live DEVICE allocation, in its chunk's VkDeviceMemory. */
         VkMemoryRequirements req;
         vkGetImageMemoryRequirements(dev->device, t->image, &req);
-        if (!at) {
-            uint32_t type = md_vk_find_memory_type(dev, req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0);
-            if (type == UINT32_MAX) type = md_vk_find_memory_type(dev, req.memoryTypeBits, 0, 0);
-            VkMemoryAllocateInfo mai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-            mai.allocationSize  = req.size;
-            mai.memoryTypeIndex = type;
-            if (!md_vk_check(vkAllocateMemory(dev->device, &mai, NULL, &t->memory), "vkAllocateMemory (texture)")) goto fail;
-            if (!md_vk_check(vkBindImageMemory(dev->device, t->image, t->memory, 0), "vkBindImageMemory")) goto fail;
-            t->bytes = req.size;
-        } else {
-            /* Placed: the texture's pages lie inside [at, at + placement size)
-               of a live DEVICE allocation, in its chunk's VkDeviceMemory. */
-            md_vk_placement_t pl;
-            md_vk_placement(dev, &req, &pl);
-            md_vk_span_t sp;
-            if (!md_vk_resolve(dev, at, pl.total, &sp, what)) goto fail;
-            if (sp.chunk->kind != MD_GPU_MEM_DEVICE) {
-                md_vk_fail("%s '%s': textures are placed in MD_GPU_MEM_DEVICE memory", what, label);
-                goto fail;
-            }
-            if (!(req.memoryTypeBits & (1u << sp.chunk->memory_type))) {
-                md_vk_fail("%s '%s': this device cannot place %s textures in MD_GPU_MEM_DEVICE memory", what, label, fi.name);
-                goto fail;
-            }
-            const uint64_t off = md_vk_align_up(sp.chunk->memory_offset + sp.offset, pl.align);
-            if (!md_vk_check(vkBindImageMemory(dev->device, t->image, sp.chunk->memory, off), "vkBindImageMemory (placed)")) goto fail;
-            t->placed = true;
+        md_vk_placement_t pl;
+        md_vk_placement(dev, &req, &pl);
+        md_vk_span_t sp;
+        if (!md_vk_resolve(dev, at, pl.total, &sp, what)) goto fail;
+        if (sp.chunk->kind != MD_GPU_MEM_DEVICE) {
+            md_vk_fail("%s '%s': textures are placed in MD_GPU_MEM_DEVICE memory", what, label);
+            goto fail;
         }
+        if (!(req.memoryTypeBits & (1u << sp.chunk->memory_type))) {
+            md_vk_fail("%s '%s': this device cannot place %s textures in MD_GPU_MEM_DEVICE memory", what, label, fi.name);
+            goto fail;
+        }
+        const uint64_t off = md_vk_align_up(sp.chunk->memory_offset + sp.offset, pl.align);
+        if (!md_vk_check(vkBindImageMemory(dev->device, t->image, sp.chunk->memory, off), "vkBindImageMemory (placed)")) goto fail;
+        /* The memory is the caller's: t->memory stays null, nothing frees it. */
     }
 
     if (d.usage & MD_GPU_TEX_SAMPLED) {
@@ -5566,31 +5545,6 @@ void md_gpu_surface_resize(md_gpu_surface_t sf, uint32_t width, uint32_t height)
     md_mutex_unlock(&dev->device_mutex);
 }
 
-static bool md_vk_record_image_barrier(md_gpu_stream_t s, VkImage image, VkImageLayout from, VkImageLayout to,
-                                       VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
-                                       VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access) {
-    if (!md_vk_stream_ensure_cmd(s)) return false;
-    VkImageMemoryBarrier2 b = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
-    b.srcStageMask  = src_stage;
-    b.srcAccessMask = src_access;
-    b.dstStageMask  = dst_stage;
-    b.dstAccessMask = dst_access;
-    b.oldLayout     = from;
-    b.newLayout     = to;
-    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    b.image = image;
-    b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    b.subresourceRange.levelCount = 1;
-    b.subresourceRange.layerCount = 1;
-    VkDependencyInfo di = {VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-    di.imageMemoryBarrierCount = 1;
-    di.pImageMemoryBarriers    = &b;
-    vkCmdPipelineBarrier2(s->open, &di);
-    s->has_work = true;
-    return true;
-}
-
 md_gpu_texture_t md_gpu_surface_acquire(md_gpu_stream_t s, md_gpu_surface_t sf) {
     if (!s || !sf) { md_vk_fail("md_gpu_surface_acquire: null argument"); return NULL; }
     md_gpu_device_t dev = s->device;
@@ -5635,7 +5589,7 @@ md_gpu_texture_t md_gpu_surface_acquire(md_gpu_stream_t s, md_gpu_surface_t sf) 
         /* Work already recorded must not wait for the image. */
         if (s->has_work) md_vk_stream_submit(s);
         md_gpu_texture_t tex = sf->sc->textures[index];
-        if (!md_vk_record_image_barrier(s, tex->image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+        if (!md_vk_record_image_barrier(s, tex->image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
                                         VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0,
                                         VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                                         VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT)) {
@@ -5669,7 +5623,7 @@ bool md_gpu_surface_present(md_gpu_stream_t s, md_gpu_surface_t sf) {
     const uint32_t index = sf->image_index;
     sf->acquired = false;
     sf->acquired_stream = NULL;
-    if (!md_vk_record_image_barrier(s, sc->textures[index]->image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+    if (!md_vk_record_image_barrier(s, sc->textures[index]->image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                                     VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
                                     /* Chains into the semaphore signal below,
                                        whose stage is ALL_COMMANDS, so the

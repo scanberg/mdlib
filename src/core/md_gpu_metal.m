@@ -361,7 +361,9 @@ typedef struct md_gpu_stream {
     bool              upload_open;
     bool              upload_direct;
     md_gpu_addr_t     upload_dst;
-    uint64_t          upload_src_addr;
+    uint64_t          upload_src_addr;   /* staging: an arena page */
+    __unsafe_unretained id<MTLBuffer> upload_src;
+    uint64_t          upload_src_offset;
     size_t            upload_size;
 
     /* The open render pass, if any. */
@@ -1809,7 +1811,9 @@ void* md_gpu_upload_begin(md_gpu_stream_t s, md_gpu_addr_t dst, size_t size) {
         return b.host;
     }
     uint64_t addr; void* host;
-    if (!md_mtl_arena_alloc(s, size, MD_MTL_ARG_ALIGN, &addr, &host, NULL, NULL)) return NULL;
+    id<MTLBuffer> src = nil;
+    if (!md_mtl_arena_alloc(s, size, MD_MTL_ARG_ALIGN, &addr, &host, &src, &s->upload_src_offset)) return NULL;
+    s->upload_src      = src;
     s->upload_open     = true;
     s->upload_direct   = false;
     s->upload_dst      = dst;
@@ -1825,14 +1829,8 @@ bool md_gpu_upload_end(md_gpu_stream_t s) {
 
     md_mtl_span_t d;
     if (!md_mtl_resolve(s->device, s->upload_dst, s->upload_size, &d, "md_gpu_upload_end")) return false;
-    for (size_t i = 0; i < s->arena.pages.count; ++i) {
-        md_mtl_page_t* p = MD_MTL_VEC_AT(s->arena.pages, md_mtl_page_t*, i);
-        if (s->upload_src_addr >= p->address && s->upload_src_addr < p->address + p->capacity) {
-            return md_mtl_record_buffer_copy(s, p->buffer, s->upload_src_addr - p->address, s->upload_src_addr,
-                                             d.buffer, d.offset, s->upload_dst, s->upload_size);
-        }
-    }
-    return md_mtl_fail("md_gpu_upload_end: staging page not found");
+    return md_mtl_record_buffer_copy(s, s->upload_src, s->upload_src_offset, s->upload_src_addr,
+                                     d.buffer, d.offset, s->upload_dst, s->upload_size);
 }
 
 /* =========================================================================
