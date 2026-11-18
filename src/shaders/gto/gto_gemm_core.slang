@@ -17,6 +17,11 @@
 //   gemm_core_staged  a STAGER (IGemmStager) writes each chunk into groupshared memory itself, as many rows of k as it
 //                     has (at most GK): the evaluations that make the AO values of a chunk in the group (the isosurface
 //                     corners and vertices, gto_iso_gpu.slang)
+//   gemm_core_tri     staged, for a quadratic form streamed over a matrix TRIANGULAR BY CHUNKS (B = D' with 2 D before a
+//                     column's chunk, D on its diagonal block, 0 after; M = GK, so a thread's columns are one chunk): a
+//                     thread multiplies the chunks up to its own and, at its own, the epilogue's diag() takes A . X while
+//                     the chunk's A is still in memory (the AO values made once per column tile, with no Phi in memory:
+//                     the isosurface D form, gto_iso_gpu.slang)
 //
 // The chunks are plain floats in groupshared memory, written and read a float at a time (the driver merges a thread's
 // consecutive reads). r3 read them as float4 (a float4 array, a component written at a time): on an RTX 3080 the
@@ -91,6 +96,21 @@ interface IGemmEpilogue {
     // ncols are of the product)
     [mutating] void take<let R : int, let M : int>(uint m0, uint ncols, uint tx, uint ty, float X[R][M]);
 };
+
+interface IGemmTriEpilogue : IGemmEpilogue {
+    // gemm_core_tri: the thread's columns [k0, k0 + GK) complete at the chunk of k0; that chunk's A is in the memory
+    // (row kk at kk GP + r). Called by the threads whose chunk it is (not group-uniform: no barriers)
+    [mutating] void diag<let R : int, let M : int>(uint k0, uint tx, uint ty, float X[R][M]);
+};
+
+// A fence for groupshared memory without an execution barrier (for code that not every thread runs): on Vulkan
+// OpMemoryBarrier; on Metal simdgroup_barrier, as threadgroup_barrier would also wait for the other SIMD-groups
+void gc_fence() {
+    __target_switch {
+    case metal: __intrinsic_asm "simdgroup_barrier(mem_flags::mem_threadgroup)";
+    default: GroupMemoryBarrier();
+    }
+}
 
 // Row kk of the chunk in Mem into the thread's X
 [ForceInline]
@@ -180,6 +200,36 @@ void gemm_core_staged<let CP : int, let CM : int, let CTX : int, let CTY : int, 
             if (kn == GC_END) break;
             GroupMemoryBarrierWithGroupSync();   // the chunk staged
             for (uint kk = 0u; kk < kn; ++kk) gc_mac<CP, CM, R, M, Mem>(X, kk, tx, ty);
+        }
+        epi.take<R, M>(m0, ncols, tx, ty, X);
+    }
+}
+
+[ForceInline]
+void gemm_core_tri<let CP : int, let CM : int, let CTX : int, let CTY : int, Mem : IGcMem, S : IGemmStager, E : IGemmTriEpilogue>(
+        inout S st, inout E epi, uint ncols, uint tid, uint tx, uint ty) {
+    static const int R = CP / CTY;
+    static const int M = CM / CTX;
+    // (M == GK: a thread's columns are one chunk of k; every chunk GK rows, zero past the end)
+    for (uint m0 = 0u; m0 < ncols; m0 += uint(CM)) {
+        float X[R][M];
+        [ForceUnroll] for (int i = 0; i < R; ++i)
+            [ForceUnroll] for (int j = 0; j < M; ++j) X[i][j] = 0.0f;
+        const uint c0 = m0 + tx * uint(M);                 // the thread's first column
+        st.begin(m0, tid);
+        for (uint k0 = 0u;; k0 += uint(GK)) {
+            GroupMemoryBarrierWithGroupSync();             // the previous chunk consumed
+            const uint kn = st.stage(m0, tid);             // uniform
+            if (kn == GC_END) break;
+            GroupMemoryBarrierWithGroupSync();             // the chunk staged
+            if (c0 < ncols && k0 <= c0) {                  // the chunks after the thread's own are zero in B
+                [ForceUnroll]
+                for (int kk = 0; kk < GK; ++kk) gc_mac<CP, CM, R, M, Mem>(X, uint(kk), tx, ty);
+                if (k0 == c0) {
+                    gc_fence();
+                    epi.diag<R, M>(k0, tx, ty, X);
+                }
+            }
         }
         epi.take<R, M>(m0, ncols, tx, ty, X);
     }

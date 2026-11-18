@@ -3076,6 +3076,318 @@ void gemm_dform<let VERT : int>(uint3 gid, uint tid) {
 
 [shader("compute")] [numthreads(256, 1, 1)] void iso_dcorners(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_dform<0>(gid, tid); }
 [shader("compute")] [numthreads(256, 1, 1)] void iso_deval(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_dform<1>(gid, tid); }
+
+// ------------------------------------------------------------------------------------------
+// The D form on the GEMM core (gemm_core_tri: staged, triangular by chunks): gemm_dform's ranges, lists, chunk table,
+// double-buffered staging and products, the multiply-adds the core's (iso_dcorners_c, iso_deval_c; gemm_dform beside
+// them until measured: MD_GTO_ISO_GEMM=own). Thread (pg, cg) = (tid & 31, tid >> 5) is the core's (ty, tx): rows
+// 4 pg .. 4 pg + 3, the 16 columns of wave cg's chunk of a tile of 128 (R = 4, M = 16). A chunk: A [kk][r] the rows'
+// AO values (row 4 pg + ce made by the threads cg >> 2 = j0 for every SP-th shell), B [kk][128] the chunk's rows of
+// D' (2 D before a column's chunk, D on its diagonal, 0 after).
+// ------------------------------------------------------------------------------------------
+GC_MEM(IsoGd, 128, 128)
+
+// dq_phi into the core's A chunk: row r at r * 128 + 4 pg + ce
+void dq_phi_gc<Mem : IGcMem>(uint buf, uint ns, uint j0, uint js, uint nvalid, float3 p, uint pg, uint ce, bool deriv, uint ch) {
+    IsoArgs a = MD_ARGS;
+    if (j0 == 0u) for (uint k = nvalid; k < uint(D_CH); ++k) Mem::st(k * 128u + 4u * pg + ce, 0.0);
+    uint ax = ch > 0u ? ch - 1u : 0u;
+    for (uint j = j0; j < ns; j += js) {
+        uint s = buf * uint(D_CH) + j;
+        float4 cs = dq_cs[s];
+        uint ci = dq_ci[s];
+        int rb = dq_rb[s];
+        uint l = ci & 15u, nc = (ci >> 4) & 15u, np = (ci >> 8) & 255u;
+        float3 d = p - cs.xyz;
+        float r2 = dot(d, d);
+        if (r2 > cs.w) {                                   // beyond the cutoff: its rows zero
+            [ForceUnroll] for (int n = 0; n < 15; ++n) {
+                int row = rb + n;
+                if (uint(n) < nc && row >= 0 && row < D_CH) Mem::st(uint(row) * 128u + 4u * pg + ce, 0.0);
+            }
+            continue;
+        }
+        float m[15];
+        float g[15];
+        float A = 0.0, Bg = 0.0;
+        {
+            float R = 0.0, R1 = 0.0;
+            if ((ci >> 31) != 0u) {                        // uniform: the same shell for every thread
+                uint po = dq_pg[s];
+                for (uint q = 0u; q < np; ++q) {
+                    float2 pr = a.prims[po + q];
+                    float t = pr.y * exp(-pr.x * r2);
+                    R += t;
+                    if (deriv) R1 -= pr.x * t;
+                }
+            } else {
+                uint po = s * uint(DQ_PMAX);
+                for (uint q = 0u; q < np; ++q) {
+                    float2 pr = dq_pr[po + q];
+                    float t = pr.y * exp(-pr.x * r2);
+                    R += t;
+                    if (deriv) R1 -= pr.x * t;
+                }
+            }
+            A = R;
+            if (deriv) {
+                float da = ax == 0u ? d.x : (ax == 1u ? d.y : d.z);
+                A = ch == 0u ? R : 2.0 * da * R1;
+                Bg = ch == 0u ? 0.0 : R;
+            }
+        }
+        cart_monomials(l, d, m);
+        if (deriv) cart_monomials_d(l, d, ax, g);
+        [ForceUnroll] for (int n = 0; n < 15; ++n) {
+            int row = rb + n;
+            if (uint(n) < nc && row >= 0 && row < D_CH) {
+                float phi = m[n] * A;
+                if (deriv) phi += g[n] * Bg;
+                Mem::st(uint(row) * 128u + 4u * pg + ce, phi);
+            }
+        }
+    }
+}
+
+// The chunks of a tile J (m0 = 128 J): q = 0 .. qe - 1, qe = min(NW (J + 1), nq) (the chunks after the tile's last
+// column are zero in D'). Each: this thread's D' elements loaded first (rows tid / 128 + 2 i, column tid % 128), the
+// next chunk's shells (or the next tile's first and its columns) staged into the other buffers, the AO values made,
+// the D' rows stored
+struct IsoDformStager<let VERT : int, Mem : IGcMem> : IGemmStager {
+    float* D;
+    uint   n, A, nq;
+    float3 p;
+    uint   pg, cg, ce, col;
+    uint   J, q, qe, jb, ca;
+    [mutating] void begin(uint m0, uint tid) {
+        J  = m0 / (16u * uint(NW));
+        q  = 0u;
+        qe = min(uint(NW) * (J + 1u), nq);
+        jb = (J & 1u) * 128u;
+        if (J == 0u) {                                     // the first tile's first chunk and columns (later: staged ahead)
+            dq_stage(0u, nq, 0u, tid);
+            dq_cols(0u, 0u, tid, 16u * uint(NW));
+        }
+    }
+    [mutating] uint stage(uint m0, uint tid) {
+        IsoArgs a = MD_ARGS;
+        if (q >= qe) return GC_END;
+        const uint TC = 16u * uint(NW);
+        if (q == 0u) ca = dq_jao[jb + col];                // after the barrier: the tile's columns staged
+        uint buf = q & 1u;
+        uint ccol = uint(NW) * J + col / uint(D_CH);
+        float fac = q < ccol ? 2.0 : (q == ccol ? 1.0 : 0.0);
+        float dv[8];
+        [ForceUnroll] for (int i = 0; i < 8; ++i) {
+            uint ra = dq_rao[buf * uint(D_CH) + tid / TC + 2u * uint(i)];
+            bool ok = fac != 0.0 && ra != INVALID && ca != INVALID;
+            float v = ok ? dform_at(D, a.dsparse, a.dm_tao, a.dm_map, a.dm_nt, a.ao_nrm, n, ra, ca) : 0.0;
+            dv[i] = ok ? fac * v : 0.0;
+        }
+        if (q + 1u < qe) {
+            dq_stage(q + 1u, nq, buf ^ 1u, tid);
+        } else if ((J + 1u) * TC < A) {
+            dq_stage(0u, nq, 0u, tid);
+            dq_cols(J + 1u, (J + 1u) & 1u, tid, TC);
+        }
+        uint la0 = q * uint(D_CH);
+        dq_phi_gc<Mem>(buf, dq_span(q, nq).y, cg >> 2, uint(NW) / 4u, min(A - la0, uint(D_CH)), p, pg, ce, VERT != 0, ce);
+        [ForceUnroll] for (int i = 0; i < 8; ++i) Mem::st(uint(GK * 128) + tid + 256u * uint(i), dv[i]);
+        q += 1u;
+        return uint(GK);
+    }
+};
+
+// Phi . T at the diagonal chunk: the rows' AO values of the chunk (read again from the A chunk) times the column chunk
+struct IsoDformEpilogue<let VERT : int, Mem : IGcMem> : IGemmTriEpilogue {
+    uint  pg;
+    float part[4];
+    [mutating] void take<let R : int, let M : int>(uint m0, uint ncols, uint tx, uint ty, float X[R][M]) {}
+    [mutating] void diag<let R : int, let M : int>(uint k0, uint tx, uint ty, float X[R][M]) {
+        [ForceUnroll] for (int k = 0; k < GK; ++k) {
+            float4 ph = float4(Mem::ld(uint(k) * 128u + 4u * pg), Mem::ld(uint(k) * 128u + 4u * pg + 1u),
+                               Mem::ld(uint(k) * 128u + 4u * pg + 2u), Mem::ld(uint(k) * 128u + 4u * pg + 3u));
+            if (VERT == 0) {
+                [ForceUnroll] for (int v = 0; v < 4; ++v) part[v] += ph[v] * X[v][k];
+            } else {
+                float t0 = X[0][k];
+                part[0] += ph.x * t0;
+                [ForceUnroll] for (int c = 1; c < 4; ++c) part[c] += ph[c] * t0 + ph.x * X[c][k];
+            }
+        }
+    }
+};
+
+void gemm_dform_core<let VERT : int>(uint3 gid, uint tid) {
+    IsoArgs a = MD_ARGS;
+    const uint GS = 32u * uint(NW);                        // threads
+    const uint TC = 16u * uint(NW);                        // columns per tile
+    const uint SP = uint(NW) / 4u;                         // threads per row making AO values
+    uint pg = tid & 31u, cg = tid >> 5;
+    uint ce = cg & 3u;                                     // the row this thread's AO values are for: 4 pg + ce
+    uint b = 0u, pt = 0u, slot0 = 0u, mask = 0u, v0 = 0u, vf = 0u;
+    bool active, out_active;
+    float3 p;
+    if (VERT == 0) {
+        uint total = a.count_in[0];
+        uint e0 = node_index(gid) * uint(G_GROUP);
+        if (e0 >= total) return;                           // uniform per group
+        active = e0 + 4u * pg + ce < total;
+        uint ee = a.plist[min(e0 + 4u * pg + ce, total - 1u)];
+        p = corner_point(a.bricks[ee >> 7], ee & 127u);
+        out_active = tid < uint(G_GROUP) && e0 + tid < total;
+        uint ent = a.plist[min(e0 + min(tid, uint(G_GROUP) - 1u), total - 1u)];
+        b = ent >> 7;
+        pt = ent & 127u;
+        mask = a.bricks[b].w;
+        slot0 = a.brick_slot[b];
+    } else {
+        v0 = node_index(gid) * 32u;
+        if (v0 >= a.count) return;                         // uniform per group
+        if (tid == 0u) {
+            uint done = 1u;
+            for (uint k = 0u; k < 32u && v0 + k < a.count; ++k) done &= a.vdone[v0 + k] != 0u ? 1u : 0u;
+            g_done = done;
+        }
+        GroupMemoryBarrierWithGroupSync();
+        if (g_done != 0u) return;                          // uniform: every vertex here has converged
+        active = v0 + pg < a.count;
+        p = a.vpos[min(v0 + pg, a.count - 1u)].xyz;
+        uint vo = min(tid, uint(G_GROUP) - 1u) >> 2;
+        out_active = tid < uint(G_GROUP) && v0 + vo < a.count;
+        vf = min(a.vinfo[min(v0 + vo, a.count - 1u)].z, 15u);
+    }
+    // The group's rows in ranges, each with the local list of its own rows' box: one range, all rows,
+    // unless that list is too long (D_LS shells, DQ_CAP chunks), when the range is halved until it is
+    // not. Rows are consecutive points of the list (corners) or vertices; a group that straddles a
+    // jump of the Morton order has a box across the molecule, its halves (mostly) do not. Every row
+    // is evaluated in every range's pass; a pass writes only its range's rows.
+    const uint units = VERT == 0 ? uint(G_GROUP) : 32u;    // corners: rows; vertices: 32 vertices of 4 rows
+    const uint unit = VERT == 0 ? 4u * pg + ce : pg;       // the unit this thread makes AO values for
+    const uint ounit = VERT == 0 ? tid : tid >> 2;         // the unit this thread writes (tid < G_GROUP)
+    if (tid == 0u) { d_rs[0] = units << 16; d_rn = 1u; }
+    GroupMemoryBarrierWithGroupSync();
+    for (;;) {
+        uint rn = d_rn;                                    // uniform (after a barrier)
+        if (rn == 0u) break;
+        uint rr = d_rs[rn - 1u];
+        uint rs = rr & 0xFFFFu, re = rr >> 16;
+        GroupMemoryBarrierWithGroupSync();
+        if (tid == 0u) d_rn = rn - 1u;
+        bool in = active && unit >= rs && unit < re;
+        bool out_in = out_active && ounit >= rs && ounit < re;
+        {
+            uint lanes = WaveGetLaneCount();
+            uint w = min(iso_wave_index(tid, lanes), 31u);
+            float3 lo = WaveActiveMin(in ? p : float3(3.0e38));
+            float3 hi = WaveActiveMax(in ? p : float3(-3.0e38));
+            if (WaveIsFirstLane()) { g_lohi[2u * w] = float4(lo, 0.0); g_lohi[2u * w + 1u] = float4(hi, 0.0); }
+            GroupMemoryBarrierWithGroupSync();
+            if (tid == 0u) {
+                uint nw = min(iso_num_waves(GS, lanes), 32u);
+                float3 glo = g_lohi[0].xyz, ghi = g_lohi[1].xyz;
+                for (uint k = 1u; k < nw; ++k) { glo = min(glo, g_lohi[2u * k].xyz); ghi = max(ghi, g_lohi[2u * k + 1u].xyz); }
+                g_lohi[0] = float4(glo, 0.0);
+                g_lohi[1] = float4(ghi, 0.0);
+            }
+            GroupMemoryBarrierWithGroupSync();
+        }
+        float3 glo = g_lohi[0].xyz, ghi = g_lohi[1].xyz;
+        d_list_gs(glo, ghi, tid, 1.0, GS);
+        uint A = d_atot;
+        uint nq = (A + uint(D_CH) - 1u) / uint(D_CH);
+        if (d_ovf != 0u || nq > uint(DQ_CAP)) {            // uniform: too many shells reach the range's box
+            if (tid == 0u) {
+                if (re - rs > 1u && d_rn + 2u <= 16u) {
+                    uint mid = (rs + re) >> 1;
+                    d_rs[d_rn] = mid | (re << 16);
+                    d_rs[d_rn + 1u] = rs | (mid << 16);
+                    d_rn += 2u;
+                } else {
+                    InterlockedAdd(a.counters[7], 1u);     // one point that many shells reach: the values would be wrong
+                }
+            }
+            GroupMemoryBarrierWithGroupSync();
+            continue;
+        }
+        if (A == 0u) {                                     // uniform: nothing reaches the box
+            if (VERT == 0) {
+                if (out_in) {
+                    for (uint f = 0u; f < a.num_fields; ++f)
+                        if (((field_bits(mask) >> (2u * f)) & 1u) != 0u) a.corners[(slot0 + field_slot(mask, f)) * 125u + pt] = 0.0;
+                }
+            } else if (tid < 32u && v0 + tid < a.count && tid >= rs && tid < re) {
+                a.vval[v0 + tid] = float4(0.0);
+            }
+            GroupMemoryBarrierWithGroupSync();
+            continue;
+        }
+        dq_table(tid, GS, nq);
+        uint nj = (A + TC - 1u) / TC;
+        uint n = a.num_ao;
+        float res = 0.0;                                   // vertices: row tid's channel of its field
+
+        for (uint u = 0u; u < a.num_dmat; ++u) {
+            // skipped where no row of the range needs this matrix
+            bool need = false;
+            if (out_in) {
+                if (VERT == 0) {
+                    for (uint f = 0u; f < a.num_fields; ++f) need = need || (((field_bits(mask) >> (2u * f)) & 1u) != 0u && a.fdmat[f] == u);
+                } else {
+                    need = a.fdmat[vf] == u;
+                }
+            }
+            GroupMemoryBarrierWithGroupSync();
+            if (tid == 0u) d_any = 0u;
+            GroupMemoryBarrierWithGroupSync();
+            if (need) d_any = 1u;
+            GroupMemoryBarrierWithGroupSync();
+            if (d_any == 0u) continue;
+            float* D = a.dmat + u * (a.dsparse != 0u ? a.dm_pool : n * n);
+            float part[4] = {0.0, 0.0, 0.0, 0.0};          // rows 4 pg + v: Phi . T over this wave's column chunks
+
+            IsoDformStager<VERT, IsoGd> st;
+            st.D = D; st.n = n; st.A = A; st.nq = nq; st.p = p; st.pg = pg; st.cg = cg; st.ce = ce; st.col = tid % TC;
+            st.J = 0u; st.q = 0u; st.qe = 0u; st.jb = 0u; st.ca = INVALID;
+            IsoDformEpilogue<VERT, IsoGd> epi;
+            epi.pg = pg;
+            [ForceUnroll] for (int v = 0; v < 4; ++v) epi.part[v] = 0.0;
+            gemm_core_tri<128, 128, 8, 32, IsoGd, IsoDformStager<VERT, IsoGd>, IsoDformEpilogue<VERT, IsoGd> >(st, epi, A, tid, cg, pg);
+            [ForceUnroll] for (int v = 0; v < 4; ++v) part[v] = epi.part[v];
+            // rows 4 pg + v summed over the waves; row tid's sum
+            GroupMemoryBarrierWithGroupSync();             // the memory free
+            [ForceUnroll] for (int v = 0; v < 4; ++v) IsoGd::st((cg * 32u + pg) * 4u + uint(v), part[v]);
+            GroupMemoryBarrierWithGroupSync();
+            float r = 0.0;
+            if (tid < uint(G_GROUP)) {
+                [ForceUnroll] for (int c = 0; c < NW; ++c) r += IsoGd::ld((uint(c) * 32u + (tid >> 2)) * 4u + (tid & 3u));
+            }
+            if (VERT == 0) {
+                if (out_in) {
+                    for (uint f = 0u; f < a.num_fields; ++f) {
+                        if (((field_bits(mask) >> (2u * f)) & 1u) == 0u || a.fdmat[f] != u) continue;
+                        a.corners[(slot0 + field_slot(mask, f)) * 125u + pt] = r;
+                    }
+                }
+            } else if (a.fdmat[vf] == u) {
+                res = r;
+            }
+        }
+        if (VERT != 0) {
+            GroupMemoryBarrierWithGroupSync();
+            if (tid < uint(G_GROUP)) IsoGd::st(tid, res);
+            GroupMemoryBarrierWithGroupSync();
+            if (tid < 32u && v0 + tid < a.count && tid >= rs && tid < re) {
+                float4 t = float4(IsoGd::ld(4u * tid), IsoGd::ld(4u * tid + 1u), IsoGd::ld(4u * tid + 2u), IsoGd::ld(4u * tid + 3u));
+                a.vval[v0 + tid] = float4(t.y, t.z, t.w, t.x);
+            }
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+}
+
+[shader("compute")] [numthreads(256, 1, 1)] void iso_dcorners_c(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_dform_core<0>(gid, tid); }
+[shader("compute")] [numthreads(256, 1, 1)] void iso_deval_c(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_dform_core<1>(gid, tid); }
 #undef NW
 
 #define OD_BLK 256                       // local AOs per block (two per thread)
