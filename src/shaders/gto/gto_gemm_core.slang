@@ -38,7 +38,8 @@
 // What uses it: the density (eval_gto_density_core.slang: symmetric, ncols = nk), ELF and LOL
 // (eval_gto_localization_core.slang: symmetric, four rows a voxel), the orbitals (eval_gto_mo_gemm.slang: B the
 // orbitals' coefficients, ncols the orbitals), a density matrix's tiles from orbitals (gto_dmat.slang: P_I^T diag(w) P_J,
-// 16 x 128 per group of 16 x 4 threads), the isosurface GEMMs (gto_iso_gpu.slang, staged).
+// 16 x 128 per group of 16 x 4 threads), the isosurface GEMMs (gto_iso_gpu.slang, staged), the topology sweep's D and
+// |D| times the AO channels (topo_gto_cube.slang gemm_core_main: staged, strided columns, |A| slots, full chunks).
 //
 // A SYMMETRIC product (B = w o D of a symmetric D, w 1 on the diagonal and 2 off it, k >= m only) sums
 // sum_{m <= k} w D[k][m] A[r][k] - half the multiply-adds - and is exact for a quadratic form a^T D a = sum_m a[m] X[m]
@@ -54,12 +55,13 @@
 //
 // r5: the template (r4: the same loop with the tile and the threads as each file's macros, one shape per source).
 // r6: the chunks' memory a kernel's choice (GC_MEM, GC_MEM4). r7: GC_MEM4's float4 reads indexed in float4s. r8: st4c.
+// r9: a strided column map and |A| column slots (GC_MEM_MAP), full chunks unrolled (IGemmStager.kFull): the topology's GEMM.
 
 #ifndef GTO_GEMM_CORE_SLANG
 #define GTO_GEMM_CORE_SLANG
 
 // For measurements: bumped with every change to the core's loop
-#define GTO_GEMM_CORE_REVISION 8
+#define GTO_GEMM_CORE_REVISION 9
 
 #define GK     16               // k per chunk
 #define GC_END 0xFFFFFFFFu      // IGemmStager.stage: no more chunks
@@ -75,6 +77,12 @@
 //            tiled GEMM 1.3-1.5x slower on GC_MEM's float reads at 20-30 functions, gemm-core r5)
 interface IGcMem {
     static const int kVec;              // 1: ld4 a 16-byte read (GC_MEM4), the multiply-adds read float4
+    // The thread's columns: 0 contiguous (tx M .. tx M + M - 1), 1 strided (tx + TX j: a warp's columns consecutive,
+    // read conflict-free a float at a time; only with kVec 0). X[i][j] is the epilogue's column accordingly.
+    static const int kColStride;
+    // The thread's column slots j >= kAbsJ multiply |A| (the rest A): a strided map's columns from TX kAbsJ on, one
+    // staged A for A B and |A| B (the topology's D and |D|); >= M: none
+    static const int kAbsJ;
     static float  ld(uint i);
     static float4 ld4(uint i4);
     static void   st(uint i, float v);
@@ -82,10 +90,13 @@ interface IGcMem {
     // both per write, and a sum's split (i + 128 n) >> 2 does not fold into the writes' offsets (unsigned wrap)
     static void   st4c(uint i4, uint c, float v);
 };
-#define GC_MEM(NAME, GPV, GMV)                                                                      \
+#define GC_MEM(NAME, GPV, GMV) GC_MEM_MAP(NAME, GPV, GMV, 0, 0x7FFFFFFF)
+#define GC_MEM_MAP(NAME, GPV, GMV, STRIDED, ABSJ)                                                   \
     groupshared float NAME##_smem[GK * ((GPV) + (GMV))];                                            \
     struct NAME : IGcMem {                                                                          \
         static const int kVec = 0;                                                                  \
+        static const int kColStride = (STRIDED);                                                    \
+        static const int kAbsJ = (ABSJ);                                                            \
         static float  ld(uint i)          { return NAME##_smem[i]; }                                \
         static float4 ld4(uint i4)        { return float4(NAME##_smem[4u * i4], NAME##_smem[4u * i4 + 1u], \
                                                           NAME##_smem[4u * i4 + 2u], NAME##_smem[4u * i4 + 3u]); } \
@@ -97,6 +108,8 @@ interface IGcMem {
     groupshared float  NAME##_d1[GK * ((GPV) + (GMV))];                                             \
     struct NAME : IGcMem {                                                                          \
         static const int kVec = 1;                                                                  \
+        static const int kColStride = 0;                                                            \
+        static const int kAbsJ = 0x7FFFFFFF;                                                        \
         static float ld(uint i) {                                                                   \
             __target_switch { case spirv: return NAME##_d4[i >> 2][i & 3u];                        \
                               default:    return NAME##_d1[i]; }                                    \
@@ -124,6 +137,8 @@ interface IGemmOperands {
 };
 
 interface IGemmStager {
+    // 1: every chunk GK rows (zero past the end), its multiply-adds unrolled; 0: stage's rows, a loop
+    static const int kFull;
     // Before the column tile at m0
     [mutating] void begin(uint m0, uint tid);
     // The next chunk into the memory (every thread, after a barrier; barriers of its own allowed): its rows of k (1 .. GK),
@@ -156,6 +171,7 @@ void gc_fence() {
 // float index divided by 4 does not fold into the reads' constant offsets (unsigned wrap), r6 an add and a shift per read
 [ForceInline]
 void gc_mac<let CP : int, let CM : int, let R : int, let M : int, Mem : IGcMem>(inout float X[R][M], uint kk, uint tx, uint ty) {
+    static const int CTX = CM / M;
     float a[R];
     float bb[M];
     if (Mem::kVec != 0 && R % 4 == 0) {
@@ -166,7 +182,9 @@ void gc_mac<let CP : int, let CM : int, let R : int, let M : int, Mem : IGcMem>(
     } else {
         [ForceUnroll] for (int i = 0; i < R; ++i) a[i] = Mem::ld(kk * uint(CP) + ty * uint(R) + uint(i));
     }
-    if (Mem::kVec != 0 && M % 4 == 0) {
+    if (Mem::kColStride != 0) {
+        [ForceUnroll] for (int j = 0; j < M; ++j) bb[j] = Mem::ld(uint(GK * CP) + kk * uint(CM) + tx + uint(CTX * j));
+    } else if (Mem::kVec != 0 && M % 4 == 0) {
         [ForceUnroll] for (int q = 0; q < M / 4; ++q) {
             const float4 v = Mem::ld4(uint(GK * CP / 4) + kk * uint(CM / 4) + tx * uint(M / 4) + uint(q));
             bb[4 * q] = v.x; bb[4 * q + 1] = v.y; bb[4 * q + 2] = v.z; bb[4 * q + 3] = v.w;
@@ -174,8 +192,11 @@ void gc_mac<let CP : int, let CM : int, let R : int, let M : int, Mem : IGcMem>(
     } else {
         [ForceUnroll] for (int j = 0; j < M; ++j) bb[j] = Mem::ld(uint(GK * CP) + kk * uint(CM) + tx * uint(M) + uint(j));
     }
-    [ForceUnroll] for (int i = 0; i < R; ++i)
-        [ForceUnroll] for (int j = 0; j < M; ++j) X[i][j] += a[i] * bb[j];
+    [ForceUnroll] for (int i = 0; i < R; ++i) {
+        const float ai = a[i];
+        const float aa = abs(ai);                // once per row (unused without |A| slots)
+        [ForceUnroll] for (int j = 0; j < M; ++j) X[i][j] += (j >= Mem::kAbsJ ? aa : ai) * bb[j];
+    }
 }
 
 [ForceInline]
@@ -254,7 +275,11 @@ void gemm_core_staged<let CP : int, let CM : int, let CTX : int, let CTY : int, 
             const uint kn = st.stage(m0, tid);   // uniform
             if (kn == GC_END) break;
             GroupMemoryBarrierWithGroupSync();   // the chunk staged
-            for (uint kk = 0u; kk < kn; ++kk) gc_mac<CP, CM, R, M, Mem>(X, kk, tx, ty);
+            if (S::kFull != 0) {
+                [ForceUnroll] for (int kk = 0; kk < GK; ++kk) gc_mac<CP, CM, R, M, Mem>(X, uint(kk), tx, ty);
+            } else {
+                for (uint kk = 0u; kk < kn; ++kk) gc_mac<CP, CM, R, M, Mem>(X, kk, tx, ty);
+            }
         }
         epi.take<R, M>(m0, ncols, tx, ty, X);
     }

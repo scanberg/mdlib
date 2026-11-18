@@ -712,6 +712,81 @@ void gemm_main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid :
     }
 }
 
+// ================================================================================== gemm_core_main
+// gemm_main on the shared GEMM core (gto_gemm_core.slang, staged; beside gemm_main until measured:
+// MD_TOPO_GTO_GEMM=own takes gemm_main): the same tile (64 rows, 256 columns, 32 x 8 threads of 8 x 8), the
+// same chunks staged the same way (D 64 x 16, j fastest; phi 16 x 256), the same multiply-adds in the same
+// order (j increasing, every chunk 16 rows: kFull), the columns strided (tx + 32 j) and slots j >= 5 by |D|
+// (GC_MEM_MAP): the core's gc_mac is gemm_main's inner loop.
+#include "../gto/gto_gemm_core.slang"
+GC_MEM_MAP(TopoGc, GT, GCJ * 32, 1, 5)
+
+struct TopoGemmStager : IGemmStager {
+    static const int kFull = 1;
+    uint n, base, r0, N, dt_n, k0;
+    uint*  row_ao;
+    float* Dm;
+    float* phi;
+    uint*  dt_map;
+    [mutating] void begin(uint m0, uint tid) { k0 = 0u; }
+    [mutating] uint stage(uint m0, uint tid) {
+        if (k0 >= n) return GC_END;
+        // D tile: 64 rows x 16 j, 4 per thread, j fastest (consecutive AOs are mostly consecutive in D)
+        [ForceUnroll] for (int q = 0; q < (GT * GKC) / GEMM_WG; ++q) {
+            const uint e = tid + uint(GEMM_WG * q);
+            const uint r = e / GKC, kk = e % GKC;
+            float d = 0.0;
+            if (r0 + r < n && k0 + kk < n) {
+                const uint ai = min(row_ao[base + r0 + r], N - 1u);
+                const uint aj = min(row_ao[base + k0 + kk], N - 1u);
+                if (dt_n == 0u) d = Dm[ai * N + aj];
+                else d = Dm[dt_map[(ai >> 4) * dt_n + (aj >> 4)] * 256u + (ai & 15u) * 16u + (aj & 15u)];
+            }
+            TopoGc::st(kk * uint(GT) + r, d);
+        }
+        // phi tile: 16 j x 256 columns, 16 per thread, columns fastest (coalesced rows)
+        [ForceUnroll] for (int q = 0; q < (GKC * GCJ * 32) / GEMM_WG; ++q) {
+            const uint e = tid + uint(GEMM_WG * q);
+            const uint kk = e / (GCJ * 32), c = e % (GCJ * 32);
+            float v = 0.0;
+            if (k0 + kk < n && c < DV_W) v = phi[(base + k0 + kk) * PHI_W + c];
+            TopoGc::st(uint(GK * GT) + kk * uint(GCJ * 32) + c, v);
+        }
+        k0 += uint(GKC);
+        return uint(GKC);
+    }
+};
+
+struct TopoGemmEpilogue : IGemmEpilogue {
+    uint   n, base, r0;
+    float* dv;
+    [mutating] void take<let R : int, let M : int>(uint m0, uint ncols, uint tx, uint ty, float X[R][M]) {
+        [ForceUnroll] for (int i = 0; i < R; ++i) {
+            const uint row = r0 + ty * uint(R) + uint(i);
+            if (row >= n) continue;
+            [ForceUnroll] for (int j = 0; j < M; ++j) {
+                const uint col = tx + 32u * uint(j);
+                if (col < DV_W) dv[(base + row) * DV_W + col] = X[i][j];
+            }
+        }
+    }
+};
+
+[shader("compute")]
+[numthreads(32, 8, 1)]
+void gemm_core_main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_GroupIndex) {
+    const uint rt = gid.x;
+    if (rt >= args.num_row_tiles) return;   // uniform per group
+    const uint2 rtd = args.row_tiles[rt];
+    const Batch bt = args.batches[min(rtd.x, args.num_batches - 1u)];
+    TopoGemmStager st;
+    st.n = bt.info.y; st.base = bt.info.z; st.r0 = rtd.y; st.N = args.num_ao; st.dt_n = args.dt_n; st.k0 = 0u;
+    st.row_ao = args.row_ao; st.Dm = args.D; st.phi = args.phi; st.dt_map = args.dt_map;
+    TopoGemmEpilogue epi;
+    epi.n = st.n; epi.base = st.base; epi.r0 = st.r0; epi.dv = args.dv;
+    gemm_core_staged<GT, GCJ * 32, 32, 8, TopoGc, TopoGemmStager, TopoGemmEpilogue>(st, epi, uint(DV_W), tid, gtid.x, gtid.y);
+}
+
 // ================================================================================== epi_main
 // Per child cube, sums over the batch's local AOs (rows) i:
 //   DOT[a][b] = sum_i V_i[a] (D V)_i[b], a = 0..19, b = 0..9, and its error sum, which depends on a only

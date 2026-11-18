@@ -1324,6 +1324,7 @@ void k_load_chunk_gc<let F : int, Mem : IGcMem>(uint c, uint f0, uint tid, uint 
 // The chunks: the shells that reach the group's box, K_LIST listed at a time, packed into chunks of whole shells of at
 // most G_CK rows; each staged and its AO values made at the thread's row
 struct IsoGemmStager<let F : int, Mem : IGcMem, let VERT : int> : IGemmStager {
+    static const int kFull = 0;
     IsoArgs a;                                             // the kernel's (not read from MD_ARGS again per chunk)
     float3 glo, ghi, p;
     uint   ch, ax;
@@ -1757,6 +1758,7 @@ void iso_wide_ao<let VERT : int, Mem : IGcMem, let CLIP : int>(int rb, uint l, u
 
 // The wide GEMM's first staging: k_list's (K_LIST shells listed at a time, chunks of whole shells of at most G_CK rows)
 struct IsoWideStager<let F : int, Mem : IGcMem, let VERT : int> : IGemmStager {
+    static const int kFull = 0;
     IsoArgs a;                                             // the kernel's (not read from MD_ARGS again per chunk)
     IsoWideRows w;
     uint s0, c, nchunk;
@@ -1790,6 +1792,7 @@ struct IsoWideStager<let F : int, Mem : IGcMem, let VERT : int> : IGemmStager {
 // The wide GEMM's second staging: the shells listed once a pass (kw_list), chunks of 16 consecutive AOs of the list (a shell across
 // a chunk's edge made in both), the next chunk's rows of C loaded into registers while the current one is used
 struct IsoWide2Stager<let F : int, Mem : IGcMem, let VERT : int> : IGemmStager {
+    static const int kFull = 0;
     IsoArgs a;                                             // the kernel's (not read from MD_ARGS again per chunk)
     IsoWideRows w;
     uint s_begin, A, nsh, nchunk, c;
@@ -2193,6 +2196,7 @@ void dq_phi<Mem : IGcMem>(uint buf, uint ns, uint j0, uint js, uint nvalid, floa
 // next chunk's shells (or the next tile's first and its columns) staged into the other buffers, the AO values made,
 // the D' rows stored
 struct IsoDformStager<let VERT : int, Mem : IGcMem> : IGemmStager {
+    static const int kFull = 0;
     float* D;
     uint   n, A, nq;
     uint   dsparse, dm_nt;                                 // dform_at's arguments, the kernel's (not read from MD_ARGS

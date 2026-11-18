@@ -463,8 +463,10 @@ typedef enum md_gto_gpu_density_algo_t {
 // unclipped where its chunks hold whole shells (as gemm_wide's). r10: the isosurface GEMMs' own loops retired, the core's
 // kernels under their names (measured on an RTX 3080 in one process, the two alternating, by stage: the tiled GEMM's
 // corners 0.99-1.01 of its own loop's at 16-56 functions, the wide 0.95-1.05 at 105-250, the D form's extraction
-// 1.00 on the protein; the registers the same or fewer).
-#define MD_GTO_GPU_GEMM_CORE_REVISION "gemm-core r10 (a template: density, orbitals, ELF/LOL, dmat tiles on float chunks; the isosurface tiled, wide and D-form GEMMs staged, on float4 chunks read as float4s and written by float4 and component; D_b gather r2: the flat triangle)"
+// 1.00 on the protein; the registers the same or fewer). r11: the topology sweep's GEMM (topo_gto_cube.slang
+// gemm_main: D and |D| times the AO channels, 64 x 256 tiles) on the core, staged, with a strided column map, |A|
+// column slots and full chunks unrolled (gemm_main's inner loop, beside it: MD_TOPO_GTO_GEMM=own).
+#define MD_GTO_GPU_GEMM_CORE_REVISION "gemm-core r11 (a template: density, orbitals, ELF/LOL, dmat tiles on float chunks; the isosurface tiled, wide and D-form GEMMs staged, on float4 chunks read as float4s and written by float4 and component; the topology sweep's D and |D| GEMM staged, strided columns; D_b gather r2: the flat triangle)"
 
 // Unified descriptor struct for density evaluation.
 typedef struct md_gto_gpu_density_desc_t {
