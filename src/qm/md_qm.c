@@ -107,6 +107,43 @@ size_t md_qm_extract_packed_symmetric_f32(float* dst, size_t cap, const md_attri
     return result;
 }
 
+size_t md_qm_extract_packed_symmetric_f64(double* dst, size_t cap, const md_attributes_t* table, const md_attribute_t* attr, md_attribute_slice_t slice, md_attribute_io_t* io) {
+    bool packed = false;
+    const size_t n = qm_symmetric_dim(&packed, attr, slice);
+    if (n == 0 || !dst) {
+        return n;
+    }
+    const size_t len = n * (n + 1) / 2;
+    if (cap < len) {
+        MD_LOG_ERROR("'" MD_STR_FMT "': room for %zu values, the packed matrix has %zu", MD_STR_ARG(attr->path), cap, len);
+        return 0;
+    }
+
+    md_temp_scope_t temp = md_temp_begin();
+    size_t result = 0;
+    if (packed) {
+        float* tri = md_temp_alloc_array(temp, float, len);
+        if (tri && md_attribute_extract_io_f32(tri, len, table, attr, slice, md_unit_none(), io) == len) {
+            for (size_t k = 0; k < len; ++k) dst[k] = (double)tri[k];
+            result = n;
+        }
+    } else {
+        double* full = md_temp_alloc_array(temp, double, n * n);
+        if (full && md_attribute_extract_io_f64(full, n * n, table, attr, slice, md_unit_none(), io) == n * n) {
+            size_t k = 0;
+            for (size_t i = 0; i < n; ++i) {
+                dst[k++] = full[i * n + i];
+                for (size_t j = i + 1; j < n; ++j) {
+                    dst[k++] = 0.5 * (full[i * n + j] + full[j * n + i]);
+                }
+            }
+            result = n;
+        }
+    }
+    md_temp_end(temp);
+    return result;
+}
+
 size_t md_qm_extract_symmetric_f64(double* dst, size_t cap, const md_attributes_t* table, const md_attribute_t* attr, md_attribute_slice_t slice, md_attribute_io_t* io) {
     bool packed = false;
     const size_t n = qm_symmetric_dim(&packed, attr, slice);

@@ -106,6 +106,8 @@ destruction.
    ========================================================================= */
 
 #define MD_MTL_MAX_COMMAND_BUFFERS 4096
+/* Submissions a stream keeps the GPU times of (md_gpu_sync_gpu_seconds) */
+#define MD_MTL_TS_RING 256u
 #define MD_MTL_ARENA_PAGE_SIZE (256u * 1024u)
 /* A transient allocation larger than this (an upload's staging, mostly) gets a page of its own, of its
    exact size, freed once the submission that reads it completes, rather than a shared page doubled up
@@ -302,9 +304,28 @@ typedef struct md_mtl_wait_t {
     uint64_t        value;
 } md_mtl_wait_t;
 
+/* The GPU times of a stream's last MD_MTL_TS_RING submissions: each command
+   buffer's GPUEndTime - GPUStartTime, written by its completed handler (on a
+   Metal thread) into slot (value % MD_MTL_TS_RING), read by
+   md_gpu_sync_gpu_seconds. An allocation of its own, held by the stream and by
+   every handler not yet run, so that a handler which runs after the stream is
+   destroyed writes into memory still there. A slot's value is 0 while it is
+   being written: a reader takes the seconds only when the value is the one it
+   asks for both before and after reading them. */
+typedef struct md_mtl_timing_t {
+    int32_t  refs;                          /* __atomic */
+    uint64_t value[MD_MTL_TS_RING];         /* __atomic */
+    double   seconds[MD_MTL_TS_RING];
+} md_mtl_timing_t;
+
+static void md_mtl_timing_release(md_mtl_timing_t* t) {
+    if (t && __atomic_sub_fetch(&t->refs, 1, __ATOMIC_ACQ_REL) == 0) free(t);
+}
+
 typedef struct md_gpu_stream {
     md_gpu_device_t      device;
     md_gpu_stream_kind_t kind;
+    md_mtl_timing_t*     timing;          /* NULL: not timed */
     __unsafe_unretained id<MTLCommandQueue>          queue;
     __unsafe_unretained id<MTLSharedEvent>           timeline;
     __unsafe_unretained id<MTLCommandBuffer>         cmd;
@@ -1038,12 +1059,15 @@ static md_gpu_stream_t md_mtl_stream_create_internal(md_gpu_device_t dev, md_gpu
         MD_MTL_OWN(fence);
         s->fence = fence;
     }
+    s->timing = (md_mtl_timing_t*)calloc(1, sizeof(md_mtl_timing_t));
+    if (s->timing) s->timing->refs = 1;     /* without it the stream works as before, untimed */
 
     md_mutex_lock(&dev->device_mutex);
     md_gpu_stream_t* slot = (md_gpu_stream_t*)md_mtl_vec_push(&dev->streams, dev->alloc);
     if (slot) *slot = s;
     md_mutex_unlock(&dev->device_mutex);
     if (!slot) {
+        md_mtl_timing_release(s->timing);
         MD_MTL_RELEASE(s->fence);
         MD_MTL_RELEASE(s->timeline);
         MD_MTL_RELEASE(s->queue);
@@ -1083,6 +1107,21 @@ static bool md_mtl_stream_submit(md_gpu_stream_t s) {
 
     uint64_t signal_value = s->next_value;
     [s->cmd encodeSignalEvent:s->timeline value:signal_value];
+
+    /* Its GPU time, once it has run (md_gpu_sync_gpu_seconds) */
+    if (s->timing) {
+        md_mtl_timing_t* t = s->timing;
+        const uint64_t v = signal_value;
+        __atomic_add_fetch(&t->refs, 1, __ATOMIC_RELAXED);
+        [s->cmd addCompletedHandler:^(id<MTLCommandBuffer> cb) {
+            const uint32_t i = (uint32_t)(v % MD_MTL_TS_RING);
+            const CFTimeInterval t0 = cb.GPUStartTime, t1 = cb.GPUEndTime;
+            __atomic_store_n(&t->value[i], 0, __ATOMIC_RELEASE);
+            t->seconds[i] = (t0 > 0.0 && t1 >= t0) ? (double)(t1 - t0) : -1.0;
+            __atomic_store_n(&t->value[i], v, __ATOMIC_RELEASE);
+            md_mtl_timing_release(t);
+        }];
+    }
 
     md_mutex_lock(&s->device->queue_mutex);
     [s->cmd commit];
@@ -1162,9 +1201,23 @@ void md_gpu_sync_wait(md_gpu_sync_t sync) {
     md_mtl_event_wait(sync.stream->timeline, sync.value);
 }
 
+bool md_gpu_sync_gpu_seconds(md_gpu_sync_t sync, double* seconds) {
+    if (!md_gpu_sync_is_valid(sync) || !sync.stream->timing) return false;
+    md_mtl_timing_t* t = sync.stream->timing;
+    const uint32_t i = (uint32_t)(sync.value % MD_MTL_TS_RING);
+    if (__atomic_load_n(&t->value[i], __ATOMIC_ACQUIRE) != sync.value) return false;
+    const double sec = t->seconds[i];
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    if (__atomic_load_n(&t->value[i], __ATOMIC_RELAXED) != sync.value || sec < 0.0) return false;
+    if (seconds) *seconds = sec;
+    return true;
+}
+
 /* Free a stream's own objects. The stream must be idle. */
 static void md_mtl_stream_free(md_gpu_stream_t s) {
     md_gpu_device_t dev = s->device;
+    md_mtl_timing_release(s->timing);    /* the handlers still to run hold it */
+    s->timing = NULL;
     md_mtl_close_encoder(s, false);
     if (s->cmd) { MD_MTL_RELEASE(s->cmd); s->cmd = nil; }
     md_mtl_arena_free(dev, &s->arena);

@@ -556,6 +556,7 @@ static bool gto_int_build_gaussians(md_gto_int_charges_t* out, const md_gto_int_
     const double scale  = desc->density_scale != 0.0 ? desc->density_scale : -1.0;
     const double threshold = MD_MAX(desc->threshold, 0.0);
     const double* D = desc->density_matrix;
+    const double* Dp = D ? NULL : desc->density_packed;    // packed upper triangle (row mu: columns mu..N-1)
     const size_t N = md_gto_basis_num_ao(basis);
 
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
@@ -646,7 +647,11 @@ static bool gto_int_build_gaussians(md_gto_int_charges_t* out, const md_gto_int_
 
     double dmax2 = 0.0;   // bounds |D_mu,nu + D_nu,mu|
     if (threshold > 0.0) {
-        for (size_t i = 0; i < N * N; ++i) dmax2 = MD_MAX(dmax2, fabs(D[i]));
+        if (Dp) {
+            for (size_t i = 0; i < N * (N + 1) / 2; ++i) dmax2 = MD_MAX(dmax2, fabs(Dp[i]));
+        } else {
+            for (size_t i = 0; i < N * N; ++i) dmax2 = MD_MAX(dmax2, fabs(D[i]));
+        }
         dmax2 *= 2.0;
     }
 
@@ -703,7 +708,15 @@ static bool gto_int_build_gaussians(md_gto_int_charges_t* out, const md_gto_int_
                     const size_t mu = ao_off[sa] + ca;
                     for (uint32_t cb = 0; cb < nb; ++cb) {
                         const size_t nu = ao_off[sb] + cb;
-                        const double d = same ? D[mu * N + nu] : (D[mu * N + nu] + D[nu * N + mu]);
+                        double d;
+                        if (Dp) {
+                            // the symmetric part P: P + P is D_mu,nu + D_nu,mu to the bit (a sum halved, then doubled)
+                            const size_t lo = MD_MIN(mu, nu), hi = MD_MAX(mu, nu);
+                            const double p = Dp[lo * (2 * N - lo + 1) / 2 + (hi - lo)];
+                            d = same ? p : p + p;
+                        } else {
+                            d = same ? D[mu * N + nu] : (D[mu * N + nu] + D[nu * N + mu]);
+                        }
                         w[ca][cb] = d;
                         wmax = MD_MAX(wmax, fabs(d));
                     }
@@ -882,7 +895,7 @@ bool md_gto_int_charges_init(md_gto_int_charges_t* out, const md_gto_int_charges
     }
     md_memset(out, 0, sizeof(*out));
 
-    const bool has_density = desc->basis && desc->density_matrix && desc->basis->num_shells > 0;
+    const bool has_density = desc->basis && (desc->density_matrix || desc->density_packed) && desc->basis->num_shells > 0;
     if (has_density) {
         if (!desc->atom_xyz) {
             MD_LOG_ERROR("md_gto_int_charges_init: a density was given without atom positions");

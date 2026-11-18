@@ -92,6 +92,7 @@ set(MD_CORE_FILES
   src/core/md_geom.c
   src/core/md_geom.h
   src/core/md_gpu.h
+  src/core/md_gpu_pieces.h
   src/core/md_grid.c
   src/core/md_grid.h
   src/core/md_handle.c
@@ -363,18 +364,26 @@ set(GTO_SLANG_FILES
   src/shaders/gto/eval_gto_density.slang
   src/shaders/gto/eval_gto_localization.slang
   src/shaders/gto/eval_gto_mo.slang
-  src/shaders/gto/eval_gto_density_gemm2_128x32.slang
-  src/shaders/gto/eval_gto_density_gemm2_128x64.slang
   src/shaders/gto/eval_gto_mo_shell_v4_m1.slang
   src/shaders/gto/eval_gto_mo_shell_v4_m8.slang
   src/shaders/gto/eval_gto_mo_gemm_128x32.slang
   # the same for a grid of one layer (the image of a plane): blocks of 32x16x1 voxels
   src/shaders/gto/eval_gto_localization_2d.slang
-  src/shaders/gto/eval_gto_density_gemm2_128x32_2d.slang
-  src/shaders/gto/eval_gto_density_gemm2_128x64_2d.slang
   src/shaders/gto/eval_gto_mo_shell_v4_m1_2d.slang
   src/shaders/gto/eval_gto_mo_shell_v4_m8_2d.slang
   src/shaders/gto/eval_gto_mo_gemm_128x32_2d.slang
+  # the density's GEMM pass on the GEMM core (gto_gemm_core.slang); the orbitals' (eval_gto_mo_gemm) is on it too
+  src/shaders/gto/eval_gto_density_core_128x32.slang
+  src/shaders/gto/eval_gto_density_core_128x64.slang
+  src/shaders/gto/eval_gto_density_core_128x32_2d.slang
+  src/shaders/gto/eval_gto_density_core_128x64_2d.slang
+)
+# ELF and LOL on the GEMM core: the GEMM pass (main) and the values of its terms (finish_main)
+set(GTO_LOC_CORE_SLANG_FILES
+  src/shaders/gto/eval_gto_localization_core_128x32.slang
+  src/shaders/gto/eval_gto_localization_core_128x64.slang
+  src/shaders/gto/eval_gto_localization_core_128x32_2d.slang
+  src/shaders/gto/eval_gto_localization_core_128x64_2d.slang
 )
 
 set(GEN_FILES)
@@ -401,6 +410,8 @@ if (MD_ENABLE_GPU)
 
   # Backend-independent sub-allocator behind md_gpu_malloc.
   list(APPEND MD_CORE_FILES src/core/md_gpu_tlsf.c)
+  # Long evaluations as bounded submissions, sized by their measured GPU time.
+  list(APPEND MD_CORE_FILES src/core/md_gpu_pieces.c)
 
   include(cmake/ResolveSlang.cmake)
   resolve_slang(VERSION 2026.8.1)
@@ -690,10 +701,11 @@ if (MD_ENABLE_HDF5 AND NOT MD_HAS_PARENT AND (TARGET md_unittest OR TARGET md_be
   endforeach()
 endif()
 
-set(SHADER_FILES ${GL_SHADER_FILES} ${TOPO_SLANG_FILES} ${TOPO_GTO_SLANG_FILE} ${GTO_SLANG_FILES}
+set(SHADER_FILES ${GL_SHADER_FILES} ${TOPO_SLANG_FILES} ${TOPO_GTO_SLANG_FILE} ${GTO_SLANG_FILES} ${GTO_LOC_CORE_SLANG_FILES}
+    src/shaders/gto/gto_gemm_core.slang src/shaders/gto/eval_gto_density_core.slang src/shaders/gto/eval_gto_localization_core.slang
     src/shaders/gto/gto_common.slang src/shaders/gto/gto_gemm_args.slang
     src/shaders/gto/gto_dmat_common.slang src/shaders/gto/gto_dmat.slang src/shaders/gto/gto_screen.slang
-    src/shaders/gto/eval_gto_density_gemm.slang src/shaders/gto/eval_gto_density_gemm2.slang
+    src/shaders/gto/eval_gto_density_gemm.slang
     src/shaders/gto/eval_gto_mo_shell.slang src/shaders/gto/eval_gto_mo_gemm.slang
     src/shaders/gto/eval_gto_int_potential.slang src/shaders/gto/gto_int_hermite.slang
     src/shaders/gto/eval_gto_int_potential_xyz.slang src/shaders/gto/gto_int_potential_common.slang
@@ -751,6 +763,7 @@ if (MD_ENABLE_GPU)
     SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/${TOPO_GTO_SLANG_FILE}
     PRECISE_MATH      # the rounding margins of the certificate assume IEEE + - * (no fast-math rewrites)
     ENTRIES   ao_main gemm_main epi_main decide_main trace_main
+    DEPENDS   ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_gemm_core.slang
   )
   # md_topo.c includes one aggregate header rather than six.
   configure_file(${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/topo_gpu_shaders.inl
@@ -761,11 +774,13 @@ if (MD_ENABLE_GPU)
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_dmat_common.slang
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_screen.slang
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_gemm_args.slang
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_density_gemm2.slang
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_mo_shell.slang
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_mo_gemm.slang
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_localization.slang
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_density_gemm.slang
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_gemm_core.slang
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_density_core.slang
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_localization_core.slang
   )
   foreach(GTO_SRC ${GTO_SLANG_FILES})
     get_filename_component(GTO_STEM ${GTO_SRC} NAME_WE)
@@ -777,19 +792,29 @@ if (MD_ENABLE_GPU)
       DEPENDS   ${GTO_SLANG_INCLUDES}
     )
   endforeach()
-  # The counting, Phi and D_b-gather passes of the two-pass (GEMM) path.
+  foreach(GTO_SRC ${GTO_LOC_CORE_SLANG_FILES})
+    get_filename_component(GTO_STEM ${GTO_SRC} NAME_WE)
+    compile_gpu_shaders(${GTO_STEM}_shaders.inl
+      TARGET    mdlib
+      NAMESPACE md_shader
+      SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/${GTO_SRC}
+      ENTRIES   main finish_main
+      DEPENDS   ${GTO_SLANG_INCLUDES}
+    )
+  endforeach()
+  # The counting, Phi and D_b-gather passes of the two-pass (GEMM) path; Phi with gradients for ELF and LOL.
   compile_gpu_shaders(eval_gto_density_gemm_shaders.inl
     TARGET    mdlib
     NAMESPACE md_shader
     SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_density_gemm.slang
-    ENTRIES   count_main phi_main dgather_main
+    ENTRIES   count_main phi_main dgather_main phi_grad_main
     DEPENDS   ${GTO_SLANG_INCLUDES}
   )
   compile_gpu_shaders(eval_gto_density_gemm_2d_shaders.inl
     TARGET    mdlib
     NAMESPACE md_shader
     SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_density_gemm_2d.slang
-    ENTRIES   count_main phi_main dgather_main
+    ENTRIES   count_main phi_main dgather_main phi_grad_main
     DEPENDS   ${GTO_SLANG_INCLUDES}
   )
   # md_gto_gpu_dmat: a density matrix in tiles, built from orbitals
@@ -797,7 +822,8 @@ if (MD_ENABLE_GPU)
     TARGET    mdlib
     NAMESPACE md_shader
     SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_dmat.slang
-    ENTRIES   dmat_tiles
+    ENTRIES   dmat_tiles_core
+    DEPENDS   ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_gemm_core.slang
   )
   # md_gto_int: the potential of a Hermite charge distribution. One entry point per Hermite order,
   # so each kernel is sized for its own unrolled recursion, and the resolve pass.
@@ -848,6 +874,7 @@ if (MD_ENABLE_GPU)
               iso_cells iso_quads iso_relax iso_newton iso_eval_orbital iso_project_list_f1
               iso_bucket_count iso_bucket_scan iso_bucket_vertices iso_bucket_triangles
               iso_dmat_rows iso_points_load iso_points_store
+    DEPENDS   ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_gemm_core.slang
   )
   # md_gto.c includes one aggregate header rather than two.
   configure_file(${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto_gpu_shaders.inl

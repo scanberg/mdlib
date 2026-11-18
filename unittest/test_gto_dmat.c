@@ -10,6 +10,9 @@
 //   gto_localization.matches_cpu      ELF and LOL by their grid kernel (md_gto_gpu_localization_launch) against
 //                                     md_qm_elf_evaluate in double at the voxels: h2o and mol (closed shells; the
 //                                     packed matrix and a dmat), the OH radical (UHF, open shell)
+//   gto_localization.gemm_matches_reference  ELF and LOL on the GEMM core against the reference kernel and the cpu:
+//                                     h2o, mol (packed and dmat), the OH radical; a cube and a plane; in pieces as
+//                                     a job, bitwise the launch
 //   gto_gpu.plane_matches_volume      a grid of one layer (the 2D kernels, 32x16x1) against the first layer of the
 //                                     same grid 8 deep (3D, 8x8x8): density, orbitals, ELF and LOL
 //   gto_localization.matches_independent  ELF and LOL against PySCF's AOs with Multiwfn's formulas
@@ -517,6 +520,7 @@ static uint64_t loc_piece_work = 0;  // the work of a submission (0: the default
 static bool loc_as_job = false;      // as a job (md_gto_gpu_localization_job_begin), polled without waiting
 static int loc_job_polls = 0;
 static float loc_job_progress = 0.0f;
+static md_gto_gpu_localization_algo_t loc_algo = MD_GTO_GPU_LOCALIZATION_ALGO_REFERENCE;  // not the default: the env picks that
 
 static bool loc_eval_gpu(float* out, const loc_src_t* s, const md_grid_t* grid, md_gto_gpu_localization_t kind, bool use_dmat, double rho_min, double* out_seconds) {
     md_gpu_device_t dev = md_gpu_device_create(NULL);
@@ -532,6 +536,7 @@ static bool loc_eval_gpu(float* out, const loc_src_t* s, const md_grid_t* grid, 
     md_gto_gpu_localization_desc_t desc = {
         .basis = basis, .atom_xyz = atoms, .num_spins = (uint32_t)s->num_spins, .kind = kind, .rho_min = rho_min,
         .d_min = loc_d_min, .grid = grid, .sample_offset = {0.5f, 0.5f, 0.5f}, .piece_work = loc_piece_work,
+        .algorithm = loc_algo,
     };
     md_gpu_addr_t coeff[2] = {0, 0};
     for (int k = 0; k < s->num_spins; ++k) {
@@ -552,6 +557,15 @@ static bool loc_eval_gpu(float* out, const loc_src_t* s, const md_grid_t* grid, 
         .width = (uint32_t)grid->dim[0], .height = (uint32_t)grid->dim[1], .depth_or_layers = (uint32_t)grid->dim[2],
     });
     md_gpu_mem_t rb = md_gpu_malloc(st, MD_GPU_MEM_HOST_READ, sizeof(float) * n);
+    // filled with NaN first, so that a voxel the evaluation leaves unwritten shows
+    if (desc.out_tex && rb.cpu) {
+        md_gpu_addr_t nan_buf = md_gpu_malloc(st, MD_GPU_MEM_DEVICE, sizeof(float) * n).gpu;
+        if (nan_buf) {
+            md_gpu_memset(st, nan_buf, 0xFF, sizeof(float) * n);
+            md_gpu_copy_to_texture(st, desc.out_tex, NULL, nan_buf);
+            md_gpu_free(st, nan_buf);
+        }
+    }
     // timed: a second launch, the kernel made by the first
     if (out_seconds && basis && atoms && desc.out_tex) md_gto_gpu_localization_launch(st, &desc);
     md_gpu_stream_sync(st);
@@ -690,6 +704,96 @@ UTEST(gto_localization, matches_cpu) {
             }
         }
         free(g); free(elf); free(lol); free(pts);
+        loc_free(&s);
+    }
+}
+// ELF and LOL by the GEMM core (MD_GTO_GPU_LOCALIZATION_ALGO_GEMM: Phi with gradients, a symmetric GEMM of four rows a
+// voxel per spin, then the finish) against the reference kernel and md_qm_elf_evaluate in double: h2o and mol (closed
+// shells; packed and dmat), the OH radical (UHF, two spins); a grid of one layer (the 2D kernels); and in pieces of a
+// few blocks as a job, bitwise the launch.
+UTEST(gto_localization, gemm_matches_reference) {
+    static const char* files[] = {"h2o.h5", "mol.h5", "oh_631gs_uhf.molden"};
+    const double rho_min = 1.0e-4;
+    printf("  (" MD_GTO_GPU_GEMM_CORE_REVISION ")\n");
+    for (int fi = 0; fi < 3; ++fi) {
+        loc_src_t s;
+        if (!loc_load(&s, files[fi])) { loc_free(&s); ASSERT_TRUE(false); }
+        double c[3] = {0, 0, 0};
+        for (size_t a = 0; a < s.num_atoms; ++a) for (int k = 0; k < 3; ++k) c[k] += s.xyz[3 * a + k] / (double)s.num_atoms;
+        for (int plane = 0; plane < 2; ++plane) {
+            // a cube of 28^3 voxels of 0.35 bohr about the molecule's centre, or a plane of 70x52 voxels through it
+            const int dx = plane ? 70 : 28, dy = plane ? 52 : 28, dz = plane ? 1 : 28;
+            const float h = 0.35f;
+            const md_grid_t grid = {
+                .orientation = md_float3x3_ident(),
+                .origin  = md_float3_set((float)c[0] - 0.5f * h * dx, (float)c[1] - 0.5f * h * dy, (float)c[2] - 0.5f * h * dz),
+                .spacing = md_float3_set(h, h, h),
+                .dim     = { dx, dy, dz },
+            };
+            const size_t n = (size_t)dx * dy * dz;
+            float* pts = (float*)malloc(sizeof(float) * 3 * n);
+            for (int z = 0; z < dz; ++z) for (int y = 0; y < dy; ++y) for (int x = 0; x < dx; ++x) {
+                const size_t i = ((size_t)z * dy + y) * dx + x;
+                pts[3 * i + 0] = grid.origin.x + ((float)x + 0.5f) * h;
+                pts[3 * i + 1] = grid.origin.y + ((float)y + 0.5f) * h;
+                pts[3 * i + 2] = grid.origin.z + ((float)z + 0.5f) * h;
+            }
+            double* elf = (double*)malloc(sizeof(double) * n);
+            double* lol = (double*)malloc(sizeof(double) * n);
+            ASSERT_EQ(md_qm_elf_evaluate(elf, lol, pts, n, 0, &s.t.sys, s.xyz, 0, rho_min, 0.0), n);
+            float* gr = (float*)malloc(sizeof(float) * n);
+            float* gg = (float*)malloc(sizeof(float) * n);
+            float* gj = (float*)malloc(sizeof(float) * n);
+            for (int kind = 0; kind < 2; ++kind) {
+                for (int dmat = 0; dmat < 2; ++dmat) {
+                    const md_gto_gpu_localization_t k = kind ? MD_GTO_GPU_LOL : MD_GTO_GPU_ELF;
+                    loc_algo = MD_GTO_GPU_LOCALIZATION_ALGO_REFERENCE;
+                    if (!loc_eval_gpu(gr, &s, &grid, k, dmat != 0, rho_min, NULL)) {
+                        free(gr); free(gg); free(gj); free(elf); free(lol); free(pts); loc_free(&s);
+                        loc_algo = MD_GTO_GPU_LOCALIZATION_ALGO_REFERENCE;
+                        UTEST_SKIP("no GPU device");
+                    }
+                    loc_algo = MD_GTO_GPU_LOCALIZATION_ALGO_GEMM;
+                    ASSERT_TRUE(loc_eval_gpu(gg, &s, &grid, k, dmat != 0, rho_min, NULL));
+                    // in pieces of about two blocks' GEMM, as a job polled without waiting
+                    loc_piece_work = (uint64_t)1 << 22;
+                    loc_as_job = true;
+                    ASSERT_TRUE(loc_eval_gpu(gj, &s, &grid, k, dmat != 0, rho_min, NULL));
+                    const int polls = loc_job_polls;
+                    const float progress = loc_job_progress;
+                    loc_piece_work = 0;
+                    loc_as_job = false;
+                    loc_algo = MD_GTO_GPU_LOCALIZATION_ALGO_REFERENCE;
+
+                    const double* ref = kind ? lol : elf;
+                    double worst_cpu = 0.0, worst_ref = 0.0, sum_cpu = 0.0;
+                    size_t nz = 0, edge = 0, nans = 0, job_differ = 0;
+                    for (size_t i = 0; i < n; ++i) {
+                        job_differ += memcmp(&gj[i], &gg[i], sizeof(float)) != 0;
+                        if (!(gg[i] == gg[i])) { ++nans; continue; }
+                        if (ref[i] == 0.0 && gg[i] == 0.0f) continue;
+                        // the rho_min floor, in float on one side and double on the other: not compared
+                        if ((ref[i] == 0.0) != (gg[i] == 0.0f) || (gr[i] == 0.0f) != (gg[i] == 0.0f)) { ++edge; continue; }
+                        const double d = fabs((double)gg[i] - ref[i]);
+                        worst_cpu = fmax(worst_cpu, d);
+                        worst_ref = fmax(worst_ref, fabs((double)gg[i] - (double)gr[i]));
+                        sum_cpu += d;
+                        ++nz;
+                    }
+                    printf("  %-20s %s %s %-6s: %zu voxels, GEMM - cpu max %.2e mean %.2e, GEMM - reference kernel max %.2e; %zu at the floor, %zu unwritten; job (%d polls, progress %.3f): %zu differ\n",
+                           files[fi], plane ? "plane" : "cube ", kind ? "LOL" : "ELF", dmat ? "dmat" : "packed", nz, worst_cpu, nz ? sum_cpu / nz : 0.0,
+                           worst_ref, edge, nans, polls, progress, job_differ);
+                    EXPECT_EQ(nans, (size_t)0);
+                    EXPECT_GT(nz, n / 20);
+                    // as the reference kernel's bounds against the cpu (gto_localization.matches_cpu)
+                    EXPECT_LT(worst_cpu, kind ? 2.0e-5 : 5.0e-4);
+                    EXPECT_LT(edge, n / 1000 + 1);
+                    EXPECT_EQ(job_differ, (size_t)0);
+                    EXPECT_EQ(progress, 1.0f);
+                }
+            }
+            free(gr); free(gg); free(gj); free(elf); free(lol); free(pts);
+        }
         loc_free(&s);
     }
 }
@@ -1083,49 +1187,54 @@ UTEST(gto_localization, tails) {
             .dim     = { dim, dim, dim },
         };
         const size_t n = (size_t)dim * dim * dim;
-        float* elf_raw = (float*)malloc(sizeof(float) * n);
-        float* elf_min = (float*)malloc(sizeof(float) * n);
-        float* lol = (float*)malloc(sizeof(float) * n);
-        loc_d_min = 0.0;
-        bool ok = loc_eval_gpu(elf_raw, &s, &grid, MD_GTO_GPU_ELF, true, 0.0, NULL) && loc_eval_gpu(lol, &s, &grid, MD_GTO_GPU_LOL, true, 0.0, NULL);
-        loc_d_min = MD_QM_ELF_D_MIN;
-        ok = ok && loc_eval_gpu(elf_min, &s, &grid, MD_GTO_GPU_ELF, true, 0.0, NULL);
-        loc_d_min = 0.0;
-        if (!ok) { free(elf_raw); free(elf_min); free(lol); loc_free(&s); UTEST_SKIP("no GPU device"); }
+        // the reference kernel, then the GEMM core's
+        for (int alg = 0; alg < 2; ++alg) {
+            loc_algo = alg ? MD_GTO_GPU_LOCALIZATION_ALGO_GEMM : MD_GTO_GPU_LOCALIZATION_ALGO_REFERENCE;
+            float* elf_raw = (float*)malloc(sizeof(float) * n);
+            float* elf_min = (float*)malloc(sizeof(float) * n);
+            float* lol = (float*)malloc(sizeof(float) * n);
+            loc_d_min = 0.0;
+            bool ok = loc_eval_gpu(elf_raw, &s, &grid, MD_GTO_GPU_ELF, true, 0.0, NULL) && loc_eval_gpu(lol, &s, &grid, MD_GTO_GPU_LOL, true, 0.0, NULL);
+            loc_d_min = MD_QM_ELF_D_MIN;
+            ok = ok && loc_eval_gpu(elf_min, &s, &grid, MD_GTO_GPU_ELF, true, 0.0, NULL);
+            loc_d_min = 0.0;
+            if (!ok) { free(elf_raw); free(elf_min); free(lol); loc_free(&s); loc_algo = MD_GTO_GPU_LOCALIZATION_ALGO_REFERENCE; UTEST_SKIP("no GPU device"); }
 
-        double* ao = (double*)malloc(sizeof(double) * 4 * s.num_ao);
-        enum { NB = 14 };   // decades 1e1 .. 1e-12 and below
-        double val[NB] = {0}, val_min[NB] = {0}, raw[NB] = {0}, rawsum[NB] = {0}, ratio[NB] = {0}, err_min[NB] = {0};
-        size_t cnt[NB] = {0};
-        double worst_min = 0, worst_lol = 0, worst_ratio = 0;
-        for (size_t i = 0; i < n; i += 3) {
-            const size_t x = i % dim, y = (i / dim) % dim, z = i / ((size_t)dim * dim);
-            const float p[3] = { grid.origin.x + ((float)x + 0.5f) * h, grid.origin.y + ((float)y + 0.5f) * h, grid.origin.z + ((float)z + 0.5f) * h };
-            double e, em, l, rho, noise;
-            loc_ref_dmat(&e, &em, &l, &rho, &noise, &s, p, ao);
-            const double r = fabs((double)elf_raw[i] - e);
-            const double dm = fabs((double)elf_min[i] - em);
-            worst_min = fmax(worst_min, dm);
-            worst_lol = fmax(worst_lol, fabs((double)lol[i] - l));
-            int b = rho > 0 ? (int)floor(1.0 - log10(rho)) : NB - 1;
-            b = b < 0 ? 0 : (b >= NB ? NB - 1 : b);
-            // where the noise is still below 0.2 (beyond it the values are noise)
-            const double q = noise < 0.2 ? fmax(r - 1.0e-4, 0.0) / noise : 0.0;
-            worst_ratio = fmax(worst_ratio, q);
-            val[b] += e; val_min[b] += em; raw[b] = fmax(raw[b], r); rawsum[b] += r; ratio[b] = fmax(ratio[b], q);
-            err_min[b] = fmax(err_min[b], dm); cnt[b]++;
+            double* ao = (double*)malloc(sizeof(double) * 4 * s.num_ao);
+            enum { NB = 14 };   // decades 1e1 .. 1e-12 and below
+            double val[NB] = {0}, val_min[NB] = {0}, raw[NB] = {0}, rawsum[NB] = {0}, ratio[NB] = {0}, err_min[NB] = {0};
+            size_t cnt[NB] = {0};
+            double worst_min = 0, worst_lol = 0, worst_ratio = 0;
+            for (size_t i = 0; i < n; i += 3) {
+                const size_t x = i % dim, y = (i / dim) % dim, z = i / ((size_t)dim * dim);
+                const float p[3] = { grid.origin.x + ((float)x + 0.5f) * h, grid.origin.y + ((float)y + 0.5f) * h, grid.origin.z + ((float)z + 0.5f) * h };
+                double e, em, l, rho, noise;
+                loc_ref_dmat(&e, &em, &l, &rho, &noise, &s, p, ao);
+                const double r = fabs((double)elf_raw[i] - e);
+                const double dm = fabs((double)elf_min[i] - em);
+                worst_min = fmax(worst_min, dm);
+                worst_lol = fmax(worst_lol, fabs((double)lol[i] - l));
+                int b = rho > 0 ? (int)floor(1.0 - log10(rho)) : NB - 1;
+                b = b < 0 ? 0 : (b >= NB ? NB - 1 : b);
+                // where the noise is still below 0.2 (beyond it the values are noise)
+                const double q = noise < 0.2 ? fmax(r - 1.0e-4, 0.0) / noise : 0.0;
+                worst_ratio = fmax(worst_ratio, q);
+                val[b] += e; val_min[b] += em; raw[b] = fmax(raw[b], r); rawsum[b] += r; ratio[b] = fmax(ratio[b], q);
+                err_min[b] = fmax(err_min[b], dm); cnt[b]++;
+            }
+            printf("  %-20s %-9s with d_min within %.1e; without, error / noise at most %.1f; LOL within %.1e (%s)\n",
+                   files[fi], alg ? "GEMM" : "reference", worst_min, worst_ratio, worst_lol, alg ? MD_GTO_GPU_GEMM_CORE_REVISION : MD_GTO_GPU_LOCALIZATION_REVISION);
+            printf("    rho     voxels  ELF    with d_min  max err   mean err  err/noise  max err with d_min\n");
+            for (int b = 0; b < NB; ++b) if (cnt[b]) {
+                printf("    1e%+03d %6zu  %.3f  %.3f       %.2e  %.2e  %6.1f     %.2e\n", 1 - b, cnt[b], val[b] / cnt[b], val_min[b] / cnt[b],
+                       raw[b], rawsum[b] / cnt[b], ratio[b], err_min[b]);
+            }
+            EXPECT_LT(worst_ratio, 30.0);
+            EXPECT_LT(worst_min, 1.0e-3);
+            EXPECT_LT(worst_lol, 1.0e-5);
+            free(ao); free(elf_raw); free(elf_min); free(lol);
         }
-        printf("  %-20s with d_min within %.1e; without, error / noise at most %.1f; LOL within %.1e (" MD_GTO_GPU_LOCALIZATION_REVISION ")\n",
-               files[fi], worst_min, worst_ratio, worst_lol);
-        printf("    rho     voxels  ELF    with d_min  max err   mean err  err/noise  max err with d_min\n");
-        for (int b = 0; b < NB; ++b) if (cnt[b]) {
-            printf("    1e%+03d %6zu  %.3f  %.3f       %.2e  %.2e  %6.1f     %.2e\n", 1 - b, cnt[b], val[b] / cnt[b], val_min[b] / cnt[b],
-                   raw[b], rawsum[b] / cnt[b], ratio[b], err_min[b]);
-        }
-        EXPECT_LT(worst_ratio, 30.0);
-        EXPECT_LT(worst_min, 1.0e-3);
-        EXPECT_LT(worst_lol, 1.0e-5);
-        free(ao); free(elf_raw); free(elf_min); free(lol);
+        loc_algo = MD_GTO_GPU_LOCALIZATION_ALGO_REFERENCE;
         loc_free(&s);
     }
 }

@@ -98,6 +98,9 @@ written on one and read on another needs no queue-family ownership transfer.
 #define MD_VK_BINDING_COUNT          3u   /* how many of the above we declare */
 
 #define MD_VK_MAX_QUEUES_PER_FAMILY  8u
+/* Submissions a stream keeps the GPU times of (md_gpu_sync_gpu_seconds): two
+   timestamps each, in a ring of query pairs */
+#define MD_VK_TS_RING                256u
 #define MD_VK_MAX_TEXTURE_SLOTS   4096u   /* sampled + storage views share it */
 #define MD_VK_MAX_SAMPLERS         256u
 #define MD_VK_ARENA_PAGE_SIZE   (256u * 1024u)
@@ -378,6 +381,14 @@ typedef struct md_gpu_stream {
     uint64_t             upload_src_addr;
     size_t               upload_size;
 
+    /* The GPU time of the last MD_VK_TS_RING submissions: a pair of timestamps
+       per submission, written at the top of its command buffer and at its end,
+       in slot (value % MD_VK_TS_RING); ts_value names the submission a slot
+       holds. VK_NULL_HANDLE where the queue cannot time. */
+    VkQueryPool          ts_pool;
+    uint64_t             ts_mask;          /* the valid bits of a timestamp */
+    uint64_t             ts_value[MD_VK_TS_RING];
+
     bool                 is_default;
     char                 label[64];
 } md_gpu_stream;
@@ -542,6 +553,10 @@ typedef struct md_gpu_device {
 
     uint32_t compute_family, transfer_family, graphics_family;   /* graphics: UINT32_MAX if none */
     bool     transfer_can_compute;
+    /* Timestamps: the valid bits of each family's (0: the family cannot time)
+       and the nanoseconds of a tick */
+    uint32_t ts_bits_compute, ts_bits_transfer, ts_bits_graphics;
+    float    ts_period;
     /* Families a resource must be shared across (CONCURRENT when > 1). */
     uint32_t share_families[3];
     uint32_t share_family_count;
@@ -1555,6 +1570,14 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
         md_vk_fail("no compute-capable queue family");
         goto fail_instance;
     }
+    /* What each family's timestamps hold: the GPU time of a submission
+       (md_gpu_sync_gpu_seconds), where the family and the device can time */
+    dev->ts_period = dev->props.limits.timestampPeriod;
+    if (dev->ts_period > 0.0f) {
+        dev->ts_bits_compute  = qfs[dev->compute_family].timestampValidBits;
+        dev->ts_bits_transfer = dev->transfer_family < qf_count ? qfs[dev->transfer_family].timestampValidBits : 0;
+        dev->ts_bits_graphics = dev->graphics_family < qf_count ? qfs[dev->graphics_family].timestampValidBits : 0;
+    }
     md_free(alloc, qfs, qf_count * sizeof(VkQueueFamilyProperties));
 
     /* ---- logical device ---- */
@@ -2056,6 +2079,24 @@ static md_gpu_stream_t md_vk_stream_create_internal(md_gpu_device_t dev, md_gpu_
         return NULL;
     }
 
+    /* The submissions' GPU times. A query is reset in the command buffer that
+       writes it, which a transfer-only family cannot do: those are not timed.
+       Without the pool the stream works as before, untimed. */
+    {
+        const uint32_t bits = kind == MD_GPU_STREAM_TRANSFER ? dev->ts_bits_transfer
+                            : kind == MD_GPU_STREAM_GRAPHICS ? dev->ts_bits_graphics : dev->ts_bits_compute;
+        if (bits > 0 && s->can_compute) {
+            VkQueryPoolCreateInfo qpci = {VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+            qpci.queryType  = VK_QUERY_TYPE_TIMESTAMP;
+            qpci.queryCount = 2 * MD_VK_TS_RING;
+            if (vkCreateQueryPool(dev->device, &qpci, NULL, &s->ts_pool) == VK_SUCCESS) {
+                s->ts_mask = bits >= 64 ? ~0ull : ((1ull << bits) - 1ull);
+            } else {
+                s->ts_pool = VK_NULL_HANDLE;
+            }
+        }
+    }
+
     md_mutex_lock(&dev->device_mutex);
     md_gpu_stream_t* slot = (md_gpu_stream_t*)md_vk_vec_push(&dev->streams, dev->alloc);
     if (slot) *slot = s;
@@ -2129,6 +2170,13 @@ static bool md_vk_stream_ensure_cmd(md_gpu_stream_t s) {
 
     s->open     = found->cmd;
     s->has_work = false;
+    /* The GPU time of the submission this buffer becomes, which signals
+       next_value: from here to its end (md_vk_stream_submit) */
+    if (s->ts_pool) {
+        const uint32_t q = 2u * (uint32_t)(s->next_value % MD_VK_TS_RING);
+        vkCmdResetQueryPool(s->open, s->ts_pool, q, 2);
+        vkCmdWriteTimestamp2(s->open, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, s->ts_pool, q);
+    }
     /* If this stream has already submitted, the first operation recorded here
        still needs a dependency on that earlier work. Batches submitted to one
        queue may overlap -- submission order alone creates no memory
@@ -2300,9 +2348,14 @@ static bool md_vk_stream_submit(md_gpu_stream_t s) {
         return true;
     }
 
-    if (!md_vk_check(vkEndCommandBuffer(s->open), "vkEndCommandBuffer")) return false;
-
     uint64_t signal_value = s->next_value;
+    if (s->ts_pool) {
+        const uint32_t slot = (uint32_t)(signal_value % MD_VK_TS_RING);
+        vkCmdWriteTimestamp2(s->open, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, s->ts_pool, 2u * slot + 1u);
+        s->ts_value[slot] = signal_value;
+    }
+
+    if (!md_vk_check(vkEndCommandBuffer(s->open), "vkEndCommandBuffer")) return false;
 
     VkCommandBufferSubmitInfo cbsi = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
     cbsi.commandBuffer = s->open;
@@ -2433,6 +2486,21 @@ bool md_gpu_sync_is_complete(md_gpu_sync_t sync) {
     return md_vk_stream_completed(sync.stream) >= sync.value;
 }
 
+bool md_gpu_sync_gpu_seconds(md_gpu_sync_t sync, double* seconds) {
+    if (!md_gpu_sync_is_valid(sync)) return false;
+    md_gpu_stream_t s = sync.stream;
+    if (!s->ts_pool) return false;
+    const uint32_t slot = (uint32_t)(sync.value % MD_VK_TS_RING);
+    if (s->ts_value[slot] != sync.value) return false;      /* an older submission's: its slot was reused */
+    if (md_vk_stream_completed(s) < sync.value) return false;
+    uint64_t ts[2] = {0, 0};
+    const VkResult r = vkGetQueryPoolResults(s->device->device, s->ts_pool, 2u * slot, 2, sizeof(ts), ts, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT);
+    if (r != VK_SUCCESS) return false;
+    const uint64_t ticks = ((ts[1] & s->ts_mask) - (ts[0] & s->ts_mask)) & s->ts_mask;
+    if (seconds) *seconds = (double)ticks * (double)s->device->ts_period * 1.0e-9;
+    return true;
+}
+
 void md_gpu_sync_wait(md_gpu_sync_t sync) {
     if (!md_gpu_sync_is_valid(sync)) return;
     VkSemaphoreWaitInfo wi = {VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
@@ -2457,6 +2525,7 @@ static void md_vk_stream_free(md_gpu_stream_t s) {
     md_vk_vec_free(&s->waits, dev->alloc);
     md_vk_arena_free(dev, &s->arena);
     md_vk_temp_free_all(s);
+    if (s->ts_pool) vkDestroyQueryPool(dev->device, s->ts_pool, NULL);
     vkDestroyCommandPool(dev->device, s->cmd_pool, NULL);
     vkDestroySemaphore(dev->device, s->timeline, NULL);
     md_free(dev->alloc, s, sizeof(*s));

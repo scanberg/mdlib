@@ -3771,6 +3771,7 @@ UTEST(gto_iso_gpu_lib, benchmark) {
         {"tq.scf.results.h5",   "tq 16 MOs",  -16,       0.05},
     };
     printf("\n  device: %s, %s | display meshes (project 8, relax 3) | median of %d\n", info.name, info.driver, reps);
+    printf("  isosurface GEMMs: " MD_GTO_GPU_GEMM_CORE_REVISION "\n");
     printf("  %-12s %5s | %4s %6s %6s %7s | %8s %7s %7s %7s %7s %7s %7s | %9s %8s %13s", "field", "h", "fn", "bricks", "slots", "verts",
         "total ms", "octree", "corners", "nets", "project", "relax", "output", "dense ms", "dense/tot", "dense grid");
     if (with_cpu) printf(" | %8s", "CPU s");
@@ -3824,7 +3825,7 @@ UTEST(gto_iso_gpu_lib, benchmark) {
             if (!md_gto_iso_gpu_extract(g.s, set, &gd, &gm)) { printf("  %-12s %5.3f (failed)\n", bc->name, h); continue; }
             md_gto_iso_gpu_mesh_free(g.s, &gm);
             double tot[64], st[MD_GTO_ISO_GPU_STAGE_COUNT][64];
-            const int nr = reps < 64 ? reps : 64;
+            const int nr = reps < 64 ? (reps > 0 ? reps : 1) : 64;
             for (int r = 0; r < nr; ++r) {
                 md_gto_iso_gpu_extract(g.s, set, &gd, &gm);
                 tot[r] = gm.seconds_total * 1e3;
@@ -4555,7 +4556,10 @@ UTEST(gto_iso_gpu_lib, flood_experiment) {
 
 // A large system's total density, as viamd extracts its mesh: the density matrix from the published virtual
 // attribute, the field from it, the GPU set and the extraction, each timed. GTO_ISO_LARGE=<file in test_data/vlx>
-// (a protein: 1152 atoms, 9072 AOs); GTO_ISO_LARGE_H (default 0.4), GTO_ISO_LARGE_ISO (default 0.0025).
+// (a protein: 1152 atoms, 9072 AOs); GTO_ISO_LARGE_H (default 0.4), GTO_ISO_LARGE_ISO (default 0.0025);
+// GTO_ISO_LARGE_PROFILE=1 the extraction's steps (the profile's host statistics take seconds on such a system: its
+// wall time is not the extraction's); GTO_ISO_LARGE_STAGES=1 the extraction by stage, and two more without the profile;
+// GTO_ISO_LARGE_ORBITALS=n the density of n of the orbitals only (not the D form: the wide GEMM on a large system).
 #include <md_qm.h>
 // md_gto_iso_gpu_evaluate: the fields of a set at arbitrary points against md_gto_iso_field_evaluate in double,
 // through every vertex evaluator (orbitals, the tiled and the wide GEMM, the D form), from the host and on the
@@ -4715,6 +4719,135 @@ UTEST(gto_iso_gpu_lib, evaluate_matches_cpu) {
         for (int k = 0; k < NF; ++k) { if (fields[k]) md_gto_iso_field_destroy(fields[k]); iso_dens_prod_free(&p[k]); }
         iso_dens_src_free(&s);
     }
+    md_gto_iso_gpu_shutdown();
+    iso_gpu_free(&g);
+}
+
+// The evaluation as a job (md_gto_iso_gpu_evaluate_job_*): pieces of a few points (a piece target far below what
+// one takes, so there are many), polled until done, the values bitwise those of the launch; the progress from 0 to
+// 1. Points shuffled, then in Morton order (md_gto_iso_gpu_morton_order): the same values point by point, to the
+// evaluation cutoff.
+UTEST(gto_iso_gpu_lib, evaluate_job_matches_launch) {
+    iso_gpu_t g;
+    if (!iso_gpu_init(&g)) { iso_gpu_free(&g); UTEST_SKIP(iso_gpu_no_device()); }
+    md_gto_iso_gpu_initialize(g.dev);
+    iso_dens_src_t s;
+    ASSERT_TRUE(iso_dens_src_load_ex(&s, "amide.h5", true));
+    const size_t lumo = vlx_test_lumo_idx(&s.t, MD_STR_LIT("orbital/alpha/occupation"));
+    iso_dens_prod_t pd;
+    memset(&pd, 0, sizeof(pd));
+    iso_dens_products(&pd, &s, ISO_D_SCF);
+    md_gto_iso_field_t* fields[2] = {
+        md_gto_iso_field_create(&s.basis, s.xyz, 0, s.C + (lumo - 1) * s.num_ao, md_get_heap_allocator()),
+        iso_dens_field(&s, &pd, false),
+    };
+    ASSERT_TRUE(fields[0] && fields[1]);
+
+    enum { N = 20000 };
+    iso_rng_t rng = {0x10b5};
+    double* pdbl = (double*)malloc(sizeof(double) * 3 * N);
+    float* pts = (float*)malloc(sizeof(float) * 3 * N);
+    float* sorted = (float*)malloc(sizeof(float) * 3 * N);
+    uint32_t* order = (uint32_t*)malloc(sizeof(uint32_t) * N);
+    iso_dens_points(pdbl, N, &s, &rng);
+    for (int i = 0; i < 3 * N; ++i) pts[i] = (float)pdbl[i];
+    md_gto_iso_gpu_morton_order(order, pts, 0, N);
+    // a permutation
+    uint8_t* seen = (uint8_t*)calloc(N, 1);
+    for (int r = 0; r < N; ++r) { ASSERT_LT(order[r], (uint32_t)N); seen[order[r]]++; }
+    for (int i = 0; i < N; ++i) EXPECT_EQ(1, (int)seen[i]);
+    for (int r = 0; r < N; ++r) memcpy(sorted + 3 * r, pts + 3 * (size_t)order[r], sizeof(float) * 3);
+    float* shuffled = (float*)malloc(sizeof(float) * 2 * N);
+
+    for (int dform = 0; dform < 2; ++dform) {
+        const int saved_dform = isog_dform;
+        isog_dform = dform;
+        const md_gto_iso_field_t* fl[2] = {fields[0], fields[1]};
+        // the D form takes densities only
+        md_gto_iso_gpu_set_t* set = md_gto_iso_gpu_set_create(g.s, &s.basis, s.xyz, 0, dform ? fl + 1 : fl, dform ? 1 : 2, md_get_heap_allocator());
+        ASSERT_TRUE(set != NULL);
+        const uint32_t nf = dform ? 1 : 2;
+        const size_t bytes = sizeof(float) * nf * N + 16;
+        md_gpu_mem_t d_pts = md_gpu_malloc(g.s, MD_GPU_MEM_DEVICE, sizeof(float) * 3 * N);
+        md_gpu_mem_t d_a = md_gpu_malloc(g.s, MD_GPU_MEM_DEVICE, bytes);
+        md_gpu_mem_t d_b = md_gpu_malloc(g.s, MD_GPU_MEM_DEVICE, bytes);
+        md_gpu_mem_t h = md_gpu_malloc(g.s, MD_GPU_MEM_HOST_READ, 2 * bytes);
+        ASSERT_TRUE(d_pts.gpu && d_a.gpu && d_b.gpu && h.gpu);
+        for (int ord = 0; ord < 2; ++ord) {
+            const float* p = ord ? sorted : pts;
+            ASSERT_TRUE(md_gpu_upload(g.s, d_pts.gpu, p, sizeof(float) * 3 * N));
+            md_gto_iso_gpu_eval_desc_t ed = {0};
+            ed.xyz = d_pts.gpu;
+            ed.num_xyz = N;
+            ed.num_fields = nf;
+            for (uint32_t k = 0; k < nf; ++k) ed.fields[k] = k;
+            ed.out_value = d_a.gpu;
+            ed.out_failed = d_a.gpu + sizeof(float) * nf * N;
+            md_tick_t t0 = md_tick_now();
+            ASSERT_TRUE(md_gto_iso_gpu_evaluate_launch(g.s, set, &ed));
+            md_gpu_stream_sync(g.s);
+            const double t_launch = md_tick_to_seconds(md_tick_now() - t0);
+            ed.out_value = d_b.gpu;
+            ed.out_failed = d_b.gpu + sizeof(float) * nf * N;
+            md_gpu_pieces_policy_t pol = {0};
+            pol.piece_ms = 1.0e-3;      // pieces of the smallest size there is: many of them
+            t0 = md_tick_now();
+            md_gto_iso_gpu_eval_job_t* job = md_gto_iso_gpu_evaluate_job_begin(g.s, set, &ed, &pol);
+            ASSERT_TRUE(job != NULL);
+            float last = 0.0f;
+            md_gto_iso_gpu_job_status_t st;
+            int polls = 0;
+            while ((st = md_gto_iso_gpu_evaluate_job_poll(job, 0.5)) == MD_GTO_ISO_GPU_JOB_RUNNING) {
+                const float prog = md_gto_iso_gpu_evaluate_job_progress(job);
+                EXPECT_GE(prog, last);
+                last = prog;
+                ++polls;
+            }
+            EXPECT_EQ((int)MD_GTO_ISO_GPU_JOB_DONE, (int)st);
+            EXPECT_EQ(1.0f, md_gto_iso_gpu_evaluate_job_progress(job));
+            EXPECT_TRUE(md_gto_iso_gpu_evaluate_job_end(job));
+            const double t_job = md_tick_to_seconds(md_tick_now() - t0);
+            md_gpu_copy(g.s, h.gpu, d_a.gpu, bytes);
+            md_gpu_copy(g.s, h.gpu + bytes, d_b.gpu, bytes);
+            md_gpu_stream_sync(g.s);
+            {
+                // the values and the count of failures after them (the rest of the 16 bytes is not written)
+                const float* va = (const float*)h.cpu;
+                const float* vb = (const float*)((const char*)h.cpu + bytes);
+                EXPECT_EQ(0, memcmp(va, vb, sizeof(float) * nf * N + sizeof(uint32_t)));
+                EXPECT_EQ(0u, *(const uint32_t*)(vb + nf * N));
+            }
+            printf("  %s, %s: launch %.3f s, job %.3f s over %d polls\n", dform ? "D form" : "orbital + products", ord ? "Morton order" : "shuffled", t_launch, t_job, polls);
+            const float* v = (const float*)h.cpu;
+            if (ord == 0) {
+                memcpy(shuffled, v, sizeof(float) * nf * N);     // for the comparison with the sorted points
+            } else {
+                // point by point the same, to the evaluation cutoff: a group lists the AOs that reach its box,
+                // which another order makes of other points
+                float fmax = 0.0f, dmax = 0.0f;
+                for (uint32_t k = 0; k < nf; ++k) {
+                    for (int r = 0; r < N; ++r) {
+                        const float a = shuffled[(size_t)k * N + order[r]], b = v[(size_t)k * N + r];
+                        fmax = fmaxf(fmax, fabsf(a));
+                        dmax = fmaxf(dmax, fabsf(a - b));
+                    }
+                }
+                printf("  shuffled against Morton order: max |f| %.2e, |df| %.1e\n", fmax, dmax);
+                EXPECT_LT(dmax, 1.0e-5f * fmax + 1.0e-5f);
+            }
+        }
+        md_gpu_free(g.s, d_pts.gpu);
+        md_gpu_free(g.s, d_a.gpu);
+        md_gpu_free(g.s, d_b.gpu);
+        md_gpu_free(g.s, h.gpu);
+        md_gto_iso_gpu_set_destroy(g.s, set);
+        isog_dform = saved_dform;
+    }
+    free(shuffled); free(seen); free(order); free(sorted); free(pts); free(pdbl);
+    md_gto_iso_field_destroy(fields[0]);
+    md_gto_iso_field_destroy(fields[1]);
+    iso_dens_prod_free(&pd);
+    iso_dens_src_free(&s);
     md_gto_iso_gpu_shutdown();
     iso_gpu_free(&g);
 }
@@ -4896,6 +5029,7 @@ UTEST(gto_iso_gpu_lib, large_density) {
     ASSERT_TRUE(qm_test_basis(&basis, &t));
     const size_t nao = md_gto_basis_num_ao(&basis);
     printf("  %s: %zu atoms, %zu AOs; loaded in %.2f s\n", file, num_atoms, nao, md_tick_to_seconds(md_tick_now() - t0));
+    printf("  isosurface GEMMs: " MD_GTO_GPU_GEMM_CORE_REVISION "\n");
 
     // what viamd does: the field from the occupied orbitals (md_qm_density_orbitals), or with
     // GTO_ISO_LARGE_MATRIX=1 from the matrix (factorized again)
@@ -4919,8 +5053,11 @@ UTEST(gto_iso_gpu_lib, large_density) {
         const size_t count = md_qm_density_orbitals(&rows, &w, &na, &t.sys, MD_STR_LIT("orbital/total/density"), md_get_heap_allocator());
         ASSERT_TRUE(count > 0);
         ASSERT_EQ(na, nao);
-        printf("  orbitals: %zu, %.2f s\n", count, md_tick_to_seconds(md_tick_now() - t0));
-        field = md_gto_iso_field_create_products(&basis, xyz, 3 * sizeof(float), rows, NULL, w, count, md_get_heap_allocator());
+        // GTO_ISO_LARGE_ORBITALS=n: the density of the first n of them only (up to 1024: not the D form, the wide GEMM)
+        const int lim = getenv("GTO_ISO_LARGE_ORBITALS") ? atoi(getenv("GTO_ISO_LARGE_ORBITALS")) : 0;
+        const size_t use = (lim > 0 && (size_t)lim < count) ? (size_t)lim : count;
+        printf("  orbitals: %zu%s, %.2f s\n", use, use < count ? " (of them, GTO_ISO_LARGE_ORBITALS)" : "", md_tick_to_seconds(md_tick_now() - t0));
+        field = md_gto_iso_field_create_products(&basis, xyz, 3 * sizeof(float), rows, NULL, w, use, md_get_heap_allocator());
         md_free(md_get_heap_allocator(), rows, sizeof(double) * count * na);
         md_free(md_get_heap_allocator(), w, sizeof(double) * count);
     }
@@ -4947,18 +5084,50 @@ UTEST(gto_iso_gpu_lib, large_density) {
         gd.iso[0] = iso;
         static md_gto_iso_gpu_profile_t prof;
         static char text[1 << 16];
+        // GTO_ISO_LARGE_STAGES=1: this extraction by stage too (desc.time_stages: a wait after each), and two more after it
+        const bool stages = getenv("GTO_ISO_LARGE_STAGES") && atoi(getenv("GTO_ISO_LARGE_STAGES")) != 0;
+        static const char* stn[MD_GTO_ISO_GPU_STAGE_COUNT] = {"octree", "corners", "nets", "project", "relax", "output"};
         md_gto_iso_gpu_profile_set(getenv("GTO_ISO_LARGE_PROFILE") ? &prof : NULL);
+        md_gto_iso_gpu_desc_t gd0 = gd;
+        gd0.time_stages = stages;
         t0 = md_tick_now();
         md_gto_iso_gpu_mesh_t m;
-        const bool ok = md_gto_iso_gpu_extract(g.s, set, &gd, &m);
-        printf("  extract (h %.2f, iso %g): %.2f s, %s: %u vertices, %u triangles\n", h, iso, md_tick_to_seconds(md_tick_now() - t0),
+        const bool ok = md_gto_iso_gpu_extract(g.s, set, &gd0, &m);
+        // the wall time from the call, and the job's own from its start (after the host's set-up: the kernels, the
+        // set's cutoff, the root box)
+        printf("  extract (h %.2f, iso %g): %.2f s (the job %.2f s)%s, %s: %u vertices, %u triangles\n", h, iso, md_tick_to_seconds(md_tick_now() - t0),
+               ok ? m.seconds_total : 0.0, getenv("GTO_ISO_LARGE_PROFILE") ? " PROFILED: with the profile's host statistics" : "",
                ok ? "ok" : "FAILED", ok ? m.vertex_count : 0, ok ? m.index_count / 3 : 0);
+        if (ok && stages) {
+            printf("  by stage (ms):");
+            for (int k = 0; k < MD_GTO_ISO_GPU_STAGE_COUNT; ++k) printf(" %s %.1f", stn[k], m.seconds[k] * 1e3);
+            printf("\n");
+        }
         md_gto_iso_gpu_profile_set(NULL);
         if (getenv("GTO_ISO_LARGE_PROFILE")) { md_gto_iso_gpu_profile_print(&prof, text, sizeof(text)); printf("%s", text); }
+        // two more without the profile: the wall time and the job's, then by stage
+        if (ok && stages) {
+            md_gto_iso_gpu_mesh_t sm;
+            md_tick_t ts = md_tick_now();
+            if (md_gto_iso_gpu_extract(g.s, set, &gd, &sm)) {
+                printf("  again, no profile: %.1f ms (the job %.1f ms)\n", md_tick_to_seconds(md_tick_now() - ts) * 1e3, sm.seconds_total * 1e3);
+                md_gto_iso_gpu_mesh_free(g.s, &sm);
+            }
+            md_gto_iso_gpu_desc_t sd = gd;
+            sd.time_stages = true;
+            if (md_gto_iso_gpu_extract(g.s, set, &sd, &sm)) {
+                double sum = 0.0;
+                printf("  again, by stage (ms):");
+                for (int k = 0; k < MD_GTO_ISO_GPU_STAGE_COUNT; ++k) { printf(" %s %.1f", stn[k], sm.seconds[k] * 1e3); sum += sm.seconds[k] * 1e3; }
+                printf("; their sum %.1f of %.1f\n", sum, sm.seconds_total * 1e3);
+                md_gto_iso_gpu_mesh_free(g.s, &sm);
+            }
+        }
         md_gpu_memory_stats(g.dev, MD_GPU_MEM_DEVICE, &ms);
         printf("  device memory: %.1f MB in use, %.1f MB peak, %.1f MB temp\n", ms.bytes_in_use / 1e6, ms.bytes_peak_in_use / 1e6, ms.bytes_temp / 1e6);
         EXPECT_TRUE(ok);
         if (ok) md_gto_iso_gpu_mesh_free(g.s, &m);
+
         md_gto_iso_gpu_set_destroy(g.s, set);
     }
     md_gto_iso_field_destroy(field);

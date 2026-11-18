@@ -1,6 +1,8 @@
 // gto_gemm_args.slang
-// Argument block shared by every entry point of the two-pass (Phi + GEMM) density
-// path: eval_gto_density_gemm.slang and the eval_gto_density_gemm2_*.slang kernels.
+// Argument block shared by every entry point of the two-pass (Phi + GEMM) path: eval_gto_density_gemm.slang (the
+// counts, Phi, D_b) and the GEMM passes on the GEMM core (gto_gemm_core.slang): the density's
+// (eval_gto_density_core*.slang), ELF's and LOL's (eval_gto_localization_core*.slang), the orbitals'
+// (eval_gto_mo_gemm*.slang).
 // Mirrored in C by gto_density_gemm_args_t in md_gto.c.
 
 #ifndef GTO_GEMM_ARGS_SLANG
@@ -42,8 +44,14 @@ struct RootArgs {
     uint     has_weights;       // orbital GEMM: mo_weights is valid
     uint     dm_tiled;          // density: D_matrix is the tile pool of a md_gto_gpu_dmat (dm_tao, dm_map)
     uint     dm_nt;             // its tiles per edge
-    uint     _dm_pad0;
-    uint     _dm_pad1;
+    uint     d_spin_offset;     // floats into D_blocks of the spin being gathered and multiplied (ELF, LOL: two spins)
+    uint     spin;              // ELF, LOL: the spin of this GEMM pass (its terms)
+    uint     num_spins;         // ELF, LOL: 1, the total density of a closed shell (two equal spins), or 2
+    uint     lol;               // ELF, LOL: 0 ELF, 1 LOL
+    float    rho_min;           // ELF, LOL: below it (both spins) the value is 0
+    float    d_min;             // ELF: added to D (md_qm_elf's d_min)
+    uint     terms_stride;      // ELF, LOL: entries of a batch's terms, per spin and term
+    uint     terms_valid;       // ELF, LOL finish: 0 for the empty blocks (no terms: written 0)
 
     uint*    shell_atom_idx;
     float*   shell_r;
@@ -60,6 +68,7 @@ struct RootArgs {
     float*   mo_weights;        // orbital GEMM: per-MO weight applied after psi / psi^2 (if has_weights)
     uint*    dm_tao;            // dm_tiled: AO -> tiled index
     uint*    dm_map;            // dm_tiled: tile pair -> pool entry
+    float*   terms;             // ELF, LOL: per spin rho, grad rho (3), tau of the batch's voxels: [spin][5][entry][512]
     DescriptorHandle<RWTexture3D<float>> out_tex;
 };
 

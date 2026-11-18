@@ -377,11 +377,49 @@ typedef struct md_gto_iso_gpu_eval_desc_t {
 } md_gto_iso_gpu_eval_desc_t;
 
 // Issues the evaluation into 'stream': asynchronous, no readbacks and no waits. The set, the points and the
-// outputs must stay until the stream has passed it. Scratch is ~52 bytes per point, up to 2^20 points at a
-// time. One field's evaluation costs about as much as another's whatever the set: a set of several fields
-// evaluates the functions of all of them at every point, for every field asked for. Returns false, logged,
-// when nothing was issued (invalid input, a kernel this device could not make, out of device memory).
+// outputs must stay until the stream has passed it. One field's evaluation costs about as much as another's
+// whatever the set: a set of several fields evaluates the functions of all of them at every point, for every
+// field asked for. Issued in pieces (md_gpu_pieces.h), each its own submission, all at once: no submission is
+// long enough for a watchdog, however many points. Returns false, logged, when nothing was issued (invalid
+// input, a kernel this device could not make, out of device memory).
+//
+// The order of the points is the caller's, and it matters: a group's AO list is of the box of its 16-32
+// consecutive points, so points in scanline order through a sparse set (a band of voxels around a surface)
+// make groups that span the molecule and list most of its AOs, many times the work of the same points in a
+// spatially coherent order (md_gto_iso_gpu_morton_order).
 bool md_gto_iso_gpu_evaluate_launch(md_gpu_stream_t stream, const md_gto_iso_gpu_set_t* set, const md_gto_iso_gpu_eval_desc_t* desc);
+
+// The same as a job that never blocks the caller (as md_gto_iso_gpu_job_t is to the extraction): begin
+// issues the first piece, each poll takes the pieces that have passed and issues more while little is ahead
+// of the GPU (md_gpu_pieces.h: pieces of a few ms of GPU time, by the rate the device measured), end
+// releases it. A job ended before it is done is cancelled: the pieces in flight complete, nothing more is
+// issued, and the outputs are part written. The set, the points and the outputs must outlive the job (until
+// the stream passes its last piece). policy: NULL for the defaults. One thread at a time, the stream's.
+//   md_gto_iso_gpu_eval_job_t* job = md_gto_iso_gpu_evaluate_job_begin(stream, set, &desc, NULL);
+//   ... once a frame: if (md_gto_iso_gpu_evaluate_job_poll(job, 1.0) != MD_GTO_ISO_GPU_JOB_RUNNING) {
+//           const bool done = md_gto_iso_gpu_evaluate_job_end(job); ... read the outputs back ... }
+typedef struct md_gto_iso_gpu_eval_job_t md_gto_iso_gpu_eval_job_t;
+struct md_gpu_pieces_policy_t;
+
+// NULL, logged, when nothing could be issued
+md_gto_iso_gpu_eval_job_t* md_gto_iso_gpu_evaluate_job_begin(md_gpu_stream_t stream, const md_gto_iso_gpu_set_t* set, const md_gto_iso_gpu_eval_desc_t* desc,
+                                                             const struct md_gpu_pieces_policy_t* policy);
+
+// Advances the job as far as the GPU allows, issuing for at most budget_ms (0: what fits at once; < 0: waits
+// until the job is done). DONE once every piece has passed: the outputs hold the values.
+md_gto_iso_gpu_job_status_t md_gto_iso_gpu_evaluate_job_poll(md_gto_iso_gpu_eval_job_t* job, double budget_ms);
+
+// How far, 0 to 1: the points of the pieces that have passed
+float md_gto_iso_gpu_evaluate_job_progress(const md_gto_iso_gpu_eval_job_t* job);
+
+// Releases the job; true when it was done. Never waits for the GPU.
+bool md_gto_iso_gpu_evaluate_job_end(md_gto_iso_gpu_eval_job_t* job);
+
+// A spatially coherent order of count points (xyz_stride bytes apart, 0 = packed float3): out[r] is the point
+// evaluated r:th, along a Morton curve through their box. What md_gto_iso_gpu_evaluate does with its points;
+// for a caller of the launch or the job, whose points are its own to order (it then reads output r for point
+// out[r]). out: count indices.
+void md_gto_iso_gpu_morton_order(uint32_t* out, const float* xyz, size_t xyz_stride, size_t count);
 
 // The same from and to the host, waiting for the result. xyz: num_xyz points, xyz_stride bytes apart (0 =
 // packed float3). out_value [num_fields][num_xyz] and out_gradient [num_fields][num_xyz][3] (df/dx, df/dy,
@@ -411,6 +449,10 @@ typedef struct md_gto_iso_gpu_profile_t {
     uint32_t num_steps;
     md_gto_iso_gpu_profile_step_t step[MD_GTO_ISO_GPU_PROFILE_CAP];
     double   wait_ms;       // one wait with nothing to wait for: the floor under every step's ms
+    double   skip_ms;       // the time between the steps that the profile leaves out (its own readbacks and host
+                            // statistics, and whatever else ran since the step before): in the wall time, in no step
+    uint32_t num_skip;      // skip_ms by where (summed by name)
+    struct { const char* name; double ms; uint32_t n; } skip[16];
     // work counts
     uint64_t brick_ao_sum;  // over the bricks: the AOs whose shells reach the brick
     uint32_t brick_ao_max;

@@ -426,7 +426,8 @@ void md_gto_gpu_dmat_view(md_gto_gpu_dmat_view_t* out, md_gto_gpu_dmat_t dmat);
 typedef enum md_gto_gpu_density_algo_t {
     // The recommended algorithm, currently MD_GTO_GPU_DENSITY_ALGO_GEMM, which
     // blocks the calling thread (see below). Pick REFERENCE explicitly where a fully
-    // asynchronous launch matters more than speed.
+    // asynchronous launch matters more than speed. MD_GTO_GPU_DENSITY_ALGO (set in the
+    // environment to reference or gemm) overrides what DEFAULT means, to compare.
     MD_GTO_GPU_DENSITY_ALGO_DEFAULT = 0,
 
     // Original kernel (eval_gto_density.slang): per-AO tiles of 16, the radial part
@@ -435,13 +436,39 @@ typedef enum md_gto_gpu_density_algo_t {
 
     // Two-pass: Phi (voxels x AOs) per 8^3 block into scratch memory, the block's
     // sub-matrix D_b gathered once, then a tiled GEMM with the
-    // rho = sum(Phi o (Phi D_b)) reduction fused into it (eval_gto_density_gemm.slang).
+    // rho = sum(Phi o (Phi D_b)) reduction fused into it, on the GEMM core shared with
+    // ELF, LOL and the orbitals (gto_gemm_core.slang, MD_GTO_GPU_GEMM_CORE_REVISION).
     // Reads per-block counts back to plan batches, so this BLOCKS the calling thread
-    // until the counting pass has completed.
+    // until the counting pass has completed (a job does not: md_gto_gpu_density_job_begin).
     MD_GTO_GPU_DENSITY_ALGO_GEMM,
 
     MD_GTO_GPU_DENSITY_ALGO_COUNT
 } md_gto_gpu_density_algo_t;
+
+// The revision of the GEMM core (gto_gemm_core.slang) and of what is evaluated on it, for measurements. r1: the
+// density's own loop (gemm2) beside the core, the same bits and time (RTX 3080); r2: gemm2 gone, the orbitals on the
+// core; r3: the chunks read as float4 (slower: orbitals -13%, ELF -5%), the thread grid a kernel's own (the dmat tiles on
+// it, 16 x 4), the D_b gather over the flat triangle (2x); r4: r3 with r2's plain float chunks again (r2's rates); r5: a
+// template over the tile, the threads and the chunks' memory (the same code for r4's kernels), with a staged mode, the
+// isosurface GEMMs on it (tiled, wide, and the D form in a triangular mode) beside their own loops (MD_GTO_ISO_GEMM=own);
+// r6: the chunks' memory a kernel's choice, floats (the grid kernels, r4's code) or float4 reads (the isosurface kernels,
+// as their own loops: on r5's float reads the protein's D-form corners took 477 ms against their own loop's 341);
+// r7: the float4 reads indexed in float4s (r6 divided a float index by 4 per read: an add and a shift each, not folded
+// into the reads' offsets), the D-form stager with dform_at's arguments as its own loop's (r6 read them from the
+// kernel's arguments in every chunk) and its diagonal's AO values read as float4 (the D form's SPIR-V then differs from
+// its own loop's in the loop's shape and the A chunk's index arithmetic). r8: IGcMem::st4c, a write at a float4 and a
+// component, for the isosurface stagers' AO values and rows (GC_MEM4's st split a float index per write: a shift and a
+// mask that a sum's index does not fold, where their own loops wrote at the float4 and component directly). r9: the
+// tiled and wide stagers with the kernel's arguments (r8 read them from MD_ARGS per chunk), the wide one's AO writes
+// unclipped where its chunks hold whole shells (as gemm_wide's). r10: the isosurface GEMMs' own loops retired, the core's
+// kernels under their names (measured on an RTX 3080 in one process, the two alternating, by stage: the tiled GEMM's
+// corners 0.99-1.01 of its own loop's at 16-56 functions, the wide 0.95-1.05 at 105-250, the D form's extraction
+// 1.00 on the protein; the registers the same or fewer). r11: the topology sweep's GEMM (topo_gto_cube.slang
+// gemm_main: D and |D| times the AO channels, 64 x 256 tiles) on the core, staged, with a strided column map, |A|
+// column slots and full chunks unrolled (gemm_main's inner loop, beside it: MD_TOPO_GTO_GEMM=own). r12: the topology
+// GEMM's own loop retired (RTX 3080: the core's 115 registers to its 127, the GEMM's time the same or 5% less, the
+// critical points and edges bit for bit the same on every dataset of md_topo_gto_bench).
+#define MD_GTO_GPU_GEMM_CORE_REVISION "gemm-core r12 (a template: density, orbitals, ELF/LOL, dmat tiles on float chunks; the isosurface tiled, wide and D-form GEMMs staged, on float4 chunks read as float4s and written by float4 and component; the topology sweep's D and |D| GEMM staged, strided columns; D_b gather r2: the flat triangle)"
 
 // Unified descriptor struct for density evaluation.
 typedef struct md_gto_gpu_density_desc_t {
@@ -515,7 +542,7 @@ void md_gto_gpu_job_end(md_gto_gpu_job_t* job);
 // pair and spin.
 //
 // The basis's radii decide which AOs are summed at a voxel: ELF is made of small differences in the tails, and
-// wants a basis made with the cutoff 1e-8 (md_gto_gpu_basis_desc_t.cutoff), and dmats made with it.
+// wants a basis made with a cutoff of 1e-7 to 1e-8 (md_gto_gpu_basis_desc_t.cutoff), and dmats made with it.
 //
 // The tails: d_min is added to D as md_qm_elf has it, MD_QM_ELF_D_MIN for Multiwfn's convention (ELF to 0 by rho 1e-4);
 // 0 for the function as defined, which in float is good to about its noise (md_qm_elf_noise, 1e-2 by rho 1e-7).
@@ -524,6 +551,28 @@ typedef enum md_gto_gpu_localization_t {
     MD_GTO_GPU_ELF = 0,
     MD_GTO_GPU_LOL = 1,
 } md_gto_gpu_localization_t;
+
+typedef enum md_gto_gpu_localization_algo_t {
+    // GEMM: 5.7x the reference's speed on a protein of 1152 atoms (RTX 3080, 14.6 M voxels at 0.25 bohr), and closer
+    // to the values in double. MD_GTO_GPU_LOCALIZATION_ALGO (set in the environment to reference or gemm) overrides
+    // what DEFAULT means, to compare.
+    MD_GTO_GPU_LOCALIZATION_ALGO_DEFAULT = 0,
+
+    // One kernel per group of 8^3 voxels (eval_gto_localization.slang): per voxel, the pairs of the AOs that reach
+    // the group, about 12 multiply-adds each per spin, the AOs' values and gradients made again for every pair of
+    // tiles of them.
+    MD_GTO_GPU_LOCALIZATION_ALGO_REFERENCE,
+
+    // The density's two passes (MD_GTO_GPU_DENSITY_ALGO_GEMM) on the GEMM core: Phi with the AOs' gradients, four
+    // rows per AO, made once per voxel; then per spin the symmetric product [phi; grad phi] x w o D_b, 2 n^2
+    // multiply-adds a voxel for n AOs at its block - four times the density's - and its terms (rho, grad rho, tau);
+    // then ELF or LOL of them (eval_gto_localization_core.slang). Blocks of 8^3 (32x16x1 for a grid of one layer) as
+    // the density's, the counts read back to plan the batches as the density's: a job (md_gto_gpu_job_t) waits for
+    // them without blocking anyone. Phi takes four times the density's scratch.
+    MD_GTO_GPU_LOCALIZATION_ALGO_GEMM,
+
+    MD_GTO_GPU_LOCALIZATION_ALGO_COUNT
+} md_gto_gpu_localization_algo_t;
 
 typedef struct md_gto_gpu_localization_desc_t {
     md_gto_gpu_basis_t basis;
@@ -539,7 +588,8 @@ typedef struct md_gto_gpu_localization_desc_t {
     md_gpu_texture_t   out_tex;       // R32F, needs MD_GPU_TEX_STORAGE; mip 0 is written
     const struct md_grid_t*   grid;
     float              sample_offset[3];
-    uint64_t           piece_work;    // the work of a submission, in voxel x AO pair x spin; 0 = 2^30
+    uint64_t           piece_work;    // the work of a submission, in voxel x AO pair x spin; 0 = 2^30 (GEMM: as the density's, 0 = 2^34)
+    md_gto_gpu_localization_algo_t algorithm;   // 0 = MD_GTO_GPU_LOCALIZATION_ALGO_DEFAULT
 } md_gto_gpu_localization_desc_t;
 
 // The revision of the kernel (eval_gto_localization.slang), for measurements: bumped with every change to it
@@ -580,7 +630,7 @@ typedef enum md_gto_gpu_orbital_algo_t {
     MD_GTO_GPU_ORBITAL_ALGO_SHELL,
 
     // Two-pass: Phi per 8^3 block into scratch (as for the density), then
-    // Psi = Phi * C as a GEMM with the psi / psi^2 sum fused (eval_gto_mo_gemm.slang).
+    // Psi = Phi * C as a GEMM with the psi / psi^2 sum fused (eval_gto_mo_gemm.slang, on the GEMM core).
     // Every AO is evaluated once whatever the number of orbitals. Reads per-block
     // counts back, so this BLOCKS the calling thread like MD_GTO_GPU_DENSITY_ALGO_GEMM.
     MD_GTO_GPU_ORBITAL_ALGO_GEMM,

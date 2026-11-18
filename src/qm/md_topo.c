@@ -2828,6 +2828,45 @@ bool md_topo_compute_extremum_graph_gto(md_topo_extremum_graph_t* out_graph, md_
     return res;
 }
 
+bool md_topo_gto_reach(md_topo_gto_reach_t* out, const md_topo_gto_desc_t* desc, md_allocator_i* alloc) {
+    MD_ASSERT(out);
+    MD_ASSERT(desc);
+    MD_ASSERT(alloc);
+    md_memset(out, 0, sizeof(*out));
+    if (!cpg_check_desc(desc, "md_topo_gto_reach")) return false;
+    cpg_run_t R;
+    const md_tick_t t0 = md_tick_now();
+    cpg_run_init(&R, desc);
+    bool ok = R.ok;
+    if (ok) {
+        const cpg_ctx_t* ctx = R.ctx;
+        const int NS = ctx->nshell;
+        const double h_root = desc->h_root > 0.0 ? desc->h_root : 1.0;
+        out->num_shells = (uint32_t)NS;
+        out->radius_local = (double*)md_alloc(alloc, sizeof(double) * MD_MAX(1, NS));
+        out->radius_far = (double*)md_alloc(alloc, sizeof(double) * MD_MAX(1, NS));
+        // as cpg_run_init's meet test (rho2) and its comment: a GPU batch P +- 2.5 hc, a CPU cube's 1.5x enclosure
+        out->region_margin = 2.0 * sqrt(3.0) * 2.5 * h_root;
+        out->region_margin_cpu = 2.0 * sqrt(3.0) * 1.5 * h_root;
+        out->tau = ctx->tau;
+        out->screening_rung = (uint32_t)ctx->rung_loc;
+        for (int si = 0; si < NS; ++si) {
+            out->radius_local[si] = ctx->shell[si].radius_trace;
+            out->radius_far[si] = ctx->shell[si].radius;
+        }
+    }
+    cpg_run_free(&R);
+    out->ms_setup = md_tick_to_milliseconds(md_tick_now() - t0);
+    return ok;
+}
+
+void md_topo_gto_reach_free(md_topo_gto_reach_t* reach, md_allocator_i* alloc) {
+    if (!reach || !alloc) return;
+    if (reach->radius_local) md_free(alloc, reach->radius_local, sizeof(double) * MD_MAX(1, reach->num_shells));
+    if (reach->radius_far) md_free(alloc, reach->radius_far, sizeof(double) * MD_MAX(1, reach->num_shells));
+    md_memset(reach, 0, sizeof(*reach));
+}
+
 #if MD_ENABLE_GPU
 // ----------------------------------------------------------------------------------------------- GPU sweep
 // The octree levels run on the GPU (src/shaders/topo/topo_gto_cube.slang, fp32 with rigorous rounding
