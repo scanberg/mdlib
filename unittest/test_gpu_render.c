@@ -760,6 +760,89 @@ UTEST(gpu_render, multi_draw_indirect_with_first_instance_records) {
     r_close(&f);
 }
 
+/* A table of argument structs, one per indirect draw: each command's
+   first_instance selects its own record (MD_ARGS_AT in the shaders), the
+   table built by a transfer earlier in the stream. Direct draws by address
+   read the struct in place. */
+UTEST(gpu_render, draw_at_with_a_table_of_arguments) {
+    rfix_t f;
+    if (!r_open(&f)) UTEST_SKIP(r_skip_reason());
+
+    md_gpu_texture_t u = r_target(&f, MD_GPU_FORMAT_R32_UINT, W, H, 0);
+    const md_gpu_format_t fmt = MD_GPU_FORMAT_R32_UINT;
+    md_gpu_pipeline_t p = r_pipeline(&f, md_shader_gpu_render_test_table_vs_shader(), md_shader_gpu_render_test_table_fs_shader(),
+                                     MD_GPU_TOPOLOGY_TRIANGLES, &fmt, 1, MD_GPU_FORMAT_INVALID);
+    ASSERT_TRUE(u && p);
+
+    const md_gpu_float4 pos[9] = {
+        {-1, 1, 0, 1}, {-1, 0, 0, 1}, {0, 1, 0, 1},      /* TL */
+        { 0, 1, 0, 1}, { 0, 0, 0, 1}, {1, 1, 0, 1},      /* TR */
+        {-1, 0, 0, 1}, {-1,-1, 0, 1}, {0, 0, 0, 1},      /* BL */
+    };
+    md_gpu_addr_t vb = r_buffer(&f, pos, sizeof(pos));
+
+    rargs_t table[3];
+    memset(table, 0, sizeof(table));
+    for (int i = 0; i < 3; ++i) { table[i].pos = vb; table[i].id = 100u * (uint32_t)(i + 1); }
+    md_gpu_addr_t tb = r_buffer(&f, table, sizeof(table));
+
+    const md_gpu_draw_cmd_t cmds[3] = {
+        {3, 1, 0, 0},       /* TL, record 0                  */
+        {3, 2, 3, 1},       /* TR, record 1, two instances    */
+        {3, 1, 6, 2},       /* BL, record 2                  */
+    };
+    md_gpu_addr_t cb = r_buffer(&f, cmds, sizeof(cmds));
+
+    md_gpu_render_desc_t rd = {0};
+    rd.color_count = 1;
+    rd.color[0].texture = u; rd.color[0].load = MD_GPU_LOAD_CLEAR; rd.color[0].clear.u32[0] = 0xFFFFFFFFu;
+    ASSERT_TRUE(md_gpu_render_begin(f.gfx, &rd));
+    EXPECT_TRUE(md_gpu_draw_indirect_at(f.gfx, p, cb, 3, tb));
+    ASSERT_TRUE(md_gpu_render_end(f.gfx));
+
+    static uint32_t ids[W * H];
+    ASSERT_TRUE(r_read(&f, u, 0, 0, ids, sizeof(ids)));
+    EXPECT_EQ(100u, ids[1 * W + 1]);           /* record 0              */
+    EXPECT_EQ(201u, ids[1 * W + 9]);           /* record 1, instance 1  */
+    EXPECT_EQ(300u, ids[9 * W + 1]);           /* record 2              */
+    EXPECT_EQ(0xFFFFFFFFu, ids[9 * W + 9]);    /* nothing drawn         */
+
+    /* Indexed indirect from the same table: record 1 drawn over BL. */
+    const uint32_t idx[3] = {0, 1, 2};
+    const md_gpu_draw_indexed_cmd_t icmds[1] = {{3, 1, 0, 6, 1}};
+    md_gpu_addr_t ib = r_buffer(&f, idx, sizeof(idx));
+    md_gpu_addr_t icb = r_buffer(&f, icmds, sizeof(icmds));
+    ASSERT_TRUE(md_gpu_render_begin(f.gfx, &rd));
+    EXPECT_TRUE(md_gpu_draw_indexed_indirect_at(f.gfx, p, ib, MD_GPU_INDEX_U32, icb, 1, tb));
+    ASSERT_TRUE(md_gpu_render_end(f.gfx));
+    ASSERT_TRUE(r_read(&f, u, 0, 0, ids, sizeof(ids)));
+    EXPECT_EQ(200u, ids[9 * W + 1]);
+    EXPECT_EQ(0xFFFFFFFFu, ids[1 * W + 1]);
+
+    /* Direct draws by address: record 0 of the table, first through
+       md_gpu_draw_at, then indexed, each covering the TL triangle. */
+    ASSERT_TRUE(md_gpu_render_begin(f.gfx, &rd));
+    EXPECT_TRUE(md_gpu_draw_at(f.gfx, p, 3, 1, tb));
+    ASSERT_TRUE(md_gpu_render_end(f.gfx));
+    ASSERT_TRUE(r_read(&f, u, 0, 0, ids, sizeof(ids)));
+    EXPECT_EQ(100u, ids[1 * W + 1]);
+    EXPECT_EQ(0xFFFFFFFFu, ids[9 * W + 1]);
+
+    ASSERT_TRUE(md_gpu_render_begin(f.gfx, &rd));
+    EXPECT_TRUE(md_gpu_draw_indexed_at(f.gfx, p, ib, MD_GPU_INDEX_U32, 3, 1, tb));
+    EXPECT_FALSE(md_gpu_draw_at(f.gfx, p, 3, 1, tb + 8));       /* not 16-byte aligned */
+    EXPECT_FALSE(md_gpu_draw_at(f.gfx, p, 3, 1, 0));
+    ASSERT_TRUE(md_gpu_render_end(f.gfx));
+    ASSERT_TRUE(r_read(&f, u, 0, 0, ids, sizeof(ids)));
+    EXPECT_EQ(100u, ids[1 * W + 1]);
+
+    md_gpu_free(f.gfx, vb); md_gpu_free(f.gfx, tb); md_gpu_free(f.gfx, cb);
+    md_gpu_free(f.gfx, ib); md_gpu_free(f.gfx, icb);
+    md_gpu_pipeline_destroy(p);
+    md_gpu_texture_destroy(u);
+    r_close(&f);
+}
+
 /* =========================================================================
    Attachments at mips and layers; ordering between passes and kernels
    ========================================================================= */

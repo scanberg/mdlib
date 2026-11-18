@@ -2385,36 +2385,67 @@ md_gpu_grid_t md_gpu_grid_for(md_gpu_kernel_t k, uint32_t nx, uint32_t ny, uint3
    kernel parameter `Root_0 constant* root_0 [[buffer(N)]]` whose one member is
    a device pointer: the bound buffer holds an 8-byte *address*, and the
    argument struct lives wherever that points. So the argument block goes into
-   the arena, its address into an 8-byte root cell of its own, and the cell is
-   what gets bound. (setBytes: for the 8 bytes proved unreliable when called
-   repeatedly at one index in a single encoder.)
+   the arena (or is the caller's, for the _at forms), its address into an
+   8-byte root cell of its own, and the cell is what gets bound. (setBytes:
+   for the 8 bytes proved unreliable when called repeatedly at one index in a
+   single encoder.)
 
    Every dispatch rebinds its pipeline and root cell unconditionally; caching
    either saves nothing measurable and fails silently when wrong. */
-static bool md_mtl_launch_common(md_gpu_stream_t s, md_gpu_kernel_t k, md_gpu_grid_t grid,
-                                 const void* args, size_t args_size,
-                                 id<MTLBuffer> indirect_buf, uint64_t indirect_off, bool is_indirect,
-                                 bool internal) {
-    if (k->device != s->device) return md_mtl_fail("kernel '%s' belongs to a different device", k->label);
-    if (s->kind == MD_GPU_STREAM_TRANSFER && !internal) {
-        return md_mtl_fail("kernel '%s' launched into '%s', a transfer stream; kernels run on compute streams", k->label, s->label);
-    }
-    if (k->args_size != 0 && args_size != k->args_size) {
-        return md_mtl_fail("kernel '%s' expects a %u-byte argument struct but %zu bytes were passed", k->label, k->args_size, args_size);
-    }
-    if (args_size > 0 && !args) return md_mtl_fail("kernel '%s': null args with non-zero size", k->label);
-    if (!md_mtl_check_no_upload(s, "launch")) return false;
+static bool md_mtl_root_cell(md_gpu_stream_t s, uint64_t args_addr, id<MTLBuffer>* out_buf, uint64_t* out_off) {
+    uint64_t root_addr;
+    void* root_host;
+    if (!md_mtl_arena_alloc(s, sizeof(uint64_t), MD_MTL_ROOT_ALIGN, &root_addr, &root_host, out_buf, out_off)) return false;
+    memcpy(root_host, &args_addr, sizeof(args_addr));
+    return true;
+}
 
+/* The caller's struct copied into the arena; 0 for an empty one. */
+static bool md_mtl_args_copy(md_gpu_stream_t s, uint32_t expected, const void* args, size_t args_size,
+                             uint64_t* out_addr, const char* what, const char* name) {
+    *out_addr = 0;
+    if (expected != 0 && args_size != expected) {
+        return md_mtl_fail("%s: '%s' expects a %u-byte argument struct but %zu bytes were passed", what, name, expected, args_size);
+    }
+    if (args_size == 0) return true;
+    if (!args) return md_mtl_fail("%s: '%s': null args with non-zero size", what, name);
+    void* host;
+    if (!md_mtl_arena_alloc(s, args_size, MD_MTL_ARG_ALIGN, out_addr, &host, NULL, NULL)) return false;
+    memcpy(host, args, args_size);
+    return true;
+}
+
+/* As md_gpu_vulkan.c: the alignment a struct of `size` bytes has in C. */
+static uint64_t md_mtl_args_align(uint32_t size) {
+    uint64_t a = size ? (uint64_t)(size & (~size + 1u)) : 4u;
+    return a < 4 ? 4 : (a > 16 ? 16 : a);
+}
+
+/* A block the caller placed (the _at forms): checked, not copied. */
+static bool md_mtl_args_at(md_gpu_stream_t s, uint32_t expected, md_gpu_addr_t args, const char* what) {
+    if (!args) return md_mtl_fail("%s: null argument address", what);
+    const uint64_t align = md_mtl_args_align(expected);
+    if (args % align != 0) {
+        return md_mtl_fail("%s: argument address 0x%llx is not %llu-byte aligned, as its %u-byte struct is",
+                           what, (unsigned long long)args, (unsigned long long)align, expected);
+    }
+    return md_mtl_resolve(s->device, args, expected ? expected : 1, NULL, what);
+}
+
+static bool md_mtl_launch_check(md_gpu_stream_t s, md_gpu_kernel_t k, bool internal, const char* what) {
+    if (k->device != s->device) return md_mtl_fail("%s: kernel '%s' belongs to a different device", what, k->label);
+    if (s->kind == MD_GPU_STREAM_TRANSFER && !internal) {
+        return md_mtl_fail("%s: kernel '%s' launched into '%s', a transfer stream; kernels run on compute streams", what, k->label, s->label);
+    }
+    return md_mtl_check_no_upload(s, what);
+}
+
+/* Record one dispatch: direct over `grid`, or indirect from `indirect`. */
+static bool md_mtl_dispatch(md_gpu_stream_t s, md_gpu_kernel_t k, uint64_t args_addr, md_gpu_grid_t grid,
+                            const md_mtl_span_t* indirect) {
     id<MTLBuffer> root_buf = nil;
     uint64_t root_off = 0;
-    if (args_size > 0) {
-        uint64_t arg_addr, root_addr;
-        void* arg_host; void* root_host;
-        if (!md_mtl_arena_alloc(s, args_size, MD_MTL_ARG_ALIGN, &arg_addr, &arg_host, NULL, NULL)) return false;
-        memcpy(arg_host, args, args_size);
-        if (!md_mtl_arena_alloc(s, sizeof(uint64_t), MD_MTL_ROOT_ALIGN, &root_addr, &root_host, &root_buf, &root_off)) return false;
-        memcpy(root_host, &arg_addr, sizeof(arg_addr));
-    }
+    if (args_addr && !md_mtl_root_cell(s, args_addr, &root_buf, &root_off)) return false;
 
     id<MTLComputeCommandEncoder> enc = md_mtl_compute_encoder(s);
     if (!enc) return false;
@@ -2422,8 +2453,8 @@ static bool md_mtl_launch_common(md_gpu_stream_t s, md_gpu_kernel_t k, md_gpu_gr
     [enc setComputePipelineState:k->pso];
     if (root_buf) [enc setBuffer:root_buf offset:root_off atIndex:k->arg_buffer_index];
     MTLSize tg = MTLSizeMake(k->group_size[0], k->group_size[1], k->group_size[2]);
-    if (is_indirect) {
-        [enc dispatchThreadgroupsWithIndirectBuffer:indirect_buf indirectBufferOffset:indirect_off threadsPerThreadgroup:tg];
+    if (indirect) {
+        [enc dispatchThreadgroupsWithIndirectBuffer:indirect->buffer indirectBufferOffset:indirect->offset threadsPerThreadgroup:tg];
     } else {
         [enc dispatchThreadgroups:MTLSizeMake(grid.x, grid.y, grid.z) threadsPerThreadgroup:tg];
     }
@@ -2431,18 +2462,53 @@ static bool md_mtl_launch_common(md_gpu_stream_t s, md_gpu_kernel_t k, md_gpu_gr
     return true;
 }
 
+static bool md_mtl_resolve_grid(md_gpu_stream_t s, md_gpu_addr_t grid, md_mtl_span_t* out, const char* what) {
+    if (!md_mtl_resolve(s->device, grid, 3 * sizeof(uint32_t), out, what)) return false;
+    if (out->offset % 4 != 0) return md_mtl_fail("%s: grid address must be 4-byte aligned", what);
+    return true;
+}
+
+/* A launch with the struct copied. `internal`: md_gpu's own kernels, which
+   may run on transfer streams. */
+static bool md_mtl_launch_copy(md_gpu_stream_t s, md_gpu_kernel_t k, md_gpu_grid_t grid, const void* args, size_t args_size,
+                               bool internal, const char* what) {
+    if (!md_mtl_launch_check(s, k, internal, what)) return false;
+    uint64_t a;
+    if (!md_mtl_args_copy(s, k->args_size, args, args_size, &a, what, k->label)) return false;
+    return md_mtl_dispatch(s, k, a, grid, NULL);
+}
+
 bool md_gpu_launch(md_gpu_stream_t s, md_gpu_kernel_t k, md_gpu_grid_t grid, const void* args, size_t args_size) {
     if (!s || !k) return md_mtl_fail("md_gpu_launch: null stream or kernel");
     if (grid.x == 0 || grid.y == 0 || grid.z == 0) return true;
-    return md_mtl_launch_common(s, k, grid, args, args_size, nil, 0, false, false);
+    return md_mtl_launch_copy(s, k, grid, args, args_size, false, "md_gpu_launch");
+}
+
+bool md_gpu_launch_at(md_gpu_stream_t s, md_gpu_kernel_t k, md_gpu_grid_t grid, md_gpu_addr_t args) {
+    const char* what = "md_gpu_launch_at";
+    if (!s || !k) return md_mtl_fail("%s: null stream or kernel", what);
+    if (grid.x == 0 || grid.y == 0 || grid.z == 0) return true;
+    if (!md_mtl_launch_check(s, k, false, what) || !md_mtl_args_at(s, k->args_size, args, what)) return false;
+    return md_mtl_dispatch(s, k, args, grid, NULL);
 }
 
 bool md_gpu_launch_indirect(md_gpu_stream_t s, md_gpu_kernel_t k, md_gpu_addr_t grid, const void* args, size_t args_size) {
-    if (!s || !k || !grid) return md_mtl_fail("md_gpu_launch_indirect: null argument");
+    const char* what = "md_gpu_launch_indirect";
+    if (!s || !k || !grid) return md_mtl_fail("%s: null argument", what);
     md_mtl_span_t b;
-    if (!md_mtl_resolve(s->device, grid, 3 * sizeof(uint32_t), &b, "md_gpu_launch_indirect")) return false;
-    if (b.offset % 4 != 0) return md_mtl_fail("md_gpu_launch_indirect: grid address must be 4-byte aligned");
-    return md_mtl_launch_common(s, k, md_gpu_grid(1, 1, 1), args, args_size, b.buffer, b.offset, true, false);
+    if (!md_mtl_launch_check(s, k, false, what) || !md_mtl_resolve_grid(s, grid, &b, what)) return false;
+    uint64_t a;
+    if (!md_mtl_args_copy(s, k->args_size, args, args_size, &a, what, k->label)) return false;
+    return md_mtl_dispatch(s, k, a, md_gpu_grid(1, 1, 1), &b);
+}
+
+bool md_gpu_launch_indirect_at(md_gpu_stream_t s, md_gpu_kernel_t k, md_gpu_addr_t grid, md_gpu_addr_t args) {
+    const char* what = "md_gpu_launch_indirect_at";
+    if (!s || !k || !grid) return md_mtl_fail("%s: null argument", what);
+    md_mtl_span_t b;
+    if (!md_mtl_launch_check(s, k, false, what) || !md_mtl_resolve_grid(s, grid, &b, what)) return false;
+    if (!md_mtl_args_at(s, k->args_size, args, what)) return false;
+    return md_mtl_dispatch(s, k, args, md_gpu_grid(1, 1, 1), &b);
 }
 
 /* Mirrors MdMakeGridArgs in md_gpu_builtin_msl.inl. */
@@ -2492,7 +2558,7 @@ static bool md_mtl_byte_op(md_gpu_stream_t s, uint64_t dst, uint64_t src, uint64
         a.value = value;
         const uint64_t threads = (n + MD_MTL_BYTE_OP_SPAN - 1) / MD_MTL_BYTE_OP_SPAN;
         const uint32_t groups  = (uint32_t)((threads + MD_MTL_BYTE_OP_GROUP - 1) / MD_MTL_BYTE_OP_GROUP);
-        if (!md_mtl_launch_common(s, k, md_gpu_grid(groups, 1, 1), &a, sizeof(a), nil, 0, false, true)) return false;
+        if (!md_mtl_launch_copy(s, k, md_gpu_grid(groups, 1, 1), &a, sizeof(a), true, "md_gpu byte_op")) return false;
         done += n;
     }
     return true;
@@ -2988,7 +3054,37 @@ void md_gpu_set_scissor(md_gpu_stream_t s, const md_gpu_rect_t* scissor) {
 
 /* ---- Draws ------------------------------------------------------------------ */
 
-static bool md_mtl_draw_check(md_gpu_stream_t s, md_gpu_pipeline_t p, const void* args, size_t args_size, const char* what) {
+/* Every draw goes through md_mtl_draw, as in md_gpu_vulkan.c. */
+typedef enum md_mtl_draw_kind_t {
+    MD_MTL_DRAW,
+    MD_MTL_DRAW_INDEXED,
+    MD_MTL_DRAW_INDIRECT,
+    MD_MTL_DRAW_INDEXED_INDIRECT,
+} md_mtl_draw_kind_t;
+
+typedef struct md_mtl_draw_t {
+    md_mtl_draw_kind_t  kind;
+    uint32_t            count;            /* vertices, indices, or indirect commands */
+    uint32_t            instance_count;   /* direct draws                            */
+    md_gpu_addr_t       indices;
+    md_gpu_index_type_t index_type;
+    md_gpu_addr_t       cmds;
+    bool                by_address;       /* the struct at args_at, else copied from args */
+    const void*         args;
+    size_t              args_size;
+    md_gpu_addr_t       args_at;
+} md_mtl_draw_t;
+
+static const char* md_mtl_draw_name(const md_mtl_draw_t* d) {
+    static const char* names[2][4] = {
+        {"md_gpu_draw", "md_gpu_draw_indexed", "md_gpu_draw_indirect", "md_gpu_draw_indexed_indirect"},
+        {"md_gpu_draw_at", "md_gpu_draw_indexed_at", "md_gpu_draw_indirect_at", "md_gpu_draw_indexed_indirect_at"},
+    };
+    return names[d->by_address ? 1 : 0][d->kind];
+}
+
+/* The pass and the pipeline agree; nothing is recorded. */
+static bool md_mtl_draw_check(md_gpu_stream_t s, md_gpu_pipeline_t p, const char* what) {
     if (!s || !p) return md_mtl_fail("%s: null stream or pipeline", what);
     if (p->device != s->device) return md_mtl_fail("%s: pipeline '%s' belongs to another device", what, p->label);
     if (!s->in_pass) return md_mtl_fail("%s: stream '%s' has no open render pass", what, s->label);
@@ -3007,44 +3103,6 @@ static bool md_mtl_draw_check(md_gpu_stream_t s, md_gpu_pipeline_t p, const void
                            p->depth ? md_mtl_format_info(p->depth).name : "none",
                            s->pass_depth ? md_mtl_format_info(s->pass_depth).name : "none");
     }
-    if (p->args_size != 0 && args_size != p->args_size) {
-        return md_mtl_fail("%s: pipeline '%s' expects a %u-byte argument struct but %zu bytes were passed",
-                           what, p->label, p->args_size, args_size);
-    }
-    if (args_size > 0 && !args) return md_mtl_fail("%s: null args with non-zero size", what);
-    return true;
-}
-
-/* Arguments into the arena, the root cell pointing at them, and both bound
-   to the stages that read a root. See md_mtl_launch_common for why the root
-   is a cell of its own. */
-static bool md_mtl_draw_bind(md_gpu_stream_t s, md_gpu_pipeline_t p, const void* args, size_t args_size) {
-    id<MTLRenderCommandEncoder> enc = s->render_enc;
-    md_mtl_declare_residency_render(s, enc);
-    if (s->bound_pipeline != p) {
-        [enc setRenderPipelineState:p->pso];
-        s->bound_pipeline = p;
-    }
-    if (args_size > 0) {
-        uint64_t arg_addr, root_addr, root_off;
-        void* arg_host; void* root_host;
-        id<MTLBuffer> root_buf = nil;
-        if (!md_mtl_arena_alloc(s, args_size, MD_MTL_ARG_ALIGN, &arg_addr, &arg_host, NULL, NULL)) return false;
-        memcpy(arg_host, args, args_size);
-        if (!md_mtl_arena_alloc(s, sizeof(uint64_t), MD_MTL_ROOT_ALIGN, &root_addr, &root_host, &root_buf, &root_off)) return false;
-        memcpy(root_host, &arg_addr, sizeof(arg_addr));
-        if (p->vs_root != UINT32_MAX) [enc setVertexBuffer:root_buf offset:root_off atIndex:p->vs_root];
-        if (p->fs_root != UINT32_MAX) [enc setFragmentBuffer:root_buf offset:root_off atIndex:p->fs_root];
-    }
-    return true;
-}
-
-bool md_gpu_draw(md_gpu_stream_t s, md_gpu_pipeline_t p, uint32_t vertex_count, uint32_t instance_count,
-                 const void* args, size_t args_size) {
-    if (!md_mtl_draw_check(s, p, args, args_size, "md_gpu_draw")) return false;
-    if (vertex_count == 0 || instance_count == 0) return true;
-    if (!md_mtl_draw_bind(s, p, args, args_size)) return false;
-    [s->render_enc drawPrimitives:p->primitive vertexStart:0 vertexCount:vertex_count instanceCount:instance_count];
     return true;
 }
 
@@ -3058,61 +3116,132 @@ static bool md_mtl_resolve_indices(md_gpu_stream_t s, md_gpu_addr_t indices, md_
     return md_mtl_resolve(s->device, indices, count * isize, out, what);
 }
 
-bool md_gpu_draw_indexed(md_gpu_stream_t s, md_gpu_pipeline_t p, md_gpu_addr_t indices, md_gpu_index_type_t index_type,
-                         uint32_t index_count, uint32_t instance_count, const void* args, size_t args_size) {
-    const char* what = "md_gpu_draw_indexed";
-    if (!md_mtl_draw_check(s, p, args, args_size, what)) return false;
-    if (index_count == 0 || instance_count == 0) return true;
-    md_mtl_span_t ib;
-    MTLIndexType it;
-    if (!md_mtl_resolve_indices(s, indices, index_type, index_count, &ib, &it, what)) return false;
-    if (!md_mtl_draw_bind(s, p, args, args_size)) return false;
-    [s->render_enc drawIndexedPrimitives:p->primitive indexCount:index_count indexType:it
-                             indexBuffer:ib.buffer indexBufferOffset:ib.offset instanceCount:instance_count];
+/* The arguments' root cell, bound to the stages that read a root, and the
+   pipeline. See md_mtl_root_cell for why the root is a cell of its own. */
+static bool md_mtl_draw_bind(md_gpu_stream_t s, md_gpu_pipeline_t p, uint64_t args_addr) {
+    id<MTLRenderCommandEncoder> enc = s->render_enc;
+    md_mtl_declare_residency_render(s, enc);
+    if (s->bound_pipeline != p) {
+        [enc setRenderPipelineState:p->pso];
+        s->bound_pipeline = p;
+    }
+    if (args_addr) {
+        id<MTLBuffer> root_buf = nil;
+        uint64_t root_off = 0;
+        if (!md_mtl_root_cell(s, args_addr, &root_buf, &root_off)) return false;
+        if (p->vs_root != UINT32_MAX) [enc setVertexBuffer:root_buf offset:root_off atIndex:p->vs_root];
+        if (p->fs_root != UINT32_MAX) [enc setFragmentBuffer:root_buf offset:root_off atIndex:p->fs_root];
+    }
     return true;
-}
-
-static bool md_mtl_resolve_cmds(md_gpu_stream_t s, md_gpu_addr_t cmds, uint32_t count, uint32_t stride,
-                                md_mtl_span_t* out, const char* what) {
-    if (!cmds) return md_mtl_fail("%s: null command address", what);
-    if (cmds % 4 != 0) return md_mtl_fail("%s: command address must be 4-byte aligned", what);
-    return md_mtl_resolve(s->device, cmds, (uint64_t)count * stride, out, what);
 }
 
 /* Metal 3 draws one indirect command per call; the layouts match
    MTLDrawPrimitivesIndirectArguments / MTLDrawIndexedPrimitivesIndirectArguments
    exactly, so each call reads a record in place. */
-bool md_gpu_draw_indirect(md_gpu_stream_t s, md_gpu_pipeline_t p, md_gpu_addr_t cmds, uint32_t count,
-                          const void* args, size_t args_size) {
-    const char* what = "md_gpu_draw_indirect";
-    if (!md_mtl_draw_check(s, p, args, args_size, what)) return false;
-    if (count == 0) return true;
-    const uint32_t stride = (uint32_t)sizeof(md_gpu_draw_cmd_t);
-    md_mtl_span_t cb;
-    if (!md_mtl_resolve_cmds(s, cmds, count, stride, &cb, what)) return false;
-    if (!md_mtl_draw_bind(s, p, args, args_size)) return false;
-    for (uint32_t i = 0; i < count; ++i) {
-        [s->render_enc drawPrimitives:p->primitive indirectBuffer:cb.buffer indirectBufferOffset:cb.offset + (uint64_t)i * stride];
+static bool md_mtl_draw(md_gpu_stream_t s, md_gpu_pipeline_t p, const md_mtl_draw_t* d) {
+    const char* what = md_mtl_draw_name(d);
+    if (!md_mtl_draw_check(s, p, what)) return false;
+    const bool indirect = d->kind == MD_MTL_DRAW_INDIRECT || d->kind == MD_MTL_DRAW_INDEXED_INDIRECT;
+    const bool indexed  = d->kind == MD_MTL_DRAW_INDEXED  || d->kind == MD_MTL_DRAW_INDEXED_INDIRECT;
+    if (d->count == 0 || (!indirect && d->instance_count == 0)) return true;
+
+    const uint32_t stride = d->kind == MD_MTL_DRAW_INDIRECT ? (uint32_t)sizeof(md_gpu_draw_cmd_t)
+                                                            : (uint32_t)sizeof(md_gpu_draw_indexed_cmd_t);
+    md_mtl_span_t ib = {nil, 0, NULL}, cb = {nil, 0, NULL};
+    MTLIndexType it = MTLIndexTypeUInt32;
+    /* The index range of an indirect draw is known only to the GPU; the
+       address must at least start a live allocation. */
+    if (indexed && !md_mtl_resolve_indices(s, d->indices, d->index_type, indirect ? 1 : d->count, &ib, &it, what)) return false;
+    if (indirect) {
+        if (!d->cmds) return md_mtl_fail("%s: null command address", what);
+        if (d->cmds % 4 != 0) return md_mtl_fail("%s: command address must be 4-byte aligned", what);
+        if (!md_mtl_resolve(s->device, d->cmds, (uint64_t)d->count * stride, &cb, what)) return false;
+    }
+
+    uint64_t args_addr = d->args_at;
+    if (d->by_address) {
+        if (!md_mtl_args_at(s, p->args_size, d->args_at, what)) return false;
+    } else if (!md_mtl_args_copy(s, p->args_size, d->args, d->args_size, &args_addr, what, p->label)) {
+        return false;
+    }
+    if (!md_mtl_draw_bind(s, p, args_addr)) return false;
+
+    id<MTLRenderCommandEncoder> enc = s->render_enc;
+    switch (d->kind) {
+    case MD_MTL_DRAW:
+        [enc drawPrimitives:p->primitive vertexStart:0 vertexCount:d->count instanceCount:d->instance_count];
+        break;
+    case MD_MTL_DRAW_INDEXED:
+        [enc drawIndexedPrimitives:p->primitive indexCount:d->count indexType:it
+                       indexBuffer:ib.buffer indexBufferOffset:ib.offset instanceCount:d->instance_count];
+        break;
+    case MD_MTL_DRAW_INDIRECT:
+        for (uint32_t i = 0; i < d->count; ++i) {
+            [enc drawPrimitives:p->primitive indirectBuffer:cb.buffer indirectBufferOffset:cb.offset + (uint64_t)i * stride];
+        }
+        break;
+    case MD_MTL_DRAW_INDEXED_INDIRECT:
+        for (uint32_t i = 0; i < d->count; ++i) {
+            [enc drawIndexedPrimitives:p->primitive indexType:it indexBuffer:ib.buffer indexBufferOffset:ib.offset
+                        indirectBuffer:cb.buffer indirectBufferOffset:cb.offset + (uint64_t)i * stride];
+        }
+        break;
     }
     return true;
 }
 
+bool md_gpu_draw(md_gpu_stream_t s, md_gpu_pipeline_t p, uint32_t vertex_count, uint32_t instance_count,
+                 const void* args, size_t args_size) {
+    md_mtl_draw_t d = {MD_MTL_DRAW, vertex_count, instance_count};
+    d.args = args; d.args_size = args_size;
+    return md_mtl_draw(s, p, &d);
+}
+
+bool md_gpu_draw_at(md_gpu_stream_t s, md_gpu_pipeline_t p, uint32_t vertex_count, uint32_t instance_count, md_gpu_addr_t args) {
+    md_mtl_draw_t d = {MD_MTL_DRAW, vertex_count, instance_count};
+    d.by_address = true; d.args_at = args;
+    return md_mtl_draw(s, p, &d);
+}
+
+bool md_gpu_draw_indexed(md_gpu_stream_t s, md_gpu_pipeline_t p, md_gpu_addr_t indices, md_gpu_index_type_t index_type,
+                         uint32_t index_count, uint32_t instance_count, const void* args, size_t args_size) {
+    md_mtl_draw_t d = {MD_MTL_DRAW_INDEXED, index_count, instance_count, indices, index_type};
+    d.args = args; d.args_size = args_size;
+    return md_mtl_draw(s, p, &d);
+}
+
+bool md_gpu_draw_indexed_at(md_gpu_stream_t s, md_gpu_pipeline_t p, md_gpu_addr_t indices, md_gpu_index_type_t index_type,
+                            uint32_t index_count, uint32_t instance_count, md_gpu_addr_t args) {
+    md_mtl_draw_t d = {MD_MTL_DRAW_INDEXED, index_count, instance_count, indices, index_type};
+    d.by_address = true; d.args_at = args;
+    return md_mtl_draw(s, p, &d);
+}
+
+bool md_gpu_draw_indirect(md_gpu_stream_t s, md_gpu_pipeline_t p, md_gpu_addr_t cmds, uint32_t count,
+                          const void* args, size_t args_size) {
+    md_mtl_draw_t d = {MD_MTL_DRAW_INDIRECT, count};
+    d.cmds = cmds; d.args = args; d.args_size = args_size;
+    return md_mtl_draw(s, p, &d);
+}
+
+bool md_gpu_draw_indirect_at(md_gpu_stream_t s, md_gpu_pipeline_t p, md_gpu_addr_t cmds, uint32_t count, md_gpu_addr_t args) {
+    md_mtl_draw_t d = {MD_MTL_DRAW_INDIRECT, count};
+    d.cmds = cmds; d.by_address = true; d.args_at = args;
+    return md_mtl_draw(s, p, &d);
+}
+
 bool md_gpu_draw_indexed_indirect(md_gpu_stream_t s, md_gpu_pipeline_t p, md_gpu_addr_t indices, md_gpu_index_type_t index_type,
                                   md_gpu_addr_t cmds, uint32_t count, const void* args, size_t args_size) {
-    const char* what = "md_gpu_draw_indexed_indirect";
-    if (!md_mtl_draw_check(s, p, args, args_size, what)) return false;
-    if (count == 0) return true;
-    const uint32_t stride = (uint32_t)sizeof(md_gpu_draw_indexed_cmd_t);
-    md_mtl_span_t cb, ib;
-    MTLIndexType it;
-    if (!md_mtl_resolve_cmds(s, cmds, count, stride, &cb, what)) return false;
-    if (!md_mtl_resolve_indices(s, indices, index_type, 1, &ib, &it, what)) return false;
-    if (!md_mtl_draw_bind(s, p, args, args_size)) return false;
-    for (uint32_t i = 0; i < count; ++i) {
-        [s->render_enc drawIndexedPrimitives:p->primitive indexType:it indexBuffer:ib.buffer indexBufferOffset:ib.offset
-                              indirectBuffer:cb.buffer indirectBufferOffset:cb.offset + (uint64_t)i * stride];
-    }
-    return true;
+    md_mtl_draw_t d = {MD_MTL_DRAW_INDEXED_INDIRECT, count, 0, indices, index_type, cmds};
+    d.args = args; d.args_size = args_size;
+    return md_mtl_draw(s, p, &d);
+}
+
+bool md_gpu_draw_indexed_indirect_at(md_gpu_stream_t s, md_gpu_pipeline_t p, md_gpu_addr_t indices, md_gpu_index_type_t index_type,
+                                     md_gpu_addr_t cmds, uint32_t count, md_gpu_addr_t args) {
+    md_mtl_draw_t d = {MD_MTL_DRAW_INDEXED_INDIRECT, count, 0, indices, index_type, cmds};
+    d.by_address = true; d.args_at = args;
+    return md_mtl_draw(s, p, &d);
 }
 
 /* ---- Texture to texture -------------------------------------------------------- */

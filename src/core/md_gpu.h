@@ -57,7 +57,9 @@ Kernel arguments
 ----------------
 A kernel receives one pointer to a caller-defined argument struct. The backend
 copies the struct into device memory and passes its address in an 8-byte push
-constant, so there is no size limit and no portability cliff:
+constant, so there is no size limit and no portability cliff. The _at forms of
+launches and draws take that address from the caller instead, so the struct
+can live in GPU memory, written by the GPU itself:
 
     struct Args { uint n; uint _pad; float* dst; };
     MD_SHADER_ARGS(Args);                   // from md_gpu.slang
@@ -848,6 +850,17 @@ bool md_gpu_launch(md_gpu_stream_t stream, md_gpu_kernel_t kernel, md_gpu_grid_t
 bool md_gpu_launch_indirect(md_gpu_stream_t stream, md_gpu_kernel_t kernel, md_gpu_addr_t grid,
                             const void* args, size_t args_size);
 
+/* The argument struct by address rather than by value: nothing is copied, and
+   the kernel reads whatever is at `args` when it runs. That lets the struct be
+   written by an earlier kernel (ordered like any other write in the stream),
+   kept and reused across launches, or chosen per launch from a table. `args`
+   must lie in md_gpu memory (malloc or temp), be aligned as the struct is in
+   C (the largest power of two dividing its size, up to 16 -- so record i of
+   an array of them always is), have at least the kernel's args_size bytes
+   behind it, and stay allocated until the launch has completed. */
+bool md_gpu_launch_at(md_gpu_stream_t stream, md_gpu_kernel_t kernel, md_gpu_grid_t grid, md_gpu_addr_t args);
+bool md_gpu_launch_indirect_at(md_gpu_stream_t stream, md_gpu_kernel_t kernel, md_gpu_addr_t grid, md_gpu_addr_t args);
+
 /* Pass an argument struct by value; its size comes from sizeof. */
 #define MD_GPU_LAUNCH(stream, kernel, grid, args) \
     md_gpu_launch((stream), (kernel), (grid), &(args), sizeof(args))
@@ -865,9 +878,10 @@ bool md_gpu_make_grid(md_gpu_stream_t stream, md_gpu_addr_t out_grid,
 
    Rasterisation on the same terms as compute:
 
-     * A draw works like a launch. It names its pipeline and takes a copied
-       argument struct that both shader stages read through the same root
-       pointer (MD_ARGS). There are no vertex buffers or input layouts: the
+     * A draw works like a launch. It names its pipeline and takes an
+       argument struct, copied or by address (the _at forms), that both
+       shader stages read through the same root pointer (MD_ARGS). There
+       are no vertex buffers or input layouts: the
        vertex shader reads what it needs through pointers in the struct.
        Index and indirect-command buffers are GPU addresses.
 
@@ -1201,6 +1215,26 @@ bool md_gpu_draw_indexed_indirect(md_gpu_stream_t stream, md_gpu_pipeline_t pipe
                                   md_gpu_addr_t indices, md_gpu_index_type_t index_type,
                                   md_gpu_addr_t cmds, uint32_t count,
                                   const void* args, size_t args_size);
+
+/* The argument struct by address, as md_gpu_launch_at: not copied, read when
+   the draw runs, with the same requirements on `args`.
+
+   `args` may also be the base of an array of records, one per draw of an
+   indirect call: a culling kernel writes command i with first_instance = i,
+   and the shaders read record MD_ARGS_AT(base_instance) (md_gpu.slang), with
+   base_instance from SV_StartInstanceLocation. That is a multi-draw whose
+   every draw has root data of its own, built on the GPU, at the cost of one
+   indexed load. */
+bool md_gpu_draw_at(md_gpu_stream_t stream, md_gpu_pipeline_t pipeline,
+                    uint32_t vertex_count, uint32_t instance_count, md_gpu_addr_t args);
+bool md_gpu_draw_indexed_at(md_gpu_stream_t stream, md_gpu_pipeline_t pipeline,
+                            md_gpu_addr_t indices, md_gpu_index_type_t index_type,
+                            uint32_t index_count, uint32_t instance_count, md_gpu_addr_t args);
+bool md_gpu_draw_indirect_at(md_gpu_stream_t stream, md_gpu_pipeline_t pipeline,
+                             md_gpu_addr_t cmds, uint32_t count, md_gpu_addr_t args);
+bool md_gpu_draw_indexed_indirect_at(md_gpu_stream_t stream, md_gpu_pipeline_t pipeline,
+                                     md_gpu_addr_t indices, md_gpu_index_type_t index_type,
+                                     md_gpu_addr_t cmds, uint32_t count, md_gpu_addr_t args);
 
 /* Pass an argument struct by value; its size comes from sizeof. */
 #define MD_GPU_DRAW(stream, pipeline, vertex_count, instance_count, args) \

@@ -1867,6 +1867,85 @@ UTEST(gpu, make_grid_and_indirect_launch) {
     gpu_close(&f);
 }
 
+/* Arguments by address: nothing copied, read when the kernel runs. The struct
+   may be written by the host, by a transfer or a kernel earlier in the stream,
+   and a table of them is addressed record by record. */
+UTEST(gpu, launch_at_reads_arguments_from_gpu_memory) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
+
+    enum { N = 1000 };
+    static uint32_t host[N];
+    md_gpu_addr_t d = gpu_alloc(&f, f.compute, N * sizeof(uint32_t));
+    ASSERT_TRUE(d != 0);
+
+    /* Host-written, two records: launch either by address arithmetic. */
+    md_gpu_mem_t table = md_gpu_malloc(f.compute, MD_GPU_MEM_HOST_WRITE, 2 * sizeof(fill_args_t));
+    ASSERT_TRUE(table.cpu != NULL);
+    fill_args_t* rec = (fill_args_t*)table.cpu;
+    memset(rec, 0, 2 * sizeof(fill_args_t));
+    rec[0].n = N;     rec[0].base = 100; rec[0].dst = d;
+    rec[1].n = N / 2; rec[1].base = 7;   rec[1].dst = d;
+    ASSERT_TRUE(md_gpu_launch_at(f.compute, f.k_fill, grid1(f.k_fill, N), table.gpu));
+    ASSERT_TRUE(gpu_read(&f, f.compute, host, d, sizeof(host)));
+    for (int i = 0; i < N; ++i) EXPECT_EQ((uint32_t)(100 + i), host[i]);
+
+    ASSERT_TRUE(md_gpu_launch_at(f.compute, f.k_fill, grid1(f.k_fill, N), table.gpu + sizeof(fill_args_t)));
+    ASSERT_TRUE(gpu_read(&f, f.compute, host, d, sizeof(host)));
+    for (int i = 0; i < N; ++i) EXPECT_EQ((uint32_t)(i < N / 2 ? 7 + i : 100 + i), host[i]);
+
+    /* Written by a transfer earlier in the stream (a staged upload into
+       device memory), then read as arguments. */
+    md_gpu_addr_t dev_args = gpu_alloc(&f, f.compute, sizeof(fill_args_t));
+    ASSERT_TRUE(dev_args != 0);
+    fill_args_t up = {0};
+    up.n = N; up.base = 5000; up.dst = d;
+    ASSERT_TRUE(md_gpu_upload(f.compute, dev_args, &up, sizeof(up)));
+    ASSERT_TRUE(md_gpu_launch_at(f.compute, f.k_fill, grid1(f.k_fill, N), dev_args));
+    ASSERT_TRUE(gpu_read(&f, f.compute, host, d, sizeof(host)));
+    for (int i = 0; i < N; ++i) EXPECT_EQ((uint32_t)(5000 + i), host[i]);
+
+    /* Written by a kernel: scale_add copies the words of a prepared struct
+       (mul 1, add 0) into the argument block the next launch reads. */
+    fill_args_t words = {0};
+    words.n = N; words.base = 9000; words.dst = d;
+    md_gpu_addr_t src_words = gpu_alloc(&f, f.compute, sizeof(words));
+    ASSERT_TRUE(src_words && md_gpu_upload(f.compute, src_words, &words, sizeof(words)));
+    md_gpu_stream_sync(f.compute);
+    ASSERT_TRUE(md_gpu_memset(f.compute, dev_args, 0, sizeof(fill_args_t)));
+    scale_args_t sa = {0};
+    sa.n = (uint32_t)(sizeof(words) / sizeof(uint32_t)); sa.mul = 1; sa.add = 0; sa.src = src_words; sa.dst = dev_args;
+    ASSERT_TRUE(MD_GPU_LAUNCH(f.compute, f.k_scale, grid1(f.k_scale, sa.n), sa));
+    ASSERT_TRUE(md_gpu_launch_at(f.compute, f.k_fill, grid1(f.k_fill, N), dev_args));
+    ASSERT_TRUE(gpu_read(&f, f.compute, host, d, sizeof(host)));
+    for (int i = 0; i < N; ++i) EXPECT_EQ((uint32_t)(9000 + i), host[i]);
+
+    /* Indirect, with both the grid and the arguments in memory. */
+    md_gpu_mem_t grid = md_gpu_malloc(f.compute, MD_GPU_MEM_HOST_WRITE, 3 * sizeof(uint32_t));
+    ASSERT_TRUE(grid.cpu != NULL);
+    const md_gpu_grid_t g = grid1(f.k_fill, N);
+    ((uint32_t*)grid.cpu)[0] = g.x; ((uint32_t*)grid.cpu)[1] = 1; ((uint32_t*)grid.cpu)[2] = 1;
+    ASSERT_TRUE(md_gpu_launch_indirect_at(f.compute, f.k_fill, grid.gpu, table.gpu));
+    ASSERT_TRUE(gpu_read(&f, f.compute, host, d, sizeof(host)));
+    for (int i = 0; i < N; ++i) EXPECT_EQ((uint32_t)(100 + i), host[i]);
+
+    /* What the address must be: non-null, 16-byte aligned, md_gpu memory with
+       the kernel's argument struct behind it. */
+    EXPECT_FALSE(md_gpu_launch_at(f.compute, f.k_fill, grid1(f.k_fill, N), 0));
+    EXPECT_FALSE(md_gpu_launch_at(f.compute, f.k_fill, grid1(f.k_fill, N), table.gpu + 4));
+    EXPECT_FALSE(md_gpu_launch_at(f.compute, f.k_fill, grid1(f.k_fill, N), (md_gpu_addr_t)0x10));
+    EXPECT_FALSE(md_gpu_launch_at(f.compute, f.k_fill, grid1(f.k_fill, N), dev_args + 8));    /* overruns it */
+    EXPECT_FALSE(md_gpu_launch_indirect_at(f.compute, f.k_fill, grid.gpu, 0));
+    md_gpu_stream_sync(f.compute);
+
+    md_gpu_free(f.compute, d);
+    md_gpu_free(f.compute, dev_args);
+    md_gpu_free(f.compute, src_words);
+    md_gpu_free(f.compute, table.gpu);
+    md_gpu_free(f.compute, grid.gpu);
+    gpu_close(&f);
+}
+
 /* An indirect grid derived from a device-side count of zero must dispatch
    nothing rather than fault. */
 UTEST(gpu, indirect_launch_with_zero_count) {

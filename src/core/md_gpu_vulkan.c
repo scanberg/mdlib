@@ -3852,37 +3852,54 @@ static void md_vk_dispatch_label_end(md_gpu_device_t dev, VkCommandBuffer cmd) {
     if (md_vk_debug_labels(dev)) vkCmdEndDebugUtilsLabelEXT(cmd);
 }
 
-static VkCommandBuffer md_vk_launch_common(md_gpu_stream_t s, md_gpu_kernel_t k, const void* args, size_t args_size) {
-    md_gpu_device_t dev = s->device;
-    if (k->device != dev) { md_vk_fail("kernel '%s' belongs to a different device", k->label); return VK_NULL_HANDLE; }
-    if (s->kind == MD_GPU_STREAM_TRANSFER) {
-        md_vk_fail("kernel '%s' launched into '%s', a transfer stream; kernels run on compute streams", k->label, s->label);
-        return VK_NULL_HANDLE;
-    }
-    if (k->args_size != 0 && args_size != k->args_size) {
-        md_vk_fail("kernel '%s' expects a %u-byte argument struct but %zu bytes were passed", k->label, k->args_size, args_size);
-        return VK_NULL_HANDLE;
-    }
-    if (args_size > 0 && !args) { md_vk_fail("kernel '%s': null args with non-zero size", k->label); return VK_NULL_HANDLE; }
+/* ---- Argument blocks ----------------------------------------------------------
+   A launch or draw passes one 8-byte address in its push constant: of a copy
+   of the caller's struct in the stream's arena, or (the _at forms) of a block
+   the caller placed. */
 
-    uint64_t arg_addr = 0;
-    if (args_size > 0) {
-        void* host;
-        if (!md_vk_arena_alloc(s, args_size, &arg_addr, &host, NULL, NULL)) return VK_NULL_HANDLE;
-        memcpy(host, args, args_size);
+static bool md_vk_args_copy(md_gpu_stream_t s, uint32_t expected, const void* args, size_t args_size,
+                            uint64_t* out_addr, const char* what, const char* name) {
+    *out_addr = 0;
+    if (expected != 0 && args_size != expected) {
+        return md_vk_fail("%s: '%s' expects a %u-byte argument struct but %zu bytes were passed", what, name, expected, args_size);
     }
-
-    VkCommandBuffer cmd = md_vk_begin_op(s);
-    if (!cmd) return VK_NULL_HANDLE;
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, k->pipeline);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, dev->pipeline_layout, 0, 1, &dev->desc_set, 0, NULL);
-    vkCmdPushConstants(cmd, dev->pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 8, &arg_addr);
-    return cmd;
+    if (args_size == 0) return true;
+    if (!args) return md_vk_fail("%s: '%s': null args with non-zero size", what, name);
+    void* host;
+    if (!md_vk_arena_alloc(s, args_size, out_addr, &host, NULL, NULL)) return false;
+    memcpy(host, args, args_size);
+    return true;
 }
 
-bool md_gpu_launch(md_gpu_stream_t s, md_gpu_kernel_t k, md_gpu_grid_t grid, const void* args, size_t args_size) {
-    if (!s || !k) return md_vk_fail("md_gpu_launch: null stream or kernel");
-    if (grid.x == 0 || grid.y == 0 || grid.z == 0) return true;   /* empty launch */
+/* The alignment an argument struct of `size` bytes has in C, and so in an
+   array of them: the largest power of two that divides its size, at most 16
+   (md_gpu_*4, md_gpu_float4x4), at least 4. */
+static uint64_t md_vk_args_align(uint32_t size) {
+    uint64_t a = size ? (uint64_t)(size & (~size + 1u)) : 4u;
+    return a < 4 ? 4 : (a > 16 ? 16 : a);
+}
+
+static bool md_vk_args_at(md_gpu_stream_t s, uint32_t expected, md_gpu_addr_t args, const char* what) {
+    if (!args) return md_vk_fail("%s: null argument address", what);
+    const uint64_t align = md_vk_args_align(expected);
+    if (args % align != 0) {
+        return md_vk_fail("%s: argument address 0x%llx is not %llu-byte aligned, as its %u-byte struct is",
+                          what, (unsigned long long)args, (unsigned long long)align, expected);
+    }
+    return md_vk_resolve(s->device, args, expected ? expected : 1, NULL, what);
+}
+
+/* ---- Launches ------------------------------------------------------------------ */
+
+static bool md_vk_launch_check(md_gpu_stream_t s, md_gpu_kernel_t k, const char* what) {
+    if (k->device != s->device) return md_vk_fail("%s: kernel '%s' belongs to a different device", what, k->label);
+    if (s->kind == MD_GPU_STREAM_TRANSFER) {
+        return md_vk_fail("%s: kernel '%s' launched into '%s', a transfer stream; kernels run on compute streams", what, k->label, s->label);
+    }
+    return true;
+}
+
+static bool md_vk_grid_check(md_gpu_stream_t s, md_gpu_kernel_t k, md_gpu_grid_t grid) {
     const VkPhysicalDeviceLimits* lim = &s->device->props.limits;
     if (grid.x > lim->maxComputeWorkGroupCount[0] || grid.y > lim->maxComputeWorkGroupCount[1] ||
         grid.z > lim->maxComputeWorkGroupCount[2]) {
@@ -3890,27 +3907,70 @@ bool md_gpu_launch(md_gpu_stream_t s, md_gpu_kernel_t k, md_gpu_grid_t grid, con
                           grid.x, grid.y, grid.z, lim->maxComputeWorkGroupCount[0],
                           lim->maxComputeWorkGroupCount[1], lim->maxComputeWorkGroupCount[2]);
     }
-    VkCommandBuffer cmd = md_vk_launch_common(s, k, args, args_size);
+    return true;
+}
+
+/* Record one dispatch: direct over `grid`, or indirect from `indirect`. */
+static bool md_vk_dispatch(md_gpu_stream_t s, md_gpu_kernel_t k, uint64_t args_addr, md_gpu_grid_t grid,
+                           const md_vk_span_t* indirect) {
+    md_gpu_device_t dev = s->device;
+    VkCommandBuffer cmd = md_vk_begin_op(s);
     if (!cmd) return false;
-    md_vk_dispatch_label_begin(s->device, cmd, k);
-    vkCmdDispatch(cmd, grid.x, grid.y, grid.z);
-    md_vk_dispatch_label_end(s->device, cmd);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, k->pipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, dev->pipeline_layout, 0, 1, &dev->desc_set, 0, NULL);
+    vkCmdPushConstants(cmd, dev->pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 8, &args_addr);
+    md_vk_dispatch_label_begin(dev, cmd, k);
+    if (indirect) vkCmdDispatchIndirect(cmd, indirect->buffer, indirect->offset);
+    else          vkCmdDispatch(cmd, grid.x, grid.y, grid.z);
+    md_vk_dispatch_label_end(dev, cmd);
     md_vk_end_op(s);
     return true;
 }
 
-bool md_gpu_launch_indirect(md_gpu_stream_t s, md_gpu_kernel_t k, md_gpu_addr_t grid, const void* args, size_t args_size) {
-    if (!s || !k || !grid) return md_vk_fail("md_gpu_launch_indirect: null argument");
-    md_vk_span_t b;
-    if (!md_vk_resolve(s->device, grid, 3 * sizeof(uint32_t), &b, "md_gpu_launch_indirect")) return false;
-    if (b.offset % 4 != 0) return md_vk_fail("md_gpu_launch_indirect: grid address must be 4-byte aligned");
-    VkCommandBuffer cmd = md_vk_launch_common(s, k, args, args_size);
-    if (!cmd) return false;
-    md_vk_dispatch_label_begin(s->device, cmd, k);
-    vkCmdDispatchIndirect(cmd, b.buffer, b.offset);
-    md_vk_dispatch_label_end(s->device, cmd);
-    md_vk_end_op(s);
+static bool md_vk_resolve_grid(md_gpu_stream_t s, md_gpu_addr_t grid, md_vk_span_t* out, const char* what) {
+    if (!md_vk_resolve(s->device, grid, 3 * sizeof(uint32_t), out, what)) return false;
+    if (out->offset % 4 != 0) return md_vk_fail("%s: grid address must be 4-byte aligned", what);
     return true;
+}
+
+bool md_gpu_launch(md_gpu_stream_t s, md_gpu_kernel_t k, md_gpu_grid_t grid, const void* args, size_t args_size) {
+    const char* what = "md_gpu_launch";
+    if (!s || !k) return md_vk_fail("%s: null stream or kernel", what);
+    if (grid.x == 0 || grid.y == 0 || grid.z == 0) return true;   /* empty launch */
+    if (!md_vk_launch_check(s, k, what) || !md_vk_grid_check(s, k, grid)) return false;
+    uint64_t a;
+    if (!md_vk_args_copy(s, k->args_size, args, args_size, &a, what, k->label)) return false;
+    return md_vk_dispatch(s, k, a, grid, NULL);
+}
+
+bool md_gpu_launch_at(md_gpu_stream_t s, md_gpu_kernel_t k, md_gpu_grid_t grid, md_gpu_addr_t args) {
+    const char* what = "md_gpu_launch_at";
+    if (!s || !k) return md_vk_fail("%s: null stream or kernel", what);
+    if (grid.x == 0 || grid.y == 0 || grid.z == 0) return true;
+    if (!md_vk_launch_check(s, k, what) || !md_vk_grid_check(s, k, grid)) return false;
+    if (!md_vk_args_at(s, k->args_size, args, what)) return false;
+    return md_vk_dispatch(s, k, args, grid, NULL);
+}
+
+bool md_gpu_launch_indirect(md_gpu_stream_t s, md_gpu_kernel_t k, md_gpu_addr_t grid, const void* args, size_t args_size) {
+    const char* what = "md_gpu_launch_indirect";
+    if (!s || !k || !grid) return md_vk_fail("%s: null argument", what);
+    if (!md_vk_launch_check(s, k, what)) return false;
+    md_vk_span_t b;
+    if (!md_vk_resolve_grid(s, grid, &b, what)) return false;
+    uint64_t a;
+    if (!md_vk_args_copy(s, k->args_size, args, args_size, &a, what, k->label)) return false;
+    return md_vk_dispatch(s, k, a, md_gpu_grid(0, 0, 0), &b);
+}
+
+bool md_gpu_launch_indirect_at(md_gpu_stream_t s, md_gpu_kernel_t k, md_gpu_addr_t grid, md_gpu_addr_t args) {
+    const char* what = "md_gpu_launch_indirect_at";
+    if (!s || !k || !grid) return md_vk_fail("%s: null argument", what);
+    if (!md_vk_launch_check(s, k, what)) return false;
+    md_vk_span_t b;
+    if (!md_vk_resolve_grid(s, grid, &b, what)) return false;
+    if (!md_vk_args_at(s, k->args_size, args, what)) return false;
+    return md_vk_dispatch(s, k, args, md_gpu_grid(0, 0, 0), &b);
 }
 
 /* Mirrors Args in src/shaders/gpu/md_gpu_make_grid.slang. */
@@ -4533,8 +4593,40 @@ void md_gpu_set_scissor(md_gpu_stream_t s, const md_gpu_rect_t* scissor) {
 
 /* ---- Draws ------------------------------------------------------------------ */
 
-/* Validation shared by every draw; nothing is recorded. */
-static bool md_vk_draw_check(md_gpu_stream_t s, md_gpu_pipeline_t p, const void* args, size_t args_size, const char* what) {
+/* Every draw goes through md_vk_draw: one kind of four, its arguments copied
+   or by address, validated before anything is recorded. */
+typedef enum md_vk_draw_kind_t {
+    MD_VK_DRAW,
+    MD_VK_DRAW_INDEXED,
+    MD_VK_DRAW_INDIRECT,
+    MD_VK_DRAW_INDEXED_INDIRECT,
+} md_vk_draw_kind_t;
+
+typedef struct md_vk_draw_t {
+    md_vk_draw_kind_t   kind;
+    uint32_t            count;            /* vertices, indices, or indirect commands */
+    uint32_t            instance_count;   /* direct draws                            */
+    md_gpu_addr_t       indices;
+    md_gpu_index_type_t index_type;
+    md_gpu_addr_t       cmds;
+    /* The argument struct: copied from `args` (args_size bytes), or at
+       `args_at` when by_address. */
+    bool                by_address;
+    const void*         args;
+    size_t              args_size;
+    md_gpu_addr_t       args_at;
+} md_vk_draw_t;
+
+static const char* md_vk_draw_name(const md_vk_draw_t* d) {
+    static const char* names[2][4] = {
+        {"md_gpu_draw", "md_gpu_draw_indexed", "md_gpu_draw_indirect", "md_gpu_draw_indexed_indirect"},
+        {"md_gpu_draw_at", "md_gpu_draw_indexed_at", "md_gpu_draw_indirect_at", "md_gpu_draw_indexed_indirect_at"},
+    };
+    return names[d->by_address ? 1 : 0][d->kind];
+}
+
+/* The pass and the pipeline agree; nothing is recorded. */
+static bool md_vk_draw_check(md_gpu_stream_t s, md_gpu_pipeline_t p, const char* what) {
     if (!s || !p) return md_vk_fail("%s: null stream or pipeline", what);
     if (p->device != s->device) return md_vk_fail("%s: pipeline '%s' belongs to another device", what, p->label);
     if (!s->in_pass) return md_vk_fail("%s: stream '%s' has no open render pass", what, s->label);
@@ -4553,109 +4645,122 @@ static bool md_vk_draw_check(md_gpu_stream_t s, md_gpu_pipeline_t p, const void*
                           p->depth ? md_vk_format_info(p->depth).name : "none",
                           s->pass_depth ? md_vk_format_info(s->pass_depth).name : "none");
     }
-    if (p->args_size != 0 && args_size != p->args_size) {
-        return md_vk_fail("%s: pipeline '%s' expects a %u-byte argument struct but %zu bytes were passed",
-                          what, p->label, p->args_size, args_size);
-    }
-    if (args_size > 0 && !args) return md_vk_fail("%s: null args with non-zero size", what);
     return true;
 }
 
-/* Copy the arguments, bind, push the root pointer. */
-static VkCommandBuffer md_vk_draw_bind(md_gpu_stream_t s, md_gpu_pipeline_t p, const void* args, size_t args_size) {
-    uint64_t arg_addr = 0;
-    if (args_size > 0) {
-        void* host;
-        if (!md_vk_arena_alloc(s, args_size, &arg_addr, &host, NULL, NULL)) return VK_NULL_HANDLE;
-        memcpy(host, args, args_size);
+static bool md_vk_resolve_indices(md_gpu_stream_t s, md_gpu_addr_t indices, md_gpu_index_type_t type, uint64_t count,
+                                  md_vk_span_t* out, const char* what) {
+    if (type != MD_GPU_INDEX_U32 && type != MD_GPU_INDEX_U16) return md_vk_fail("%s: invalid index type %d", what, (int)type);
+    const uint64_t isize = type == MD_GPU_INDEX_U16 ? 2 : 4;
+    if (!indices) return md_vk_fail("%s: null index address", what);
+    if (indices % isize != 0) return md_vk_fail("%s: index address must be %llu-byte aligned", what, (unsigned long long)isize);
+    return md_vk_resolve(s->device, indices, count * isize, out, what);
+}
+
+static bool md_vk_draw(md_gpu_stream_t s, md_gpu_pipeline_t p, const md_vk_draw_t* d) {
+    const char* what = md_vk_draw_name(d);
+    if (!md_vk_draw_check(s, p, what)) return false;
+    const bool indirect = d->kind == MD_VK_DRAW_INDIRECT || d->kind == MD_VK_DRAW_INDEXED_INDIRECT;
+    const bool indexed  = d->kind == MD_VK_DRAW_INDEXED  || d->kind == MD_VK_DRAW_INDEXED_INDIRECT;
+    if (d->count == 0 || (!indirect && d->instance_count == 0)) return true;
+
+    /* Indirect commands are tightly packed in the layout both APIs read. The
+       index range of an indirect draw is known only to the GPU; the address
+       must at least start a live allocation. */
+    const uint32_t stride = d->kind == MD_VK_DRAW_INDIRECT ? (uint32_t)sizeof(md_gpu_draw_cmd_t)
+                                                           : (uint32_t)sizeof(md_gpu_draw_indexed_cmd_t);
+    md_vk_span_t ib = {0}, cb = {0};
+    if (indexed && !md_vk_resolve_indices(s, d->indices, d->index_type, indirect ? 1 : d->count, &ib, what)) return false;
+    if (indirect) {
+        if (!d->cmds) return md_vk_fail("%s: null command address", what);
+        if (d->cmds % 4 != 0) return md_vk_fail("%s: command address must be 4-byte aligned", what);
+        if (!md_vk_resolve(s->device, d->cmds, (uint64_t)d->count * stride, &cb, what)) return false;
     }
+
+    uint64_t args_addr = d->args_at;
+    if (d->by_address) {
+        if (!md_vk_args_at(s, p->args_size, d->args_at, what)) return false;
+    } else if (!md_vk_args_copy(s, p->args_size, d->args, d->args_size, &args_addr, what, p->label)) {
+        return false;
+    }
+
     VkCommandBuffer cmd = s->open;
     if (s->bound_pipeline != p) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p->pipeline);
         s->bound_pipeline = p;
     }
-    vkCmdPushConstants(cmd, s->device->raster_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 8, &arg_addr);
-    return cmd;
+    vkCmdPushConstants(cmd, s->device->raster_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 8, &args_addr);
+    if (indexed) vkCmdBindIndexBuffer(cmd, ib.buffer, ib.offset, d->index_type == MD_GPU_INDEX_U16 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
+
+    switch (d->kind) {
+    case MD_VK_DRAW:         vkCmdDraw(cmd, d->count, d->instance_count, 0, 0); break;
+    case MD_VK_DRAW_INDEXED: vkCmdDrawIndexed(cmd, d->count, d->instance_count, 0, 0, 0); break;
+    default: {
+        const uint32_t max = s->device->props.limits.maxDrawIndirectCount;
+        for (uint32_t done = 0; done < d->count;) {
+            const uint32_t n = d->count - done < max ? d->count - done : max;
+            const uint64_t off = cb.offset + (uint64_t)done * stride;
+            if (indexed) vkCmdDrawIndexedIndirect(cmd, cb.buffer, off, n, stride);
+            else         vkCmdDrawIndirect(cmd, cb.buffer, off, n, stride);
+            done += n;
+        }
+    } break;
+    }
+    return true;
 }
 
 bool md_gpu_draw(md_gpu_stream_t s, md_gpu_pipeline_t p, uint32_t vertex_count, uint32_t instance_count,
                  const void* args, size_t args_size) {
-    if (!md_vk_draw_check(s, p, args, args_size, "md_gpu_draw")) return false;
-    if (vertex_count == 0 || instance_count == 0) return true;
-    VkCommandBuffer cmd = md_vk_draw_bind(s, p, args, args_size);
-    if (!cmd) return false;
-    vkCmdDraw(cmd, vertex_count, instance_count, 0, 0);
-    return true;
+    md_vk_draw_t d = {MD_VK_DRAW, vertex_count, instance_count};
+    d.args = args; d.args_size = args_size;
+    return md_vk_draw(s, p, &d);
 }
 
-static bool md_vk_bind_indices(md_gpu_stream_t s, md_gpu_addr_t indices, md_gpu_index_type_t type, uint64_t count, const char* what) {
-    if (type != MD_GPU_INDEX_U32 && type != MD_GPU_INDEX_U16) return md_vk_fail("%s: invalid index type %d", what, (int)type);
-    const uint64_t isize = type == MD_GPU_INDEX_U16 ? 2 : 4;
-    if (!indices) return md_vk_fail("%s: null index address", what);
-    if (indices % isize != 0) return md_vk_fail("%s: index address must be %llu-byte aligned", what, (unsigned long long)isize);
-    md_vk_span_t b;
-    if (!md_vk_resolve(s->device, indices, count * isize, &b, what)) return false;
-    vkCmdBindIndexBuffer(s->open, b.buffer, b.offset, type == MD_GPU_INDEX_U16 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
-    return true;
+bool md_gpu_draw_at(md_gpu_stream_t s, md_gpu_pipeline_t p, uint32_t vertex_count, uint32_t instance_count, md_gpu_addr_t args) {
+    md_vk_draw_t d = {MD_VK_DRAW, vertex_count, instance_count};
+    d.by_address = true; d.args_at = args;
+    return md_vk_draw(s, p, &d);
 }
 
 bool md_gpu_draw_indexed(md_gpu_stream_t s, md_gpu_pipeline_t p, md_gpu_addr_t indices, md_gpu_index_type_t index_type,
                          uint32_t index_count, uint32_t instance_count, const void* args, size_t args_size) {
-    if (!md_vk_draw_check(s, p, args, args_size, "md_gpu_draw_indexed")) return false;
-    if (index_count == 0 || instance_count == 0) return true;
-    if (!md_vk_bind_indices(s, indices, index_type, index_count, "md_gpu_draw_indexed")) return false;
-    VkCommandBuffer cmd = md_vk_draw_bind(s, p, args, args_size);
-    if (!cmd) return false;
-    vkCmdDrawIndexed(cmd, index_count, instance_count, 0, 0, 0);
-    return true;
+    md_vk_draw_t d = {MD_VK_DRAW_INDEXED, index_count, instance_count, indices, index_type};
+    d.args = args; d.args_size = args_size;
+    return md_vk_draw(s, p, &d);
 }
 
-static bool md_vk_resolve_cmds(md_gpu_stream_t s, md_gpu_addr_t cmds, uint32_t count, uint32_t stride,
-                               md_vk_span_t* out, const char* what) {
-    if (!cmds) return md_vk_fail("%s: null command address", what);
-    if (cmds % 4 != 0) return md_vk_fail("%s: command address must be 4-byte aligned", what);
-    return md_vk_resolve(s->device, cmds, (uint64_t)count * stride, out, what);
+bool md_gpu_draw_indexed_at(md_gpu_stream_t s, md_gpu_pipeline_t p, md_gpu_addr_t indices, md_gpu_index_type_t index_type,
+                            uint32_t index_count, uint32_t instance_count, md_gpu_addr_t args) {
+    md_vk_draw_t d = {MD_VK_DRAW_INDEXED, index_count, instance_count, indices, index_type};
+    d.by_address = true; d.args_at = args;
+    return md_vk_draw(s, p, &d);
 }
 
 bool md_gpu_draw_indirect(md_gpu_stream_t s, md_gpu_pipeline_t p, md_gpu_addr_t cmds, uint32_t count,
                           const void* args, size_t args_size) {
-    const char* what = "md_gpu_draw_indirect";
-    if (!md_vk_draw_check(s, p, args, args_size, what)) return false;
-    if (count == 0) return true;
-    const uint32_t stride = (uint32_t)sizeof(md_gpu_draw_cmd_t);
-    md_vk_span_t b;
-    if (!md_vk_resolve_cmds(s, cmds, count, stride, &b, what)) return false;
-    VkCommandBuffer cmd = md_vk_draw_bind(s, p, args, args_size);
-    if (!cmd) return false;
-    const uint32_t max = s->device->props.limits.maxDrawIndirectCount;
-    for (uint32_t done = 0; done < count;) {
-        const uint32_t n = count - done < max ? count - done : max;
-        vkCmdDrawIndirect(cmd, b.buffer, b.offset + (uint64_t)done * stride, n, stride);
-        done += n;
-    }
-    return true;
+    md_vk_draw_t d = {MD_VK_DRAW_INDIRECT, count};
+    d.cmds = cmds; d.args = args; d.args_size = args_size;
+    return md_vk_draw(s, p, &d);
+}
+
+bool md_gpu_draw_indirect_at(md_gpu_stream_t s, md_gpu_pipeline_t p, md_gpu_addr_t cmds, uint32_t count, md_gpu_addr_t args) {
+    md_vk_draw_t d = {MD_VK_DRAW_INDIRECT, count};
+    d.cmds = cmds; d.by_address = true; d.args_at = args;
+    return md_vk_draw(s, p, &d);
 }
 
 bool md_gpu_draw_indexed_indirect(md_gpu_stream_t s, md_gpu_pipeline_t p, md_gpu_addr_t indices, md_gpu_index_type_t index_type,
                                   md_gpu_addr_t cmds, uint32_t count, const void* args, size_t args_size) {
-    const char* what = "md_gpu_draw_indexed_indirect";
-    if (!md_vk_draw_check(s, p, args, args_size, what)) return false;
-    if (count == 0) return true;
-    const uint32_t stride = (uint32_t)sizeof(md_gpu_draw_indexed_cmd_t);
-    md_vk_span_t b;
-    if (!md_vk_resolve_cmds(s, cmds, count, stride, &b, what)) return false;
-    /* The index range is known only to the GPU; the address must at least
-       start a live allocation. */
-    if (!md_vk_bind_indices(s, indices, index_type, 1, what)) return false;
-    VkCommandBuffer cmd = md_vk_draw_bind(s, p, args, args_size);
-    if (!cmd) return false;
-    const uint32_t max = s->device->props.limits.maxDrawIndirectCount;
-    for (uint32_t done = 0; done < count;) {
-        const uint32_t n = count - done < max ? count - done : max;
-        vkCmdDrawIndexedIndirect(cmd, b.buffer, b.offset + (uint64_t)done * stride, n, stride);
-        done += n;
-    }
-    return true;
+    md_vk_draw_t d = {MD_VK_DRAW_INDEXED_INDIRECT, count, 0, indices, index_type, cmds};
+    d.args = args; d.args_size = args_size;
+    return md_vk_draw(s, p, &d);
+}
+
+bool md_gpu_draw_indexed_indirect_at(md_gpu_stream_t s, md_gpu_pipeline_t p, md_gpu_addr_t indices, md_gpu_index_type_t index_type,
+                                     md_gpu_addr_t cmds, uint32_t count, md_gpu_addr_t args) {
+    md_vk_draw_t d = {MD_VK_DRAW_INDEXED_INDIRECT, count, 0, indices, index_type, cmds};
+    d.by_address = true; d.args_at = args;
+    return md_vk_draw(s, p, &d);
 }
 
 /* =========================================================================
