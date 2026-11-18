@@ -394,6 +394,62 @@ UTEST(gto_int, antisymmetric_part_is_ignored) {
     qm_test_free(&t);
 }
 
+// The density as its packed upper triangle in double (md_qm_extract_packed_symmetric_f64, what viamd keeps of it)
+// makes the same distribution as the square matrix, to the bit where the square one is exactly symmetric: the
+// same gaussians, centres, exponents, bounds and coefficients, screened and not.
+UTEST(gto_int, packed_density_matches_square) {
+    qm_test_t t = {0};
+    qm_test_init(&t, MD_MEGABYTES(16));
+    ASSERT_TRUE(md_molden_system_init_from_file(&t.sys, &t.state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden"), NULL));
+    int_test_qm_t m;
+    ASSERT_TRUE(int_test_extract(&m, &t));
+    const size_t N = m.num_ao;
+
+    const md_attribute_t* attr = md_attributes_find(&t.sys.attributes, MD_STR_LIT("orbital/total/density"));
+    if (!attr) attr = md_attributes_find(&t.sys.attributes, MD_STR_LIT("orbital/alpha/density"));
+    ASSERT_TRUE(attr != NULL);
+    ASSERT_EQ(N, md_qm_extract_packed_symmetric_f64(NULL, 0, &t.sys.attributes, attr, md_attribute_slice_all(), NULL));
+    const size_t len = N * (N + 1) / 2;
+    double* P = (double*)md_alloc(t.alloc, sizeof(double) * len);
+    EXPECT_EQ(0u, md_qm_extract_packed_symmetric_f64(P, len - 1, &t.sys.attributes, attr, md_attribute_slice_all(), NULL));
+    ASSERT_EQ(N, md_qm_extract_packed_symmetric_f64(P, len, &t.sys.attributes, attr, md_attribute_slice_all(), NULL));
+
+    // The square matrix (int_test_extract read the same attribute) as its symmetric part, exactly: what the
+    // packed one holds
+    for (size_t i = 0; i < N; ++i) for (size_t j = i + 1; j < N; ++j) {
+        const double s = 0.5 * (m.D[i * N + j] + m.D[j * N + i]);
+        m.D[i * N + j] = m.D[j * N + i] = s;
+    }
+    size_t k = 0, mismatch = 0;
+    for (size_t i = 0; i < N; ++i) for (size_t j = i; j < N; ++j, ++k) mismatch += P[k] != m.D[i * N + j];
+    EXPECT_EQ(0u, mismatch);
+
+    const double thresholds[2] = { 0.0, 1e-6 };
+    for (int ti = 0; ti < 2; ++ti) {
+        md_gto_int_charges_t a = {0}, b = {0};
+        md_gto_int_charges_desc_t desc = {
+            .basis = &m.basis, .atom_xyz = m.atom_xyz, .density_matrix = m.D, .density_scale = -1.0,
+            .point_xyz = m.atom_xyz, .point_charge = m.atom_z, .num_points = m.num_atoms, .threshold = thresholds[ti],
+        };
+        ASSERT_TRUE(md_gto_int_charges_init(&a, &desc, t.alloc));
+        desc.density_matrix = NULL;
+        desc.density_packed = P;
+        ASSERT_TRUE(md_gto_int_charges_init(&b, &desc, t.alloc));
+        ASSERT_EQ(a.num_gaussians, b.num_gaussians);
+        ASSERT_EQ(a.num_coeffs, b.num_coeffs);
+        EXPECT_EQ(0, memcmp(a.center, b.center, sizeof(double) * 3 * a.num_gaussians));
+        EXPECT_EQ(0, memcmp(a.exponent, b.exponent, sizeof(double) * a.num_gaussians));
+        EXPECT_EQ(0, memcmp(a.bound, b.bound, sizeof(double) * a.num_gaussians));
+        EXPECT_EQ(0, memcmp(a.coeff_offset, b.coeff_offset, sizeof(uint32_t) * a.num_gaussians));
+        EXPECT_EQ(0, memcmp(a.coeff, b.coeff, sizeof(double) * a.num_coeffs));
+        printf("h2o cc-pVDZ, threshold %.0e: %u gaussians, %zu coefficients, packed and square the same to the bit\n",
+               thresholds[ti], a.num_gaussians, a.num_coeffs);
+        md_gto_int_charges_free(&a, t.alloc);
+        md_gto_int_charges_free(&b, t.alloc);
+    }
+    qm_test_free(&t);
+}
+
 // The field against central differences of the potential.
 UTEST(gto_int, field_is_minus_gradient) {
     qm_test_t t = {0};
