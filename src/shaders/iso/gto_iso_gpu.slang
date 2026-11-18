@@ -2315,6 +2315,307 @@ void gemm_wide2<let F : int, B : IKBuf, let VERT : int>(uint3 gid, uint tid) {
 [shader("compute")] [numthreads(W_GROUP, 1, 1)] void iso_geval_y256(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_wide2<256, WBuf256, 1>(gid, tid); }
 
 // ------------------------------------------------------------------------------------------
+// The wide GEMMs on the GEMM core (staged): gemm_wide's and gemm_wide2's chunks, products and epilogue, with the
+// multiply-adds the core's (iso_gcorners_cw128, _cw192, _cy256, iso_geval_cw*, _cy256; their own loops beside them
+// until measured: MD_GTO_ISO_GEMM=own). 64 rows per group of 256 threads, F columns per tile; thread (pg, cg) =
+// (tid & 15, tid >> 4) is the core's (ty, tx): rows 4 pg .. 4 pg + 3, columns cg F / 16 .. (R = 4, M = F / 16). The AO
+// values of row 4 pg + ce (ce = cg & 3) are made by the four threads js = cg >> 2, every fourth shell of a chunk.
+// ------------------------------------------------------------------------------------------
+GC_MEM(IsoGw128, 64, 128)
+GC_MEM(IsoGw192, 64, 192)
+GC_MEM(IsoGw256, 64, 256)
+
+// The rows of a wide group (gemm_wide's): false when the group has nothing to do (uniform)
+struct IsoWideRows {
+    float3 p, glo, ghi;
+    uint   pg, cg, ce, js, b, pt, slot0, mask, v0;
+    bool   active, out_active;
+};
+bool iso_wide_rows<let VERT : int>(uint3 gid, uint tid, out IsoWideRows w) {
+    IsoArgs a = MD_ARGS;
+    w.pg = tid & 15u; w.cg = tid >> 4;
+    w.ce = w.cg & 3u; w.js = w.cg >> 2;
+    w.b = 0u; w.pt = 0u; w.slot0 = 0u; w.mask = 0u; w.v0 = 0u;
+    w.active = false; w.out_active = false;
+    w.p = float3(0.0); w.glo = float3(0.0); w.ghi = float3(0.0);
+    if (VERT == 0) {
+        uint total = a.count_in[0];
+        uint e0 = node_index(gid) * uint(W_ROWS);
+        if (e0 >= total) return false;                     // uniform per group
+        w.active = e0 + 4u * w.pg + w.ce < total;
+        uint ee = a.plist[min(e0 + 4u * w.pg + w.ce, total - 1u)];
+        w.p = corner_point(a.bricks[ee >> 7], ee & 127u);
+        w.out_active = tid < uint(W_ROWS) && e0 + tid < total;
+        uint ent = a.plist[min(e0 + min(tid, uint(W_ROWS) - 1u), total - 1u)];
+        w.b = ent >> 7;
+        w.pt = ent & 127u;
+        w.mask = a.bricks[w.b].w;
+        w.slot0 = a.brick_slot[w.b];
+    } else {
+        w.v0 = node_index(gid) * 16u;
+        if (w.v0 >= a.count) return false;                 // uniform per group
+        if (tid == 0u) {
+            uint done = 1u;
+            for (uint k = 0u; k < 16u && w.v0 + k < a.count; ++k) done &= a.vdone[w.v0 + k] != 0u ? 1u : 0u;
+            g_done = done;
+        }
+        GroupMemoryBarrierWithGroupSync();
+        if (g_done != 0u) return false;                    // uniform: every vertex here has converged
+        w.active = w.v0 + w.pg < a.count;
+        w.out_active = tid < uint(W_ROWS) && w.v0 + (tid >> 2) < a.count;
+        w.p = a.vpos[min(w.v0 + w.pg, a.count - 1u)].xyz;
+    }
+    {
+        uint lanes = WaveGetLaneCount();
+        uint wi = min(iso_wave_index(tid, lanes), 31u);
+        float3 lo = WaveActiveMin(w.active ? w.p : float3(3.0e38));
+        float3 hi = WaveActiveMax(w.active ? w.p : float3(-3.0e38));
+        if (WaveIsFirstLane()) { g_lohi[2u * wi] = float4(lo, 0.0); g_lohi[2u * wi + 1u] = float4(hi, 0.0); }
+        GroupMemoryBarrierWithGroupSync();
+        if (tid == 0u) {
+            uint nw = min(iso_num_waves(W_GROUP, lanes), 32u);
+            float3 glo = g_lohi[0].xyz, ghi = g_lohi[1].xyz;
+            for (uint k = 1u; k < nw; ++k) { glo = min(glo, g_lohi[2u * k].xyz); ghi = max(ghi, g_lohi[2u * k + 1u].xyz); }
+            g_lohi[0] = float4(glo, 0.0);
+            g_lohi[1] = float4(ghi, 0.0);
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+    w.glo = g_lohi[0].xyz;
+    w.ghi = g_lohi[1].xyz;
+    return true;
+}
+
+// A shell's AO values at the thread's point into rows [rb, rb + nc) of the chunk (those in [0, 16)), row r at
+// r * 64 + 4 pg + ce of the A chunk; VERT: channel ce (0 the value, 1 + ax the derivative along ax)
+void iso_wide_ao<let VERT : int, Mem : IGcMem>(int rb, uint l, uint nc, float3 d, float R, float R1, uint pg, uint ce) {
+    uint ax = ce > 0u ? ce - 1u : 0u;
+    float m[15];
+    cart_monomials(l, d, m);
+    float Av = R, Bg = 0.0;
+    float g[15];
+    if (VERT != 0) {
+        cart_monomials_d(l, d, ax, g);
+        float da = ax == 0u ? d.x : (ax == 1u ? d.y : d.z);
+        Av = ce == 0u ? R : 2.0 * da * R1;
+        Bg = ce == 0u ? 0.0 : R;
+    }
+    [ForceUnroll] for (int n = 0; n < 15; ++n) {
+        int r = rb + n;
+        if (uint(n) < nc && r >= 0 && r < 16) {
+            float phi = m[n] * Av;
+            if (VERT != 0) phi += g[n] * Bg;
+            Mem::st(uint(r) * uint(W_ROWS) + 4u * pg + ce, phi);
+        }
+    }
+}
+
+// gemm_wide's chunks: k_list's (K_LIST shells listed at a time, chunks of whole shells of at most G_CK rows)
+struct IsoWideStager<let F : int, Mem : IGcMem, let VERT : int> : IGemmStager {
+    IsoWideRows w;
+    uint s0, c, nchunk;
+    bool listed;
+    [mutating] void begin(uint m0, uint tid) { s0 = 0u; c = 0u; nchunk = 0u; listed = false; }
+    [mutating] uint stage(uint m0, uint tid) {
+        IsoArgs a = MD_ARGS;
+        while (c >= nchunk) {                              // uniform
+            if (listed) s0 += uint(K_LIST);
+            if (s0 >= a.num_shells) return GC_END;
+            k_list(s0, w.glo, w.ghi, tid, W_GROUP, G_CK);  // barriers inside
+            listed = true;
+            nchunk = k_nchunk;
+            c = 0u;
+        }
+        k_load_chunk_gcw<F, Mem>(c, m0, tid, W_GROUP);
+        uint i0 = k_chunk[c], i1 = k_chunk[c + 1];
+        for (uint i = i0 + w.js; i < i1; i += 4u) {
+            float3 d;
+            float R, R1 = 0.0;
+            uint l, nc;
+            if (VERT == 0) k_shell(i - i0, w.p, d, R, l, nc);
+            else           k_shell_d(i - i0, w.p, d, R, R1, l, nc);
+            iso_wide_ao<VERT, Mem>(int(k_row[i]), l, nc, d, R, R1, w.pg, w.ce);
+        }
+        const uint nrows = k_nrows[c];
+        c += 1u;
+        return nrows;
+    }
+};
+
+// gemm_wide2's chunks: the shells listed once a pass (kw_list), chunks of 16 consecutive AOs of the list (a shell across
+// a chunk's edge made in both), the next chunk's rows of C loaded into registers while the current one is used
+struct IsoWide2Stager<let F : int, Mem : IGcMem, let VERT : int> : IGemmStager {
+    IsoWideRows w;
+    uint s_begin, A, nsh, nchunk, c;
+    bool done;
+    float cr[F / 16];                                      // the next chunk's rows of C: e = tid + W_GROUP k
+    [mutating] void load_rows(uint ln, uint f0, uint tid) {
+        IsoArgs a = MD_ARGS;
+        [ForceUnroll] for (int k = 0; k < F / 16; ++k) {
+            uint e = tid + uint(W_GROUP * k), row = e / uint(F), col = e % uint(F);
+            uint ao = kw_rowao[min(ln + row, max(A, 1u) - 1u)];
+            cr[k] = (ln + row < A && f0 + col < a.num_fn) ? a.C[ao * a.fn_stride + min(f0 + col, a.fn_stride - 1u)] * a.ao_nrm[ao] : 0.0;
+        }
+    }
+    [mutating] void begin(uint m0, uint tid) {
+        IsoArgs a = MD_ARGS;
+        s_begin = 0u; A = 0u; nsh = 0u; nchunk = 0u; c = 0u;
+        done = a.num_shells == 0u;
+    }
+    [mutating] uint stage(uint m0, uint tid) {
+        IsoArgs a = MD_ARGS;
+        while (c >= nchunk) {                              // uniform
+            if (done) return GC_END;
+            kw_list(s_begin, w.glo, w.ghi, tid, W_GROUP);  // barriers inside
+            s_begin = kw_next;
+            done = s_begin >= a.num_shells;
+            A = kw_a;
+            nsh = kw_n;
+            nchunk = (A + 15u) >> 4;
+            c = 0u;
+            if (nchunk > 0u) load_rows(0u, m0, tid);
+        }
+        uint la0 = 16u * c;
+        uint nrows = min(16u, A - la0);
+        // the prefetched rows of chunk c into B, then chunk c + 1's
+        [ForceUnroll] for (int k = 0; k < F / 16; ++k) Mem::st(uint(GK * W_ROWS) + tid + uint(W_GROUP * k), cr[k]);
+        load_rows(la0 + 16u, m0, tid);
+        // the chunk's AO values: shells [i0, i1), each its rows within the chunk
+        uint sn = kw_cf[c + 1u];
+        uint i0 = kw_cf[c], i1 = (sn < nsh && kw_la[min(sn, uint(KW_LIST))] < la0 + 16u) ? sn + 1u : sn;
+        for (uint i = i0 + w.js; i < i1; i += 4u) {
+            float3 d;
+            float R, R1;
+            uint l, nc;
+            kw_shell<VERT>(i, w.p, d, R, R1, l, nc);
+            iso_wide_ao<VERT, Mem>(int(kw_la[i]) - int(la0), l, nc, d, R, R1, w.pg, w.ce);
+        }
+        c += 1u;
+        return nrows;
+    }
+};
+
+// k_load_chunk with the rows of C into the wide core's B chunk
+void k_load_chunk_gcw<let F : int, Mem : IGcMem>(uint c, uint f0, uint tid, uint gs) {
+    IsoArgs a = MD_ARGS;
+    uint i0 = k_chunk[c], i1 = k_chunk[c + 1];
+    uint i = min(i0 + tid, i1 - 1u);       // clamped: see k_list
+    IsoShell sh = a.shells[min(k_sh[i], a.num_shells - 1u)];
+    uint ao0 = sh.info2.x;
+    if (tid < i1 - i0) {
+        uint np = sh.info.z, po = k_poff[i];
+        for (uint n = 0u; n < k_nc[i]; ++n) k_row_ao[k_row[i] + n] = ao0 + n;
+        k_cs[tid] = sh.c;
+        k_ci[tid] = sh.info.x | (sh.info.y << 4) | (np << 8) | (po << 16);
+        for (uint q = 0u; q < np; ++q) k_pr[min(po + q, uint(K_PR) - 1u)] = a.prims[sh.info.w + q];
+    }
+    GroupMemoryBarrierWithGroupSync();
+    uint nrows = k_nrows[c];
+    for (uint e = tid; e < nrows * uint(F); e += gs) {
+        uint row = e / uint(F), col = e % uint(F);
+        uint ao = min(k_row_ao[min(row, uint(K_CK) - 1u)], a.num_ao - 1u);
+        float v = a.C[ao * a.fn_stride + min(f0 + col, a.fn_stride - 1u)] * a.ao_nrm[ao];
+        Mem::st(uint(GK * W_ROWS) + e, f0 + col < a.num_fn ? v : 0.0);
+    }
+    GroupMemoryBarrierWithGroupSync();
+}
+
+// gemm_wide's epilogue (canonical terms): per row the partial sums of the thread's columns, reduced over the 16 column
+// groups through the memory's first GK GP floats
+struct IsoWideEpilogue<let F : int, Mem : IGcMem, let VERT : int> : IGemmEpilogue {
+    IsoWideRows w;
+    uint  tid;
+    float res;
+    [mutating] void take<let R : int, let M : int>(uint f0, uint ncols, uint tx, uint ty, float X[R][M]) {
+        IsoArgs a = MD_ARGS;
+        const int FC = M;
+        uint stride = a.fn_stride;
+        uint col0 = f0 + w.cg * uint(FC);
+        for (uint f = 0u; f < (VERT == 0 ? a.num_fields : 1u); ++f) {
+            uint fw = f;
+            if (VERT != 0) fw = min(a.vinfo[min(w.v0 + w.pg, a.count - 1u)].z, 15u);   // the vertex's field
+            uint wb = fw * 3u * stride;
+            float part[4] = {0.0, 0.0, 0.0, 0.0};
+            [ForceUnroll] for (int c = 0; c < FC; ++c) {
+                // columns past the row of weights (a pass of 256 over a stride of 320, say): zero (their C is zero
+                // too), and not read
+                uint cc = col0 + uint(c);
+                bool in = cc < stride;
+                uint wi = wb + min(cc, stride - 1u);
+                float wl = in ? a.wts[wi] : 0.0, wd = in ? a.wts[wi + stride] : 0.0;
+                float wp = ((c & 1) == 0 && in) ? a.wts[wi + 2u * stride] : 0.0;
+                if (VERT == 0) {
+                    [ForceUnroll] for (int v = 0; v < 4; ++v) {
+                        float x = X[v][c];
+                        part[v] += x * (wl + wd * x);
+                        if ((c & 1) == 0) part[v] += wp * x * X[v][c + 1];
+                    }
+                } else {
+                    float x = X[0][c];
+                    part[0] += x * (wl + wd * x);
+                    [ForceUnroll] for (int k = 1; k < 4; ++k) part[k] += X[k][c] * (wl + 2.0 * wd * x);
+                    if ((c & 1) == 0) {
+                        float x1 = X[0][c + 1];
+                        part[0] += wp * x * x1;
+                        [ForceUnroll] for (int k = 1; k < 4; ++k) part[k] += wp * (x * X[k][c + 1] + x1 * X[k][c]);
+                    }
+                }
+            }
+            GroupMemoryBarrierWithGroupSync();             // the memory free
+            [ForceUnroll] for (int v = 0; v < 4; ++v) Mem::st(w.cg * uint(W_ROWS) + w.pg * 4u + uint(v), part[v]);
+            GroupMemoryBarrierWithGroupSync();
+            if (tid < uint(W_ROWS)) {
+                float sum = 0.0;
+                [ForceUnroll] for (int k = 0; k < 16; ++k) sum += Mem::ld(uint(k) * uint(W_ROWS) + tid);
+                if (VERT == 0) {
+                    if (w.out_active && ((field_bits(w.mask) >> (2u * f)) & 1u) != 0u) {
+                        uint ci = (w.slot0 + field_slot(w.mask, f)) * 125u + w.pt;
+                        a.corners[ci] = f0 == 0u ? sum : a.corners[ci] + sum;
+                    }
+                } else {
+                    res += sum;
+                }
+            }
+        }
+    }
+};
+
+void gemm_wide_core<let F : int, Mem : IGcMem, let VERT : int, let V2 : int>(uint3 gid, uint tid) {
+    IsoArgs a = MD_ARGS;
+    IsoWideRows w;
+    if (!iso_wide_rows<VERT>(gid, tid, w)) return;
+    IsoWideEpilogue<F, Mem, VERT> epi;
+    epi.w = w;
+    epi.tid = tid;
+    epi.res = 0.0;
+    if (V2 != 0) {
+        IsoWide2Stager<F, Mem, VERT> st;
+        st.w = w;
+        st.s_begin = 0u; st.A = 0u; st.nsh = 0u; st.nchunk = 0u; st.c = 0u; st.done = true;
+        [ForceUnroll] for (int k = 0; k < F / 16; ++k) st.cr[k] = 0.0;
+        gemm_core_staged<W_ROWS, F, 16, 16, Mem, IsoWide2Stager<F, Mem, VERT>, IsoWideEpilogue<F, Mem, VERT> >(st, epi, a.num_fn, tid, w.cg, w.pg);
+    } else {
+        IsoWideStager<F, Mem, VERT> st;
+        st.w = w;
+        st.s0 = 0u; st.c = 0u; st.nchunk = 0u; st.listed = false;
+        gemm_core_staged<W_ROWS, F, 16, 16, Mem, IsoWideStager<F, Mem, VERT>, IsoWideEpilogue<F, Mem, VERT> >(st, epi, a.num_fn, tid, w.cg, w.pg);
+    }
+    if (VERT != 0) {
+        GroupMemoryBarrierWithGroupSync();
+        if (tid < uint(W_ROWS)) Mem::st(tid, epi.res);
+        GroupMemoryBarrierWithGroupSync();
+        if (tid < 16u && w.v0 + tid < a.count) a.vval[w.v0 + tid] = float4(Mem::ld(4u * tid + 1u), Mem::ld(4u * tid + 2u), Mem::ld(4u * tid + 3u), Mem::ld(4u * tid));
+    }
+}
+
+[shader("compute")] [numthreads(W_GROUP, 1, 1)] void iso_gcorners_cw128(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_wide_core<128, IsoGw128, 0, 0>(gid, tid); }
+[shader("compute")] [numthreads(W_GROUP, 1, 1)] void iso_gcorners_cw192(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_wide_core<192, IsoGw192, 0, 0>(gid, tid); }
+[shader("compute")] [numthreads(W_GROUP, 1, 1)] void iso_gcorners_cy256(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_wide_core<256, IsoGw256, 0, 1>(gid, tid); }
+[shader("compute")] [numthreads(W_GROUP, 1, 1)] void iso_geval_cw128(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_wide_core<128, IsoGw128, 1, 0>(gid, tid); }
+[shader("compute")] [numthreads(W_GROUP, 1, 1)] void iso_geval_cw192(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_wide_core<192, IsoGw192, 1, 0>(gid, tid); }
+[shader("compute")] [numthreads(W_GROUP, 1, 1)] void iso_geval_cy256(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_wide_core<256, IsoGw256, 1, 1>(gid, tid); }
+
+// ------------------------------------------------------------------------------------------
 // Densities as phi^T D phi (dform): the local list, the shells that reach a box in shell order with
 // their first local AO (the D form's corners, vertices and octree work over the A local AOs)
 // ------------------------------------------------------------------------------------------
