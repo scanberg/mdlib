@@ -203,6 +203,7 @@ extern "C" {
     unsigned char __cdecl       _BitScanReverse64(unsigned long* index, unsigned __int64 mask);
     __int64 __cdecl             _InterlockedExchangeAdd64(__int64 volatile* addend, __int64 value);
     __int64 __cdecl             _InterlockedCompareExchange64(__int64 volatile* destination, __int64 exchange, __int64 comparand);
+    __int64 __cdecl             _InterlockedExchange64(__int64 volatile* target, __int64 value);
     unsigned __int64 __cdecl    __umulh(unsigned __int64 a, unsigned __int64 b);
     void __cdecl                __debugbreak(void);
 #if defined(_M_X64)
