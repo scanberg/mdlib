@@ -2407,11 +2407,34 @@ bool vial_k_builtin_draw(vial_kctx_t* k, const char* name, const vial_val_t* con
     prim_core_t c = {.label_unit = k->type && k->type->unit_kind == VIAL_UNIT_KNOWN ? k->type->unit : md_unit_none()};
     const void* prev = k->core;
     bool ok = false;
-    if ((is_angle || is_dihedral) && !arg(&ba, "points", 0) && result && result->data) {
+    if ((is_angle || is_dihedral) && result && result->data) {
         const int np = is_angle ? 3 : 4;
         const char* pn[4] = {"a", "b", "c", "d"};
         const vial_val_t* a[5] = {0};
-        for (int i = 0; i < np; ++i) if (!(a[i] = arg(&ba, pn[i], (uint32_t)i))) return false;
+        const vial_val_t* stacked = arg(&ba, "points", 0);
+        if (stacked) {
+            // One argument, the points stacked along the last dimension but one (angle(r[[2, 8, 9]]), angle(rs.particle[[1, 0, 2]])):
+            // the i-th point of every row as an array of its own, so the arcs are drawn as for angle(a, b, c)
+            vial_val_t p;
+            if (!points(k, stacked, &p) || p.ndim < 2 || p.dims[p.ndim - 1] != 3 || p.dims[p.ndim - 2] != (uint32_t)np) return false;
+            const size_t rows = vial_val_count(&p) / (3 * (size_t)np);
+            uint32_t dims[VIAL_MAX_DIMS];
+            const uint8_t nd = (uint8_t)(p.ndim - 1);
+            memcpy(dims, p.dims, (p.ndim - 2) * sizeof(uint32_t));
+            dims[nd - 1] = 3;
+            for (int i = 0; i < np; ++i) {
+                vial_val_t* pi = md_alloc(k->alloc, sizeof(vial_val_t));
+                if (!vial_k_make(k, VIAL_DT_FLOAT, nd, dims, pi)) return false;
+                for (size_t r = 0; r < rows; ++r) {
+                    const size_t from = (r * np + (size_t)i) * 3;
+                    md_memcpy((float*)pi->data + 3 * r, (const float*)p.data + from, 3 * sizeof(float));
+                    for (int c = 0; c < 3; ++c) if (vial_val_is_missing(&p, from + c)) vial_val_set_missing(pi, 3 * r + c, k->alloc);
+                }
+                a[i] = pi;
+            }
+        } else {
+            for (int i = 0; i < np; ++i) if (!(a[i] = arg(&ba, pn[i], (uint32_t)i))) return false;
+        }
         const uint8_t kinds[5] = {VX_KIND_POINT, VX_KIND_POINT, VX_KIND_POINT, VX_KIND_POINT, VX_KIND_FLOAT};
         k->core = &c;
         if (is_angle) {

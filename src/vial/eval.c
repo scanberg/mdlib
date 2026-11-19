@@ -845,6 +845,7 @@ typedef struct draw_out_t {
     size_t              count;      // primitives and labels so far
     md_vial_prim_t*     spheres;    // held back until every one is known, for draw_spheres to choose from
     int64_t             frame;      // which spheres are drawn of more than DRAW_MAX_SPHERES
+    int64_t             col;        // of sets with a last dimension, the column drawn alone, or -1
 } draw_out_t;
 
 static bool draw_room(draw_out_t* o) {
@@ -934,8 +935,10 @@ static void draw_by_type(draw_out_t* o, const vial_val_t* v, const vial_type_t* 
     const size_t n = v->dtype == VIAL_DT_SET ? (v->ndim ? vial_val_count(v) : 1) : vial_val_count(v);
     if (v->dtype == VIAL_DT_SET && v->sets) {
         o->d->num_elements = n;
+        const size_t width = o->col >= 0 && v->ndim && v->dims[v->ndim - 1] > (uint32_t)o->col ? v->dims[v->ndim - 1] : 0;
         for (size_t i = 0; i < n; ++i) {
             if (o->only >= 0 && (int64_t)i != o->only) continue;
+            if (width && i % width != (size_t)o->col) continue;
             draw_group(o, (uint32_t)i, vial_sets_items(v->sets, (uint32_t)i), vial_sets_size(v->sets, (uint32_t)i));
         }
         return;
@@ -1130,10 +1133,23 @@ bool md_vial_draw(md_vial_drawing_t* out, const md_vial_draw_desc_t* desc, uint3
     memset(out, 0, sizeof(*out));
     if (!desc || !desc->prog || !desc->sys || !alloc) return false;
     const vial_ir_t* ir = md_vial__ir(desc->prog);
-    const vial_ssa_t v = md_vial__expr_value(desc->prog, expr);
+    md_vial__pick_t pick;
+    const vial_ssa_t v = md_vial__expr_target(desc->prog, expr, &pick);
     if (!ir || !v || v >= md_array_size(ir->values)) return false;
+    if (pick.narrow) {
+        // One item of a list argument: the script with the list as that item, and the selection drawn there
+        uint32_t ne;
+        md_vial_program_t* np = md_vial__narrowed(desc->prog, &pick, desc->sys, desc->run, &ne);
+        if (!np) return false;
+        md_vial_draw_desc_t nd = *desc;
+        nd.prog = np;
+        nd.eval = NULL;
+        const bool ok = md_vial_draw(out, &nd, ne, alloc);
+        md_vial_program_free(np);
+        return ok;
+    }
     const vial_type_t* t = &ir->values[v].type;
-    draw_out_t o = {.d = out, .alloc = alloc, .only = desc->element, .frame = desc->frame};
+    draw_out_t o = {.d = out, .alloc = alloc, .only = desc->element, .frame = desc->frame, .col = pick.col};
     const uint32_t so = sdf_op(ir, v);
     if (so != VIAL_IR_NO_OP) {
         md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
@@ -1171,8 +1187,20 @@ size_t md_vial_value_text(char* buf, size_t cap, const md_vial_draw_desc_t* desc
     if (buf && cap) buf[0] = 0;
     if (!buf || !cap || !desc || !desc->prog || !desc->sys) return 0;
     const vial_ir_t* ir = md_vial__ir(desc->prog);
-    const vial_ssa_t v = md_vial__expr_value(desc->prog, expr);
+    md_vial__pick_t pick;
+    const vial_ssa_t v = md_vial__expr_target(desc->prog, expr, &pick);
     if (!ir || !v || v >= md_array_size(ir->values)) return 0;
+    if (pick.narrow) {
+        uint32_t ne;
+        md_vial_program_t* np = md_vial__narrowed(desc->prog, &pick, desc->sys, desc->run, &ne);
+        if (!np) return 0;
+        md_vial_draw_desc_t nd = *desc;
+        nd.prog = np;
+        nd.eval = NULL;
+        const size_t len = md_vial_value_text(buf, cap, &nd, ne);
+        md_vial_program_free(np);
+        return len;
+    }
     const double scale = desc->value_scale != 0.0 ? desc->value_scale : 1.0;
     if (ir->values[v].type.stage == VIAL_STAGE_TRAJECTORY) {
         vial_val_t one;

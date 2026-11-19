@@ -138,5 +138,18 @@ const struct vial_ir_t* md_vial__run_ir(const md_vial_program_t* prog);   // inl
 // The value in md_vial__ir of the expression hover shows at offset, and its span; 0 when it has none
 uint32_t md_vial__hover_value(const md_vial_program_t* prog, uint32_t offset, md_vial_span_t* span);
 uint32_t md_vial__expr_value(const md_vial_program_t* prog, uint32_t expr);  // its value in the IR as lowered, 0 none
+// What hover shows for expr: a literal argument of a selection, or the index into one, is shown as that selection.
+// One of a list indexing, 'O' in s[['CA', 'O']], is its column of the sets selected; one of a list argument, 'GLY' in
+// residue(['ALA', 'GLY']), is the selection evaluated with the list holding it alone. Anything else is itself.
+typedef struct md_vial__pick_t {
+    int64_t         col;        // the column of the sets drawn, or -1
+    bool            narrow;     // one item of a list argument: the spans below are set
+    md_vial_span_t  list, item; // the list, and the item hovered
+    md_vial_span_t  call;       // the selection
+} md_vial__pick_t;
+uint32_t md_vial__expr_target(const md_vial_program_t* prog, uint32_t expr, md_vial__pick_t* pick);
+// The script compiled with the list of pick->narrow holding its item alone, against sys and run, and the selection's
+// node in it (*expr); NULL when the selection is not there. Freed with md_vial_program_free.
+md_vial_program_t* md_vial__narrowed(const md_vial_program_t* prog, const md_vial__pick_t* pick, const struct md_system_t* sys, md_str_t run, uint32_t* expr);
 // A value of md_vial__ir's top level as it is in md_vial__run_ir; 0 when it has none there
 uint32_t md_vial__run_value(const md_vial_program_t* prog, uint32_t v);

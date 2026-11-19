@@ -900,6 +900,104 @@ static uint32_t vial_test_count_ca(const md_system_t* sys) {
     return n;
 }
 
+// Every form of angle draws its arcs: three points, the points stacked in one argument, over arrays, and in a
+// comprehension, where hovering the body draws every element
+static uint32_t vial_ir__prims(const char* src, const char* at_text, md_allocator_i* alloc) {
+    const md_system_t* sys = vial_test_system('P');
+    const md_system_state_t* st = vial_test_state('P');
+    md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys}, alloc);
+    if (md_vial_diagnostics(prog, NULL)) { md_vial_program_free(prog); return UINT32_MAX; }
+    md_vial_draw_desc_t desc = {.prog = prog, .sys = sys, .frame = 0, .state = st, .element = -1};
+    const uint32_t at = md_vial_expr_at(prog, (uint32_t)(strstr(src, at_text) - src) + 1);
+    md_vial_drawing_t d = {0};
+    const bool ok = md_vial_draw(&d, &desc, at, alloc);
+    md_vial_program_free(prog);
+    return ok ? d.num_prims : UINT32_MAX;
+}
+
+UTEST(vial_ir, angle_draws_every_form) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
+    EXPECT_EQ(1u, vial_ir__prims("r = residue[2]\na = angle(r[2], r[8], r[9])\n", "angle(", alloc));
+    EXPECT_EQ(1u, vial_ir__prims("r = residue[2]\na = angle(r[[2, 8, 9]])\n", "angle(", alloc));
+    EXPECT_EQ(3u, vial_ir__prims("rs = residue[2:5]\na = angle(rs.particle[[2, 8, 9]])\n", "angle(", alloc));
+    EXPECT_EQ(3u, vial_ir__prims("rs = residue[2:5]\na = angle(rs['N'], rs['CA'], rs['C'])\n", "angle(", alloc));
+    EXPECT_EQ(9u, vial_ir__prims("rs = residue[2:5]\nd = dihedral(rs.particle[[0, 2, 4, 6]])\n", "dihedral(", alloc));     // two disks and an arc each
+    // Inside a comprehension's body: the comprehension, every element
+    EXPECT_EQ(3u, vial_ir__prims("a = [angle(r[2], r[8], r[9]) for r in residue[2:5]]\n", "angle(", alloc));
+    EXPECT_EQ(3u, vial_ir__prims("a = [angle(r[2], r[8], r[9]) for r in residue[2:5]]\n", "r[8]", alloc));
+    md_arena_allocator_destroy(alloc);
+}
+
+// The atoms hover highlights at at_text: their count, and each one summed, to tell two selections apart
+static bool vial_ir__atoms(const char* src, const char* at_text, md_allocator_i* alloc, size_t* groups, size_t* count, uint64_t* sum) {
+    const md_system_t* sys = vial_test_system('P');
+    const md_system_state_t* st = vial_test_state('P');
+    md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys}, alloc);
+    const md_vial_diagnostic_t* diags;
+    const size_t nd = md_vial_diagnostics(prog, &diags);
+    for (size_t k = 0; k < nd; ++k) printf("%.5s %.*s\n", diags[k].code, (int)diags[k].message.len, diags[k].message.ptr);
+    if (nd) { md_vial_program_free(prog); return false; }
+    md_vial_draw_desc_t desc = {.prog = prog, .sys = sys, .frame = 0, .state = st, .element = -1};
+    const uint32_t at = md_vial_expr_at(prog, (uint32_t)(strstr(src, at_text) - src) + 1);
+    md_vial_drawing_t d = {0};
+    const bool ok = md_vial_draw(&d, &desc, at, alloc);
+    md_vial_program_free(prog);
+    *groups = d.num_groups;
+    *count = 0;
+    *sum = 0;
+    for (size_t g = 0; g < d.num_groups; ++g) {
+        for (uint32_t i = d.groups[g].beg; i < d.groups[g].end; ++i) { ++*count; *sum += d.atoms[i]; }
+    }
+    return ok;
+}
+
+// A literal is shown through what it selects: 'ALA' in residue('ALA') is those residues, 'CB' in rs['CB'] or
+// rs.particle('CB') those particles, 5 in within(5, of=x) what is within, and 'CB' in rs[['O', 'CB']] its column.
+// Elsewhere, a literal is itself: nothing is drawn
+UTEST(vial_ir, literal_draws_its_context) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
+    size_t g0, n0, g, n;
+    uint64_t s0, s;
+    const char* src = "rs = residue('ALA')\ncz = rs['CB']\ncols = rs[['O', 'CB']]\nw = within(3.0, of=cz)\nq = percentile(distance(rs.com, cz), 90)\n";
+    ASSERT_TRUE(vial_ir__atoms(src, "residue(", alloc, &g0, &n0, &s0));
+    ASSERT_TRUE(g0 > 1 && n0 > g0);
+    ASSERT_TRUE(vial_ir__atoms(src, "'ALA'", alloc, &g, &n, &s));
+    EXPECT_EQ(g0, g); EXPECT_EQ(n0, n); EXPECT_EQ(s0, s);
+    ASSERT_TRUE(vial_ir__atoms(src, "cz)", alloc, &g0, &n0, &s0));
+    EXPECT_EQ(g, g0); EXPECT_EQ(g0, n0);
+    ASSERT_TRUE(vial_ir__atoms(src, "'CB']\n", alloc, &g, &n, &s));
+    EXPECT_EQ(g0, g); EXPECT_EQ(n0, n); EXPECT_EQ(s0, s);
+    // One column of rs[['O', 'CB']]: the CB of every ALA, as rs['CB'] has them, and the O the other
+    ASSERT_TRUE(vial_ir__atoms(src, "'CB']]", alloc, &g, &n, &s));
+    EXPECT_EQ(g0, g); EXPECT_EQ(n0, n); EXPECT_EQ(s0, s);
+    ASSERT_TRUE(vial_ir__atoms(src, "'O'", alloc, &g, &n, &s));
+    EXPECT_EQ(g0, g); EXPECT_EQ(n0, n); EXPECT_NE(s0, s);
+    ASSERT_TRUE(vial_ir__atoms(src, "[['O'", alloc, &g, &n, &s));
+    EXPECT_EQ(2 * g0, g); EXPECT_EQ(2 * n0, n);
+    ASSERT_TRUE(vial_ir__atoms(src, "within(", alloc, &g0, &n0, &s0));
+    ASSERT_TRUE(vial_ir__atoms(src, "3.0", alloc, &g, &n, &s));
+    EXPECT_EQ(g0, g); EXPECT_EQ(n0, n); EXPECT_EQ(s0, s);
+    ASSERT_TRUE(vial_ir__atoms(src, "90", alloc, &g, &n, &s));
+    EXPECT_EQ(0u, g);
+    // One of a list argument: the selection with that item alone, so 'CB' in particle(['N', 'CB']) is the CB atoms, as
+    // rs['CB'] has them (in one set, as particle() gives), by position or by keyword; the list itself is both
+    const char* lsrc = "rs = residue('ALA')\ncb = rs['CB']\nps = particle(['N', 'CB'])\nqs = particle(name=['N', 'CB'])\n";
+    ASSERT_TRUE(vial_ir__atoms(lsrc, "cb = rs", alloc, &g0, &n0, &s0));
+    EXPECT_EQ(15u, g0);
+    ASSERT_TRUE(vial_ir__atoms(lsrc, "'CB'])\nqs", alloc, &g, &n, &s));
+    EXPECT_EQ(1u, g); EXPECT_EQ(n0, n); EXPECT_EQ(s0, s);
+    ASSERT_TRUE(vial_ir__atoms(lsrc, "'CB'])\n\0", alloc, &g, &n, &s));
+    EXPECT_EQ(1u, g); EXPECT_EQ(n0, n); EXPECT_EQ(s0, s);
+    ASSERT_TRUE(vial_ir__atoms(lsrc, "'N', 'CB'])\nqs", alloc, &g, &n, &s));
+    EXPECT_EQ(1u, g); EXPECT_EQ(n0, n); EXPECT_NE(s0, s);
+    ASSERT_TRUE(vial_ir__atoms(lsrc, "particle([", alloc, &g, &n, &s));
+    EXPECT_EQ(1u, g); EXPECT_EQ(2 * n0, n);
+    // Through what the script bound before it: the view call on rs, one CB per residue
+    ASSERT_TRUE(vial_ir__atoms("rs = residue('ALA')\nvs = rs.particle(['N', 'CB'])\n", "'CB'", alloc, &g, &n, &s));
+    EXPECT_EQ(g0, g); EXPECT_EQ(n0, n); EXPECT_EQ(s0, s);
+    md_arena_allocator_destroy(alloc);
+}
+
 // What hover draws: the drawing shown() attached, kept through names and calls; built-ins that draw themselves; and
 // values by their type
 // Of more than 1,000 spheres, 1,000 are drawn: distinct, the same at the same frame, others at another, and every

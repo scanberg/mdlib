@@ -382,9 +382,95 @@ static void make_marks(md_vial_program_t* prog) {
     }
 }
 
+// A literal shown through what it selects: 'ALA' in residue('ALA') is those residues, 'CA' in s['CA'] or s.particle('CA')
+// those particles, 5 in within(5, of=x) what is within, 'O' in s[['CA', 'C', 'O']] its column of the sets selected and
+// 'GLY' in residue(['ALA', 'GLY']) the residues named GLY. The literal, a list of them or a number with a unit or sign,
+// as an argument of a call or the index of a subscript that makes a set: that call or subscript, with the column when
+// the literal is one of a list indexing and the list and item when it is one of a list argument. A literal anywhere
+// else, 90 in percentile(x, 90) or 2 in x + 2, is itself.
+static vial_node_id literal_context(const md_vial_program_t* prog, vial_node_id n, md_vial__pick_t* pick) {
+    const vial_tree_t* t = &prog->tree;
+    const vial_names_t* nm = &prog->check.names;
+    if (!n || n >= md_array_size(nm->parent)) return n;
+    switch (t->nodes[n].kind) {
+    case VIAL_N_INT: case VIAL_N_FLOAT: case VIAL_N_STRING: case VIAL_N_RANGE: break;
+    default: return n;
+    }
+    vial_node_id c = n, p = nm->parent[c];
+    while (p && (t->nodes[p].kind == VIAL_N_QUANTITY || t->nodes[p].kind == VIAL_N_UNARY)) { c = p; p = nm->parent[c]; }
+    vial_node_id list = 0, item = c;
+    int64_t at = -1;
+    if (p && t->nodes[p].kind == VIAL_N_LIST) {
+        for (uint32_t i = 0; i < t->nodes[p].child_count; ++i) if (vial_child(t, p, i) == c) at = i;
+        list = p;
+        c = p; p = nm->parent[c];
+    }
+    if (p && t->nodes[p].kind == VIAL_N_KWARG) { c = p; p = nm->parent[c]; }
+    if (!p) return n;
+    const vial_node_kind_t pk = t->nodes[p].kind;
+    const bool arg = pk == VIAL_N_CALL && vial_child(t, p, 0) != c;
+    const bool index = pk == VIAL_N_SUBSCRIPT && vial_child(t, p, 1) == c;
+    if (!(arg || index) || !is_expr(prog, p) || prog->types.types[p].dtype != VIAL_DT_SET) return n;
+    if (index) pick->col = at;
+    if (arg && list) {
+        pick->narrow = true;
+        pick->list = t->nodes[list].span;
+        pick->item = t->nodes[item].span;
+        pick->call = t->nodes[p].span;
+    }
+    return p;
+}
+
+md_vial_program_t* md_vial__narrowed(const md_vial_program_t* prog, const md_vial__pick_t* pick, const md_system_t* sys, md_str_t run, uint32_t* expr) {
+    if (expr) *expr = 0;
+    if (!prog || !pick || !pick->narrow || pick->list.end > prog->src.len || pick->item.beg < pick->list.beg || pick->item.end > pick->list.end) return NULL;
+    md_allocator_i* alloc = md_get_heap_allocator();
+    const md_str_t src = prog->src;
+    const size_t len = src.len - (pick->list.end - pick->list.beg) + (pick->item.end - pick->item.beg);
+    char* text = md_alloc(alloc, len + 1);
+    size_t n = 0;
+    md_memcpy(text, src.ptr, pick->list.beg); n += pick->list.beg;
+    md_memcpy(text + n, src.ptr + pick->item.beg, pick->item.end - pick->item.beg); n += pick->item.end - pick->item.beg;
+    md_memcpy(text + n, src.ptr + pick->list.end, src.len - pick->list.end); n += src.len - pick->list.end;
+    text[n] = 0;
+    md_vial_program_t* np = md_vial_compile((md_str_t){text, n}, &(md_vial_compile_desc_t){.sys = sys, .run = run}, alloc);
+    md_free(alloc, text, len + 1);
+    if (!np) return NULL;
+    // The selection, where it was: the text before the list is the same, and the call lost the list's other items
+    const uint32_t end = pick->call.end - (pick->list.end - pick->list.beg) + (pick->item.end - pick->item.beg);
+    for (vial_node_id i = 1; i < md_array_size(np->tree.nodes); ++i) {
+        const vial_node_t* nd = &np->tree.nodes[i];
+        if (nd->kind != VIAL_N_CALL || nd->span.beg != pick->call.beg || nd->span.end != end || !is_expr(np, i)) continue;
+        if (expr) *expr = i;
+        return np;
+    }
+    md_vial_program_free(np);
+    return NULL;
+}
+
+uint32_t md_vial__expr_target(const md_vial_program_t* prog, uint32_t expr, md_vial__pick_t* pick) {
+    md_vial__pick_t pk = {.col = -1};
+    if (prog && expr) expr = literal_context(prog, expr, &pk);
+    const uint32_t v = md_vial__expr_value(prog, expr);
+    if (!v) pk = (md_vial__pick_t){.col = -1};
+    if (pick) *pick = pk;
+    return v;
+}
+
 uint32_t md_vial__expr_value(const md_vial_program_t* prog, uint32_t expr) {
     if (!prog || !is_expr(prog, expr) || expr - prog->types.base >= md_array_size(prog->types.ssa)) return 0;
-    return prog->types.ssa[expr - prog->types.base];
+    const vial_ir_t* ir = &prog->ir;
+    const uint32_t top = md_array_size(ir->funcs) ? ir->funcs[0].body : 0;
+    // An expression inside a comprehension's body has its value once per element, in the map's own region, which
+    // cannot be read on its own: what hover shows and draws for it is the comprehension, every element
+    for (vial_node_id n = expr; n && n < md_array_size(prog->types.ssa) + prog->types.base; n = prog->check.names.parent[n]) {
+        if (!is_expr(prog, n)) continue;
+        const vial_ssa_t v = prog->types.ssa[n - prog->types.base];
+        if (!v) continue;
+        if (v < md_array_size(ir->values) && ir->values[v].region != top) continue;
+        return v;
+    }
+    return 0;
 }
 
 bool md_vial_expr_info(const md_vial_program_t* prog, uint32_t expr, md_vial_hover_t* out) {
