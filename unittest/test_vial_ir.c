@@ -2971,6 +2971,80 @@ UTEST(vial_ir, missing_where_keeps_its_input) {
     md_arena_allocator_destroy(alloc);
 }
 
+// Values carry no unit when evaluating, so a quantity in another unit is converted where it meets others: 0.5 nm as
+// a radius is 5 Å. Each pair below is one value written in nm and in Å, and must give the same.
+UTEST(vial_ir, units_convert) {
+    const md_system_t* sys = vial_test_system('P');
+    ASSERT_TRUE(sys != NULL);
+    const int64_t nf = vial_test_run('P');
+    ASSERT_GT(nf, 3);
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
+    const char* src =
+        "d = distance(particle[0], particle[30])\n"
+        "_qn = unitless(particle[0:5].xyz) * 0.1 nm\n"
+        "_qa = particle[0:5].xyz\n"
+        "w_nm = count(within(0.5 nm, of=particle[0]))\n"            "w_a = count(within(5.0, of=particle[0]))\n"
+        "wo_nm = count(within(5.0, of=_qn))\n"                        "wo_a = count(within(5.0, of=_qa))\n"
+        "c_nm = clip(d, 0.1 nm, 0.5 nm)\n"                            "c_a = clip(d, 1.0, 5.0)\n"
+        "mx_nm = max(d, 1 nm)\n"                                      "mx_a = max(d, 10.0)\n"
+        "mn_nm = min(d, 0.2 nm)\n"                                    "mn_a = min(d, 2.0)\n"
+        "wh_nm = where(d > 100.0, d, 1 nm)\n"                         "wh_a = where(d > 100.0, d, 10.0)\n"
+        "f_nm = filled(missing_where(d > 0.0, d), 1 nm)\n"            "f_a = filled(missing_where(d > 0.0, d), 10.0)\n"
+        "p_nm = distance(_qn[0], particle[30])\n"                     "p_a = distance(_qa[0], particle[30])\n"
+        "g_nm = gyration(_qn, weights=None)\n"                        "g_a = gyration(_qa, weights=None)\n"
+        "in_nm = d in 0.5 nm..1.5 nm\n"                               "in_a = d in 5.0..15.0\n"
+        "l_nm = [d, 1 nm]\n"                                          "l_a = [d, 10.0]\n"
+        "k_nm = concatenate((_qa, _qn))[5:, 0]\n"                     "k_a = _qa[:, 0]\n"
+        "h_nm = histogram(d, axis='frame', bins=10, range=(0.0, 2 nm))\n"   "h_a = histogram(d, axis='frame', bins=10, range=(0.0, 20.0))\n"
+        "s_nm = sdf(residue[1:5], particle(name='O'), 0.6 nm, sigma=0.05 nm)\n"   "s_a = sdf(residue[1:5], particle(name='O'), 6.0, sigma=0.5)\n"
+        "dn_nm = density(particle, box=((0.0, 0.0, 0.0), (4 nm, 4 nm, 4 nm)), samples=1)\n"
+        "dn_a = density(particle, box=((0.0, 0.0, 0.0), (40.0, 40.0, 40.0)), samples=1)\n"
+        "fit_nm = fit(_qn, at(_qn, frame=0))\n"
+        "sp = sphere(particle[0], 0.3 nm)\n";
+    md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = MD_STR_LIT("run")}, alloc);
+    ASSERT_TRUE(prog != NULL);
+    const md_vial_diagnostic_t* dg;
+    const size_t ndg = md_vial_diagnostics(prog, &dg);
+    for (size_t i = 0; i < ndg; ++i) printf("%.5s %.*s\n", dg[i].code, (int)dg[i].message.len, dg[i].message.ptr);
+    ASSERT_EQ(0u, (unsigned)ndg);
+    // Positions fitted are in Å, as geometry gives them, whatever unit the points came in
+    const md_vial_output_t* of = vial_ir__pub(prog, "fit_nm");
+    ASSERT_TRUE(of != NULL);
+    EXPECT_STREQ("float[5][3] Å", of->type);
+    md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = MD_STR_LIT("run")}, alloc);
+    ASSERT_TRUE(e != NULL);
+    ASSERT_TRUE(md_vial_eval_run(e));
+    const md_attributes_t* at = md_vial_eval_attributes(e);
+    static const char* pairs[] = {"w", "wo", "c", "mx", "mn", "wh", "f", "p", "g", "in", "l", "k", "h", "s", "dn"};
+    for (size_t i = 0; i < MD_COUNTOF(pairs); ++i) {
+        char pn[64], pa[64];
+        snprintf(pn, sizeof(pn), "script/%s_nm", pairs[i]);
+        snprintf(pa, sizeof(pa), "script/%s_a", pairs[i]);
+        const md_attribute_t* an = md_attributes_find(at, md_str_from_cstr(pn));
+        const md_attribute_t* aa = md_attributes_find(at, md_str_from_cstr(pa));
+        ASSERT_TRUE(an && aa);
+        const size_t n = md_attribute_slice_count(an, md_attribute_slice_all());
+        ASSERT_EQ(n, md_attribute_slice_count(aa, md_attribute_slice_all()));
+        double* vn = md_alloc(alloc, n * sizeof(double));
+        double* va = md_alloc(alloc, n * sizeof(double));
+        ASSERT_EQ(n, md_attribute_extract_f64(vn, n, at, an, md_attribute_slice_all(), md_unit_none()));
+        ASSERT_EQ(n, md_attribute_extract_f64(va, n, at, aa, md_attribute_slice_all(), md_unit_none()));
+        double worst = 0, scale = 0;
+        for (size_t k = 0; k < n; ++k) { worst = MD_MAX(worst, fabs(vn[k] - va[k])); scale = MD_MAX(scale, fabs(va[k])); }
+        if (worst > 1e-5 * (scale + 1)) printf("%s: %s and %s differ by %g\n", pairs[i], pn, pa, worst);
+        EXPECT_LE(worst, 1e-5 * (scale + 1));
+    }
+    // A sphere's radius in nm is drawn in Å
+    const uint32_t expr = md_vial_expr_at(prog, (uint32_t)(strstr(src, "sphere(") - src));
+    md_vial_drawing_t dr;
+    ASSERT_TRUE(md_vial_draw(&dr, &(md_vial_draw_desc_t){.prog = prog, .sys = sys, .run = MD_STR_LIT("run"), .frame = 1, .element = -1}, expr, alloc));
+    ASSERT_EQ(1u, (unsigned)dr.num_prims);
+    EXPECT_NEAR(3.0, dr.prims[0].r, 1e-6);
+    md_vial_eval_free(e);
+    md_vial_program_free(prog);
+    md_arena_allocator_destroy(alloc);
+}
+
 UTEST(vial_ir, volume_diagnostics) {
     const md_system_t* sys = vial_test_system('P');
     ASSERT_TRUE(sys != NULL);

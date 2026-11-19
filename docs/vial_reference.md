@@ -160,7 +160,7 @@ c : float[433][3] Å                                    frame
 
 ### Units
 
-- `+`, `-` and comparisons convert compatible units, such as nm and Å. Incompatible units give W0501, and the result's unit becomes unknown, so later steps do not warn again.
+- `+`, `-`, comparisons and `in` convert compatible units, such as nm and Å, and so do the items of a list, the values a built-in compares or chooses between (`min`, `max`, `clip`, `where`, `filled`, `concatenate`, `linspace`, `arange`), a histogram's `range=`, which is taken in its values' unit, and every length and point a built-in takes, which geometry computes in Å: `within(0.5 nm, of=s)` searches 5 Å, and `fit` of points in nm gives positions in Å. Incompatible units give W0501, and the result's unit becomes unknown, so later steps do not warn again.
 - A bare number, and an array built by zeros, ones or full without unit=, takes the unit the operation expects. That is the other operand's unit in `+`, `-`, comparisons, `min`, `max`, `where` and `clip`, and the parameter's declared unit elsewhere, such as Å for a point, the radius of `within` and the `range` of a histogram. In `*` and `/` it has no unit.
 - Trigonometric functions take angles in any angle unit. `exp`, `log` and the like take values without a unit; anything else gives W0501.
 - `unitless(x)` drops the unit on purpose, without a warning.

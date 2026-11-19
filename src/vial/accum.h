@@ -94,9 +94,9 @@ bool vial_rdf_end(vial_kctx_t* k, vial_rdf_t* rdf, vial_val_t* out);
 bool vial_rdf_like(vial_rdf_t* out, const vial_rdf_t* rdf);
 void vial_rdf_free(vial_rdf_t* rdf);
 
-// The range of the distances an rdf bins, from its cutoff argument in Å: (0, c) for a length, (lo, hi) for lo..hi or a
-// tuple. scale converts the argument's unit to Å, and scale2 that of a tuple's second element.
-bool vial_rdf_range(const vial_val_t* cutoff, double scale, double scale2, double* lo, double* hi);
+// The range of the distances an rdf bins, from its cutoff argument, in Å as lowering converts it: (0, c) for a length,
+// (lo, hi) for lo..hi or a tuple
+bool vial_rdf_range(const vial_val_t* cutoff, double* lo, double* hi);
 
 // The rdf of chosen frames, those where mask[f] is set, from the counts kept per frame, into out (bins floats, NaN where
 // missing). False when the counts are not kept per frame.

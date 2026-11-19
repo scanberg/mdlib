@@ -618,6 +618,8 @@ static T call_fit(infer_t* x, vial_node_id call) {
     if (!vx_weights_ok(x, args[3], "fit", &x->out->types[(args[0]) - x->out->base])) return err();
     T core = sp[0].core;
     core.stage = core.stage < VIAL_STAGE_FRAME ? VIAL_STAGE_FRAME : core.stage;
+    // Points are taken in Å, as geometry computes them, so the positions it gives are in Å
+    if (core.unit_kind == VIAL_UNIT_KNOWN && md_unit_base_equal(core.unit, unit_named("angstrom"))) core.unit = unit_named("angstrom");
     T t;
     if (!with_loop(x, call, &loop, core, &t)) return err();
     join_stage(&t, &sp[1].core);

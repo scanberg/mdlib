@@ -205,18 +205,136 @@ static vial_ssa_t op1(infer_t* x, vial_node_id id, uint16_t kind, uint16_t sub, 
 
 static const T* type_at(const infer_t* x, vial_node_id id) { return &x->out->types[id - x->out->base]; }
 
-// b converted to a's unit for + - % and comparisons, as the check folds it: compatible units convert to the left's
-static vial_ssa_t in_unit_of(infer_t* x, vial_node_id at, const T* a, vial_ssa_t bv, const T* b) {
-    if (a->unit_kind != VIAL_UNIT_KNOWN || b->unit_kind != VIAL_UNIT_KNOWN) return bv;
+// ### UNITS ###
+// A value carries no unit when evaluating: it is held in the unit of its type. Where values of different units meet,
+// in + - %, comparisons, a list, or a built-in that compares or chooses between them, and where a built-in computes in
+// a unit of its own, as geometry does in Å, lowering converts them, once, here, where the check knows both units.
+
+// v, of type vt, in unit `to`: a number or an array of numbers multiplied by the factor, a range scaled, a tuple
+// element by element. As it is when there is nothing to convert: either unit not known, units that do not convert (a
+// mismatch the check reported), or a factor of 1.
+static vial_ssa_t to_unit(infer_t* x, vial_node_id at, vial_ssa_t v, const T* vt, md_unit_t to) {
+    if (!v || !vt) return v;
+    const vial_ir_t* ir = x->ir;
+    const uint32_t op = ir->values[v].op;
+    if (vt->dtype == VIAL_DT_TUPLE) {
+        if (op == VIAL_IR_NO_OP || ir->ops[op].kind != VIAL_IR_TUPLE || ir->ops[op].num_args != vt->num_elems || vt->num_elems > 64) return v;
+        const uint32_t n = vt->num_elems;
+        vial_ssa_t items[64];
+        T* elems = md_alloc(x->ir->alloc, (n ? n : 1) * sizeof(T));
+        bool changed = false;
+        for (uint32_t i = 0; i < n; ++i) {
+            const vial_ssa_t e = ir->args[ir->ops[op].arg_beg + i];
+            items[i] = to_unit(x, at, e, &vt->elems[i], to);
+            elems[i] = items[i] != e ? x->ir->values[items[i]].type : vt->elems[i];
+            changed |= items[i] != e;
+        }
+        if (!changed) return v;
+        T tt = *vt;
+        tt.elems = elems;
+        return vial_ir_op1(x->ir, VIAL_IR_TUPLE, 0, 0, items, n, &tt, vx_span(x, at));
+    }
+    if (vt->unit_kind != VIAL_UNIT_KNOWN) return v;
     double f;
-    if (!md_unit_conversion_factor(&f, b->unit, a->unit) || f == 1.0) return bv;
-    T ft = vial_type_scalar(b->dtype == VIAL_DT_FLOAT64 ? VIAL_DT_FLOAT64 : VIAL_DT_FLOAT);
+    if (!md_unit_conversion_factor(&f, vt->unit, to) || f == 1.0) return v;
+    T r = *vt;
+    r.unit = to;
+    if (vt->dtype == VIAL_DT_RANGE) {
+        // A range is a constant of two numbers, lo..hi
+        if (op == VIAL_IR_NO_OP || ir->ops[op].kind != VIAL_IR_CONST) return v;
+        const vial_val_t* c = &ir->consts[ir->ops[op].aux];
+        if (!c->data) return v;
+        vial_val_t rv = vial_val_make(VIAL_DT_RANGE, 0, NULL, x->ir->alloc);
+        ((double*)rv.data)[0] = ((const double*)c->data)[0] * f;
+        ((double*)rv.data)[1] = ((const double*)c->data)[1] * f;
+        return vial_ir_const(x->ir, &rv, &r, (md_str_t){0}, vx_span(x, at));
+    }
+    if (vt->dtype != VIAL_DT_INT && vt->dtype != VIAL_DT_FLOAT && vt->dtype != VIAL_DT_FLOAT64) return v;
+    T ft = vial_type_scalar(vt->dtype == VIAL_DT_FLOAT64 ? VIAL_DT_FLOAT64 : VIAL_DT_FLOAT);
     vial_val_t fv = ft.dtype == VIAL_DT_FLOAT64 ? vial_val_float64(f, x->ir->alloc) : vial_val_float((float)f, x->ir->alloc);
     const vial_ssa_t c = vial_ir_const(x->ir, &fv, &ft, (md_str_t){0}, vx_span(x, at));
-    T r = *b;
     if (r.dtype != VIAL_DT_FLOAT64) r.dtype = VIAL_DT_FLOAT;
-    r.unit = a->unit;
-    return op1(x, at, VIAL_IR_BINARY, VIAL_OP_STAR, 0, (vial_ssa_t[]){bv, c}, 2, &r);
+    return op1(x, at, VIAL_IR_BINARY, VIAL_OP_STAR, 0, (vial_ssa_t[]){v, c}, 2, &r);
+}
+
+// b converted to a's unit for + - % and comparisons, as the check folds it: compatible units convert to the left's
+static vial_ssa_t in_unit_of(infer_t* x, vial_node_id at, const T* a, vial_ssa_t bv, const T* b) {
+    if (a->unit_kind != VIAL_UNIT_KNOWN) return bv;
+    return to_unit(x, at, bv, b, a->unit);
+}
+
+static md_unit_t angstrom(void) {
+    md_unit_t u;
+    vial_unit_name(MD_STR_LIT("angstrom"), &u);
+    return u;
+}
+
+// What a built-in takes an argument in: lengths and points in Å; values it compares or chooses between in the unit of
+// its result; a histogram's range in its values' unit, atan2's x in y's. A parameter of kind point or points is a length
+// without being listed.
+enum { UNIT_AS_GIVEN = 0, UNIT_LENGTH, UNIT_RESULT, UNIT_LIKE };
+
+typedef struct arg_unit_t {
+    const char* fn;
+    const char* param;      // NULL: every argument
+    int8_t      pos;        // its position, for an argument written positionally to a built-in the check does not bind
+    uint8_t     to;
+    const char* like;       // UNIT_LIKE: the parameter whose unit it takes
+} arg_unit_t;
+
+static const arg_unit_t arg_units[] = {
+    {"within", "r", 0, UNIT_LENGTH, NULL},          {"within", "of", -1, UNIT_LENGTH, NULL},
+    {"sdf", "target", 1, UNIT_LENGTH, NULL},        {"sdf", "extent", 2, UNIT_LENGTH, NULL},
+    {"sdf", "ref", 4, UNIT_LENGTH, NULL},           {"sdf", "sigma", 6, UNIT_LENGTH, NULL},
+    {"density", "points", 0, UNIT_LENGTH, NULL},    {"density", "box", 2, UNIT_LENGTH, NULL},
+    {"density", "sigma", 4, UNIT_LENGTH, NULL},
+    {"rdf", "a", 0, UNIT_LENGTH, NULL},             {"rdf", "b", 1, UNIT_LENGTH, NULL},
+    {"rdf", "cutoff", 2, UNIT_LENGTH, NULL},
+    {"sphere", "r", 1, UNIT_LENGTH, NULL},          {"disk", "r", 2, UNIT_LENGTH, NULL},
+    {"arrow", "length", 3, UNIT_LENGTH, NULL},
+    {"min", NULL, -1, UNIT_RESULT, NULL},           {"max", NULL, -1, UNIT_RESULT, NULL},
+    {"clip", NULL, -1, UNIT_RESULT, NULL},          {"filled", NULL, -1, UNIT_RESULT, NULL},
+    {"where", "a", 1, UNIT_RESULT, NULL},           {"where", "b", 2, UNIT_RESULT, NULL},
+    {"concatenate", NULL, -1, UNIT_RESULT, NULL},
+    {"linspace", NULL, -1, UNIT_RESULT, NULL},      {"arange", NULL, -1, UNIT_RESULT, NULL},
+    {"histogram", "range", 3, UNIT_LIKE, "x"},      {"atan2", "x", 1, UNIT_LIKE, "y"},
+};
+
+// Each argument of a call to built-in fn in the unit it is taken in. names are the parameters the check bound them to
+// (bound, with their kinds), or as written: a keyword's name, empty for a positional argument.
+static void args_in_units(infer_t* x, vial_node_id at, const char* fn, const vx_bound_t* bound, vial_ssa_t* args, const md_str_t* names, uint32_t n,
+                          const T* t) {
+    uint32_t pos = 0;
+    for (uint32_t i = 0; i < n; ++i) {
+        const bool positional = !names[i].len;
+        const uint32_t p = positional ? pos++ : UINT32_MAX;
+        if (!args[i]) continue;
+        uint8_t to = UNIT_AS_GIVEN;
+        const char* like = NULL;
+        if (bound && i < bound->np && (bound->params[i].kind == VX_KIND_POINT || bound->params[i].kind == VX_KIND_POINTS)) to = UNIT_LENGTH;
+        for (size_t k = 0; to == UNIT_AS_GIVEN && k < MD_COUNTOF(arg_units); ++k) {
+            const arg_unit_t* u = &arg_units[k];
+            if (strcmp(u->fn, fn)) continue;
+            const bool match = !u->param || (positional ? (int64_t)p == u->pos && !bound : md_str_eq(names[i], md_str_from_cstr(u->param)));
+            if (match) { to = u->to; like = u->like; }
+        }
+        md_unit_t unit;
+        if (to == UNIT_LENGTH) {
+            unit = angstrom();
+        } else if (to == UNIT_RESULT) {
+            if (t->unit_kind != VIAL_UNIT_KNOWN) continue;
+            unit = t->unit;
+        } else if (to == UNIT_LIKE) {
+            const T* lt = NULL;
+            for (uint32_t j = 0; j < n && !lt; ++j) if (args[j] && md_str_eq(names[j], md_str_from_cstr(like))) lt = &x->ir->values[args[j]].type;
+            if (!lt && !bound && args[0]) lt = &x->ir->values[args[0]].type;    // written positionally: the first
+            if (!lt || lt->unit_kind != VIAL_UNIT_KNOWN) continue;
+            unit = lt->unit;
+        } else {
+            continue;
+        }
+        args[i] = to_unit(x, at, args[i], &x->ir->values[args[i]].type, unit);
+    }
 }
 
 // An operand evaluated as a float64 beside one (vx_operand_dtype): a bare float number is emitted again as a float64
@@ -267,7 +385,7 @@ static vial_ssa_t emit_compare(infer_t* x, vial_node_id id, const T* t) {
         vial_ssa_t a = vx_ssa(x, an), b = vx_ssa(x, bn);
         a = in_operand_dtype(x, an, a, at, bt);
         b = in_operand_dtype(x, bn, b, bt, at);
-        if (bt->dtype != VIAL_DT_RANGE) b = in_unit_of(x, on, at, b, bt);
+        b = in_unit_of(x, on, at, b, bt);
         const vial_ssa_t c = op1(x, on, VIAL_IR_COMPARE, cmp, 0, (vial_ssa_t[]){a, b}, 2, i + 3 >= n && !acc ? t : &pt);
         if (!c) return 0;
         acc = acc ? op1(x, id, VIAL_IR_LOGIC, VIAL_KW_AND, 0, (vial_ssa_t[]){acc, c}, 2, i + 3 >= n ? t : &pt) : c;
@@ -334,6 +452,8 @@ static vial_ssa_t emit_items(infer_t* x, vial_node_id id, uint16_t kind, const T
     for (uint32_t i = 0; i < n; ++i) {
         args[i] = vx_ssa(x, vx_child(x, id, i));
         if (!args[i]) return 0;
+        // A list stacks its items into one array, in the list's unit; a tuple's keep their own
+        if (kind == VIAL_IR_LIST) args[i] = in_unit_of(x, id, t, args[i], type_at(x, vx_child(x, id, i)));
     }
     return vial_ir_op1(x->ir, kind, 0, 0, args, n, t, vx_span(x, id));
 }
@@ -537,7 +657,9 @@ static vial_ssa_t emit_attr(infer_t* x, vial_node_id id, const T* t) {
     }
     if (md_str_eq(name, MD_STR_LIT("xyz")) && at->dtype != VIAL_DT_SET) return a;
     if (md_str_eq(name, MD_STR_LIT("xyz"))) return builtin(x, id, "xyz", &a, NULL, 1, t);
-    return builtin(x, id, buf, &a, NULL, 1, t);
+    // .com of points computes in Å, as com() does
+    const vial_ssa_t ac = md_str_eq(name, MD_STR_LIT("com")) ? to_unit(x, id, a, at, angstrom()) : a;
+    return builtin(x, id, buf, &ac, NULL, 1, t);
 }
 
 // A tuple or list written as an argument whose items the built-in typed one by one, as concatenate's: a tuple of them
@@ -607,6 +729,7 @@ static vial_ssa_t emit_call(infer_t* x, vial_node_id id, const T* t) {
             ++n;
         }
     }
+    args_in_units(x, id, sym->builtin->name, bi ? &x->out->binds[bi - 1] : NULL, args, names, n, t);
     const uint32_t op = vial_ir_emit(x->ir, &(vial_ir_emit_t){.kind = VIAL_IR_BUILTIN, .aux = vial_builtin_index(sym->builtin), .args = args,
                                                               .names = names, .num_args = n, .types = t, .num_results = 1, .span = vx_span(x, id)});
     return x->ir->ops[op].result;

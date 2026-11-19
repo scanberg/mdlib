@@ -6,44 +6,26 @@
 #include <core/md_unitcell.h>
 #include <core/md_allocator.h>
 #include <core/md_common.h>
-#include <core/md_unit.h>
 
 #include <math.h>
 
 bool vial_k_positions(vial_kctx_t* k, const vial_val_t* s, vial_val_t* out);
 
-// ### UNITS AND THE RANGE ###
+// ### THE RANGE ###
 
-// What one unit of a value of type t is in Å: 1 for a value without a unit, or one not known, which is read as Å
-static double length_scale(const vial_type_t* t) {
-    if (!t || t->unit_kind != VIAL_UNIT_KNOWN || md_unit_is_none(t->unit)) return 1.0;
-    md_unit_t angstrom;
-    vial_unit_name(MD_STR_LIT("angstrom"), &angstrom);
-    double f;
-    return md_unit_conversion_factor(&f, t->unit, angstrom) ? f : 1.0;
-}
-
-// The type the check gave argument i of the op, NULL when there is none
-static const vial_type_t* arg_type(const vial_kctx_t* k, int i) {
-    if (i < 0 || !k->op || !k->in || !k->in->ir || (uint32_t)i >= k->op->num_args) return NULL;
-    const vial_ir_t* ir = k->in->ir;
-    const vial_ssa_t s = ir->args[k->op->arg_beg + (uint32_t)i];
-    return s ? &ir->values[s].type : NULL;
-}
-
-bool vial_rdf_range(const vial_val_t* cutoff, double scale, double scale2, double* lo, double* hi) {
+bool vial_rdf_range(const vial_val_t* cutoff, double* lo, double* hi) {
     if (!cutoff) return false;
     double l = 0.0, h = 0.0;
     if (cutoff->dtype == VIAL_DT_RANGE && cutoff->data) {
-        l = ((const double*)cutoff->data)[0] * scale;
-        h = ((const double*)cutoff->data)[1] * scale;
+        l = ((const double*)cutoff->data)[0];
+        h = ((const double*)cutoff->data)[1];
     } else if (cutoff->dtype == VIAL_DT_TUPLE && cutoff->num_elems == 2) {
         const vial_val_t* e = cutoff->elems;
         if (!vial_arg_is_num(&e[0]) || !vial_arg_is_num(&e[1]) || vial_val_count(&e[0]) != 1 || vial_val_count(&e[1]) != 1) return false;
-        l = vial_arg_num(&e[0], 0) * scale;
-        h = vial_arg_num(&e[1], 0) * scale2;
+        l = vial_arg_num(&e[0], 0);
+        h = vial_arg_num(&e[1], 0);
     } else if (vial_arg_is_num(cutoff) && vial_val_count(cutoff) == 1) {
-        h = vial_arg_num(cutoff, 0) * scale;
+        h = vial_arg_num(cutoff, 0);
     } else {
         return false;
     }
@@ -94,7 +76,8 @@ typedef struct rdf_points_t {
     size_t          n;
 } rdf_points_t;
 
-// The points of argument name at this frame, in Å: a set's particles, or points; those missing are left out
+// The points of argument name at this frame, in Å, as lowering converts them: a set's particles, or points; those
+// missing are left out
 static bool points_of(vial_kctx_t* k, const vial_args_t* a, const char* name, uint32_t pos, rdf_points_t* out) {
     const int i = vial_arg_index(a, name, pos);
     const vial_val_t* v = i < 0 ? NULL : a->v[i];
@@ -108,14 +91,13 @@ static bool points_of(vial_kctx_t* k, const vial_args_t* a, const char* name, ui
     const uint32_t* ids = NULL;
     if (v->dtype == VIAL_DT_SET && v->sets && v->sets->count == 1 && vial_sets_size(v->sets, 0) == n) ids = vial_sets_items(v->sets, 0);
     else if (p.origin && p.origin->count == 1 && vial_sets_size(p.origin, 0) == n) ids = vial_sets_items(p.origin, 0);
-    const double s = v->dtype == VIAL_DT_SET ? 1.0 : length_scale(arg_type(k, i));
     float*    xyz = md_alloc(k->alloc, (n ? n : 1) * 3 * sizeof(float));
     uint32_t* id = ids ? md_alloc(k->alloc, (n ? n : 1) * sizeof(uint32_t)) : NULL;
     const float* src = (const float*)p.data;
     size_t m = 0;
     for (size_t q = 0; q < n; ++q) {
         if (vial_val_is_missing(&p, 3 * q) || vial_val_is_missing(&p, 3 * q + 1) || vial_val_is_missing(&p, 3 * q + 2)) continue;
-        for (int c = 0; c < 3; ++c) xyz[3 * m + c] = (float)(src[3 * q + c] * s);
+        for (int c = 0; c < 3; ++c) xyz[3 * m + c] = src[3 * q + c];
         if (id) id[m] = ids[q];
         m += 1;
     }
@@ -193,14 +175,7 @@ static bool alloc_sums(vial_rdf_t* rdf, size_t budget, size_t* keep) {
 
 bool vial_rdf_begin(vial_kctx_t* k, vial_rdf_t* rdf, const vial_args_t* a) {
     md_memset(rdf, 0, sizeof(*rdf));
-    const int ci = vial_arg_index(a, "cutoff", 2);
-    const vial_type_t* ct = arg_type(k, ci);
-    double s1 = length_scale(ct), s2 = s1;
-    if (ct && ct->dtype == VIAL_DT_TUPLE && ct->num_elems == 2) {
-        s1 = length_scale(&ct->elems[0]);
-        s2 = length_scale(&ct->elems[1]);
-    }
-    if (!vial_rdf_range(ci < 0 ? NULL : a->v[ci], s1, s2, &rdf->lo, &rdf->hi)) {
+    if (!vial_rdf_range(vial_arg(a, "cutoff", 2), &rdf->lo, &rdf->hi)) {
         return vial_rt_fail(k, "R0103", "cutoff= is a length more than 0, or lo..hi with hi above lo");
     }
     // The bins as the check worked them out: the extent of the type
