@@ -63,10 +63,14 @@ struct md_executor_t;
 //   vlx/scf/gostshyp/tessera/decay_length                    {T} Å, <rho|g> / (-d/dn <rho|g>). The amplitudes hold the
 //                                                            pressure: p (-d/dn <rho|g>) = P a
 //   vlx/scf/gostshyp/tessera/atom_index                      {T} u32, the QM atom whose sphere it lies on: read where
-//                                                            the file has it (gostshyp_gaussian_atom_indices), else
-//                                                            found from the distances (vlx_publish_gostshyp)
-//   vlx/scf/gostshyp/sphere_radius                           {A} Å, of each QM atom's sphere; NAN where an element
-//                                                            has no tesserae at all
+//                                                            the file has it, else found from the distances
+//                                                            (vlx_publish_gostshyp)
+//   vlx/scf/gostshyp/tessera/{lebedev_weight,switching}      {T}, where the file has them: what the area is made of,
+//                                                            a = w R^2 F - the Lebedev weight w (the point's solid
+//                                                            angle, 4 pi over a sphere) and the switching F
+//   vlx/scf/gostshyp/sphere_radius                           {A} Å, of each QM atom's sphere: from its tesserae; an
+//                                                            atom without any (buried) takes its element's, or the
+//                                                            radius scale times its van der Waals radius
 //   vlx/scf/gostshyp/pressure                                rank 0, GPa
 //   vlx/scf/gostshyp/{num_lebedev_points,radius_scale}       rank 0: how the cavity was made - the Lebedev
 //   vlx/scf/gostshyp/discretization                          points per sphere, the scale of the van der Waals
