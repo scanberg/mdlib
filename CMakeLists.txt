@@ -360,30 +360,24 @@ set(TOPO_SLANG_FILES
 # The GTO critical point search: its kernels share one argument struct.
 set(TOPO_GTO_SLANG_FILE src/shaders/topo/topo_gto_cube.slang)
 
+# One kernel per pass for both block shapes (8x8x8, and 32x16x1 for a grid of one layer: the shape an argument,
+# gto_gemm_args.slang), but the shell kernel's, which keeps one per shape
 set(GTO_SLANG_FILES
-  src/shaders/gto/eval_gto_density.slang
-  src/shaders/gto/eval_gto_localization.slang
-  src/shaders/gto/eval_gto_mo.slang
+  # the orbitals' shell kernel, 1 or 8 a pass, per block shape
   src/shaders/gto/eval_gto_mo_shell_v4_m1.slang
   src/shaders/gto/eval_gto_mo_shell_v4_m8.slang
-  src/shaders/gto/eval_gto_mo_gemm_128x32.slang
-  # the same for a grid of one layer (the image of a plane): blocks of 32x16x1 voxels
-  src/shaders/gto/eval_gto_localization_2d.slang
   src/shaders/gto/eval_gto_mo_shell_v4_m1_2d.slang
   src/shaders/gto/eval_gto_mo_shell_v4_m8_2d.slang
-  src/shaders/gto/eval_gto_mo_gemm_128x32_2d.slang
-  # the density's GEMM pass on the GEMM core (gto_gemm_core.slang); the orbitals' (eval_gto_mo_gemm) is on it too
+  # the density's and the orbitals' GEMM passes on the GEMM core (gto_gemm_core.slang)
   src/shaders/gto/eval_gto_density_core_128x32.slang
   src/shaders/gto/eval_gto_density_core_128x64.slang
-  src/shaders/gto/eval_gto_density_core_128x32_2d.slang
-  src/shaders/gto/eval_gto_density_core_128x64_2d.slang
+  src/shaders/gto/eval_gto_mo_gemm_128x32.slang
 )
-# ELF and LOL on the GEMM core: the GEMM pass (main) and the values of its terms (finish_main)
+# ELF and LOL on the GEMM core: the GEMM pass (main) at either tile, and the values of its terms (finish_main: the
+# tile is not its), with their entries below
 set(GTO_LOC_CORE_SLANG_FILES
   src/shaders/gto/eval_gto_localization_core_128x32.slang
   src/shaders/gto/eval_gto_localization_core_128x64.slang
-  src/shaders/gto/eval_gto_localization_core_128x32_2d.slang
-  src/shaders/gto/eval_gto_localization_core_128x64_2d.slang
 )
 
 set(GEN_FILES)
@@ -704,7 +698,7 @@ endif()
 set(SHADER_FILES ${GL_SHADER_FILES} ${TOPO_SLANG_FILES} ${TOPO_GTO_SLANG_FILE} ${GTO_SLANG_FILES} ${GTO_LOC_CORE_SLANG_FILES}
     src/shaders/gto/gto_gemm_core.slang src/shaders/gto/eval_gto_density_core.slang src/shaders/gto/eval_gto_localization_core.slang
     src/shaders/gto/gto_common.slang src/shaders/gto/gto_gemm_args.slang
-    src/shaders/gto/gto_dmat_common.slang src/shaders/gto/gto_dmat.slang src/shaders/gto/gto_screen.slang
+    src/shaders/gto/gto_dmat_common.slang src/shaders/gto/gto_dmat.slang
     src/shaders/gto/eval_gto_density_gemm.slang
     src/shaders/gto/eval_gto_mo_shell.slang src/shaders/gto/eval_gto_mo_gemm.slang
     src/shaders/gto/eval_gto_int_potential.slang src/shaders/gto/gto_int_hermite.slang
@@ -772,11 +766,9 @@ if (MD_ENABLE_GPU)
   set(GTO_SLANG_INCLUDES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_common.slang
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_dmat_common.slang
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_screen.slang
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_gemm_args.slang
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_mo_shell.slang
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_mo_gemm.slang
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_localization.slang
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_density_gemm.slang
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_gemm_core.slang
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_density_core.slang
@@ -792,13 +784,17 @@ if (MD_ENABLE_GPU)
       DEPENDS   ${GTO_SLANG_INCLUDES}
     )
   endforeach()
-  foreach(GTO_SRC ${GTO_LOC_CORE_SLANG_FILES})
-    get_filename_component(GTO_STEM ${GTO_SRC} NAME_WE)
-    compile_gpu_shaders(${GTO_STEM}_shaders.inl
+  # the GEMM pass at either tile; the finish once (the tile is not its)
+  foreach(GTO_LOC IN ITEMS "128x32:main finish_main" "128x64:main")
+    string(REPLACE ":" ";" GTO_LOC_PARTS "${GTO_LOC}")
+    list(GET GTO_LOC_PARTS 0 GTO_LOC_CFG)
+    list(GET GTO_LOC_PARTS 1 GTO_LOC_ENTRIES)
+    separate_arguments(GTO_LOC_ENTRIES)
+    compile_gpu_shaders(eval_gto_localization_core_${GTO_LOC_CFG}_shaders.inl
       TARGET    mdlib
       NAMESPACE md_shader
-      SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/${GTO_SRC}
-      ENTRIES   main finish_main
+      SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_localization_core_${GTO_LOC_CFG}.slang
+      ENTRIES   ${GTO_LOC_ENTRIES}
       DEPENDS   ${GTO_SLANG_INCLUDES}
     )
   endforeach()
@@ -807,13 +803,6 @@ if (MD_ENABLE_GPU)
     TARGET    mdlib
     NAMESPACE md_shader
     SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_density_gemm.slang
-    ENTRIES   count_main phi_main dgather_main phi_grad_main
-    DEPENDS   ${GTO_SLANG_INCLUDES}
-  )
-  compile_gpu_shaders(eval_gto_density_gemm_2d_shaders.inl
-    TARGET    mdlib
-    NAMESPACE md_shader
-    SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_density_gemm_2d.slang
     ENTRIES   count_main phi_main dgather_main phi_grad_main
     DEPENDS   ${GTO_SLANG_INCLUDES}
   )

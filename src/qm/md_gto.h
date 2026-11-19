@@ -277,7 +277,7 @@ void md_gto_gpu_initialize(md_gpu_device_t device);
 void md_gto_gpu_shutdown(void);
 
 // ---------------------------------------------------------------------------
-// GPU basis buffer  (owns device-local atom_idx, r, off_len, pgto regions)
+// GPU basis buffer  (owns the device-local shell data: atom_idx, r, info, primitives)
 // Create once per basis set; reuse across all density and MO evaluations.
 // ---------------------------------------------------------------------------
 
@@ -285,7 +285,7 @@ typedef struct md_gto_gpu_basis* md_gto_gpu_basis_t;
 
 typedef struct md_gto_gpu_basis_desc_t {
 	const md_gto_basis_t* basis;      // basis set topology (required)
-	double                cutoff;     // pgto radius pruning threshold; pass 0 to disable
+	double                cutoff;     // the shells' radii of influence at this cutoff; pass 0 to disable
 } md_gto_gpu_basis_desc_t;
 
 // Allocate a device-local basis buffer and fully populate it from desc.
@@ -298,12 +298,11 @@ md_gto_gpu_basis_t md_gto_gpu_basis_create(md_gpu_stream_t stream, const md_gto_
 // Stream-ordered: the memory is freed at this point in `stream`.
 void md_gto_gpu_basis_destroy(md_gpu_stream_t stream, md_gto_gpu_basis_t basis_buf);
 
-// Return the underlying GPU basis buffer (CGTO metadata + PGTO data).
+// Return the underlying GPU basis buffer (the shells: atoms, radii, primitives).
 md_gpu_addr_t md_gto_gpu_basis_buffer(md_gto_gpu_basis_t basis_buf);
 
 // Basis metadata queries.
 size_t md_gto_gpu_basis_num_cgtos(md_gto_gpu_basis_t basis_buf);
-size_t md_gto_gpu_basis_num_pgtos(md_gto_gpu_basis_t basis_buf);
 size_t md_gto_gpu_basis_num_atoms(md_gto_gpu_basis_t basis_buf);
 
 // Atom buffer helpers.
@@ -424,15 +423,10 @@ void md_gto_gpu_dmat_view(md_gto_gpu_dmat_view_t* out, md_gto_gpu_dmat_t dmat);
 
 // Density evaluation algorithm.
 typedef enum md_gto_gpu_density_algo_t {
-    // The recommended algorithm, currently MD_GTO_GPU_DENSITY_ALGO_GEMM, which
-    // blocks the calling thread (see below). Pick REFERENCE explicitly where a fully
-    // asynchronous launch matters more than speed. MD_GTO_GPU_DENSITY_ALGO (set in the
-    // environment to reference or gemm) overrides what DEFAULT means, to compare.
+    // MD_GTO_GPU_DENSITY_ALGO_GEMM, the only one. (The reference kernel, a loop over the screened AOs per voxel, is
+    // gone: the GPU tests check against the CPU in double. A launch blocks the calling thread for the counts; a job,
+    // md_gto_gpu_density_job_begin, does not.)
     MD_GTO_GPU_DENSITY_ALGO_DEFAULT = 0,
-
-    // Original kernel (eval_gto_density.slang): per-AO tiles of 16, the radial part
-    // evaluated per Cartesian component. Asynchronous; also the reference for tests.
-    MD_GTO_GPU_DENSITY_ALGO_REFERENCE,
 
     // Two-pass: Phi (voxels x AOs) per 8^3 block into scratch memory, the block's
     // sub-matrix D_b gathered once, then a tiled GEMM with the
@@ -511,8 +505,7 @@ void md_gto_gpu_density_launch(md_gpu_stream_t stream, const md_gto_gpu_density_
 // returns; md_gto_gpu_job_poll plans the rest once the counts are on the host (the launch waits for them, and for
 // whatever the stream held before them) and issues its pieces over the polls, a few in flight, the next as the
 // GPU passes one. Until it is all issued, what the descriptor names (the basis, the atom positions, the
-// coefficients or the dmat) must stay as they are. The reference algorithm is issued at once. NULL for invalid
-// input (logged).
+// coefficients or the dmat) must stay as they are. NULL for invalid input (logged).
 //   md_gto_gpu_job_t* job = md_gto_gpu_density_job_begin(stream, &desc);
 //   ... once a frame: if (md_gto_gpu_job_poll(job, false)) { ... all issued: read out_tex back after it ... }
 //   ... md_gto_gpu_job_progress(job) for a progress display, md_gto_gpu_job_end(job) once it is no longer watched
@@ -537,9 +530,8 @@ void md_gto_gpu_job_end(md_gto_gpu_job_t* job);
 // ---------------------------------------------------------------------------
 // From the spins' density matrices: per voxel rho_s, grad rho_s and the kinetic energy density
 // tau_s = 1/2 sum_ij D_ij grad chi_i . grad chi_j, from the AOs and their gradients, then ELF or LOL as md_qm_elf
-// and md_qm_lol take them (the Kohout-Savin spin form; md_qm.h), in float, written to out_tex. One kernel, with
-// the reference density kernel's structure (eval_gto_localization.slang): about 7 times its multiply-adds per AO
-// pair and spin.
+// and md_qm_lol take them (the Kohout-Savin spin form; md_qm.h), in float, written to out_tex, on the GEMM core
+// (MD_GTO_GPU_LOCALIZATION_ALGO_GEMM).
 //
 // The basis's radii decide which AOs are summed at a voxel: ELF is made of small differences in the tails, and
 // wants a basis made with a cutoff of 1e-7 to 1e-8 (md_gto_gpu_basis_desc_t.cutoff), and dmats made with it.
@@ -553,15 +545,9 @@ typedef enum md_gto_gpu_localization_t {
 } md_gto_gpu_localization_t;
 
 typedef enum md_gto_gpu_localization_algo_t {
-    // GEMM: 5.7x the reference's speed on a protein of 1152 atoms (RTX 3080, 14.6 M voxels at 0.25 bohr), and closer
-    // to the values in double. MD_GTO_GPU_LOCALIZATION_ALGO (set in the environment to reference or gemm) overrides
-    // what DEFAULT means, to compare.
+    // GEMM, the only one: 5.7x the speed of the reference kernel it replaced (a loop over the AO pairs per voxel,
+    // gone) on a protein of 1152 atoms (RTX 3080, 14.6 M voxels at 0.25 bohr), and closer to the values in double.
     MD_GTO_GPU_LOCALIZATION_ALGO_DEFAULT = 0,
-
-    // One kernel per group of 8^3 voxels (eval_gto_localization.slang): per voxel, the pairs of the AOs that reach
-    // the group, about 12 multiply-adds each per spin, the AOs' values and gradients made again for every pair of
-    // tiles of them.
-    MD_GTO_GPU_LOCALIZATION_ALGO_REFERENCE,
 
     // The density's two passes (MD_GTO_GPU_DENSITY_ALGO_GEMM) on the GEMM core: Phi with the AOs' gradients, four
     // rows per AO, made once per voxel; then per spin the symmetric product [phi; grad phi] x w o D_b, 2 n^2
@@ -588,22 +574,21 @@ typedef struct md_gto_gpu_localization_desc_t {
     md_gpu_texture_t   out_tex;       // R32F, needs MD_GPU_TEX_STORAGE; mip 0 is written
     const struct md_grid_t*   grid;
     float              sample_offset[3];
-    uint64_t           piece_work;    // the work of a submission, in voxel x AO pair x spin; 0 = 2^30 (GEMM: as the density's, 0 = 2^34)
+    uint64_t           piece_work;    // the work of a submission, in multiply-adds as the density's; 0 = 2^34
     md_gto_gpu_localization_algo_t algorithm;   // 0 = MD_GTO_GPU_LOCALIZATION_ALGO_DEFAULT
 } md_gto_gpu_localization_desc_t;
 
-// The revision of the kernel (eval_gto_localization.slang), for measurements: bumped with every change to it
-#define MD_GTO_GPU_LOCALIZATION_REVISION "r5 (counted, then in pieces of 2^30 voxel-pairs, each its own submission; the screened AOs in index order, bitwise run to run)"
-
-// The revision of the grid kernels' 2D variants (a grid of one layer: blocks of 32x16x1 voxels, 16x16x1 for ELF and
-// LOL), for measurements.
-// MD_GTO_GPU_NO_2D (set in the environment) takes the 3D kernels for every grid, to compare.
-#define MD_GTO_GPU_PLANE_REVISION "plane-kernels r2"
+// The revision of the grid kernels' handling of a grid of one layer (blocks of 32x16x1 voxels), for measurements.
+// MD_GTO_GPU_NO_2D (set in the environment) takes the 8x8x8 blocks for every grid, to compare.
+// r3: beside the kernels per shape, one kernel for either shape, the shape an argument (measured against them).
+// r4: the GEMM path one kernel per pass for either shape, the shape an argument (the counts, Phi, the density's, ELF's
+// and LOL's and the orbitals' GEMM passes, ELF's and LOL's finish); the shell kernel one per shape; the references
+// 8x8x8 for every grid (ELF's and LOL's had 16x16x1 for one layer). (The references have since gone.)
+#define MD_GTO_GPU_PLANE_REVISION "plane-kernels r4"
 
 // In pieces, each its own submission, as the density's GEMM (MD_GTO_GPU_GEMM_PIECES_REVISION): at the cutoff ELF
 // takes, a large system's grid as one launch is minutes of GPU work, which the watchdog (TDR) takes the device for.
-// A group's cost is the pairs of the AOs that reach it, so the groups are counted first (the screening alone) and
-// the pieces planned from the counts: runs of consecutive groups of about piece_work each.
+// The blocks are counted first and the pieces planned from the counts, as the density's.
 //
 // Issues the evaluation into `stream`. Waits for the counting pass on the calling thread (and for what the stream
 // held before it), then issues every piece. False, logged, for invalid input.
@@ -619,10 +604,6 @@ md_gto_gpu_job_t* md_gto_gpu_localization_job_begin(md_gpu_stream_t stream, cons
 typedef enum md_gto_gpu_orbital_algo_t {
     // SHELL for up to 8 orbitals, GEMM for more.
     MD_GTO_GPU_ORBITAL_ALGO_DEFAULT = 0,
-
-    // Original kernel (eval_gto_mo.slang): per-AO tiles of 16, re-evaluates every AO
-    // once per 4 orbitals. Kept for comparisons. Does not support weights.
-    MD_GTO_GPU_ORBITAL_ALGO_REFERENCE,
 
     // Shell-based single-pass kernel (eval_gto_mo_shell.slang): radial part once per
     // shell, no per-tile barriers, coefficient-aware screening, 4 voxels per thread.
@@ -655,7 +636,7 @@ typedef struct md_gto_gpu_orbital_desc_t {
 
     // Optional float[num_orbitals]: w_m multiplies psi_m (or psi_m^2, i.e. after
     // squaring, so negative weights give differences of orbital densities).
-    // 0 = all weights 1. Not supported by MD_GTO_GPU_ORBITAL_ALGO_REFERENCE.
+    // 0 = all weights 1.
     md_gpu_addr_t weights;
 
     md_gto_gpu_orbital_algo_t algorithm;   // 0 = MD_GTO_GPU_ORBITAL_ALGO_DEFAULT

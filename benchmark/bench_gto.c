@@ -445,11 +445,9 @@ UBENCH_EX(gto, NAME) { \
     bench_gto_free(&b); \
 }
 
-BENCH_GPU_MO(mo_gpu_reference, MD_GTO_GPU_ORBITAL_ALGO_REFERENCE)
 BENCH_GPU_MO(mo_gpu_shell,     MD_GTO_GPU_ORBITAL_ALGO_SHELL)
 BENCH_GPU_MO(mo_gpu_gemm,      MD_GTO_GPU_ORBITAL_ALGO_GEMM)
 
-BENCH_GPU_DENSITY(density_gpu_reference, MD_GTO_GPU_DENSITY_ALGO_REFERENCE)
 BENCH_GPU_DENSITY(density_gpu_gemm,      MD_GTO_GPU_DENSITY_ALGO_GEMM)
 
 #endif

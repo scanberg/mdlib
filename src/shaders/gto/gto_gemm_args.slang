@@ -15,18 +15,15 @@
 
 #define BLOCK_VOXELS 512
 
-// The shape of a block of voxels (BLOCK_VOXELS of them): 8x8x8, or for a grid of one layer (the image of a plane;
-// the *_2d.slang wrappers) 32x16x1 - as many voxels as near together, none of the block off the grid. Voxel p of a
-// block is at block_voxel(p): x fastest, as SV_GroupIndex orders a group of numthreads(BLOCK_X, BLOCK_Y, BLOCK_Z).
-#ifndef BLOCK_X
-#define BLOCK_X 8
-#define BLOCK_Y 8
-#define BLOCK_Z 8
-#endif
-#define BLOCK_SHAPE uint3(BLOCK_X, BLOCK_Y, BLOCK_Z)
-uint3 block_voxel(uint p) {
-    return uint3(p % uint(BLOCK_X), (p / uint(BLOCK_X)) % uint(BLOCK_Y), p / uint(BLOCK_X * BLOCK_Y));
-}
+// The shape of a block of voxels (BLOCK_VOXELS of them) is an argument (args.block_shape): 8x8x8, or for a grid of one
+// layer (the image of a plane) 32x16x1 - as many voxels as near together, none of the block off the grid. One kernel
+// for both: a group's threads in a row (numthreads(BLOCK_TX, 1, 1)), voxel p of a block at block_voxel(p), x
+// fastest. Measured against a kernel per shape (groups of 8x8x8 and 32x16x1 threads) on an M4 Pro, an RTX 3080, a
+// GTX 1060 and an HD 530 (gemm-bench r6): the density's, ELF's and the orbitals' GEMM passes with their counts and Phi
+// within 2.2% on volumes, but the orbitals' GEMM pass on the RTX 3080's protein (1.037, rounds of 0.99-1.13); runs of
+// about 1 ms or less (planes, mol's volume on the RTX 3080) within their spread, the median at most 1.15.
+#define BLOCK_SHAPE (args.block_shape.xyz)
+#define BLOCK_TX BLOCK_VOXELS
 
 struct RootArgs {
     float4x4 world_to_model;
@@ -34,6 +31,7 @@ struct RootArgs {
     float4   step;
     uint4    grid_dim;
     uint4    block_dim;         // blocks per axis (xyz)
+    uint4    block_shape;       // a block's voxels per axis (xyz), powers of two, and w: log2 x | log2 y << 8
     uint     num_shells;
     uint     num_aos;
     uint     operation;
@@ -77,6 +75,11 @@ struct MdGpuRoot { RootArgs* args_ptr; };
 ConstantBuffer<MdGpuRoot> md_root;
 
 #define args (*md_root.args_ptr)
+
+uint3 block_voxel(uint p) {
+    const uint lx = args.block_shape.w & 0xFFu, ly = (args.block_shape.w >> 8u) & 0xFFu;
+    return uint3(p & (args.block_shape.x - 1u), (p >> lx) & (args.block_shape.y - 1u), p >> (lx + ly));
+}
 
 // D[i][j] of the density, packed or in tiles
 float gto_d(uint i, uint j) {

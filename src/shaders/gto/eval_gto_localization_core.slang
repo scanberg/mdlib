@@ -16,7 +16,7 @@
 //
 // 4 n^2 / 2 multiply-adds a voxel per spin: four times the density's, the least a gradient of tau's kind takes. The
 // three terms of each voxel and spin go to the batch's terms (args.terms), and finish_main makes ELF or LOL of them
-// (md_qm_elf, md_qm_lol: the Kohout-Savin spin form, as eval_gto_localization.slang).
+// (md_qm_elf, md_qm_lol: the Kohout-Savin spin form).
 //
 // The rows of a group: GP of them, four channels of GP / 4 voxels, channel-major (row r: channel r / (GP / 4), voxel
 // r % (GP / 4)), so that the loads of A read runs of GP / 4 voxels of one row of Phi. A thread's RP rows are of one
@@ -147,13 +147,13 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_G
 // ELF or LOL of the terms of a batch's entries (or 0 for the empty blocks: terms_valid 0), into out_tex: one group per
 // block
 [shader("compute")]
-[numthreads(BLOCK_X, BLOCK_Y, BLOCK_Z)]
-void finish_main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_GroupIndex) {
+[numthreads(BLOCK_TX, 1, 1)]
+void finish_main(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
     const uint b = gid.x;
     if (b >= args.num_blocks) return;
     uint4 e0 = args.block_table[2u * b + 0u];
     uint4 e1 = args.block_table[2u * b + 1u];
-    const uint3 vox = e0.xyz * BLOCK_SHAPE + gtid;
+    const uint3 vox = e0.xyz * BLOCK_SHAPE + block_voxel(tid);
     if (!all(vox < args.grid_dim.xyz)) return;
     float value = 0.0f;
     if (args.terms_valid != 0u) {

@@ -9,7 +9,7 @@
 // with w_m = 1 unless a weight buffer is given (weights may be negative, e.g. for
 // differences of orbital densities; they are applied after squaring).
 //
-// Compared with eval_gto_mo.slang (the per-AO reference kernel):
+// Compared with the per-AO reference kernel it replaced (eval_gto_mo.slang, gone):
 //   * Shell based: screening per contracted shell, the radial part evaluated once per
 //     shell and shared by its Cartesian components.
 //   * No per-tile barriers. Shells are screened in chunks of one workgroup; the
@@ -36,7 +36,8 @@
 #endif
 
 // A group's block of voxels: 8x8x8, VPT voxels a thread along z; or for a grid of one layer (the *_2d.slang
-// wrappers) 32x16x1, VPT along y
+// wrappers) 32x16x1, VPT along y. A kernel per shape: one for both, the shape an argument as the GEMM path's
+// (gto_gemm_args.slang), was 5% behind for one orbital on an M4 Pro's volume and 9-19% for 8 on a GTX 1060.
 #ifndef BLOCK_X
 #define BLOCK_X 8
 #define BLOCK_Y 8

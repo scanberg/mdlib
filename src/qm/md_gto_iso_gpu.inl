@@ -16,7 +16,7 @@
 #include <gto_iso_gpu_shaders.inl>
 
 // BENCHMARK (temporary, branch gto-iso-gpu-opt): which round of changes this is, in every profile report
-#define ISOG_REVISION "r40 (the profile's left-out time by where; r39: profile.skip_ms; r38: a set's own evaluation cutoff)"
+#define ISOG_REVISION "r44 (the GEMMs' widths by the function count alone; r43: chunks by the GEMMs' columns too, and in the blocking extraction)"
 
 typedef struct isog_shell_t {        // mirrors IsoShell
     md_gpu_float4 c;
@@ -1040,14 +1040,44 @@ typedef struct isog_vkernel_t {
     uint32_t per_group;
 } isog_vkernel_t;
 
+// The tiled and the wide GEMM by a set's function count: the corners' kernel, the vertices' is GEVAL_* - GCORN_*
+// further on. The wide one -1 where there is none (fewer than 65 functions, or not canonical).
+// isog_corner_cols: the columns its GEMM works through, its width times its passes (64 where the work is not by
+// columns: one function, the D form).
+// Each width the fastest in its band, measured against its neighbours (the extraction's total, the densities of the N
+// highest occupied orbitals; isosurface r41-r43), as a fraction of the other's time: at N <= 16 tiled 16 0.88-0.95 of
+// 32's (M4 Pro, GTX 1060, HD 530); at 17-32 tiled 32 0.71-0.81 of 64's (the same three); at 65-128 w128 0.64-0.67 of
+// y256's; at 129-192 w192 0.80-0.86 of y256's and 0.72-0.75 of w128's two passes; past 192 y256 0.64-0.90 of the
+// passes of w128 or w192 (N to 1024; the wide ones on the M4 Pro and the GTX 1060). Tiled 64 is the only one for sets
+// of more than 32 functions that are not canonical. At N 96 w128 took 0.80 of tiled 64's time on the M4 Pro, 0.99 on
+// the GTX 1060, but 1.27 on the HD 530: by the count alone, w128.
+static int isog_tiled_corners(uint32_t nf) {
+    return nf <= 16 ? ISOG_K_GCORN_F16 : nf <= 32 ? ISOG_K_GCORN_F32 : ISOG_K_GCORN_F64;
+}
+static int isog_wide_corners(const md_gto_iso_gpu_set_t* set, uint32_t nf) {
+    if (!set->canon || nf <= 64u) return -1;
+    const int k = nf <= 128 ? ISOG_K_GCORN_W128 : nf <= 192 ? ISOG_K_GCORN_W192 : ISOG_K_GCORN_Y256;
+    return isog_k[k] ? k : -1;
+}
+
+static uint32_t isog_corner_cols(const md_gto_iso_gpu_set_t* set, uint32_t F, bool cdform) {
+    const uint32_t nfn = set->num_fn;
+    if (cdform || (nfn == 1 && F == 1)) return 64u;
+    const int kw = isog_wide_corners(set, nfn);
+    const int k = kw >= 0 ? kw : isog_tiled_corners(nfn);
+    const uint32_t fc = k == ISOG_K_GCORN_F16 ? 16u : k == ISOG_K_GCORN_F32 ? 32u : k == ISOG_K_GCORN_W128 ? 128u
+                      : k == ISOG_K_GCORN_W192 ? 192u : k == ISOG_K_GCORN_Y256 ? 256u : 64u;
+    return fc * ((nfn + fc - 1) / fc);
+}
+
 static isog_vkernel_t isog_vertex_kernel(const md_gto_iso_gpu_set_t* set, bool dform, bool project) {
     if (project && set->orbitals_only && set->num_fn == 1 && set->num_fields == 1) return (isog_vkernel_t){ISOG_K_PROJ1, 128u};
     if (set->orbitals_only) return (isog_vkernel_t){ISOG_K_EVAL1, 0u};
     if (dform) return (isog_vkernel_t){ISOG_K_DEVAL, 32u};
     const uint32_t nf = set->num_fn;
-    const int kw = nf <= 128 ? ISOG_K_GEVAL_W128 : nf <= 192 ? ISOG_K_GEVAL_W192 : ISOG_K_GEVAL_Y256;
-    if (set->canon && nf > 64u && isog_k[kw]) return (isog_vkernel_t){kw, 16u};
-    return (isog_vkernel_t){nf <= 16 ? ISOG_K_GEVAL_F16 : nf <= 32 ? ISOG_K_GEVAL_F32 : ISOG_K_GEVAL_F64, 32u};
+    const int kw = isog_wide_corners(set, nf);
+    if (kw >= 0 && isog_k[kw + (ISOG_K_GEVAL_W128 - ISOG_K_GCORN_W128)]) return (isog_vkernel_t){kw + (ISOG_K_GEVAL_W128 - ISOG_K_GCORN_W128), 16u};
+    return (isog_vkernel_t){isog_tiled_corners(nf) + (ISOG_K_GEVAL_F16 - ISOG_K_GCORN_F16), 32u};
 }
 
 static void isog_stage(md_gpu_stream_t s, const md_gto_iso_gpu_desc_t* desc, md_gto_iso_gpu_mesh_t* out, int stage, md_tick_t* t) {
@@ -1336,7 +1366,7 @@ struct md_gto_iso_gpu_job_t {
     float         mark_val[ISOG_JOB_MARKS];
     uint32_t      mark_head, mark_tail;
     uint32_t      chunks;          // the corner and vertex launches in this many chunks (1: whole)
-    bool          blocking;        // md_gto_iso_gpu_extract's: nobody watches the progress, no chunks
+    bool          blocking;        // md_gto_iso_gpu_extract's: nobody watches the progress (the watchdog does)
 };
 
 static md_gpu_addr_t isog_jalloc(md_gto_iso_gpu_job_t* j, size_t bytes) {
@@ -1416,8 +1446,9 @@ static void isog_jprog(md_gto_iso_gpu_job_t* j, float v) {
 }
 
 // A progress marker: the work issued so far is at 'value' once this sync has passed
+// A chunk's end: its own submission either way (the marks full: submitted without one).
 static void isog_jmark(md_gto_iso_gpu_job_t* j, float value) {
-    if (j->mark_tail - j->mark_head >= ISOG_JOB_MARKS) return;
+    if (j->mark_tail - j->mark_head >= ISOG_JOB_MARKS) { md_gpu_stream_flush(j->s); return; }
     const uint32_t i = j->mark_tail++ % ISOG_JOB_MARKS;
     j->mark_sync[i] = md_gpu_stream_record(j->s);
     j->mark_val[i] = value;
@@ -1610,10 +1641,18 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
             // followed by a progress marker (and a point where other work, the rendering, can get the GPU).
             // The octree is a tenth to a quarter of an extraction: a chunk every 2 ms of it, about 10-20 ms of
             // work each. A quick one (under 4 ms) is not split: the markers would cost more than they tell.
+            // The GEMMs' work grows with their columns as the octree's does not: as many chunks again for every
+            // 64 columns past the first 64 (a canonical set of 512 functions in passes of 128: 8 times), so that
+            // no chunk runs long enough for a watchdog on a slow GPU (Windows' 2 s: a GTX 1060 lost the device on
+            // the protein's 512 functions in one launch). The blocking extraction too: nobody watches its
+            // progress, the watchdog does.
             {
                 const double oms = md_tick_to_seconds(md_tick_now() - j->t_start) * 1e3;
-                uint32_t n = (oms < 4.0 || j->blocking || isog_prof) ? 1u : (uint32_t)(oms / 2.0);
+                uint32_t n = (oms < 4.0 || isog_prof) ? 1u : (uint32_t)(oms / 2.0);
                 if (n > 32) n = 32;
+                const uint32_t cols = isog_corner_cols(set, F, j->cdform);
+                if (n > 1 && cols > 64u) n *= (cols + 63u) / 64u;
+                if (n > 256) n = 256;
                 if (isog_chunks > 0) n = (uint32_t)isog_chunks;
                 j->chunks = n;
             }
@@ -1723,11 +1762,10 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
             // 128 points per group; canonical sets of more than 64 functions: the wide GEMM, 64 points per group;
             // else the tiled GEMM, 128 points per group (iso_gcorners_f*)
             const bool one = nfn == 1 && F == 1;
-            const int kw = nfn <= 128 ? ISOG_K_GCORN_W128 : nfn <= 192 ? ISOG_K_GCORN_W192 : ISOG_K_GCORN_Y256;
-            const bool wide = !one && !cdform && a.canon && nfn > 64u && isog_k[kw];
+            const int kw = isog_wide_corners(set, nfn);
+            const bool wide = !one && !cdform && kw >= 0;
             const bool gemm = !one;
-            const int kc = one ? ISOG_K_CLIST_F1V4 : cdform ? ISOG_K_DCORN : wide ? kw
-                         : nfn <= 16 ? ISOG_K_GCORN_F16 : nfn <= 32 ? ISOG_K_GCORN_F32 : ISOG_K_GCORN_F64;
+            const int kc = one ? ISOG_K_CLIST_F1V4 : cdform ? ISOG_K_DCORN : wide ? kw : isog_tiled_corners(nfn);
             if (!isog_have(kc)) { isog_job_fail(j, "md_gto_iso_gpu_extract: a corner kernel is missing"); break; }
             isog_args_t ac = a;
             ac.count_in = a.counters + sizeof(uint32_t) * 5;
