@@ -259,7 +259,6 @@ MD_STATIC_ASSERT(offsetof(struct md_gpu_align_probem_, v) == 16,
 MD_STATIC_ASSERT(sizeof(md_gpu_storage_tex_t) == 8, "handle must be 8 bytes");
 MD_STATIC_ASSERT(sizeof(md_gpu_sampled_tex_t) == 8, "handle must be 8 bytes");
 MD_STATIC_ASSERT(sizeof(md_gpu_sampler_t)     == 8, "handle must be 8 bytes");
-#undef MD_STATIC_ASSERT
 
 /* Launch geometry, in thread groups. */
 typedef struct md_gpu_grid_t {
