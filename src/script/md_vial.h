@@ -141,7 +141,7 @@ typedef enum md_vial_stage_t {
 // the frame shown. In the order the script binds them.
 enum {
     MD_VIAL_OUTPUT_TEMPORAL     = 1 << 0,   // a value per frame: frame stage, or over the trajectory keeping the frame
-    MD_VIAL_OUTPUT_DISTRIBUTION = 1 << 1,   // a histogram over the frames
+    MD_VIAL_OUTPUT_DISTRIBUTION = 1 << 1,   // a histogram over the frames, or an rdf; <path>/range holds its bins' range
     MD_VIAL_OUTPUT_PERIODIC     = 1 << 2,   // values that wrap, such as angles about an axis
     // A volume over the frames, float[nx][ny][nz], k fastest: a density per Å³, published with <path>/origin [3] and
     // <path>/basis [3][3] (Å, the corner of voxel [0][0][0] and one step along each index, in the volume's frame),
@@ -262,6 +262,10 @@ typedef struct md_vial_eval_desc_t {
     const struct md_system_t* sys;  // the system the program was compiled against
     md_str_t       run;                // the run whose frames are evaluated: its prefix in sys->attributes, as "run/ala"
     size_t      max_elements;       // the most elements one value may have (R0105); 0 for 2^28
+    // Bytes the rdfs may keep per frame, given in script order, so that one over chosen frames is summed from them
+    // rather than made by reading the frames again (md_vial_eval_aggregate). 0 for 256 MB, as v1's frame_budget; an
+    // rdf that does not fit keeps only its sum.
+    size_t      frame_budget;
     // What the frames run on (md_executor.h): an interpreter and a frame reader per thread_idx. NULL, or an
     // executor of one thread, evaluates them on the calling thread. It must outlive the evaluation.
     const struct md_executor_t* executor;
@@ -323,11 +327,12 @@ size_t md_vial_eval_output_frames(const md_vial_eval_t* eval, md_str_t name, uin
 
 // An output over the trajectory, such as a histogram over the frames, computed again over chosen frames: those where
 // frames[f] is nonzero, from the per-frame values the evaluation kept, so nothing is evaluated again. What a plot
-// period shows (decided 31 October). A volume keeps nothing per frame, so its frames are read again, one after the
-// other, with a reader of its own: that takes as long as evaluating them did on one thread, and md_vial_eval_interrupt
-// stops it (0 is returned). Into out as floats, NaN where missing; returns how many values it has, and writes
-// them only when cap holds them all. 0 when the run has not finished, or the output is not computed over the frames
-// from per-frame values. Safe from any thread once md_vial_eval_run has returned.
+// period shows (decided 31 October). An rdf keeps its counts per frame and is summed from them. A volume keeps nothing
+// per frame, nor does an rdf too long to keep, so its frames are read again, one after the other, with a reader of its
+// own: that takes as long as evaluating them did on one thread, and md_vial_eval_interrupt stops it (0 is returned).
+// Into out as floats, NaN where missing; returns how many values it has, and writes them only when cap holds them all.
+// 0 when the run has not finished, or the output is not computed over the frames from per-frame values. Safe from any
+// thread once md_vial_eval_run has returned.
 size_t md_vial_eval_aggregate(const md_vial_eval_t* eval, md_str_t name, const uint8_t* frames, float* out, size_t cap);
 
 // The value of the expression md_vial_hover shows at offset, at a frame of the run, as the reference prints values,

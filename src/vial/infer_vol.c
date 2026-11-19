@@ -1,8 +1,9 @@
-// The volumes, sdf() and density() (volume.h): their arguments checked, and their grids worked out when compiling, so
-// a volume's type has its extents and what is too large is said before anything is evaluated.
+// What is added up over the frames (accum.h): the volumes, sdf() and density() (volume.h), and rdf(). Their arguments
+// are checked, and a volume's grid and an rdf's bins worked out when compiling, so the type has its extents and what is
+// too large is said before anything is evaluated.
 
 #include "infer_internal.h"
-#include "volume.h"
+#include "accum.h"
 #include "builtins.h"
 
 #include <md_system.h>
@@ -384,7 +385,63 @@ static T call_mcs(infer_t* x, vial_node_id call, const char* fname) {
     return t;
 }
 
+// rdf(a, b, cutoff, bins=None): a and b one set or points each; the cutoff a length, or lo..hi, known when compiling;
+// the bins known when compiling, by default as many as GROMACS's bin width gives
+static bool rdf_cutoff(infer_t* x, vial_node_id n, double* lo, double* hi) {
+    if (!n) return false;
+    const vial_node_kind_t kind = vx_kind(x, n);
+    if ((kind == VIAL_N_RANGE || kind == VIAL_N_TUPLE) && vx_num_children(x, n) == 2) {
+        if (!known_length(x, vx_child(x, n, 0), lo) || !known_length(x, vx_child(x, n, 1), hi)) return false;
+    } else {
+        *lo = 0.0;
+        if (!known_length(x, n, hi)) return false;
+    }
+    return *lo >= 0.0 && *hi > *lo && isfinite(*hi);
+}
+
+static T call_rdf(infer_t* x, vial_node_id call, const char* fname) {
+    static const vx_param_t p[] = {{"a", VX_KIND_WHOLE, true}, {"b", VX_KIND_WHOLE, true}, {"cutoff", VX_KIND_WHOLE, true},
+                                   {"bins", VX_KIND_WHOLE, false}};
+    vial_node_id a[4] = {0};
+    if (!vx_bind(x, call, fname, p, 4, a)) return err();
+    bool ok = target_ok(x, a[0], fname, "a");
+    if (!target_ok(x, a[1], fname, "b")) ok = false;
+    double lo = 0.0, hi = 0.0;
+    if (!rdf_cutoff(x, a[2], &lo, &hi)) {
+        vx_diag_fix(x, "E0313", a[2], NULL, "cutoff= is how far the pairs reach: a length more than 0, or lo..hi, known when compiling");
+        ok = false;
+    }
+    uint32_t bins = 0;
+    if (a[3] && !is_none(x, a[3])) {
+        const vial_value_t v = vx_value_of(x, a[3]);
+        if (v.kind != VIAL_VAL_INT || v.i < 1 || v.i > INT32_MAX) {
+            vx_diag_fix(x, "E0313", a[3], NULL, "bins= is an int of at least 1, known when compiling");
+            ok = false;
+        } else {
+            bins = (uint32_t)v.i;
+        }
+    } else if (ok) {
+        // GROMACS's bin width, as many whole bins as reach the cutoff
+        const double n = ceil((hi - lo) / VIAL_RDF_BIN_WIDTH - 1e-9);
+        if (n > INT32_MAX) {
+            vx_diag_fix(x, "E0313", a[2], NULL, "a cutoff of %g Å makes %.3g bins of %g Å; give bins=", hi, n, VIAL_RDF_BIN_WIDTH);
+            ok = false;
+        }
+        bins = n < 1.0 ? 1 : n > INT32_MAX ? 0 : (uint32_t)n;
+    }
+    if (!ok) return err();
+    T t = vial_type_scalar(VIAL_DT_FLOAT);
+    vial_type_push_dim(&t, vial_extent_static(bins));
+    t.unit_kind = VIAL_UNIT_KNOWN;
+    t.unit = md_unit_none();
+    t.stage = VIAL_STAGE_TRAJECTORY;
+    const uint8_t pa = vx_pass(type_of(x, a[0])), pb = vx_pass(type_of(x, a[1]));
+    t.pass = pa > pb ? pa : pb;
+    return t;
+}
+
 bool vx_call_volume(infer_t* x, vial_node_id call, const vial_builtin_t* b, T* out) {
+    if (!strcmp(b->name, "rdf")) { *out = call_rdf(x, call, b->name); return true; }
     if (!strcmp(b->name, "mcs")) { *out = call_mcs(x, call, b->name); return true; }
     if (!strcmp(b->name, "sdf")) { *out = call_sdf(x, call, b->name); return true; }
     if (!strcmp(b->name, "density")) { *out = call_density(x, call, b->name); return true; }

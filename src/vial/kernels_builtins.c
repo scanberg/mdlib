@@ -10,7 +10,7 @@
 #include "interp.h"
 #include "infer_internal.h"
 #include "ast.h"
-#include "volume.h"
+#include "accum.h"
 
 #include <md_system.h>
 #include <md_element.h>
@@ -3093,7 +3093,7 @@ bool vial_k_builtin(vial_kctx_t* k, const char* name, const vial_val_t* const* a
         return k_covariance(k, x, axis, out);
     }
     if (IS("mcs")) return vial_k_mcs(k, args, names, n, NULL, out);
-    if (IS("sdf") || IS("density")) return vial_rt_fail(k, "R0103", "`%s` is added up over the frames, at the top level of a script", name);
+    if (vial_accum_builtin(name)) return vial_rt_fail(k, "R0103", "`%s` is added up over the frames, at the top level of a script", name);
     if (IS("histogram")) return k_histogram(k, arg(&ba, "x", 0), arg(&ba, "bins", 2), arg(&ba, "range", 3), arg(&ba, "density", 4), out);
     if (IS("smooth")) return k_smooth(k, arg(&ba, "x", 0), arg(&ba, "n", 1), out);
     if (IS("derivative")) return k_derivative(k, arg(&ba, "x", 0), out);

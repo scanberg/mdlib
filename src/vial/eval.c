@@ -4,7 +4,7 @@
 #include "interp.h"
 #include "check.h"
 #include "infer.h"
-#include "volume.h"
+#include "accum.h"
 
 #include <md_system.h>
 #include <md_run.h>
@@ -206,9 +206,9 @@ md_vial_eval_t* md_vial_eval_create_from(const md_vial_eval_t* prev, const md_vi
                 hd.desc = (md_attribute_desc_t){.format = at->format, .flags = at->flags, .unit = at->unit,
                                                 .label = md_alloc_str(arena, o[i].name), .data = data, .byte_size = bytes};
                 md_array_push(e->held, hd, arena);
-                // And its summary, as it was
-                static const char* leaf[3] = {"/mean", "/variance", "/extent"};
-                for (int s = 0; s < 3; ++s) {
+                // And its summary, and a distribution's bin range, as they were
+                static const char* leaf[4] = {"/mean", "/variance", "/extent", "/range"};
+                for (int s = 0; s < 4; ++s) {
                     char sfrom[192];
                     snprintf(sfrom, sizeof(sfrom), "%s%s", from, leaf[s]);
                     const md_attribute_t* sa = md_attributes_find(&prev->attributes, md_str_from_cstr(sfrom));
@@ -239,6 +239,7 @@ md_vial_eval_t* md_vial_eval_create_from(const md_vial_eval_t* prev, const md_vi
         if (md_array_size(e->held) && md_array_size(roots) == 0) md_atomic_fetch_add64(&e->done, 1);
     }
     e->in.max_elements = desc->max_elements;
+    e->in.frame_budget = desc->frame_budget ? desc->frame_budget : VIAL_RDF_FRAME_BUDGET;
     e->in.load_frame = load_frame;
     e->in.load_user = e;
     e->in.load_release = main_release;
@@ -570,8 +571,19 @@ static void publish_labels(md_vial_eval_t* e) {
     }
 }
 
-// A histogram's range=, in the unit of what it counts, published beside it as <path>/range: the bin edges, which a plot
-// of it takes its axis from. Static, so also for one taken over.
+// The bin range of a distribution published beside it as <path>/range, which a plot of it takes its axis from: a
+// histogram's range=, in the unit of what it counts, static, so also for one taken over; an rdf's distances, Å, as its
+// accumulator binned them (one taken over keeps the range it was published with)
+static void publish_range(md_vial_eval_t* e, md_str_t name, const double lohi[2], md_unit_t unit) {
+    char path[192];
+    snprintf(path, sizeof(path), "script/%.*s/range", (int)name.len, name.ptr);
+    md_attribute_desc_t desc = {.path = md_str_from_cstr(path), .unit = unit,
+                                .format = {.type = attr_type(VIAL_DT_FLOAT64), .components = 1, .rank = 1, .shape = {2}}};
+    const md_attribute_id_t id = md_attributes_replace(&e->attributes, &desc);
+    double* dst = id ? md_attributes_data(&e->attributes, id, attr_type(VIAL_DT_FLOAT64)) : NULL;
+    if (dst) { dst[0] = lohi[0]; dst[1] = lohi[1]; }
+}
+
 static void publish_ranges(md_vial_eval_t* e) {
     publish_periods(e);
     publish_labels(e);
@@ -579,6 +591,13 @@ static void publish_ranges(md_vial_eval_t* e) {
     for (size_t k = 0; k < md_array_size(ir->outputs); ++k) {
         const vial_ir_output_t* o = &ir->outputs[k];
         if (o->hidden) continue;
+        const vial_rdf_t* rdf = vial_accum_rdf(vial_interp_accum(&e->in, o->value));
+        if (rdf) {
+            md_unit_t length;
+            vial_unit_name(MD_STR_LIT("angstrom"), &length);
+            publish_range(e, o->name, (const double[2]){rdf->lo, rdf->hi}, length);
+            continue;
+        }
         uint32_t op = ir->values[o->value].op;
         if (op != VIAL_IR_NO_OP && ir->ops[op].kind == VIAL_IR_ELEM && ir->ops[op].num_args) op = ir->values[ir->args[ir->ops[op].arg_beg]].op;
         if (op == VIAL_IR_NO_OP || ir->ops[op].kind != VIAL_IR_BUILTIN || strcmp(vial_builtin_at(ir->ops[op].aux)->name, "histogram")) continue;
@@ -622,13 +641,7 @@ static void publish_ranges(md_vial_eval_t* e) {
         }
     have:;
         const vial_type_t* xt = xs ? &ir->values[xs].type : NULL;
-        char path[192];
-        snprintf(path, sizeof(path), "script/%.*s/range", (int)o->name.len, o->name.ptr);
-        md_attribute_desc_t desc = {.path = md_str_from_cstr(path), .unit = xt && xt->unit_kind == VIAL_UNIT_KNOWN ? xt->unit : md_unit_none(),
-                                    .format = {.type = attr_type(VIAL_DT_FLOAT64), .components = 1, .rank = 1, .shape = {2}}};
-        const md_attribute_id_t id = md_attributes_replace(&e->attributes, &desc);
-        double* dst = id ? md_attributes_data(&e->attributes, id, attr_type(VIAL_DT_FLOAT64)) : NULL;
-        if (dst) { dst[0] = lohi[0]; dst[1] = lohi[1]; }
+        publish_range(e, o->name, lohi, xt && xt->unit_kind == VIAL_UNIT_KNOWN ? xt->unit : md_unit_none());
     }
 }
 
@@ -707,18 +720,20 @@ size_t md_vial_eval_aggregate(const md_vial_eval_t* e, md_str_t name, const uint
     vial_ssa_t v = 0;
     for (size_t k = 0; k < md_array_size(ir->outputs) && !v; ++k) if (md_str_eq(ir->outputs[k].name, name)) v = ir->outputs[k].value;
     if (!v) return 0;
-    const vial_volume_t* vol = vial_interp_volume(&e->in, v);
-    if (vol) {
+    const vial_accum_t* acc = vial_interp_accum(&e->in, v);
+    if (acc) {
         // Its size is known without reading a frame: a caller asking for it does not pay for the frames
-        const size_t nv = (size_t)vol->dims[0] * vol->dims[1] * vol->dims[2];
+        const size_t nv = vial_accum_count(acc);
         if (!out || cap < nv) return nv;
+        // An rdf whose counts are kept per frame is summed from them, and nothing is read again
+        if (vial_rdf_over(vial_accum_rdf(acc), frames, out)) return nv;
         md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
         hover_frames_t h = {.sys = e->sys, .run = e->run, .times = e->times, .num_frames = e->num_frames, .alloc = arena, .state = {.alloc = arena}};
         md_system_state_init(&h.state, e->sys->atom.count);
         vial_val_t r;
         size_t n = 0;
-        if (vial_interp_volume_over(&e->in, v, frames, hover_load, &h, &r, arena) && r.dtype == VIAL_DT_FLOAT && vial_val_count(&r) == nv) {
-            memcpy(out, r.data, nv * sizeof(float));
+        if (vial_interp_accum_over(&e->in, v, frames, hover_load, &h, &r, arena) && r.dtype == VIAL_DT_FLOAT && vial_val_count(&r) == nv) {
+            for (size_t i = 0; i < nv; ++i) out[i] = vial_val_is_missing(&r, i) ? NAN : ((const float*)r.data)[i];
             n = nv;
         }
         if (h.ex) md_system_extract_end(h.ex);

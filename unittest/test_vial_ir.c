@@ -2661,6 +2661,192 @@ UTEST(vial_ir, volumes) {
     md_arena_allocator_destroy(alloc);
 }
 
+// rdf(a, b, cutoff): pairs counted by a spatial search, bin by bin, normalized as gmx rdf does; checked against every
+// pair, counted here under the minimum image of P's orthorhombic cell
+typedef struct vial_ir__rdf_ref_t {
+    double*  counts;    // [bins]
+    double   pairs;     // sum over the frames of (N_a N_b - N_self) / V
+} vial_ir__rdf_ref_t;
+
+static vial_ir__rdf_ref_t vial_ir__rdf_ref(const md_system_t* sys, int64_t nf, const uint8_t* mask, int za, int zb, double lo, double hi,
+                                           uint32_t bins, md_allocator_i* alloc) {
+    vial_ir__rdf_ref_t r = {.counts = md_alloc(alloc, bins * sizeof(double))};
+    memset(r.counts, 0, bins * sizeof(double));
+    const md_str_t paths[] = {MD_STR_LIT("atom/position"), MD_STR_LIT("unitcell")};
+    md_system_extract_t* ex = md_system_extract_begin(sys, MD_STR_LIT("run"), paths, 2, alloc);
+    md_system_state_t st = {.alloc = alloc};
+    md_system_state_init(&st, sys->atom.count);
+    for (int64_t f = 0; ex && f < nf; ++f) {
+        if (mask && !mask[f]) continue;
+        if (!md_system_extract_frame(ex, f, &st)) break;
+        const double L[3] = {st.unitcell.x, st.unitcell.y, st.unitcell.z};
+        const float* xyz = (const float*)st.xyz;
+        size_t na = 0, nb = 0, self = 0;
+        for (size_t i = 0; i < sys->atom.count; ++i) {
+            const int z = md_atom_atomic_number(&sys->atom, i);
+            na += z == za;
+            nb += z == zb;
+            self += z == za && z == zb;
+        }
+        r.pairs += ((double)na * nb - (double)self) / (L[0] * L[1] * L[2]);
+        for (size_t i = 0; i < sys->atom.count; ++i) {
+            if (md_atom_atomic_number(&sys->atom, i) != za) continue;
+            for (size_t j = 0; j < sys->atom.count; ++j) {
+                if (j == i || md_atom_atomic_number(&sys->atom, j) != zb) continue;
+                double d2 = 0;
+                for (int c = 0; c < 3; ++c) {
+                    double d = (double)xyz[3 * j + c] - xyz[3 * i + c];
+                    d -= L[c] * round(d / L[c]);
+                    d2 += d * d;
+                }
+                const double d = sqrt(d2);
+                if (d < lo || d >= hi) continue;
+                const uint32_t b = (uint32_t)((d - lo) / (hi - lo) * bins);
+                r.counts[b < bins ? b : bins - 1] += 1;
+            }
+        }
+    }
+    if (ex) md_system_extract_end(ex);
+    return r;
+}
+
+// The pairs a published rdf counted in bin k, from its value: g P · shell
+static double vial_ir__rdf_count(const float* g, uint32_t k, double P, double lo, double hi, uint32_t bins) {
+    const double w = (hi - lo) / bins, r0 = lo + k * w, r1 = r0 + w;
+    return (double)g[k] * P * 4.0 / 3.0 * MD_PI * (r1 * r1 * r1 - r0 * r0 * r0);
+}
+
+UTEST(vial_ir, rdf) {
+    const md_system_t* sys = vial_test_system('P');
+    ASSERT_TRUE(sys != NULL);
+    const int64_t nf = vial_test_run('P');
+    ASSERT_GT(nf, 3);
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
+    const char* src =
+        "r  = rdf(particle(element='C'), particle(element='H'), 10.0)\n"
+        "rn = rdf(particle(element='C'), particle(element='H'), 1 nm, bins=250)\n"
+        "rp = rdf(particle(element='C').xyz, particle(element='H'), (0.0, 10.0), bins=250)\n"
+        "rh = rdf(particle(element='H'), particle(element='H'), 2.0..8.0)\n"
+        "far = rdf(particle(name='CA'), particle(name='CA'), 30.0)\n";
+    md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = MD_STR_LIT("run")}, alloc);
+    ASSERT_TRUE(prog != NULL);
+    const md_vial_diagnostic_t* dg;
+    const size_t ndg = md_vial_diagnostics(prog, &dg);
+    for (size_t i = 0; i < ndg; ++i) printf("%.5s %.*s\n", dg[i].code, (int)dg[i].message.len, dg[i].message.ptr);
+    ASSERT_EQ(0u, (unsigned)ndg);
+    // The bins: GROMACS's width of 0.02 Å by default, or bins=; a distribution over the trajectory
+    const struct { const char* name; const char* type; } want[] = {
+        {"r", "float[500]"}, {"rn", "float[250]"}, {"rp", "float[250]"}, {"rh", "float[300]"}, {"far", "float[1500]"},
+    };
+    for (size_t i = 0; i < MD_COUNTOF(want); ++i) {
+        const md_vial_output_t* o = vial_ir__pub(prog, want[i].name);
+        ASSERT_TRUE(o != NULL);
+        EXPECT_STREQ(want[i].type, o->type);
+        EXPECT_EQ(MD_VIAL_STAGE_TRAJECTORY, o->stage);
+        EXPECT_EQ((uint32_t)MD_VIAL_OUTPUT_DISTRIBUTION, o->flags);
+    }
+    const vial_ir__rdf_ref_t ch = vial_ir__rdf_ref(sys, nf, NULL, 6, 1, 0.0, 10.0, 500, alloc);
+    const vial_ir__rdf_ref_t hh = vial_ir__rdf_ref(sys, nf, NULL, 1, 1, 2.0, 8.0, 300, alloc);
+    EXPECT_GT(ch.pairs, 0.0);
+
+    float* first = NULL;
+    // Kept per frame, and with no room to keep it, so a period is made by reading its frames again; on one thread and four
+    for (int run = 0; run < 4; ++run) {
+        const uint32_t threads = run % 2 ? 4 : 1;
+        const size_t budget = run < 2 ? 0 : 1;
+        md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = MD_STR_LIT("run"), .frame_budget = budget,
+                                                                             .executor = test_executor_of_threads(threads)}, alloc);
+        ASSERT_TRUE(e != NULL);
+        ASSERT_TRUE(md_vial_eval_run(e));
+        const md_attributes_t* at = md_vial_eval_attributes(e);
+        const md_attribute_t* ar = md_attributes_find(at, MD_STR_LIT("script/r"));
+        const md_attribute_t* an = md_attributes_find(at, MD_STR_LIT("script/rn"));
+        const md_attribute_t* ap = md_attributes_find(at, MD_STR_LIT("script/rp"));
+        const md_attribute_t* ah = md_attributes_find(at, MD_STR_LIT("script/rh"));
+        const md_attribute_t* af = md_attributes_find(at, MD_STR_LIT("script/far"));
+        ASSERT_TRUE(ar && an && ap && ah && af);
+        ASSERT_EQ(500u, (unsigned)ar->format.shape[0]);
+        const float* g = (const float*)ar->data;
+        // The pairs counted are every pair's, bin by bin: a pair on a bin's edge may fall either side in 32 bits
+        double total = 0, ref_total = 0, worst = 0;
+        for (uint32_t k = 0; k < 500; ++k) {
+            const double n = vial_ir__rdf_count(g, k, ch.pairs, 0.0, 10.0, 500);
+            total += n;
+            ref_total += ch.counts[k];
+            worst = MD_MAX(worst, fabs(n - ch.counts[k]));
+        }
+        EXPECT_LT(worst, 2.01);
+        EXPECT_NEAR(ref_total, total, 1e-4 * ref_total);
+        // A particle is never paired with itself
+        const float* gh = (const float*)ah->data;
+        double hworst = 0;
+        for (uint32_t k = 0; k < 300; ++k) hworst = MD_MAX(hworst, fabs(vial_ir__rdf_count(gh, k, hh.pairs, 2.0, 8.0, 300) - hh.counts[k]));
+        EXPECT_LT(hworst, 2.01);
+        // 1 nm is 10 Å; points pair as the set's particles do
+        EXPECT_EQ(0, memcmp(an->data, ap->data, 250 * sizeof(float)));
+        for (uint32_t k = 0; k < 250; ++k) {
+            const double n = vial_ir__rdf_count((const float*)an->data, k, ch.pairs, 0.0, 10.0, 250);
+            EXPECT_NEAR(ch.counts[2 * k] + ch.counts[2 * k + 1], n, 2.01);
+        }
+        // The range of its bins, beside it, in Å
+        EXPECT_EQ(0.0, vial_ir__attr1(at, "script/r/range", 0));
+        EXPECT_EQ(10.0, vial_ir__attr1(at, "script/r/range", 1));
+        EXPECT_EQ(2.0, vial_ir__attr1(at, "script/rh/range", 0));
+        // A cutoff of more than half the cell: every frame left out, with a note, and every bin missing
+        for (uint32_t k = 0; k < 1500; ++k) EXPECT_TRUE(isnan(((const float*)af->data)[k]));
+        const md_vial_diagnostic_t* rd;
+        const size_t nr = md_vial_eval_diagnostics(e, &rd);
+        bool noted = false;
+        for (size_t i = 0; i < nr; ++i) noted |= !strncmp(rd[i].code, "R0101", 5) && strstr(rd[i].message.ptr, "narrowest") != NULL;
+        EXPECT_TRUE(noted);
+        // The same bits however many threads added the frames
+        if (!first) {
+            first = md_alloc(alloc, 500 * sizeof(float));
+            memcpy(first, g, 500 * sizeof(float));
+        } else {
+            EXPECT_EQ(0, memcmp(first, g, 500 * sizeof(float)));
+        }
+
+        // Over chosen frames: every frame is what was published; the first half is the first half's pairs
+        uint8_t* all = md_alloc(alloc, (size_t)nf);
+        memset(all, 1, (size_t)nf);
+        EXPECT_EQ(500u, (unsigned)md_vial_eval_aggregate(e, MD_STR_LIT("r"), all, NULL, 0));
+        float* over = md_alloc(alloc, 500 * sizeof(float));
+        ASSERT_EQ(500u, (unsigned)md_vial_eval_aggregate(e, MD_STR_LIT("r"), all, over, 500));
+        EXPECT_EQ(0, memcmp(over, g, 500 * sizeof(float)));
+        uint8_t* half = md_alloc(alloc, (size_t)nf);
+        for (int64_t f = 0; f < nf; ++f) half[f] = f < nf / 2;
+        ASSERT_EQ(500u, (unsigned)md_vial_eval_aggregate(e, MD_STR_LIT("r"), half, over, 500));
+        const vial_ir__rdf_ref_t chh = vial_ir__rdf_ref(sys, nf, half, 6, 1, 0.0, 10.0, 500, alloc);
+        double hw = 0;
+        for (uint32_t k = 0; k < 500; ++k) hw = MD_MAX(hw, fabs(vial_ir__rdf_count(over, k, chh.pairs, 0.0, 10.0, 500) - chh.counts[k]));
+        EXPECT_LT(hw, 2.01);
+        md_vial_eval_free(e);
+    }
+
+    // Diagnostics: the arguments are checked when compiling
+    const struct { const char* src; const char* code; } bad[] = {
+        {"x = rdf(residue, particle, 10.0)\n", "E0313"},                    // an array of sets: its centres are residue.com
+        {"x = rdf(particle, particle, 0.0)\n", "E0313"},                    // a cutoff of nothing
+        {"x = rdf(particle, particle, 8.0..2.0)\n", "E0313"},               // hi below lo
+        {"x = rdf(particle, particle, 10.0, bins=0)\n", "E0313"},
+        {"x = rdf(particle, particle, distance(particle[0], particle[1]))\n", "E0313"},   // not known when compiling
+        {"x = rdf(particle, particle)\n", "E0204"},
+        {"x = [rdf(r, particle, 5.0) for r in residue[0:2]]\n", "E0406"},  // an array of rdfs is not supported yet
+    };
+    for (size_t i = 0; i < MD_COUNTOF(bad); ++i) {
+        md_vial_program_t* p = md_vial_compile(md_str_from_cstr(bad[i].src), &(md_vial_compile_desc_t){.sys = sys, .run = MD_STR_LIT("run")}, alloc);
+        const size_t n = md_vial_diagnostics(p, &dg);
+        bool found = false;
+        for (size_t k = 0; k < n; ++k) found |= !strncmp(dg[k].code, bad[i].code, 5);
+        if (!found) printf("%s: expected %s\n", bad[i].src, bad[i].code);
+        EXPECT_TRUE(found);
+        md_vial_program_free(p);
+    }
+    md_vial_program_free(prog);
+    md_arena_allocator_destroy(alloc);
+}
+
 UTEST(vial_ir, volume_diagnostics) {
     const md_system_t* sys = vial_test_system('P');
     ASSERT_TRUE(sys != NULL);

@@ -8,7 +8,7 @@
 #include "builtins.h"
 #include "infer_internal.h"
 #include "select.h"
-#include "volume.h"
+#include "accum.h"
 
 #include <core/md_array.h>
 #include <core/md_allocator.h>
@@ -66,9 +66,10 @@ static vial_ssa_t run_output(const md_vial_program_t* prog, md_str_t name) {
     return 0;
 }
 
-// Whether v is what histogram() gives, or an element of it
-static bool from_histogram(const vial_ir_t* ir, vial_ssa_t v) {
+// Whether v is a distribution over bins: what histogram() gives, or an element of it, or what rdf() gives
+static bool distribution_of(const vial_ir_t* ir, vial_ssa_t v) {
     uint32_t op = ir->values[v].op;
+    if (op != VIAL_IR_NO_OP && ir->ops[op].kind == VIAL_IR_BUILTIN && !strcmp(vial_builtin_at(ir->ops[op].aux)->name, "rdf")) return true;
     if (op != VIAL_IR_NO_OP && ir->ops[op].kind == VIAL_IR_ELEM && ir->ops[op].num_args) op = ir->values[ir->args[ir->ops[op].arg_beg]].op;
     return op != VIAL_IR_NO_OP && ir->ops[op].kind == VIAL_IR_BUILTIN && !strcmp(vial_builtin_at(ir->ops[op].aux)->name, "histogram");
 }
@@ -81,18 +82,20 @@ static const char* volume_of(const vial_ir_t* ir, vial_ssa_t v) {
     return vial_volume_builtin(name) ? name : NULL;
 }
 
-// A volume is added up over the frames at the top level: one inside a map, as a comprehension or a def mapped over
-// groups gives, would be an array of volumes, which is not supported yet (E0406). The program is not evaluated.
-static bool volumes_at_top(md_vial_program_t* prog) {
+// What is added up over the frames (accum.h), a volume or an rdf, is at the top level: one inside a map, as a
+// comprehension or a def mapped over groups gives, would be an array of them, which is not supported yet (E0406). The
+// program is not evaluated.
+static bool accums_at_top(md_vial_program_t* prog) {
     const vial_ir_t* ir = &prog->run_ir;
     const uint32_t top = ir->funcs[0].body;
     bool ok = true;
     for (size_t i = 0; i < md_array_size(ir->ops); ++i) {
         const vial_ir_op_t* op = &ir->ops[i];
-        if (op->kind != VIAL_IR_BUILTIN || op->parent == top || !vial_volume_builtin(vial_builtin_at(op->aux)->name)) continue;
+        if (op->kind != VIAL_IR_BUILTIN || op->parent == top || !vial_accum_builtin(vial_builtin_at(op->aux)->name)) continue;
         if (!vial_diag_at(&prog->diags, op->span.beg)) {
-            vial_diag(&prog->diags, "E0406", op->span, "`%s` is added up over the frames at the top level; an array of volumes, from a comprehension or a def mapped over groups, is not supported yet",
-                vial_builtin_at(op->aux)->name);
+            const char* name = vial_builtin_at(op->aux)->name;
+            vial_diag(&prog->diags, "E0406", op->span, "`%s` is added up over the frames at the top level; an array of %s, from a comprehension or a def mapped over groups, is not supported yet",
+                name, vial_volume_builtin(name) ? "volumes" : "them");
         }
         ok = false;
     }
@@ -131,7 +134,7 @@ static void collect_outputs(md_vial_program_t* prog) {
             if (vol) o.flags |= MD_VIAL_OUTPUT_VOLUME | (!strcmp(vol, "sdf") ? MD_VIAL_OUTPUT_SDF : 0);
             if (rv) {
                 o.fingerprint = vial_ir_fingerprint(&prog->run_ir, rv, prog->check.sys, prog->check.run, memo);
-                if (from_histogram(&prog->run_ir, rv)) o.flags |= MD_VIAL_OUTPUT_DISTRIBUTION;
+                if (distribution_of(&prog->run_ir, rv)) o.flags |= MD_VIAL_OUTPUT_DISTRIBUTION;
             }
             md_array_push(prog->outputs, o, prog->arena);
         }
@@ -232,7 +235,7 @@ md_vial_program_t* md_vial_compile(md_str_t src, const md_vial_compile_desc_t* d
     vial_check_names(&prog->check);
     vial_check_types(&prog->check, &prog->types);
     if (!md_array_size(prog->ir.failures)) prog->has_run_ir = vial_ir_inline_map(&prog->ir, &prog->run_ir, arena, &prog->run_of);
-    if (prog->has_run_ir && !volumes_at_top(prog)) prog->has_run_ir = false;
+    if (prog->has_run_ir && !accums_at_top(prog)) prog->has_run_ir = false;
     if (prog->has_run_ir) {
         vial_ir_pairs(&prog->run_ir, arena);
         vial_ir_contract(&prog->run_ir, arena);

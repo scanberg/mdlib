@@ -291,6 +291,8 @@ set(MD_SCRIPT_FILES
   src/script/md_script_complete.inl
   src/script/md_script_functions.inl
   src/script/md_vial.h
+  src/vial/accum.c
+  src/vial/accum.h
   src/vial/api.c
   src/vial/ast.h
   src/vial/builtins.c
@@ -319,6 +321,7 @@ set(MD_SCRIPT_FILES
   src/vial/parse.c
   src/vial/passes.c
   src/vial/prelude.vial
+  src/vial/rdf.c
   src/vial/select.c
   src/vial/select.h
   src/vial/types.c

@@ -804,7 +804,7 @@ half = rmsd(ca[0:7], ca[8:15])                         # -> float Å, frame: sli
 odd  = rmsd(ca[0:7], ca[7:15])                         # error E0301: [7][3] and [8][3] do not broadcast
 ```
 
-Not ported from v1 yet: `rdf`, contact maps, hydrogen bonds, secondary structure and ring pucker. The volumes, `sdf` and `density`, are under Volumes.
+Not ported from v1 yet: contact maps, hydrogen bonds, secondary structure and ring pucker. The volumes, `sdf` and `density`, are under Volumes, and `rdf` under Frames.
 
 ## Built-in functions: reductions, math and arrays
 
@@ -1057,6 +1057,7 @@ inter = sum(coul) + sum(lj)                            # -> float kJ/mol, frame:
 | --- | --- | --- |
 | `mean`, `var`, `std`, `min`, `max`, `sum` with `axis='frame'` | the frame removed | trajectory; streams while frames load |
 | `histogram(x, axis='frame', bins=, range=)` | `float[bins]`, with bin edges, over `range=lo..hi` or `(lo, hi)`: counts, or a density with density=True; values outside range are counted apart, below and above | trajectory; streams |
+| `rdf(a, b, cutoff, bins=None)` | `float[bins]`, with bin edges: the radial distribution function of b about a, from 0 to cutoff= or over `lo..hi`, Å; bins 0.02 Å wide by default | trajectory; added up as frames load, its counts kept per frame |
 | `smooth(x, n)` | keeps the frame | trajectory, per frame; a centred window of n frames, n odd, that shrinks at the ends |
 | `derivative(x)` | keeps the frame; unit per ps | trajectory, per frame; central differences over time(), one-sided at the ends |
 | `autocorrelation(x, max_lag=)` | `float[max_lag+1]` | trajectory; the mean removed and normalized to 1 at lag 0, so it has no unit; complete when its pass ends |
@@ -1079,6 +1080,23 @@ def step(state, x):
     return where(x > 30.0, state + 1, 0)
 run  = fold(step, ends, init=0)                        # -> int, trajectory, per frame: frames in a row above 30 Å
 long = max(run, axis='frame')                          # -> int, trajectory
+```
+
+### Radial distribution
+
+`rdf(a, b, cutoff, bins=None)` is the radial distribution function g(r) of the points of b about the points of a, as `gmx rdf` gives it by default. a and b are each one set or points, `float[n][3]` Å: `residue.com` takes the residues' centres, and an array of sets is E0313, since several particles never quietly become one point. The cutoff is a length, the bins reaching from 0 to it, or `lo..hi` or `(lo, hi)` for a shell; it is known when compiling, as `bins=` is, which is by default as many bins as reach it 0.02 Å wide, GROMACS's `-bin`.
+
+Each frame counts the pairs of a point of a and a point of b whose distance under the minimum image lies in a bin, by a spatial search, so no matrix of every pair is made; a particle is never paired with itself. Bin k is the pairs counted over what the same number of pairs spread evenly over each frame's cell would put in its shell, `n_k / (P · 4/3 π (r_k+1³ - r_k³))` with P the sum over the frames of `(N_a N_b - N_self) / V`: 1 at every distance for points that do not see each other, and without a unit. A frame without a unit cell, or whose cell is less than twice the cutoff across at its narrowest, is left out with R0101, since the minimum image would miscount it; with no frame left, every bin is missing. The counts are kept per frame, so an rdf over a plot period is summed from them rather than read again. It is published as a curve, its bins' range beside it as `/range`, Å, and like a volume it is added up at the top level of a script (E0406).
+
+```python
+# on P
+c    = particle(element='C')
+h    = particle(element='H')
+g    = rdf(c, h, 10.0)                                 # -> float[500], trajectory: bins 0.02 Å wide, as gmx rdf's
+gn   = rdf(c, h, 1 nm, bins=250)                       # -> float[250], trajectory: 1 nm is 10 Å
+hh   = rdf(h, h, 2.0..8.0)                             # -> float[300], trajectory: a shell; no particle is paired with itself
+gr   = rdf(residue.com, particle(element='O'), 12.0)   # -> float[600], trajectory: about each residue's centre
+bad  = rdf(residue, h, 10.0)                           # error E0313: residues of several particles; residue.com is their centres
 ```
 
 ### Volumes
@@ -1140,7 +1158,7 @@ Every top-level name bound to a number or a set is published under `script/<name
 | Trajectory array not over particles, such as eigenvalues | one constant per label | labels, unit |
 | Static matrix, such as `eye(3)` | a matrix | labels for each dimension |
 | bool | as an int, 0 or 1, in any of the forms above | — |
-| Histogram or autocorrelation | a curve | bin edges, or lags |
+| Histogram, rdf or autocorrelation | a curve | bin edges, or lags |
 | Volume, from `sdf` or `density` | a grid, `float[nx][ny][nz]` | `/origin`, `/basis`, `/bulk`, `/samples` |
 | `set`, static or frame, and a frame-stage array of sets, `set[?]` | a selection under its name; a frame-stage one is a recipe, evaluated for the frame being shown |  |
 | Static array of sets | one selection under its name, holding the array: filters use the name for the union, or name\[i\] | labels |
@@ -1286,7 +1304,7 @@ Codes are stable: E for errors, W for warnings, R for errors found while evaluat
 | W0404 | A published per-frame value over 64 MB for the run | `dm` takes 2.1 GB over 22,000 frames | `_dm` |
 | E0404 | at() of a value that depends on other frames | mean\_e is a trajectory value; at() reads one frame |  |
 | E0405 | at() past the last frame | frame 500 of a run with 38 frames |  |
-| E0406 | A volume inside a comprehension or a def mapped over groups | `sdf` is added up over the frames at the top level; an array of volumes is not supported yet |  |
+| E0406 | A volume or an rdf inside a comprehension or a def mapped over groups | `sdf` is added up over the frames at the top level; an array of volumes is not supported yet |  |
 | W0405 | A value that may be missing in some frames | near\[4\] is missing in frames with fewer than five residues nearby | none; the series shows gaps |
 | W0406 | More than three passes over the trajectory | pcs2 is pass 4; each pass reads every frame again |  |
 | W0407 | A volume of more than 512³ voxels: sampled coarser | 13,824,000,000 voxels at 4 samples per Å are more than 512³; it is sampled at 0.853 per Å, 512×512×512 | a smaller extent, or fewer samples |

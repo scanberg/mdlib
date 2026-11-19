@@ -1,6 +1,6 @@
 // Volumes: sdf() and density() (volume.h)
 
-#include "volume.h"
+#include "accum.h"
 #include "builtins.h"
 
 #include <md_system.h>
@@ -163,61 +163,22 @@ double vial_volume_grid(const double len[3], double samples, uint32_t dims[3], b
 
 // ### ARGUMENTS ###
 
-typedef struct vargs_t {
-    const vial_val_t* const* v;
-    const md_str_t*      names;
-    uint32_t          n;
-} vargs_t;
-
-// By parameter name when the check bound them, else the pos-th positional one; NULL when not given
-static const vial_val_t* varg(const vargs_t* a, const char* name, uint32_t pos) {
-    bool bound = false;
-    for (uint32_t i = 0; i < a->n; ++i) {
-        if (!a->names || !a->names[i].len) continue;
-        if (md_str_eq(a->names[i], md_str_from_cstr(name))) return a->v[i];
-        bound = true;
-    }
-    if (bound) return NULL;
-    uint32_t p = 0;
-    for (uint32_t i = 0; i < a->n; ++i) {
-        if (a->names && a->names[i].len) continue;
-        if (p++ == pos) return a->v[i];
-    }
-    return NULL;
-}
-
-static bool is_none(const vial_val_t* v) { return !v || v->dtype == VIAL_DT_NONE; }
-
-static double num(const vial_val_t* v, size_t i) {
-    switch (v->dtype) {
-    case VIAL_DT_BOOL:    return ((const uint8_t*)v->data)[i];
-    case VIAL_DT_INT:     return ((const int32_t*)v->data)[i];
-    case VIAL_DT_FLOAT:   return ((const float*)v->data)[i];
-    case VIAL_DT_FLOAT64: return ((const double*)v->data)[i];
-    default:              return NAN;
-    }
-}
-
-static bool is_num(const vial_val_t* v) {
-    return v && v->data && (v->dtype == VIAL_DT_INT || v->dtype == VIAL_DT_FLOAT || v->dtype == VIAL_DT_FLOAT64 || v->dtype == VIAL_DT_BOOL);
-}
-
 // Three numbers: one for all three, a tuple of three, or float[3]
 static bool three(const vial_val_t* v, double out[3]) {
     if (!v) return false;
     if (v->dtype == VIAL_DT_TUPLE) {
         if (v->num_elems != 3) return false;
         for (int a = 0; a < 3; ++a) {
-            if (!is_num(&v->elems[a]) || vial_val_count(&v->elems[a]) != 1) return false;
-            out[a] = num(&v->elems[a], 0);
+            if (!vial_arg_is_num(&v->elems[a]) || vial_val_count(&v->elems[a]) != 1) return false;
+            out[a] = vial_arg_num(&v->elems[a], 0);
         }
         return true;
     }
-    if (!is_num(v)) return false;
+    if (!vial_arg_is_num(v)) return false;
     const size_t c = vial_val_count(v);
-    if (c == 1) { out[0] = out[1] = out[2] = num(v, 0); return true; }
+    if (c == 1) { out[0] = out[1] = out[2] = vial_arg_num(v, 0); return true; }
     if (c != 3) return false;
-    for (int a = 0; a < 3; ++a) out[a] = num(v, a);
+    for (int a = 0; a < 3; ++a) out[a] = vial_arg_num(v, a);
     return true;
 }
 
@@ -225,8 +186,8 @@ static bool three(const vial_val_t* v, double out[3]) {
 static bool box_of(const vial_val_t* v, double lo[3], double hi[3]) {
     if (!v) return false;
     if (v->dtype == VIAL_DT_TUPLE) return v->num_elems == 2 && three(&v->elems[0], lo) && three(&v->elems[1], hi);
-    if (!is_num(v) || vial_val_count(v) != 6) return false;
-    for (int a = 0; a < 3; ++a) { lo[a] = num(v, a); hi[a] = num(v, 3 + a); }
+    if (!vial_arg_is_num(v) || vial_val_count(v) != 6) return false;
+    for (int a = 0; a < 3; ++a) { lo[a] = vial_arg_num(v, a); hi[a] = vial_arg_num(v, 3 + a); }
     return true;
 }
 
@@ -338,7 +299,7 @@ static bool kind_from(vial_kctx_t* k, vial_sdf_kind_t* kind, const vial_val_t* v
 // mutually consistent images about its own centre, as v1 places it
 static bool kind_ref(vial_kctx_t* k, vial_sdf_kind_t* kind, const vial_val_t* ref, const vial_frame_t* first, const md_system_t* sys, md_allocator_i* alloc) {
     kind->ref_xyzw = md_alloc(alloc, kind->n * sizeof(md_float4_t));
-    if (!is_none(ref)) {
+    if (!vial_arg_none(ref)) {
         vial_val_t r = *ref;
         if (r.dtype == VIAL_DT_FLOAT64) r = vial_val_as(ref, VIAL_DT_FLOAT, k->alloc);
         if (r.dtype != VIAL_DT_FLOAT || vial_val_count(&r) != 3 * (size_t)kind->n || !r.data) {
@@ -379,20 +340,20 @@ bool vial_volume_begin(vial_kctx_t* k, vial_volume_t* vol, const char* name, con
                        uint32_t n, const vial_frame_t* first, bool add, md_allocator_i* alloc) {
     memset(vol, 0, sizeof(*vol));
     vol->alloc = alloc;
-    const vargs_t a = {args, names, n};
+    const vial_args_t a = {args, names, n};
     const bool sdf = !strcmp(name, "sdf");
-    const vial_val_t* samples = sdf ? varg(&a, "samples", 3) : varg(&a, "samples", 1);
-    const vial_val_t* sigma = sdf ? varg(&a, "sigma", 6) : varg(&a, "sigma", 4);
-    const double want = is_num(samples) ? num(samples, 0) : VIAL_VOLUME_SAMPLES;
+    const vial_val_t* samples = sdf ? vial_arg(&a, "samples", 3) : vial_arg(&a, "samples", 1);
+    const vial_val_t* sigma = sdf ? vial_arg(&a, "sigma", 6) : vial_arg(&a, "sigma", 4);
+    const double want = vial_arg_is_num(samples) ? vial_arg_num(samples, 0) : VIAL_VOLUME_SAMPLES;
     if (!(want > 0.0)) return vial_rt_fail(k, "R0103", "samples= is a number of samples per Å, more than 0");
-    vol->sigma = is_num(sigma) ? num(sigma, 0) : 0.0;
+    vol->sigma = vial_arg_is_num(sigma) ? vial_arg_num(sigma, 0) : 0.0;
     if (!(vol->sigma >= 0.0)) return vial_rt_fail(k, "R0103", "sigma= is a length, 0 or more");
     double len[3];
     if (sdf) {
         vol->kind = VIAL_VOLUME_SDF;
-        const vial_val_t* st = varg(&a, "structures", 0);
-        const vial_val_t* ext = varg(&a, "extent", 2);
-        const vial_val_t* ref = varg(&a, "ref", 4);
+        const vial_val_t* st = vial_arg(&a, "structures", 0);
+        const vial_val_t* ext = vial_arg(&a, "extent", 2);
+        const vial_val_t* ref = vial_arg(&a, "ref", 4);
         if (!three(ext, vol->extent) || !(vol->extent[0] > 0.0 && vol->extent[1] > 0.0 && vol->extent[2] > 0.0)) {
             return vial_rt_fail(k, "R0103", "extent= is a length more than 0, or three");
         }
@@ -402,8 +363,8 @@ bool vial_volume_begin(vial_kctx_t* k, vial_volume_t* vol, const char* name, con
             vol->origin[q] = -vol->extent[q];
         }
     } else {
-        const vial_val_t* box = varg(&a, "box", 2);
-        if (!is_none(box)) {
+        const vial_val_t* box = vial_arg(&a, "box", 2);
+        if (!vial_arg_none(box)) {
             vol->kind = VIAL_VOLUME_BOX;
             double hi[3];
             if (!box_of(box, vol->lo, hi)) return vial_rt_fail(k, "R0103", "box= is (lo, hi), each three lengths");
@@ -575,10 +536,10 @@ static void sdf_cb(const uint32_t* idx, const float* x, const float* y, const fl
 bool vial_volume_add(vial_kctx_t* k, vial_volume_t* vol, const vial_val_t* const* args, const md_str_t* names, uint32_t n) {
     const vial_frame_t* fr = k->in->frame;
     if (!fr || !fr->xyz) return vial_rt_fail(k, "R0103", "a volume adds frames");
-    const vargs_t a = {args, names, n};
+    const vial_args_t a = {args, names, n};
     const bool sdf = vol->kind == VIAL_VOLUME_SDF;
-    const vial_val_t* tv = sdf ? varg(&a, "target", 1) : varg(&a, "points", 0);
-    const vial_val_t* wv = sdf ? varg(&a, "weights", 5) : varg(&a, "weights", 3);
+    const vial_val_t* tv = sdf ? vial_arg(&a, "target", 1) : vial_arg(&a, "points", 0);
+    const vial_val_t* wv = sdf ? vial_arg(&a, "weights", 5) : vial_arg(&a, "weights", 3);
     if (!tv) return vial_rt_fail(k, "R0103", "a missing argument");
     vial_val_t p;
     if (!vial_k_positions(k, tv, &p)) return false;
@@ -595,7 +556,7 @@ bool vial_volume_add(vial_kctx_t* k, vial_volume_t* vol, const vial_val_t* const
     const double scale = vox > 0.0 ? vol->vref / vox : 1.0;
     float* w = md_alloc(k->alloc, (np ? np : 1) * sizeof(float));
     double total = 0.0;
-    if (!is_none(wv) && wv->dtype == VIAL_DT_STR) {
+    if (!vial_arg_none(wv) && wv->dtype == VIAL_DT_STR) {
         // weights='mass': the particles' masses, so the points must be particles
         const md_system_t* sys = k->in->msys;
         if (!ids || !sys) return vial_rt_fail(k, "R0103", "weights='mass' needs points whose particles are known");
@@ -604,10 +565,10 @@ bool vial_volume_add(vial_kctx_t* k, vial_volume_t* vol, const vial_val_t* const
             w[i] = (float)(x * scale);
             total += x;
         }
-    } else if (!is_none(wv)) {
-        if (!is_num(wv) || vial_val_count(wv) != np) return vial_rt_fail(k, "R0103", "weights= has one number per point: %zu, not %zu", np, wv ? vial_val_count(wv) : 0);
+    } else if (!vial_arg_none(wv)) {
+        if (!vial_arg_is_num(wv) || vial_val_count(wv) != np) return vial_rt_fail(k, "R0103", "weights= has one number per point: %zu, not %zu", np, wv ? vial_val_count(wv) : 0);
         for (size_t i = 0; i < np; ++i) {
-            const double x = vial_val_is_missing(wv, i) ? 0.0 : num(wv, i);
+            const double x = vial_val_is_missing(wv, i) ? 0.0 : vial_arg_num(wv, i);
             w[i] = (float)(x * scale);
             total += x;
         }
