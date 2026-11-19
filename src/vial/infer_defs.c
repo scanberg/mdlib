@@ -371,6 +371,14 @@ static T call_core(infer_t* x, vial_node_id call, const vial_tree_t* t, const vi
             "or return one value and call it once per value", g->fname);
         return err();
     }
+    for (uint8_t k = 0; loop.ndim && k < result.ndim; ++k) {
+        // The map stacks one value per call, and values whose extent changes from call to call do not stack: the
+        // residues' weights, of 10 to 12 particles each. As their positions do not (E0318), and the run would fail.
+        if (result.dims[k].kind != VIAL_EXT_RANGED) continue;
+        vx_diag_fix(x, "E0318", call, NULL, "`%s` gives %s in each call, of %u to %u entries, which do not form one array; "
+            "reduce them in the def, or call it on one group", g->fname, vx_tstr(&result), result.dims[k].n, result.dims[k].m);
+        return err();
+    }
     T t2;
     if (!with_loop(x, call, &loop, &result, &t2)) return err();
     if (x->ir) {

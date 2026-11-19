@@ -3050,6 +3050,71 @@ UTEST(vial_ir, units_convert) {
     md_arena_allocator_destroy(alloc);
 }
 
+// Inside a def mapped over residues, an extent that changes from call to call keeps its identity through slices by
+// fixed offsets, as ? does: r[1:] - r[:-1] and w[:, None] * d evaluate, per residue
+UTEST(vial_ir, slices_of_extents_per_call) {
+    const md_system_t* sys = vial_test_system('P');
+    ASSERT_TRUE(sys != NULL);
+    const int64_t nf = vial_test_run('P');
+    ASSERT_GT(nf, 3);
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(8));
+    const char* src =
+        "def steps(r: points):\n"
+        "    return mean(norm(r[1:] - r[:-1]))\n"
+        "st = steps(residue)\n"
+        "def second_moment(p: points):\n"
+        "    w = weight(p, None)\n"
+        "    d = displacement(com(p, weights=None), p)\n"
+        "    return trace(d.T @ (w[:, None] * d)) / sum(w)\n"
+        "sp = second_moment(residue)\n"
+        "g = gyration(residue, weights=None)\n";
+    md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = MD_STR_LIT("run")}, alloc);
+    ASSERT_TRUE(prog != NULL);
+    const md_vial_diagnostic_t* dg;
+    const size_t ndg = md_vial_diagnostics(prog, &dg);
+    for (size_t i = 0; i < ndg; ++i) printf("%.5s %.*s\n", dg[i].code, (int)dg[i].message.len, dg[i].message.ptr);
+    ASSERT_EQ(0u, (unsigned)ndg);
+    md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = MD_STR_LIT("run")}, alloc);
+    ASSERT_TRUE(e != NULL);
+    ASSERT_TRUE(md_vial_eval_run(e));
+    const md_attributes_t* at = md_vial_eval_attributes(e);
+    const md_attribute_t* ast = md_attributes_find(at, MD_STR_LIT("script/st"));
+    const md_attribute_t* asp = md_attributes_find(at, MD_STR_LIT("script/sp"));
+    const md_attribute_t* ag = md_attributes_find(at, MD_STR_LIT("script/g"));
+    ASSERT_TRUE(ast && asp && ag);
+    const size_t nr = sys->residue.count;
+    const md_str_t paths[] = {MD_STR_LIT("atom/position"), MD_STR_LIT("unitcell")};
+    md_system_extract_t* ex = md_system_extract_begin(sys, MD_STR_LIT("run"), paths, 2, alloc);
+    ASSERT_TRUE(ex != NULL);
+    md_system_state_t st = {.alloc = alloc};
+    md_system_state_init(&st, sys->atom.count);
+    double sworst = 0, gworst = 0;
+    for (int64_t f = 0; f < nf; ++f) {
+        ASSERT_TRUE(md_system_extract_frame(ex, f, &st));
+        const float* xyz = (const float*)st.xyz;
+        for (size_t r = 0; r < nr; ++r) {
+            // The mean step from one particle of the residue to the next, as P's residues are whole
+            const md_urange_t rg = md_system_residue_atom_range(sys, r);
+            double sum = 0;
+            for (size_t i = rg.beg + 1; i < rg.end; ++i) {
+                double d2 = 0;
+                for (int q = 0; q < 3; ++q) d2 += ((double)xyz[3 * i + q] - xyz[3 * (i - 1) + q]) * ((double)xyz[3 * i + q] - xyz[3 * (i - 1) + q]);
+                sum += sqrt(d2);
+            }
+            sworst = MD_MAX(sworst, fabs(sum / (rg.end - rg.beg - 1) - ((const float*)ast->data)[f * nr + r]));
+            // The trace of the spread is the square of the radius of gyration
+            const double g = ((const float*)ag->data)[f * nr + r];
+            gworst = MD_MAX(gworst, fabs(g * g - ((const float*)asp->data)[f * nr + r]));
+        }
+    }
+    md_system_extract_end(ex);
+    EXPECT_LT(sworst, 1e-4);
+    EXPECT_LT(gworst, 1e-4);
+    md_vial_eval_free(e);
+    md_vial_program_free(prog);
+    md_arena_allocator_destroy(alloc);
+}
+
 UTEST(vial_ir, volume_diagnostics) {
     const md_system_t* sys = vial_test_system('P');
     ASSERT_TRUE(sys != NULL);

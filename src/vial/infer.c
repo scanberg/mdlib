@@ -165,7 +165,7 @@ static bool extent_join(vial_extent_t a, vial_extent_t b, vial_extent_t* out) {
     switch (a.kind) {
     case VIAL_EXT_STATIC:  same = a.n == b.n; break;
     case VIAL_EXT_DYNAMIC: same = a.id == b.id && a.offset == b.offset; break;
-    case VIAL_EXT_RANGED:  same = a.n == b.n && a.m == b.m; break;
+    case VIAL_EXT_RANGED:  same = a.n == b.n && a.m == b.m && a.offset == b.offset; break;
     default: break;
     }
     if (!same) return false;
@@ -1244,11 +1244,19 @@ static T infer_subscript(infer_t* x, vial_node_id id) {
                     r.n = b > en ? (uint32_t)((b - en - step - 1) / (-step)) : 0;
                 }
                 r.kind = VIAL_EXT_STATIC;
-            } else if (e.kind == VIAL_EXT_DYNAMIC && kst && step == 1 && klo && khi) {
-                // A slice by fixed offsets keeps a related identity: c[1:] and c[:-1] pair
+            } else if ((e.kind == VIAL_EXT_DYNAMIC || e.kind == VIAL_EXT_RANGED) && kst && step == 1 && klo && khi) {
+                // A slice by fixed offsets keeps a related identity: c[1:] and c[:-1] pair, and c[:] is c. So does an
+                // extent that changes from call to call of a mapped def, whose range shortens with it.
                 const int64_t off_lo = ln ? lo : 0;
                 const int64_t off_hi = hn ? (hi < 0 ? -hi : -1) : 0;
-                if (off_lo >= 0 && off_hi >= 0 && (!hn || hi < 0)) { r.offset = e.offset + (int32_t)(off_lo + off_hi); }
+                if (off_lo >= 0 && off_hi >= 0 && (!hn || hi < 0)) {
+                    const int32_t off = (int32_t)(off_lo + off_hi);
+                    r.offset = e.offset + off;
+                    if (e.kind == VIAL_EXT_RANGED) {
+                        r.n = e.n > (uint32_t)off ? e.n - (uint32_t)off : 0;
+                        r.m = e.m > (uint32_t)off ? e.m - (uint32_t)off : 0;
+                    }
+                }
                 else { r.kind = VIAL_EXT_DYNAMIC; r.id = (uint32_t)id; r.offset = 0; }
             } else {
                 r = (vial_extent_t){.kind = e.kind == VIAL_EXT_STATIC ? VIAL_EXT_UNKNOWN : VIAL_EXT_DYNAMIC, .id = (uint32_t)id, .desc = e.desc};

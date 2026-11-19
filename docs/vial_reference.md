@@ -527,7 +527,7 @@ A parameter can be annotated with a kind. The kind says how much of an argument 
 | `float`, `int`, `bool` | one element | E0313 | maps over every dimension |
 
 - An unannotated parameter takes its argument whole, as in Python. When an unannotated argument has a dimension that describes the same units as a mapped one, W0607 suggests the annotation that pairs them.
-- Inside the body the mapped dimensions are not visible, so a reduction there reduces only what one call took. An extent that changes from call to call, such as the number of particles in each residue, behaves like `?`: it broadcasts only with itself or 1, and hover shows its range, `float[4..14][3]`.
+- Inside the body the mapped dimensions are not visible, so a reduction there reduces only what one call took. An extent that changes from call to call, such as the number of particles in each residue, behaves like `?`: it broadcasts only with itself or 1, and hover shows its range, `float[4..14][3]`. As for `?`, a slice by fixed offsets keeps it related, so `p[1:] - p[:-1]` and `w[:, None] * d` work in the body. What a call gives must not keep such an extent, since the calls' values would not stack into one array (E0318): reduce it in the def.
 - A set taken as a body that is empty in some frame gives a missing entry, which reductions skip.
 - Any other annotation, and a return annotation, is E0312. An int where a point or body is expected is E0302, with the particles[i] fix; any other argument that does not fit its kind, such as a float for int, is E0313. particles(p), per-particle properties and shape() keep the identity of p's extents, so the weights in gyration pair with its positions.
 
@@ -545,6 +545,16 @@ n2  = contacts(res_a[0], vlb)                        # -> int, frame: one residu
 cut = full(shape(res_a), 4.0)                        # -> float[433]: one cutoff per residue
 n3  = contacts(res_a, vlb, cut)                      # -> int[433], frame: cutoff: float pairs it per residue
 rg  = gyration(res_a)                                # -> float[433] Å, frame: points maps over the residues
+
+def steps(r: points):
+    return mean(norm(r[1:] - r[:-1]))                # [1:] and [:-1] of an extent that changes from call to call pair
+
+st  = steps(res_a)                                   # -> float[433] Å, frame
+
+def masses(r: points):
+    return weight(r, 'mass')
+
+ms  = masses(res_a)                                  # error E0318: 4 to 14 per residue do not stack; reduce them in the def
 
 def in_contact(r: set, lig: set, cutoff=4.0):
     return distance(r, lig, between='closest') < cutoff
@@ -1307,7 +1317,7 @@ Codes are stable: E for errors, W for warnings, R for errors found while evaluat
 | E0315 | A fold step whose result differs from init in dtype, shape or unit | step returns float\[3\] Å; init is float Å |  |
 | E0316 | An axis the array does not have | axis=2 on float\[433\]\[3\] | axis=1 |
 | E0317 | is on a value that is not static | is compares static values; d changes per frame | == |
-| E0318 | The coordinates of an array of sets whose sizes differ | `res_a` holds 433 sets of 4 to 14 particles; their positions do not form one array | `particle(res_a).xyz`, or a def with a `points` parameter |
+| E0318 | The coordinates of an array of sets whose sizes differ, or what a def mapped over them gives per set | `res_a` holds 433 sets of 4 to 14 particles; their positions do not form one array | `particle(res_a).xyz`, or a def with a `points` parameter |
 | E0319 | An operator or property on a value it does not take | `+` takes numbers; this is str and int | |
 | E0320 | Structures of an sdf that are not alike, particle by particle | the structures of `sdf` are fitted particle by particle; structure 1 has 10 particles and the first 13 |  |
 | E0321 | Structures with too little in common to pair: mcs, or a kind of an sdf | the two have 13 heavy atoms in common, of 32 and 59; least=0.5 asks for 16 | least=, or poses= |
