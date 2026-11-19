@@ -2357,13 +2357,42 @@ static bool k_primitive(vial_kctx_t* k, const char* name, const bargs_t* ba, via
     return vial_rt_fail(k, "R0103", "an unknown primitive %s", name);
 }
 
-// What a built-in draws of its own, as the reference's Drawing section has it: angle an arc at the vertex labelled with
-// the angle, dihedral the two planes, the arc between them about the axis and a label on it, within a sphere around
+// What a built-in draws of its own, as the reference's Drawing section has it: angle its two arms and an arc at the
+// vertex labelled with the angle, dihedral the two planes, the arc between them about the axis and a label on it, within a sphere around
 // each point and the particles in them. Computed only while drawing, after the built-in's value, which labels it.
 static void near3(const md_unitcell_t* cell, const float a[3], const float b[3], float out[3]) {
     md_float3_t d = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
     md_geom_min_image(d.elem, 0, 1, cell);
     out[0] = a[0] + d.x; out[1] = a[1] + d.y; out[2] = a[2] + d.z;
+}
+
+// The arms, from b to the nearest images of a and c, and the arc at b between them: the arc alone is a third of the
+// shorter arm in viamd, a speck where the vertex is bonded to a hydrogen
+static bool core_angle_draw(vial_kctx_t* k, const vial_val_t* const* a, vial_val_t* out) {
+    const prim_core_t* c = k->core;
+    float p[3][3];
+    bool ok = true;
+    for (int i = 0; i < 3 && ok; ++i) ok = point_of(k, a[i], p[i]);
+    vial_prim_t pr[3];
+    uint32_t n = 0;
+    if (ok) {
+        const md_unitcell_t cell = frame_cell(k);
+        float A[3], C[3];
+        near3(&cell, p[1], p[0], A);
+        near3(&cell, p[1], p[2], C);
+        for (int arm = 0; arm < 2; ++arm) {
+            pr[n] = (vial_prim_t){.kind = VIAL_PRIM_LINE, .value = NAN};
+            for (int q = 0; q < 3; ++q) { pr[n].p[0][q] = p[1][q]; pr[n].p[1][q] = arm ? C[q] : A[q]; }
+            ++n;
+        }
+        pr[n] = (vial_prim_t){.kind = VIAL_PRIM_ARC, .value = NAN};
+        for (int q = 0; q < 3; ++q) { pr[n].p[0][q] = p[1][q]; pr[n].p[1][q] = A[q]; pr[n].p[2][q] = C[q]; }
+        if (a[3]) label_text(k, &pr[n], c, a[3]);
+        ++n;
+    }
+    *out = vial_val_make_uninit(VIAL_DT_DRAWING, 0, NULL, k->alloc);
+    *(const vial_drawing_t**)out->data = vial_drawing_make(pr, n, k->alloc);
+    return true;
 }
 
 static bool core_dihedral_draw(vial_kctx_t* k, const vial_val_t* const* a, vial_val_t* out) {
@@ -2458,10 +2487,8 @@ bool vial_k_builtin_draw(vial_kctx_t* k, const char* name, const vial_val_t* con
         const uint8_t kinds[5] = {VX_KIND_POINT, VX_KIND_POINT, VX_KIND_POINT, VX_KIND_POINT, VX_KIND_FLOAT};
         k->core = &c;
         if (is_angle) {
-            // The arc at b, from a to c
-            c.kind = VIAL_PRIM_ARC;
-            const vial_val_t* arcs[4] = {a[1], a[0], a[2], result};
-            ok = mapped(k, arcs, kinds + 1, 4, core_prim, out);
+            a[3] = result;
+            ok = mapped(k, a, kinds + 1, 4, core_angle_draw, out);
         } else {
             a[4] = result;
             ok = mapped(k, a, kinds, 5, core_dihedral_draw, out);

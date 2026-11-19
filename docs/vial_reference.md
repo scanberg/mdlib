@@ -242,7 +242,7 @@ Every value has one of three stages, inferred from what it reads. Nobody declare
 - `fold(step, x, init)` keeps one state from frame to frame, in order. With skip=False, step is also called for a frame whose x is missing, and the state may hold missing values. An init that is a frame value is taken from the first frame where it is present. Folds run once over the whole run and their per-frame results are stored, so evaluating a subset of frames reads them rather than running the fold again. Its result is a trajectory value per frame, and it is the only operation that needs frames in order.
 - Everything evaluated within a frame-stage scope is frame stage.
 - Only published and hovered values are computed.
-- Hover shows an expression's type and value and draws it: sets as their particles, points as markers, and what `angle`, `dihedral`, `within` and `shown()` draw. A literal is shown through what it selects: `'ALA'` in `residue('ALA')` is those residues, `'CB'` in `rs['CB']` or `rs.particle('CB')` those particles, `5` in `within(5, of=x)` what is within, `'O'` in `rs[['N', 'CA', 'C', 'O']]` the O of every set selected, and `'GLY'` in `residue(['ALA', 'GLY'])` the residues named GLY: the selection as if the list held that item alone. The type shown is the literal's own. A literal anywhere else, `90` in `percentile(x, 90)`, is itself.
+- Hover shows an expression's type and value and draws it: sets as their particles, points as markers, and what `angle`, `dihedral`, `within` and `shown()` draw. A literal is shown through what it selects: `'ALA'` in `residue('ALA')` is those residues, `'CB'` in `rs['CB']` or `rs.particle('CB')` those particles, `5` in `within(5, of=x)` what is within, `'O'` in `rs[['N', 'CA', 'C', 'O']]` the O of every set selected, and `'GLY'` in `residue(['ALA', 'GLY'])` the residues named GLY: the selection as if the list held that item alone. The list itself, `[0, 1, 2]` in `particle[[0, 1, 2]]`, is the whole selection. The type shown is the literal's own. A literal anywhere else, `90` in `percentile(x, 90)`, is itself.
 
 ```python
 # on P
@@ -1224,7 +1224,7 @@ Hovering an expression in the editor draws its value in the 3D view, at the fram
 | A point, or points: `float[3]` Å or `float[n][3]` Å | dots |
 | A number per particle or per residue | the particles or residues coloured by value |
 | `bond(...)` | the bonds |
-| `angle`, `dihedral` | an arc at the vertex; for a dihedral also the two planes |
+| `angle`, `dihedral` | an angle its two arms and an arc at the vertex; a dihedral the two planes and the arc between them |
 | `within(r, of=x)` | a sphere of radius r around each point of x, and the particles inside highlighted |
 | `attr(path)` of an energy term of groups | the groups it is of, each in a colour of its own: `Coul-SR:Protein-SOL` as Protein and SOL, `T-Protein` as Protein (see Groups). Of a pattern every group its terms name, once each, or of the hovered member its groups. A name bound to it draws as it does. Known from the path, so nothing is evaluated |
 | anything else | nothing; hover shows the value as text |

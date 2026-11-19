@@ -389,21 +389,22 @@ static void make_marks(md_vial_program_t* prog) {
 // those particles, 5 in within(5, of=x) what is within, 'O' in s[['CA', 'C', 'O']] its column of the sets selected and
 // 'GLY' in residue(['ALA', 'GLY']) the residues named GLY. The literal, a list of them or a number with a unit or sign,
 // as an argument of a call or the index of a subscript that makes a set: that call or subscript, with the column when
-// the literal is one of a list indexing and the list and item when it is one of a list argument. A literal anywhere
-// else, 90 in percentile(x, 90) or 2 in x + 2, is itself.
+// the literal is one of a list indexing and the list and item when it is one of a list argument. A list there, [0, 1, 2]
+// in particle[[0, 1, 2]], is the call or subscript, every column. A literal anywhere else, 90 in percentile(x, 90) or
+// 2 in x + 2, is itself.
 static vial_node_id literal_context(const md_vial_program_t* prog, vial_node_id n, md_vial__pick_t* pick) {
     const vial_tree_t* t = &prog->tree;
     const vial_names_t* nm = &prog->check.names;
     if (!n || n >= md_array_size(nm->parent)) return n;
     switch (t->nodes[n].kind) {
-    case VIAL_N_INT: case VIAL_N_FLOAT: case VIAL_N_STRING: case VIAL_N_RANGE: break;
+    case VIAL_N_INT: case VIAL_N_FLOAT: case VIAL_N_STRING: case VIAL_N_RANGE: case VIAL_N_LIST: break;
     default: return n;
     }
     vial_node_id c = n, p = nm->parent[c];
     while (p && (t->nodes[p].kind == VIAL_N_QUANTITY || t->nodes[p].kind == VIAL_N_UNARY)) { c = p; p = nm->parent[c]; }
     vial_node_id list = 0, item = c;
     int64_t at = -1;
-    if (p && t->nodes[p].kind == VIAL_N_LIST) {
+    if (t->nodes[n].kind != VIAL_N_LIST && p && t->nodes[p].kind == VIAL_N_LIST) {
         for (uint32_t i = 0; i < t->nodes[p].child_count; ++i) if (vial_child(t, p, i) == c) at = i;
         list = p;
         c = p; p = nm->parent[c];

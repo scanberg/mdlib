@@ -901,7 +901,7 @@ static uint32_t vial_test_count_ca(const md_system_t* sys) {
     return n;
 }
 
-// Every form of angle draws its arcs: three points, the points stacked in one argument, over arrays, and in a
+// Every form of angle draws its arms and arc: three points, the points stacked in one argument, over arrays, and in a
 // comprehension, where hovering the body draws every element
 static uint32_t vial_ir__prims(const char* src, const char* at_text, md_allocator_i* alloc) {
     const md_system_t* sys = vial_test_system('P');
@@ -918,14 +918,15 @@ static uint32_t vial_ir__prims(const char* src, const char* at_text, md_allocato
 
 UTEST(vial_ir, angle_draws_every_form) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
-    EXPECT_EQ(1u, vial_ir__prims("r = residue[2]\na = angle(r[2], r[8], r[9])\n", "angle(", alloc));
-    EXPECT_EQ(1u, vial_ir__prims("r = residue[2]\na = angle(r[[2, 8, 9]])\n", "angle(", alloc));
-    EXPECT_EQ(3u, vial_ir__prims("rs = residue[2:5]\na = angle(rs.particle[[2, 8, 9]])\n", "angle(", alloc));
-    EXPECT_EQ(3u, vial_ir__prims("rs = residue[2:5]\na = angle(rs['N'], rs['CA'], rs['C'])\n", "angle(", alloc));
+    EXPECT_EQ(3u, vial_ir__prims("r = residue[2]\na = angle(r[2], r[8], r[9])\n", "angle(", alloc));
+    EXPECT_EQ(3u, vial_ir__prims("r = residue[2]\na = angle(r[[2, 8, 9]])\n", "angle(", alloc));
+    EXPECT_EQ(3u, vial_ir__prims("a = angle(particle[[0, 1, 2]])\n", "angle(", alloc));
+    EXPECT_EQ(9u, vial_ir__prims("rs = residue[2:5]\na = angle(rs.particle[[2, 8, 9]])\n", "angle(", alloc));
+    EXPECT_EQ(9u, vial_ir__prims("rs = residue[2:5]\na = angle(rs['N'], rs['CA'], rs['C'])\n", "angle(", alloc));
     EXPECT_EQ(9u, vial_ir__prims("rs = residue[2:5]\nd = dihedral(rs.particle[[0, 2, 4, 6]])\n", "dihedral(", alloc));     // two disks and an arc each
     // Inside a comprehension's body: the comprehension, every element
-    EXPECT_EQ(3u, vial_ir__prims("a = [angle(r[2], r[8], r[9]) for r in residue[2:5]]\n", "angle(", alloc));
-    EXPECT_EQ(3u, vial_ir__prims("a = [angle(r[2], r[8], r[9]) for r in residue[2:5]]\n", "r[8]", alloc));
+    EXPECT_EQ(9u, vial_ir__prims("a = [angle(r[2], r[8], r[9]) for r in residue[2:5]]\n", "angle(", alloc));
+    EXPECT_EQ(9u, vial_ir__prims("a = [angle(r[2], r[8], r[9]) for r in residue[2:5]]\n", "r[8]", alloc));
     md_arena_allocator_destroy(alloc);
 }
 
@@ -993,6 +994,14 @@ UTEST(vial_ir, literal_draws_its_context) {
     EXPECT_EQ(1u, g); EXPECT_EQ(n0, n); EXPECT_NE(s0, s);
     ASSERT_TRUE(vial_ir__atoms(lsrc, "particle([", alloc, &g, &n, &s));
     EXPECT_EQ(1u, g); EXPECT_EQ(2 * n0, n);
+    // A list indexing: the subscript, every column, as hovering its brackets draws it; one of its items its column
+    const char* isrc = "a = angle(particle[[0, 1, 2]])\n";
+    ASSERT_TRUE(vial_ir__atoms(isrc, "[[0", alloc, &g, &n, &s));
+    EXPECT_EQ(3u, g); EXPECT_EQ(3u, n); EXPECT_EQ(3u, s);
+    ASSERT_TRUE(vial_ir__atoms(isrc, ", 2]", alloc, &g, &n, &s));
+    EXPECT_EQ(3u, g); EXPECT_EQ(3u, n); EXPECT_EQ(3u, s);
+    ASSERT_TRUE(vial_ir__atoms(isrc, " 1,", alloc, &g, &n, &s));
+    EXPECT_EQ(1u, g); EXPECT_EQ(1u, n); EXPECT_EQ(1u, s);
     // Through what the script bound before it: the view call on rs, one CB per residue
     ASSERT_TRUE(vial_ir__atoms("rs = residue('ALA')\nvs = rs.particle(['N', 'CB'])\n", "'CB'", alloc, &g, &n, &s));
     EXPECT_EQ(g0, g); EXPECT_EQ(n0, n); EXPECT_EQ(s0, s);
@@ -1167,11 +1176,19 @@ UTEST(vial_ir, draw) {
         EXPECT_NEAR(XYZ(ca[0], 0) + 10.0f, m.prims[0].p[0][0], 1e-4f);
     }
 
-    // angle: an arc at the vertex; dihedral: the two planes and a label
+    // angle: both arms and an arc at the vertex; dihedral: the two planes and a label
     ASSERT_TRUE(md_vial_draw(&dr, &desc, md_vial_expr_at(prog, AT("angle(", 5)), alloc));
-    ASSERT_EQ(1u, dr.num_prims);
-    EXPECT_EQ((int)MD_VIAL_PRIM_ARC, (int)dr.prims[0].kind);
-    for (int k = 0; k < 3; ++k) EXPECT_EQ(XYZ(ca[1], k), dr.prims[0].p[0][k]);
+    ASSERT_EQ(3u, dr.num_prims);
+    EXPECT_EQ((int)MD_VIAL_PRIM_LINE, (int)dr.prims[0].kind);
+    EXPECT_EQ((int)MD_VIAL_PRIM_LINE, (int)dr.prims[1].kind);
+    EXPECT_EQ((int)MD_VIAL_PRIM_ARC, (int)dr.prims[2].kind);
+    for (int k = 0; k < 3; ++k) {
+        EXPECT_EQ(XYZ(ca[1], k), dr.prims[0].p[0][k]);
+        EXPECT_NEAR(XYZ(ca[0], k), dr.prims[0].p[1][k], 1e-4f);
+        EXPECT_EQ(XYZ(ca[1], k), dr.prims[1].p[0][k]);
+        EXPECT_NEAR(XYZ(ca[2], k), dr.prims[1].p[1][k], 1e-4f);
+        EXPECT_EQ(XYZ(ca[1], k), dr.prims[2].p[0][k]);
+    }
     EXPECT_EQ(1u, dr.num_labels);
     ASSERT_TRUE(md_vial_draw(&dr, &desc, md_vial_expr_at(prog, AT("dihedral(", 8)), alloc));
     ASSERT_EQ(3u, dr.num_prims);
@@ -3376,3 +3393,4 @@ UTEST(vial_ir, attr_draws_groups) {
     md_vial_program_free(prog);
     md_arena_allocator_destroy(alloc);
 }
+
