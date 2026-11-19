@@ -6,15 +6,36 @@
 
 #include <core/md_str.h>
 
-// Reading files into a system: what every reader takes, and the table of the formats.
+// Reading files into a system: the one operation every reader has, what it takes, and the table of the formats.
 //
-// A reader of a format has some of these, all with the same signature, all taking an optional md_load_desc_t:
-//
-//   md_<fmt>_system_init_from_file(sys, state, path, desc)    the system (atoms, bonds, ...) and its coordinates
-//   md_<fmt>_system_init_from_str (sys, state, str,  desc)    the same of text in memory
-//   md_<fmt>_system_supplement_from_file(sys, path, desc)     added to a loaded system: its topology, groups, or a
-//                                                              series along a run (desc->run)
+//   md_<fmt>_system_load_from_file(sys, state, path, desc)    what the file holds, into the system
+//   md_<fmt>_system_load_from_str (sys, state, str,  desc)    the same of text in memory
 //   md_<fmt>_system_publish_run(sys, path, run, flags)        frames streamed from the file as a run (md_run.h)
+//
+// LOAD. A load adds what the file holds to the system and its state. Onto a system without atoms, a file with atoms
+// builds it anew; onto a system with atoms, the file is checked against them and adds to them, by kind (below). Every
+// file loads the same way whatever was loaded before it: a topology and a structure file of its atoms make one system
+// in either order, and the order decides only the names, where the two name the same atoms or residues otherwise.
+//
+// A load onto a system with atoms never
+//   - starts the system over: to replace it, md_system_reset it and load onto the empty system
+//   - changes how many atoms there are: what is kept by atom index stays with its atoms
+//   - infers (md_system_infer): it records a change of the topology (md_system_t::topology_version), and the caller
+//     infers once, when the files are loaded
+//
+// What a file gives, by kind:
+//   ATOMS        The first file with atoms gives them, their names and their order, and their residues. Every later
+//                file is of the same atoms in the same order (names compared as structure files cut them short, the
+//                residue boundaries where the residue counts agree), or the load is MD_LOAD_MISMATCH.
+//   COORDINATES  The state: a file with coordinates replaces them, and the cell with its own where it has one. A file
+//                without coordinates (a topology) gives its cell only where the state has none.
+//   BONDS        A file which gives the bonds of every atom (a topology, MD_IO_FLAG_TOPOLOGY) replaces the covalent bonds
+//                given before it; one which gives some (the CONECT records of a PDB file) adds them only between atoms
+//                whose bonds are not complete (md_atom_data_t::bonds_complete). The user's edits (md_system_t::bond_edit)
+//                are apart and stay.
+//   LABELS       Residue names and chains: a file fills in what the system lacks, and what it has stays.
+//   ATTRIBUTES   What a file publishes (atom/charge, atom/mass, groups, QM data, series along desc->run) replaces what
+//                was published under the same path.
 //
 // The table below says which of them a format has, what it is called, what it is told by (its extension, and where that
 // is not enough its contents) and what it holds, for an application to dispatch on, rather than every application
@@ -38,9 +59,19 @@ typedef struct md_load_desc_t {
     uint32_t flags;                         // MD_LOAD_FLAG_*
     md_str_t format;                        // What the file does not say itself: the atom style of a LAMMPS data file
                                             // ("full", "atomic", ... or the columns); empty: told from the file
-    md_str_t run;                           // The run a series sampled along a trajectory joins ("run/<name>"): a
-                                            // supplement which is MD_IO_FLAG_TEMPORAL fails without one
+    md_str_t run;                           // The run a series sampled along a trajectory joins ("run/<name>"): the
+                                            // load of a format which is MD_IO_FLAG_TEMPORAL fails without one
 } md_load_desc_t;
+
+// What a load did. MD_LOAD_OK is 0, so that a result read as a bool is true for every failure, a mismatch included:
+// compare it.
+typedef enum md_load_result_t {
+    MD_LOAD_OK = 0,
+    MD_LOAD_MISMATCH,   // The file is not of the system's atoms, and nothing changed: it is checked before anything is
+                        // written. A caller which replaces the system on it resets the system and loads again.
+    MD_LOAD_FAILED,     // Logged: the file could not be read, is not of its format, or holds no atoms and the system has
+                        // none. What it had added before it failed stays; a system it was building is to be reset.
+} md_load_result_t;
 
 // ### FORMATS ###
 
@@ -97,14 +128,18 @@ typedef struct md_io_format_info_t {
 
     // The readers of the format; NULL where it has none, all of them where the format is not built in (VeloxChem,
     // TREXIO and H5MD without HDF5)
+    md_load_result_t (*load)(struct md_system_t* sys, struct md_system_state_t* state, md_str_t path, const md_load_desc_t* desc);
+    bool   (*publish_run)(struct md_system_t* sys, md_str_t path, md_str_t run, uint32_t flags);
+    // The atom count its header gives, without reading the rest; NULL where a format does not say up front
+    size_t (*atom_count) (md_str_t path);
+
+    // TRANSITIONAL: the readers of the formats which do not load yet. They go once every format does: system_init and
+    // supplement into load, state_init into the load of a file of coordinates onto the atoms of a system.
     bool   (*system_init)(struct md_system_t* sys, struct md_system_state_t* state, md_str_t path, const md_load_desc_t* desc);
     bool   (*supplement) (struct md_system_t* sys, md_str_t path, const md_load_desc_t* desc);
-    bool   (*publish_run)(struct md_system_t* sys, md_str_t path, md_str_t run, uint32_t flags);
     // The coordinates of a file of coordinates (MD_IO_FLAG_COORDINATES, or the first frame of a trajectory) for a
     // system of num_atoms atoms
     bool   (*state_init) (struct md_system_state_t* state, md_str_t path, size_t num_atoms);
-    // The atom count its header gives, without reading the rest; NULL where a format does not say up front
-    size_t (*atom_count) (md_str_t path);
 } md_io_format_info_t;
 
 // The format's entry. MD_IO_FORMAT_UNKNOWN, and anything past the end, is an entry of nothing.

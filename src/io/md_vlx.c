@@ -6248,99 +6248,38 @@ static void vlx_publish_atom_system_index(md_system_t* sys, const vlx_t* vlx, bo
 	}
 }
 
-// A supplemental file's QM atoms are a region of the system it supplements (a QM/MM run against its
-// MD system): they are flagged where the local-to-global map puts them - or, without a map, where the
-// two atom spaces coincide, as the system's first atoms - and the rest of the system is their
-// environment. The flags of an earlier supplement are cleared first, as its map is (see above).
+// The QM atoms of a file loaded onto a system's atoms are a region of them (a QM/MM run against its
+// MD system): they are flagged where the local-to-global map puts them, which such a file has
+// (vlx_file_fits_system), and the rest of the system is their environment. The flags of an earlier
+// load are cleared first, as its map is (see above).
 static void vlx_flag_supplemental_qm_region(md_system_t* sys, const vlx_t* vlx) {
 	MD_ASSERT(sys);
 	const size_t num_atoms = sys->atom.count;
 	const size_t num_qm_atoms = vlx_number_of_atoms(vlx);
-	if (num_atoms == 0 || num_qm_atoms == 0) {
+	const int* local_to_global = vlx_local_to_global_atom_idx(vlx);
+	if (num_atoms == 0 || num_qm_atoms == 0 || !local_to_global) {
 		return;
 	}
 	md_array_resize(sys->atom.qm, num_atoms, sys->alloc);
 	md_memset(sys->atom.qm, 0, num_atoms);
 
-	const int* local_to_global = vlx_local_to_global_atom_idx(vlx);
 	for (size_t i = 0; i < num_qm_atoms; ++i) {
-		const int idx = local_to_global ? local_to_global[i] : (int)i;
+		const int idx = local_to_global[i];
 		if (idx >= 0 && (size_t)idx < num_atoms) {
 			sys->atom.qm[idx] = 1;
 		}
 	}
 }
 
-bool md_vlx_system_init_from_file(md_system_t* sys, struct md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
-    const md_executor_t* executor = desc ? desc->executor : NULL;
+// Whether the file is of a region of the system's atoms: it says which atoms its QM atoms are, and their elements
+// agree. A file that cannot be read is no mismatch: MD_LOAD_FAILED, so that a caller does not replace a system for it.
+static md_load_result_t vlx_file_fits_system(const md_system_t* sys, md_str_t filename) {
 	MD_ASSERT(sys);
 
-	// Heap backed, not temp backed - see vlx_create.
-	vlx_t* vlx = vlx_create(md_get_heap_allocator(), sys);
-	if (!vlx) {
-		return false;
-	}
-	vlx->executor = executor;
-
-	// The system is built from the core block and everything after it publishes into the table as it
-	// is read - see vlx_system_begin. That is what makes the table a property of the LOAD: a system
-	// carries its data the moment it is loaded, and a consumer finds it by asking the system. It
-	// used to be published by the veloxchem UI component, which meant the data existed only because
-	// that component was compiled in and had parsed the same file a second time.
-	bool success = vlx_parse_file(vlx, filename, state);
-	if (success) {
-		vlx_publish_whole_file_attributes(sys, vlx);
-		// Standalone: the QM atoms are the system's first atoms, so the map is cleared rather than written.
-		vlx_publish_atom_system_index(sys, vlx, false);
-	}
-
-	vlx_destroy(vlx);
-	return success;
-}
-
-bool md_vlx_system_supplement_from_file(md_system_t* sys, md_str_t filename, const md_load_desc_t* desc) {
-    const md_executor_t* executor = desc ? desc->executor : NULL;
-	MD_ASSERT(sys);
-
-	if (!sys->attributes.alloc) {
-		MD_LOG_ERROR("Cannot supplement a system which has not been initialised");
-		return false;
-	}
-
-	// Heap backed, not temp backed - see vlx_create.
-	vlx_t* vlx = vlx_create(md_get_heap_allocator(), sys);
-	if (!vlx) {
-		return false;
-	}
-	vlx->executor = executor;
-
-	// A NULL state is what tells vlx_system_begin this file is supplementing: the atoms and the
-	// state belong to whatever loaded the system first and are left alone, and this file only adds
-	// to its table. Whether the file actually belongs to this system is
-	// md_vlx_system_is_file_supplemental's question and the caller has already asked it.
-	bool success = vlx_parse_file(vlx, filename, NULL);
-	if (success) {
-		vlx_publish_whole_file_attributes(sys, vlx);
-		vlx_publish_atom_system_index(sys, vlx, true);
-		vlx_flag_supplemental_qm_region(sys, vlx);
-	}
-
-	vlx_destroy(vlx);
-	return success;
-}
-
-// Attempt to open the file and check if it can supplement the existing system with QM data
-bool md_vlx_system_is_file_supplemental(const md_system_t* sys, md_str_t filename) {
-	MD_ASSERT(sys);
-
-	// Simple check here, we just check for the existence of a couple of fields in h5 file.
-
+	// A .out file says nothing of the atoms of another system
 	md_str_t ext = md_path_ext(filename);
-	if (!md_str_empty(ext)) {
-        if (!md_str_eq_ignore_case(ext, MD_STR_LIT("h5")) && !md_str_eq_ignore_case(ext, MD_STR_LIT("hdf5"))) {
-			// Unsupported file extension
-			return false;
-		}
+	if (!md_str_empty(ext) && !md_str_eq_ignore_case(ext, MD_STR_LIT("h5")) && !md_str_eq_ignore_case(ext, MD_STR_LIT("hdf5"))) {
+		return MD_LOAD_MISMATCH;
 	}
 
 	// Ensure a zero terminated string for interfacing to HDF5
@@ -6349,54 +6288,85 @@ bool md_vlx_system_is_file_supplemental(const md_system_t* sys, md_str_t filenam
 
 	h5_error_scope_t h5_err_scope = h5_error_scope_begin();
 
-	// Open an existing file
 	hid_t file_id = H5Fopen(buf, H5F_ACC_RDONLY, H5P_DEFAULT);
 	if (file_id == H5I_INVALID_HID) {
 		MD_LOG_ERROR("Could not open HDF5 file: '"MD_STR_FMT"'", MD_STR_ARG(filename));
 		h5_error_scope_end(h5_err_scope);
-		return false;
+		return MD_LOAD_FAILED;
 	}
 
-	bool result = false;
-	
-    if (h5_check_dataset_exists(file_id, "qm_atom_indices") &&
-		h5_check_dataset_exists(file_id, "nuclear_charges"))
-	{
+	// A file without the map is of a calculation of its own
+	md_load_result_t result = MD_LOAD_MISMATCH;
+	if (h5_check_dataset_exists(file_id, "qm_atom_indices") && h5_check_dataset_exists(file_id, "nuclear_charges")) {
 		md_temp_scope_t temp_scope = md_temp_begin();
 		md_allocator_i* temp_arena = md_temp_allocator(temp_scope);
-		// Derive atomic numbers from nuclear charges and verify with qm_atom_indices that they are consistent with the loaded system.
-        // This is a heuristic check, but it should be sufficient to determine if the file contains data that can supplement the existing system.
-		
-		size_t vlx_num_atoms = 0;
-		if (!h5_read_scalar(&vlx_num_atoms, file_id, H5T_NATIVE_UINT64, "number_of_atoms")) {
-			goto temp_done;
-		}
 
-		md_array(int) qm_atom_indices = md_array_create(int, vlx_num_atoms, temp_arena);
-		md_array(int) nuclear_charges = md_array_create(int, vlx_num_atoms, temp_arena);
-		
-        if (h5_read_dataset_data(qm_atom_indices, vlx_num_atoms, file_id, H5T_NATIVE_INT32, "qm_atom_indices") &&
-			h5_read_dataset_data(nuclear_charges, vlx_num_atoms, file_id, H5T_NATIVE_INT32, "nuclear_charges"))
-		{
-			bool match = true;
-			for (size_t i = 0; i < vlx_num_atoms; ++i) {
-                int idx = qm_atom_indices[i];
-				int z = md_atom_atomic_number(&sys->atom, idx);
-                if (z != nuclear_charges[i]) {
-					match = false;
-					break;
+		size_t vlx_num_atoms = 0;
+		md_array(int) qm_atom_indices = NULL;
+		md_array(int) nuclear_charges = NULL;
+		result = MD_LOAD_FAILED;
+		if (h5_read_scalar(&vlx_num_atoms, file_id, H5T_NATIVE_UINT64, "number_of_atoms")) {
+			qm_atom_indices = md_array_create(int, vlx_num_atoms, temp_arena);
+			nuclear_charges = md_array_create(int, vlx_num_atoms, temp_arena);
+			if (h5_read_dataset_data(qm_atom_indices, vlx_num_atoms, file_id, H5T_NATIVE_INT32, "qm_atom_indices") &&
+				h5_read_dataset_data(nuclear_charges, vlx_num_atoms, file_id, H5T_NATIVE_INT32, "nuclear_charges"))
+			{
+				// The elements of the atoms the map names: nuclear charges are atomic numbers
+				result = MD_LOAD_OK;
+				for (size_t i = 0; i < vlx_num_atoms; ++i) {
+					const int idx = qm_atom_indices[i];
+					if (idx < 0 || (size_t)idx >= sys->atom.count || md_atom_atomic_number(&sys->atom, (size_t)idx) != nuclear_charges[i]) {
+						result = MD_LOAD_MISMATCH;
+						break;
+					}
 				}
 			}
-			result = match;
 		}
-	temp_done:
 		md_temp_end(temp_scope);
 	}
 
 	H5Fclose(file_id);
 	h5_error_scope_end(h5_err_scope);
-
 	return result;
+}
+
+md_load_result_t md_vlx_system_load_from_file(md_system_t* sys, struct md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
+	MD_ASSERT(sys);
+	MD_ASSERT(state);
+
+	// Onto atoms: the QM data of a region of them, checked before anything is written
+	const bool onto_atoms = sys->atom.count > 0;
+	if (onto_atoms) {
+		const md_load_result_t fits = vlx_file_fits_system(sys, filename);
+		if (fits != MD_LOAD_OK) return fits;
+		if (!sys->attributes.alloc) sys->attributes.alloc = sys->alloc;
+	}
+
+	// Heap backed, not temp backed - see vlx_create.
+	vlx_t* vlx = vlx_create(md_get_heap_allocator(), sys);
+	if (!vlx) {
+		return MD_LOAD_FAILED;
+	}
+	vlx->executor = desc ? desc->executor : NULL;
+
+	// The system is built from the core block and everything after it publishes into the table as it
+	// is read - see vlx_system_begin. That is what makes the table a property of the LOAD: a system
+	// carries its data the moment it is loaded, and a consumer finds it by asking the system. It
+	// used to be published by the veloxchem UI component, which meant the data existed only because
+	// that component was compiled in and had parsed the same file a second time.
+	//
+	// Onto atoms no state is passed: that tells vlx_system_begin the atoms and the state belong to
+	// whatever loaded the system and are left alone, and this file only adds to its table.
+	const bool success = vlx_parse_file(vlx, filename, onto_atoms ? NULL : state);
+	if (success) {
+		vlx_publish_whole_file_attributes(sys, vlx);
+		// On its own the QM atoms are the system's first atoms, so the map is cleared rather than written
+		vlx_publish_atom_system_index(sys, vlx, onto_atoms);
+		if (onto_atoms) vlx_flag_supplemental_qm_region(sys, vlx);
+	}
+
+	vlx_destroy(vlx);
+	return success ? MD_LOAD_OK : MD_LOAD_FAILED;
 }
 
 // Externally visible procedures

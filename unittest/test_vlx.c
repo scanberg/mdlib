@@ -1,6 +1,7 @@
 #include "utest.h"
 
 #include "vlx_test_util.h"
+#include <md_xyz.h>
 
 #include <core/md_allocator.h>
 #include <core/md_str.h>
@@ -1137,26 +1138,69 @@ UTEST(vlx, pe_environment_left_out_when_it_cannot_be_the_one) {
 	qm_test_free(&none);
 }
 
-// A supplemental load leaves the atoms of the system it supplements alone, so it adds no sites
-UTEST(vlx, pe_environment_not_added_by_a_supplemental_load) {
-	const md_str_t h5 = MD_STR_LIT(VLX_PE_DIR "unittest_pe_supplement.h5");
+// Writes qm_atom_indices into an h5 file: which of the atoms of a system its QM atoms are
+static bool vlx_test_write_qm_atom_indices(md_str_t dst, const int* indices, size_t count) {
+	char path[1024];
+	md_str_copy_to_char_buf(path, sizeof(path), dst);
+	hid_t file = H5Fopen(path, H5F_ACC_RDWR, H5P_DEFAULT);
+	if (file < 0) return false;
+	const hsize_t dims[1] = { count };
+	hid_t space = H5Screate_simple(1, dims, NULL);
+	hid_t dset  = H5Dcreate2(file, "qm_atom_indices", H5T_STD_I32LE, space, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+	const bool ok = dset >= 0 && H5Dwrite(dset, H5T_NATIVE_INT32, H5S_ALL, H5S_ALL, H5P_DEFAULT, indices) >= 0;
+	if (dset >= 0) H5Dclose(dset);
+	H5Sclose(space);
+	H5Fclose(file);
+	return ok;
+}
+
+// A file loaded onto a system's atoms is of a region of them, which its map names: its atoms and
+// the state stay the system's, so it adds no sites of its embedding, and the region is its QM atoms
+UTEST(vlx, load_onto_atoms_is_of_a_region_of_them) {
+	const md_str_t h5 = MD_STR_LIT(VLX_PE_DIR "unittest_pe_onto.h5");
 	ASSERT_TRUE(vlx_test_write_pe_h5(h5, "../pot/water_pe_npe.pot"));
+	// The water of h2o.h5 as atoms 3, 4 and 5 of a system of two of it
+	const int region[3] = { 3, 4, 5 };
+	ASSERT_TRUE(vlx_test_write_qm_atom_indices(h5, region, 3));
 
 	vlx_test_t t = {0};
 	const bool loaded = vlx_test_load(&t, MD_STR_LIT(VLX_PE_DIR "h2o.h5"), MD_MEGABYTES(64));
-	const bool supplemented = loaded && md_vlx_system_supplement_from_file(&t.sys, h5, NULL);
-	remove(h5.ptr);
+	ASSERT_TRUE(loaded);
+	// Not of these atoms: the map names atoms the system of one water does not have
+	const uint64_t version = t.sys.topology_version;
+	EXPECT_EQ(MD_LOAD_MISMATCH, md_vlx_system_load_from_file(&t.sys, &t.state, h5, NULL));
+	EXPECT_EQ(version, t.sys.topology_version);
+	EXPECT_FALSE(qm_test_has(&t, MD_STR_LIT("qm/atom/system_index")));
+	qm_test_free(&t);
 
-	EXPECT_TRUE(supplemented);
-	EXPECT_EQ(3u, t.sys.atom.count);
-	EXPECT_EQ(3u, t.state.num_atoms);
-	EXPECT_FALSE(qm_test_has(&t, MD_STR_LIT("atom/charge")));
-	// Without a map the supplement's atoms are the system's own, and they stay its QM region
-	for (size_t i = 0; i < t.sys.atom.count; ++i) {
-		EXPECT_TRUE(md_atom_is_qm(&t.sys.atom, i));
+	// A system of two waters: the file is of the second
+	vlx_test_t two = {0};
+	qm_test_init(&two, MD_MEGABYTES(64));
+	const md_str_t waters = MD_STR_LIT(
+		"6\n"
+		"two waters\n"
+		"O  0.000  0.000  0.000\n"
+		"H  0.957  0.000  0.000\n"
+		"H -0.240  0.927  0.000\n"
+		"O  3.000  0.000  0.000\n"
+		"H  3.957  0.000  0.000\n"
+		"H  2.760  0.927  0.000\n");
+	ASSERT_TRUE(md_xyz_system_init_from_str(&two.sys, &two.state, waters, NULL));
+	EXPECT_EQ(MD_LOAD_OK, md_vlx_system_load_from_file(&two.sys, &two.state, h5, NULL));
+	EXPECT_EQ(6u, two.sys.atom.count);
+	EXPECT_EQ(6u, two.state.num_atoms);
+	EXPECT_FALSE(qm_test_has(&two, MD_STR_LIT("atom/charge")));
+	EXPECT_EQ(3u, qm_test_count(&two, MD_STR_LIT("qm/atom/system_index")));
+	for (size_t i = 0; i < two.sys.atom.count; ++i) {
+		EXPECT_EQ(i >= 3, md_atom_is_qm(&two.sys.atom, i));
 	}
 
-	qm_test_free(&t);
+	// A file that cannot be read is no mismatch: a caller replacing the system on one would lose it for nothing
+	EXPECT_EQ(MD_LOAD_FAILED, md_vlx_system_load_from_file(&two.sys, &two.state, MD_STR_LIT(VLX_PE_DIR "unittest_not_there.h5"), NULL));
+	EXPECT_EQ(6u, two.sys.atom.count);
+
+	remove(h5.ptr);
+	qm_test_free(&two);
 }
 
 // ---------------------------------------------------------------------------

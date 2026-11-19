@@ -429,33 +429,19 @@ static md_topology_desc_t prmtop_desc(const prmtop_data_t* d) {
     };
 }
 
-bool md_amber_prmtop_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
+md_load_result_t md_amber_prmtop_system_load_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
     (void)desc;
     MD_ASSERT(sys);
     MD_ASSERT(state);
     md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
     prmtop_data_t d;
-    bool result = prmtop_read(&d, filename, md_temp_allocator(temp));
-    if (result) {
+    md_load_result_t result = MD_LOAD_FAILED;
+    if (prmtop_read(&d, filename, md_temp_allocator(temp))) {
         const md_topology_desc_t desc = prmtop_desc(&d);
-        result = md_topology_system_init(sys, state, &desc);
-        if (result && d.chamber) {
+        result = md_topology_system_load(sys, state, &desc, filename);
+        if (result == MD_LOAD_OK && d.chamber) {
             MD_LOG_INFO("Amber topology: '" MD_STR_FMT "' is a CHAMBER topology (a CHARMM force field); its CHARMM terms are not read", MD_STR_ARG(filename));
         }
-    }
-    md_temp_end(temp);
-    return result;
-}
-
-bool md_amber_prmtop_system_supplement_from_file(md_system_t* sys, md_str_t filename, const md_load_desc_t* desc) {
-    (void)desc;
-    MD_ASSERT(sys);
-    md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
-    prmtop_data_t d;
-    bool result = prmtop_read(&d, filename, md_temp_allocator(temp));
-    if (result) {
-        const md_topology_desc_t desc = prmtop_desc(&d);
-        result = md_topology_system_supplement(sys, &desc, filename);
     }
     md_temp_end(temp);
     return result;

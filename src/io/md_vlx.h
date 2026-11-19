@@ -2,9 +2,9 @@
 
 #include <stdbool.h>
 #include <core/md_str.h>
+#include <md_io.h>
 
 struct md_system_t;
-struct md_load_desc_t;
 struct md_system_state_t;
 struct md_executor_t;
 
@@ -32,8 +32,8 @@ struct md_executor_t;
 //                        VeloxChem would have refused, or whose polarizable sites do not count the
 //                        run's induced dipoles is not the one the run used: the environment is left out
 //                        with a log line - the load itself does not fail. A PyFraME JSON potential is
-//                        not read. A supplemental load never adds it: that system's atoms are not
-//                        this reader's
+//                        not read. A load onto a system with atoms never adds it: that system's atoms
+//                        are not this reader's
 //
 //   atom/charge                                              {N} over the SYSTEM's atoms, when the
 //   atom/polarizability                                      embedding was added: each site's charge
@@ -175,18 +175,18 @@ struct md_executor_t;
 extern "C" {
 #endif
 
-// Parse a VeloxChem .h5 or .out file into a system, replacing its atoms, its state and its
-// attribute table with what the file carried. The executor of desc (may be NULL) is what the loader's
-// heavy loops run on: the conversion of the orbitals to Cartesian AOs.
-bool md_vlx_system_init_from_file(struct md_system_t* sys, struct md_system_state_t* state, md_str_t filename, const struct md_load_desc_t* desc);
-
-// For a file whose atoms are a subset of an ALREADY loaded system - see
-// md_vlx_system_is_file_supplemental, which is how a caller decides between the two. Parses and
-// publishes onto that system, leaving its atoms and its state untouched where
-// md_vlx_system_init_from_file would replace them.
-bool md_vlx_system_supplement_from_file(struct md_system_t* sys, md_str_t filename, const struct md_load_desc_t* desc);
-
-bool md_vlx_system_is_file_supplemental(const struct md_system_t* sys, md_str_t filename);
+// Loads a VeloxChem .h5 or .out file into the system (md_io.h, LOAD). The executor of desc (may be
+// NULL) is what the loader's heavy loops run on: the conversion of the orbitals to Cartesian AOs.
+//
+// Onto a system without atoms, the file's atoms and their coordinates, the sites of its embedding
+// after them, and everything it publishes.
+//
+// Onto a system with atoms, the file is of a region of them - a QM/MM run against its MD system -
+// when it says which atoms its QM atoms are (qm_atom_indices) and their elements agree (nuclear_charges);
+// else it is MD_LOAD_MISMATCH and nothing changes. What it publishes is then over that region
+// (qm/atom/system_index), the region is flagged (md_atom_data_t::qm), and the atoms and the state are
+// left as they are.
+md_load_result_t md_vlx_system_load_from_file(struct md_system_t* sys, struct md_system_state_t* state, md_str_t filename, const struct md_load_desc_t* desc);
 
 #ifdef __cplusplus
 }

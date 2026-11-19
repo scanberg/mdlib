@@ -9,6 +9,7 @@
 #include <md_amber_prmtop.h>
 #include <md_amber_rst7.h>
 #include <md_amber_energy.h>
+#include <md_gro.h>
 #include <md_system.h>
 #include <md_run.h>
 #include <core/md_common.h>
@@ -474,7 +475,7 @@ UTEST(amber_prmtop, builds_a_system_without_coordinates) {
 
     md_system_t sys = { .alloc = arena };
     md_system_state_t state = { .alloc = arena };
-    ASSERT_TRUE(md_amber_prmtop_system_init_from_file(&sys, &state, path, NULL));
+    ASSERT_EQ(MD_LOAD_OK, md_amber_prmtop_system_load_from_file(&sys, &state, path, NULL));
     EXPECT_EQ(10u, sys.atom.count);
     EXPECT_EQ(2u, sys.residue.count);
     EXPECT_FALSE(md_system_state_has_coords(&state));
@@ -499,7 +500,7 @@ UTEST(amber_prmtop, builds_a_system_without_coordinates) {
     snprintf(chamber, sizeof(chamber), "%s%%FLAG CHARMM_UREY_BRADLEY_COUNT\n%%FORMAT(2I8)\n       0       0\n", prmtop_text);
     ASSERT_TRUE(write_text(path, chamber));
     md_system_t sys2 = { .alloc = arena };
-    ASSERT_TRUE(md_amber_prmtop_system_init_from_file(&sys2, &state, path, NULL));
+    ASSERT_EQ(MD_LOAD_OK, md_amber_prmtop_system_load_from_file(&sys2, &state, path, NULL));
     EXPECT_EQ(10u, sys2.atom.count);
 
     md_system_free(&sys);
@@ -508,29 +509,73 @@ UTEST(amber_prmtop, builds_a_system_without_coordinates) {
     md_arena_allocator_destroy(arena);
 }
 
-UTEST(amber_prmtop, supplements_a_system_of_the_same_atoms) {
+// The atoms of prmtop_text as a structure file has them: no chains, the water named HOH, and a box of its own
+static const char* prmtop_gro_text =
+    "methanol in water\n"
+    "   10\n"
+    "    1MOH     C1    1   1.000   1.000   1.000\n"
+    "    1MOH    H11    2   1.100   1.000   1.000\n"
+    "    1MOH    H12    3   0.960   1.100   1.000\n"
+    "    1MOH    H13    4   0.960   0.950   1.090\n"
+    "    1MOH     O1    5   0.950   0.930   0.890\n"
+    "    1MOH    HO1    6   0.990   0.840   0.890\n"
+    "    2HOH      O    7   1.500   1.500   1.500\n"
+    "    2HOH     H1    8   1.596   1.500   1.500\n"
+    "    2HOH     H2    9   1.476   1.593   1.500\n"
+    "    2HOH    EPW   10   1.515   1.515   1.500\n"
+    "   2.50000   2.60000   2.70000\n";
+
+UTEST(amber_prmtop, loads_onto_a_system_of_its_atoms) {
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
-    const md_str_t path = MD_STR_LIT("md_unittest_amber_supp.prmtop");
+    const md_str_t gro  = MD_STR_LIT("md_unittest_amber_onto.gro");
+    const md_str_t path = MD_STR_LIT("md_unittest_amber_onto.prmtop");
+    ASSERT_TRUE(write_text(gro, prmtop_gro_text));
     ASSERT_TRUE(write_text(path, prmtop_text));
     md_system_t sys = { .alloc = arena };
     md_system_state_t state = { .alloc = arena };
-    ASSERT_TRUE(md_amber_prmtop_system_init_from_file(&sys, &state, path, NULL));
-    md_bond_data_clear(&sys.bond);
-    md_bond_build_connectivity(&sys.bond, sys.atom.count, arena);
-    EXPECT_EQ(0u, sys.bond.count);
-    ASSERT_TRUE(md_amber_prmtop_system_supplement_from_file(&sys, path, NULL));
-    EXPECT_EQ(8u, sys.bond.count);
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, gro, NULL));
+    ASSERT_EQ(10u, sys.atom.count);
+    ASSERT_EQ(0u, sys.instance.count);
+    const md_unitcell_t cell = state.unitcell;
+    const md_float3_t xyz0 = state.xyz[0];
 
-    // Other atoms: refused, nothing changed
+    const uint64_t version = sys.topology_version;
+    ASSERT_EQ(MD_LOAD_OK, md_amber_prmtop_system_load_from_file(&sys, &state, path, NULL));
+    EXPECT_EQ(10u, sys.atom.count);
+    EXPECT_NE(version, sys.topology_version);
+    // BONDS: the topology's, of every atom, without the one to the extra point, as when it builds the system
+    EXPECT_EQ(8u, md_bond_list_count(&sys.given_bond));
+    EXPECT_EQ(1, sys.atom.bonds_complete[0]);
+    EXPECT_EQ(0u, sys.bond.count);      // not inferred
+    // LABELS: the residue names the system has stay, the chains it lacks are the topology's
+    EXPECT_TRUE(md_str_eq_cstr(md_system_residue_name(&sys, 1), "HOH"));
+    EXPECT_EQ(2u, sys.instance.count);
+    // COORDINATES: the structure's, and its cell over the topology's
+    EXPECT_EQ(xyz0.x, state.xyz[0].x);
+    EXPECT_NEAR(cell.x, state.unitcell.x, 1e-4f);
+    EXPECT_NEAR(25.0f, state.unitcell.x, 1e-3f);
+    // ATTRIBUTES
+    const md_attribute_t* charge = md_attributes_find(&sys.attributes, MD_STR_LIT("atom/charge"));
+    ASSERT_TRUE(charge != NULL);
+    EXPECT_NEAR(-1.05804f, ((const float*)charge->data)[9], 1e-4f);
+
+    // Other atoms: MD_LOAD_MISMATCH, and nothing changed
     char other[8192];
     snprintf(other, sizeof(other), "%s", prmtop_text);
     char* name = strstr(other, "HO1 ");
     md_memcpy(name, "XX1 ", 4);
     ASSERT_TRUE(write_text(path, other));
-    EXPECT_FALSE(md_amber_prmtop_system_supplement_from_file(&sys, path, NULL));
-    EXPECT_EQ(8u, sys.bond.count);
+    const uint64_t loaded = sys.topology_version;
+    EXPECT_EQ(MD_LOAD_MISMATCH, md_amber_prmtop_system_load_from_file(&sys, &state, path, NULL));
+    EXPECT_EQ(loaded, sys.topology_version);
+    EXPECT_EQ(8u, md_bond_list_count(&sys.given_bond));
+
+    // Not a topology at all: MD_LOAD_FAILED, not a mismatch
+    ASSERT_TRUE(write_text(path, "not a topology\n"));
+    EXPECT_EQ(MD_LOAD_FAILED, md_amber_prmtop_system_load_from_file(&sys, &state, path, NULL));
 
     md_system_free(&sys);
+    remove(gro.ptr);
     remove(path.ptr);
     md_arena_allocator_destroy(arena);
 }

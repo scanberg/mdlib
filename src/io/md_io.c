@@ -79,11 +79,11 @@ static const md_io_format_info_t formats[MD_IO_FORMAT_COUNT] = {
         .publish_run = md_trr_system_publish_run, .atom_count = md_trr_file_atom_count },
     [MD_IO_FORMAT_DCD] = { S("DCD Trajectory (dcd)"), S("dcd"), MD_IO_FLAG_RUN | MD_IO_FLAG_MM,
         .publish_run = md_dcd_system_publish_run, .atom_count = md_dcd_file_atom_count },
-    // VeloxChem: a system, or the QM data of the atoms of one loaded (md_vlx_system_is_file_supplemental). RUN as it is
-    // read along with the trajectories of a system; it publishes none of its own.
+    // VeloxChem: a system, or the QM data of a region of the atoms of one loaded (md_vlx_system_load_from_file). RUN as
+    // it is read along with the trajectories of a system; it publishes none of its own.
     [MD_IO_FORMAT_VLX] = { S("VeloxChem (h5)"), S("h5"), MD_IO_FLAG_SYSTEM | MD_IO_FLAG_RUN | MD_IO_FLAG_MM | MD_IO_FLAG_QM,
 #if MD_HDF5
-        .system_init = md_vlx_system_init_from_file, .supplement = md_vlx_system_supplement_from_file,
+        .load = md_vlx_system_load_from_file,
 #endif
     },
     [MD_IO_FORMAT_MOLDEN] = { S("Molden (molden)"), S("molden"), MD_IO_FLAG_SYSTEM | MD_IO_FLAG_QM,
@@ -114,11 +114,11 @@ static const md_io_format_info_t formats[MD_IO_FORMAT_COUNT] = {
         .supplement = md_csv_system_supplement_from_file },
     [MD_IO_FORMAT_ASE_TRAJ] = { S("ASE Trajectory (traj)"), S("traj"), MD_IO_FLAG_SYSTEM | MD_IO_FLAG_RUN | MD_IO_FLAG_MM,
         .system_init = md_ase_traj_system_init_from_file, .publish_run = md_ase_traj_system_publish_run },
-    // A topology: a system once its coordinates are there (another file of them, as state_init of its format reads), or
-    // the bonds and types of a loaded system of its atoms
+    // A topology: the atoms of a system without coordinates (they come from another file, as state_init of its format
+    // reads), or the bonds, charges and masses of a loaded system of its atoms
     [MD_IO_FORMAT_AMBER_PRMTOP] = { S("Amber Topology (prmtop/parm7)"), S("prmtop"),
         MD_IO_FLAG_SYSTEM | MD_IO_FLAG_MM | MD_IO_FLAG_TOPOLOGY | MD_IO_FLAG_NEEDS_COORDINATES,
-        .system_init = md_amber_prmtop_system_init_from_file, .supplement = md_amber_prmtop_system_supplement_from_file,
+        .load = md_amber_prmtop_system_load_from_file,
         .atom_count = md_amber_prmtop_file_atom_count },
     [MD_IO_FORMAT_AMBER_RESTART] = { S("Amber Restart (rst7/inpcrd/ncrst)"), S("rst7"), MD_IO_FLAG_COORDINATES | MD_IO_FLAG_MM,
         .state_init = amber_restart_state_init, .atom_count = amber_restart_atom_count },
@@ -129,7 +129,7 @@ static const md_io_format_info_t formats[MD_IO_FORMAT_COUNT] = {
         .supplement = md_amber_energy_system_supplement_from_file },
     [MD_IO_FORMAT_PSF] = { S("CHARMM/NAMD Topology (psf)"), S("psf"),
         MD_IO_FLAG_SYSTEM | MD_IO_FLAG_MM | MD_IO_FLAG_TOPOLOGY | MD_IO_FLAG_NEEDS_COORDINATES,
-        .system_init = md_psf_system_init_from_file, .supplement = md_psf_system_supplement_from_file,
+        .load = md_psf_system_load_from_file,
         .atom_count = md_psf_file_atom_count },
     [MD_IO_FORMAT_NAMD_COOR] = { S("NAMD Binary Coordinates (coor)"), S("coor"), MD_IO_FLAG_COORDINATES | MD_IO_FLAG_MM,
         .state_init = md_namdbin_state_init_from_file, .atom_count = md_namdbin_file_atom_count },
@@ -143,7 +143,7 @@ const md_io_format_info_t* md_io_format_info(md_io_format_t format) {
 
 bool md_io_format_available(md_io_format_t format) {
     const md_io_format_info_t* f = md_io_format_info(format);
-    return f->system_init || f->supplement || f->publish_run || f->state_init;
+    return f->load || f->publish_run || f->system_init || f->supplement || f->state_init;
 }
 
 md_io_format_t md_io_format_from_ext(md_str_t ext) {

@@ -2,8 +2,8 @@
 
 // Reading a VeloxChem file the way every consumer now does.
 //
-// md_vlx.h exposes three entry points and nothing else: no reader object, no accessors, no types
-// describing what the file held. A file is parsed into an md_system_t, and everything it carried is
+// md_vlx.h exposes one entry point, the load, and nothing else: no reader object, no accessors, no
+// types describing what the file held. A file is parsed into an md_system_t, and everything it carried is
 // read back out of that system - its atoms, its state, and its ATTRIBUTE TABLE.
 //
 // Everything that reads such a system is in qm_test_util.h, because none of it is VeloxChem
@@ -21,7 +21,7 @@ typedef qm_test_t vlx_test_t;
 // Parses 'filename' into a fresh system. Returns false exactly when the reader declines the file.
 static inline bool vlx_test_load(vlx_test_t* out, md_str_t filename, size_t arena_bytes) {
     qm_test_init(out, arena_bytes);
-    return md_vlx_system_init_from_file(&out->sys, &out->state, filename, NULL);
+    return md_vlx_system_load_from_file(&out->sys, &out->state, filename, NULL) == MD_LOAD_OK;
 }
 
 // The frontier orbital, derived from the published occupations by the SAME rule the reader used

@@ -90,7 +90,7 @@ static bool src_load(src_t* s, const char* path, size_t want_mo) {
     s->arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(64));
     md_system_t sys = { .alloc = s->arena };
     md_system_state_t state = { .alloc = s->arena };
-    if (!md_vlx_system_init_from_file(&sys, &state, md_str_from_cstr(path), NULL)) return false;
+    if (md_vlx_system_load_from_file(&sys, &state, md_str_from_cstr(path), NULL) != MD_LOAD_OK) return false;
     const md_attribute_t* c = md_attributes_find(&sys.attributes, MD_STR_LIT("qm/atom/coordinate"));
     const md_attribute_t* d = md_attributes_find(&sys.attributes, MD_STR_LIT("orbital/total/density"));
     double scale = 1.0;

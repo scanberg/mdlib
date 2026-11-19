@@ -4,9 +4,9 @@
 #include <stddef.h>
 
 #include <core/md_str.h>
+#include <md_io.h>
 
 struct md_system_t;
-struct md_load_desc_t;
 struct md_system_state_t;
 
 #ifdef __cplusplus
@@ -33,16 +33,10 @@ bool md_amber_prmtop_file_is_topology(md_str_t filename);
 // The atom count of the topology (NATOM of POINTERS), 0 when the file is not one.
 size_t md_amber_prmtop_file_atom_count(md_str_t filename);
 
-// Builds the system from the topology. The state receives no coordinates (md_system_state_has_coords is false),
-// only the cell of BOX_DIMENSIONS when the topology is periodic. Published: 'atom/charge' (e), 'atom/mass' (Da).
-bool md_amber_prmtop_system_init_from_file(struct md_system_t* sys, struct md_system_state_t* state, md_str_t filename, const struct md_load_desc_t* desc);
-
-// Applies the topology to a loaded system of the same atoms in the same order, a PDB file of the same simulation:
-// the atom count, the residue boundaries and the names (atom names compared as a structure file truncates them)
-// must agree. The topology's bonds replace those inferred (user defined bonds are kept), 'atom/charge' and
-// 'atom/mass' are published, and the parts, molecules and backbones re-inferred. Nothing changes when they do not
-// agree.
-bool md_amber_prmtop_system_supplement_from_file(struct md_system_t* sys, md_str_t filename, const struct md_load_desc_t* desc);
+// Loads the topology into the system (md_io.h, LOAD; md_topology_system_load): onto a system without atoms, its atoms
+// without coordinates, and the cell of BOX_DIMENSIONS when the topology is periodic; onto a system of its atoms in its
+// order (a PDB file of the same simulation), its bonds. Published: 'atom/charge' (e), 'atom/mass' (Da).
+md_load_result_t md_amber_prmtop_system_load_from_file(struct md_system_t* sys, struct md_system_state_t* state, md_str_t filename, const struct md_load_desc_t* desc);
 
 #ifdef __cplusplus
 }

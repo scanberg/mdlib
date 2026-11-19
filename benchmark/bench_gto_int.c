@@ -38,7 +38,7 @@ static bool bench_esp_load(bench_esp_t* b) {
     b->arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(64));
     md_system_t sys = { .alloc = b->arena };
     md_system_state_t state = { .alloc = b->arena };
-    if (!md_vlx_system_init_from_file(&sys, &state, MD_STR_LIT(MD_BENCHMARK_DATA_DIR "/vlx/mol.h5"), NULL)) {
+    if (md_vlx_system_load_from_file(&sys, &state, MD_STR_LIT(MD_BENCHMARK_DATA_DIR "/vlx/mol.h5"), NULL) != MD_LOAD_OK) {
         MD_LOG_ERROR("Could not load benchmark vlx file");
         return false;
     }

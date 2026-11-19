@@ -95,7 +95,7 @@ static bool src_load(src_t* s, const char* path) {
     md_system_t sys = { .alloc = s->arena };
     md_system_state_t state = { .alloc = s->arena };
     md_tick_t t0 = md_tick_now();
-    if (!md_vlx_system_init_from_file(&sys, &state, md_str_from_cstr(path), NULL)) return false;
+    if (md_vlx_system_load_from_file(&sys, &state, md_str_from_cstr(path), NULL) != MD_LOAD_OK) return false;
     s->ms_open = ms_since(t0);
     const md_attribute_t* c = md_attributes_find(&sys.attributes, MD_STR_LIT("qm/atom/coordinate"));
     const md_attribute_t* z = md_attributes_find(&sys.attributes, MD_STR_LIT("qm/atom/nuclear_charge"));

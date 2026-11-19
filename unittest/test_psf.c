@@ -47,7 +47,7 @@ UTEST(psf, builds_a_system_without_coordinates) {
 
     md_system_t sys = { .alloc = arena };
     md_system_state_t state = { .alloc = arena };
-    ASSERT_TRUE(md_psf_system_init_from_file(&sys, &state, path, NULL));
+    ASSERT_EQ(MD_LOAD_OK, md_psf_system_load_from_file(&sys, &state, path, NULL));
     EXPECT_EQ(4u, sys.atom.count);
     EXPECT_EQ(2u, sys.residue.count);
     EXPECT_EQ(3u, md_bond_list_count(&sys.given_bond));
@@ -61,11 +61,13 @@ UTEST(psf, builds_a_system_without_coordinates) {
     ASSERT_TRUE(charge != NULL);
     EXPECT_NEAR(-0.834f, ((const float*)charge->data)[0], 1e-5f);
 
-    // Applied to the same atoms: the bonds of the file
-    md_bond_data_clear(&sys.bond);
-    md_bond_build_connectivity(&sys.bond, sys.atom.count, arena);
-    ASSERT_TRUE(md_psf_system_supplement_from_file(&sys, path, NULL));
-    EXPECT_EQ(3u, sys.bond.count);
+    // Loaded onto its own atoms: checked against them, and its bonds given anew; nothing is inferred
+    const uint64_t version = sys.topology_version;
+    ASSERT_EQ(MD_LOAD_OK, md_psf_system_load_from_file(&sys, &state, path, NULL));
+    EXPECT_EQ(4u, sys.atom.count);
+    EXPECT_EQ(3u, md_bond_list_count(&sys.given_bond));
+    EXPECT_EQ(0u, sys.bond.count);
+    EXPECT_NE(version, sys.topology_version);
 
     ASSERT_TRUE(psf_write_text(path, "ATOM      1  N   ALA A   1      11.104   6.134  -6.504  1.00  0.00           N\n"));
     EXPECT_FALSE(md_psf_file_is_psf(path));
@@ -140,7 +142,7 @@ UTEST(psf, blank_segment_ids) {
         ASSERT_TRUE(psf_write_text(path, texts[k]));
         md_system_t sys = { .alloc = arena };
         md_system_state_t state = { .alloc = arena };
-        ASSERT_TRUE(md_psf_system_init_from_file(&sys, &state, path, NULL));
+        ASSERT_EQ(MD_LOAD_OK, md_psf_system_load_from_file(&sys, &state, path, NULL));
         ASSERT_EQ(2u, sys.atom.count);
         ASSERT_EQ(1u, sys.residue.count);
         EXPECT_TRUE(md_str_eq_cstr(md_system_residue_name(&sys, 0), "ALA"));

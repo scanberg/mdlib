@@ -21,8 +21,10 @@ UTEST(io, format_table) {
         EXPECT_FALSE(md_str_empty(f->ext));
         EXPECT_EQ(format, md_io_format_from_ext(f->ext));
         if (!md_io_format_available(format)) continue;
-        if (f->flags & MD_IO_FLAG_SYSTEM)       EXPECT_TRUE(f->system_init != NULL);
-        if (f->flags & MD_IO_FLAG_SUPPLEMENT)   EXPECT_TRUE(f->supplement != NULL);
+        if (f->flags & MD_IO_FLAG_SYSTEM)       EXPECT_TRUE(f->load != NULL || f->system_init != NULL);
+        if (f->flags & MD_IO_FLAG_SUPPLEMENT)   EXPECT_TRUE(f->load != NULL || f->supplement != NULL);
+        // A format which loads has none of the readers the load replaces
+        if (f->load) EXPECT_TRUE(f->system_init == NULL && f->supplement == NULL);
         if (f->flags & MD_IO_FLAG_COORDINATES)  EXPECT_TRUE(f->state_init != NULL);
         if (f->flags & MD_IO_FLAG_TEMPORAL)     EXPECT_TRUE((f->flags & MD_IO_FLAG_SUPPLEMENT) != 0);
         if (f->flags & MD_IO_FLAG_NEEDS_COORDINATES) EXPECT_TRUE(f->atom_count != NULL);
@@ -106,7 +108,7 @@ UTEST(io, format_from_contents) {
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_system_t sys = { .alloc = arena };
     md_system_state_t state = { .alloc = arena };
-    EXPECT_TRUE(f->system_init(&sys, &state, psf, NULL));
+    EXPECT_EQ(MD_LOAD_OK, f->load(&sys, &state, psf, NULL));
     EXPECT_EQ(3u, sys.atom.count);
     EXPECT_EQ(2u, md_bond_list_count(&sys.given_bond));
     md_arena_allocator_destroy(arena);
