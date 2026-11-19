@@ -84,15 +84,15 @@ destruction.
 #include <core/md_common.h>
 #include <core/md_log.h>
 #include <core/md_os.h>
+#include <core/md_str.h>
 
+#import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
 #include <TargetConditionals.h>
+#include <objc/message.h>
 
 #include "md_gpu_select.inl"
-#include <TargetConditionals.h>
-#import <Foundation/Foundation.h>
-#include <objc/message.h>
 
 /* macOS 15 / iOS 18 at run time (residency sets; checked at device creation),
    and their SDK to build. */
@@ -100,10 +100,6 @@ destruction.
 #error "md_gpu's Metal backend needs the macOS 15 SDK (Xcode 16) or later"
 #endif
 
-#include <stdarg.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
 /* =========================================================================
    1. Configuration, error handling, utilities
@@ -202,7 +198,7 @@ typedef struct md_mtl_timing_t {
 } md_mtl_timing_t;
 
 static void md_mtl_timing_release(md_mtl_timing_t* t) {
-    if (t && __atomic_sub_fetch(&t->refs, 1, __ATOMIC_ACQ_REL) == 0) free(t);
+    if (t && __atomic_sub_fetch(&t->refs, 1, __ATOMIC_ACQ_REL) == 0) md_free(md_get_heap_allocator(), t, sizeof(*t));
 }
 
 typedef struct md_gpu_stream {
@@ -487,7 +483,7 @@ static void md_mtl_destroy_raw_buffer(md_gpu_device_t dev, id<MTLBuffer> buf) {
 static md_mtl_page_t* md_mtl_page_create(md_gpu_device_t dev, uint64_t size) {
     md_mtl_page_t* p = (md_mtl_page_t*)md_alloc(dev->alloc, sizeof(md_mtl_page_t));
     if (!p) return NULL;
-    memset(p, 0, sizeof(*p));
+    md_memset(p, 0, sizeof(*p));
     void* host = NULL;
     id<MTLBuffer> buf = nil;
     /* Argument structs live in these pages and the shader reaches them by raw
@@ -604,7 +600,7 @@ static uint64_t md_mtl_stream_position(md_gpu_stream_t s) {
    list itself cannot be allocated. */
 static void md_mtl_retire_locked(md_gpu_device_t dev, md_mtl_retire_kind_t kind, void* object) {
     md_mtl_retire_t r;
-    memset(&r, 0, sizeof(r));
+    md_memset(&r, 0, sizeof(r));
     r.kind   = kind;
     r.object = object;
 
@@ -839,7 +835,7 @@ static void md_mtl_event_wait(id<MTLSharedEvent> ev, uint64_t value) {
 static md_gpu_stream_t md_mtl_stream_create_internal(md_gpu_device_t dev, md_gpu_stream_kind_t kind, const char* label, bool is_default) {
     md_gpu_stream_t s = (md_gpu_stream_t)md_alloc(dev->alloc, sizeof(md_gpu_stream));
     if (!s) { md_gpu_fail("out of memory"); return NULL; }
-    memset(s, 0, sizeof(*s));
+    md_memset(s, 0, sizeof(*s));
     s->device     = dev;
     s->kind       = kind;
     s->ordering   = MD_GPU_ORDER_IMPLICIT;
@@ -886,8 +882,11 @@ static md_gpu_stream_t md_mtl_stream_create_internal(md_gpu_device_t dev, md_gpu
         MD_MTL_OWN(fence);
         s->fence = fence;
     }
-    s->timing = (md_mtl_timing_t*)calloc(1, sizeof(md_mtl_timing_t));
-    if (s->timing) s->timing->refs = 1;     /* without it the stream works as before, untimed */
+    s->timing = (md_mtl_timing_t*)md_alloc(md_get_heap_allocator(), sizeof(md_mtl_timing_t));
+    if (s->timing) {
+        md_memset(s->timing, 0, sizeof(md_mtl_timing_t));
+        s->timing->refs = 1;
+    }     /* without it the stream works as before, untimed */
 
     md_mutex_lock(&dev->device_mutex);
     const bool listed = MD_ARRAY_TRY_PUSH(dev->streams, s);
@@ -1086,7 +1085,7 @@ static md_gpu_chunk_t* md_mtl_chunk_create(void* user, md_gpu_mem_kind_t kind, u
     md_gpu_device_t dev = (md_gpu_device_t)user;
     md_mtl_chunk_t* c = (md_mtl_chunk_t*)md_alloc(dev->alloc, sizeof(md_mtl_chunk_t));
     if (!c) { md_gpu_fail("out of memory"); return NULL; }
-    memset(c, 0, sizeof(*c));
+    md_memset(c, 0, sizeof(*c));
     void* host = NULL;
     id<MTLBuffer> buf = nil;
     @autoreleasepool {
@@ -1156,7 +1155,7 @@ void md_gpu_temp_end(md_gpu_temp_t scope) {
 
 bool md_gpu_memory_stats(md_gpu_device_t dev, md_gpu_mem_kind_t kind, md_gpu_memory_stats_t* out) {
     if (!dev || !out || (unsigned)kind >= (unsigned)MD_GPU_MEM_KIND_COUNT) return md_gpu_fail("md_gpu_memory_stats: invalid argument");
-    memset(out, 0, sizeof(*out));
+    md_memset(out, 0, sizeof(*out));
     md_gpu_heap_stats(&dev->heap, kind, out);
     md_mutex_lock(&dev->device_mutex);
     out->bytes_textures = kind == MD_GPU_MEM_DEVICE ? dev->texture_bytes : 0;
@@ -1212,12 +1211,12 @@ bool md_gpu_upload(md_gpu_stream_t s, md_gpu_addr_t dst, const void* src, size_t
     md_mtl_span_t d;
     if (!md_mtl_resolve(s->device, dst, size, &d, "md_gpu_upload")) return false;
     if (d.host && md_mtl_stream_idle(s)) {
-        memcpy(d.host, src, size);
+        md_memcpy(d.host, src, size);
         return true;
     }
     uint64_t addr, off; void* host; id<MTLBuffer> buf = nil;
     if (!md_mtl_arena_alloc(s, size, MD_MTL_ARG_ALIGN, &addr, &host, &buf, &off)) return false;
-    memcpy(host, src, size);
+    md_memcpy(host, src, size);
     return md_mtl_record_buffer_copy(s, buf, off, addr, d.buffer, d.offset, dst, size);
 }
 
@@ -1423,7 +1422,7 @@ static md_gpu_texture_t md_mtl_texture_create(md_gpu_stream_t s, const md_gpu_te
 
     md_gpu_texture_t t = (md_gpu_texture_t)md_alloc(dev->alloc, sizeof(md_gpu_texture));
     if (!t) { md_gpu_fail("out of memory"); return NULL; }
-    memset(t, 0, sizeof(*t));
+    md_memset(t, 0, sizeof(*t));
     t->device = dev;
     t->fi     = fi;
     t->desc   = d;
@@ -1473,7 +1472,7 @@ static md_gpu_texture_t md_mtl_texture_create(md_gpu_stream_t s, const md_gpu_te
                    view of its own. Same format, so no PixelFormatView usage. */
                 t->mip_views = (__unsafe_unretained id<MTLTexture>*)md_alloc(dev->alloc, d.mip_levels * sizeof(id));
                 if (!t->mip_views) ok = md_gpu_fail("out of memory");
-                else memset((void*)t->mip_views, 0, d.mip_levels * sizeof(id));
+                else md_memset((void*)t->mip_views, 0, d.mip_levels * sizeof(id));
                 const NSUInteger slices = d.type == MD_GPU_TEX_2D_ARRAY ? d.depth_or_layers : 1;
                 for (uint32_t m = 0; ok && m < d.mip_levels; ++m) {
                     id<MTLTexture> v = [tex newTextureViewWithPixelFormat:fi.fmt
@@ -1570,7 +1569,7 @@ md_gpu_sampler_t md_gpu_sampler(md_gpu_device_t dev, const md_gpu_sampler_desc_t
     md_gpu_sampler_t h = {0};
     if (!dev) { md_gpu_fail("md_gpu_sampler: null device"); return h; }
     md_gpu_sampler_desc_t d;
-    memset(&d, 0, sizeof(d));
+    md_memset(&d, 0, sizeof(d));
     if (desc) d = *desc;
 
     md_mutex_lock(&dev->device_mutex);
@@ -1635,7 +1634,7 @@ typedef struct md_mtl_copy_region_t {
 
 static bool md_mtl_resolve_region(md_gpu_texture_t t, const md_gpu_tex_region_t* r, md_mtl_copy_region_t* out, const char* what) {
     md_gpu_tex_region_t z;
-    memset(&z, 0, sizeof(z));
+    md_memset(&z, 0, sizeof(z));
     if (!r) r = &z;
     const md_gpu_texture_desc_t* d = &t->desc;
     if (r->mip >= d->mip_levels) return md_gpu_fail("%s: mip %u out of range (texture '%s' has %u)", what, r->mip, t->label, d->mip_levels);
@@ -1659,7 +1658,7 @@ static bool md_mtl_resolve_region(md_gpu_texture_t t, const md_gpu_tex_region_t*
         }
     }
 
-    memset(out, 0, sizeof(*out));
+    md_memset(out, 0, sizeof(*out));
     out->mip           = r->mip;
     out->bytes_per_row = (uint64_t)ext[0] * t->fi.bytes;
     if (d->type == MD_GPU_TEX_3D) {
@@ -1753,7 +1752,7 @@ bool md_gpu_upload_texture(md_gpu_stream_t s, md_gpu_texture_t t, const md_gpu_t
     }
     uint64_t addr, off; void* host; id<MTLBuffer> buf = nil;
     if (!md_mtl_arena_alloc(s, size, MD_MTL_ARG_ALIGN, &addr, &host, &buf, &off)) return false;
-    memcpy(host, src, size);
+    md_memcpy(host, src, size);
     return md_mtl_record_texture_copy(s, t, buf, off, &cr, true);
 }
 
@@ -1774,7 +1773,7 @@ bool md_gpu_upload_texture(md_gpu_stream_t s, md_gpu_texture_t t, const md_gpu_t
    failures are real errors. Returns a +1 library the caller drops. */
 
 static bool md_mtl_blob_is_metallib(const void* code, size_t size) {
-    return size >= 4 && memcmp(code, "MTLB", 4) == 0;
+    return size >= 4 && md_memcmp(code, "MTLB", 4) == 0;
 }
 
 static id<MTLLibrary> md_mtl_library_from_source(md_gpu_device_t dev, const void* code, size_t size, const char* who, bool precise_math) {
@@ -1782,7 +1781,7 @@ static id<MTLLibrary> md_mtl_library_from_source(md_gpu_device_t dev, const void
        +stringWithUTF8String: can be used, which also rejects non-UTF-8. */
     char* buf = (char*)md_alloc(dev->alloc, size + 1);
     if (!buf) { md_gpu_fail("out of memory preparing Metal source for '%s'", who); return nil; }
-    memcpy(buf, code, size);
+    md_memcpy(buf, code, size);
     buf[size] = '\0';
     NSString* src = [NSString stringWithUTF8String:buf];
     md_free(dev->alloc, buf, size + 1);
@@ -1934,7 +1933,7 @@ static md_gpu_kernel_t md_mtl_kernel_from_library(md_gpu_device_t dev, id<MTLLib
 
     md_gpu_kernel_t k = (md_gpu_kernel_t)md_alloc(dev->alloc, sizeof(md_gpu_kernel));
     if (!k) { MD_MTL_RELEASE(pso); md_gpu_fail("out of memory"); return NULL; }
-    memset(k, 0, sizeof(*k));
+    md_memset(k, 0, sizeof(*k));
     k->device           = dev;
     k->pso              = pso;
     k->group_size[0]    = group_size[0];
@@ -1996,7 +1995,7 @@ void md_gpu_kernel_destroy(md_gpu_kernel_t k) {
 
 bool md_gpu_kernel_info(md_gpu_kernel_t k, md_gpu_kernel_info_t* info) {
     if (!k || !info) return false;
-    memset(info, 0, sizeof(*info));
+    md_memset(info, 0, sizeof(*info));
     info->group_size[0]            = k->group_size[0];
     info->group_size[1]            = k->group_size[1];
     info->group_size[2]            = k->group_size[2];
@@ -2034,7 +2033,7 @@ static bool md_mtl_root_cell(md_gpu_stream_t s, uint64_t args_addr, id<MTLBuffer
     uint64_t root_addr;
     void* root_host;
     if (!md_mtl_arena_alloc(s, sizeof(uint64_t), MD_MTL_ROOT_ALIGN, &root_addr, &root_host, out_buf, out_off)) return false;
-    memcpy(root_host, &args_addr, sizeof(args_addr));
+    md_memcpy(root_host, &args_addr, sizeof(args_addr));
     return true;
 }
 
@@ -2049,7 +2048,7 @@ static bool md_mtl_args_copy(md_gpu_stream_t s, uint32_t expected, const void* a
     if (!args) return md_gpu_fail("%s: '%s': null args with non-zero size", what, name);
     void* host;
     if (!md_mtl_arena_alloc(s, args_size, MD_MTL_ARG_ALIGN, out_addr, &host, NULL, NULL)) return false;
-    memcpy(host, args, args_size);
+    md_memcpy(host, args, args_size);
     return true;
 }
 
@@ -2160,7 +2159,7 @@ bool md_gpu_make_grid(md_gpu_stream_t s, md_gpu_addr_t out_grid, md_gpu_addr_t c
     if (!md_mtl_resolve(s->device, out_grid, 3 * sizeof(uint32_t), NULL, "md_gpu_make_grid (out_grid)")) return false;
     if (!md_mtl_resolve(s->device, count, sizeof(uint32_t), NULL, "md_gpu_make_grid (count)")) return false;
     md_mtl_make_grid_args_t a;
-    memset(&a, 0, sizeof(a));
+    md_memset(&a, 0, sizeof(a));
     a.count    = count;
     a.out_grid = out_grid;
     a.local.x  = k->group_size[0];
@@ -2308,7 +2307,7 @@ md_gpu_pipeline_t md_gpu_pipeline_create(md_gpu_device_t dev, const md_gpu_pipel
 
     md_gpu_pipeline_t p = (md_gpu_pipeline_t)md_alloc(dev->alloc, sizeof(md_gpu_pipeline));
     if (!p) { md_gpu_fail("out of memory"); return NULL; }
-    memset(p, 0, sizeof(*p));
+    md_memset(p, 0, sizeof(*p));
     p->device      = dev;
     p->primitive   = prim;
     p->color_count = desc->color_count;
@@ -2509,7 +2508,7 @@ static void md_mtl_apply_draw_state(md_gpu_stream_t s, const md_gpu_draw_state_t
     if (all || n->depth_bias != o->depth_bias || n->depth_bias_slope != o->depth_bias_slope || n->depth_bias_clamp != o->depth_bias_clamp) {
         [enc setDepthBias:n->depth_bias slopeScale:n->depth_bias_slope clamp:n->depth_bias_clamp];
     }
-    if (all || memcmp(n->blend_constant, o->blend_constant, sizeof(n->blend_constant)) != 0) {
+    if (all || md_memcmp(n->blend_constant, o->blend_constant, sizeof(n->blend_constant)) != 0) {
         [enc setBlendColorRed:n->blend_constant[0] green:n->blend_constant[1] blue:n->blend_constant[2] alpha:n->blend_constant[3]];
     }
     s->draw_state = *n;
@@ -2602,7 +2601,7 @@ bool md_gpu_render_begin(md_gpu_stream_t s, const md_gpu_render_desc_t* desc) {
     s->bound_pipeline = NULL;
 
     md_gpu_draw_state_t zero;
-    memset(&zero, 0, sizeof(zero));
+    md_memset(&zero, 0, sizeof(zero));
     md_mtl_apply_draw_state(s, &zero, true);
     const md_gpu_viewport_t vp = {0, 0, (float)w, (float)h, 0, 0};
     md_mtl_apply_viewport(s, &vp);
@@ -2628,7 +2627,7 @@ void md_gpu_set_draw_state(md_gpu_stream_t s, const md_gpu_draw_state_t* state) 
     if (!s) return;
     if (!s->in_pass) { md_gpu_fail("md_gpu_set_draw_state: stream '%s' has no open render pass", s->label); return; }
     md_gpu_draw_state_t n;
-    memset(&n, 0, sizeof(n));
+    md_memset(&n, 0, sizeof(n));
     if (state) n = *state;
     if ((unsigned)n.depth_compare > (unsigned)MD_GPU_COMPARE_GREATER || (unsigned)n.cull > (unsigned)MD_GPU_CULL_FRONT) {
         md_gpu_fail("md_gpu_set_draw_state: invalid depth_compare or cull");
@@ -2866,7 +2865,7 @@ bool md_gpu_copy_texture(md_gpu_stream_t s, md_gpu_texture_t dst, const md_gpu_t
     md_mtl_copy_region_t sr, dr;
     if (!md_mtl_resolve_region(src, src_region, &sr, "md_gpu_copy_texture (src)")) return false;
     md_gpu_tex_region_t d;
-    memset(&d, 0, sizeof(d));
+    md_memset(&d, 0, sizeof(d));
     if (dst_region) d = *dst_region;
     d.extent[0] = (uint32_t)sr.size.width;
     d.extent[1] = (uint32_t)sr.size.height;
@@ -2928,7 +2927,7 @@ md_gpu_surface_t md_gpu_surface_create(md_gpu_device_t dev, const md_gpu_surface
 
     md_gpu_surface_t sf = (md_gpu_surface_t)md_alloc(dev->alloc, sizeof(md_gpu_surface));
     if (!sf) { md_gpu_fail("out of memory"); return NULL; }
-    memset(sf, 0, sizeof(*sf));
+    md_memset(sf, 0, sizeof(*sf));
     sf->device = dev;
     sf->desc   = *desc;
     sf->desc.format = fmt;
@@ -3045,7 +3044,7 @@ md_gpu_texture_t md_gpu_surface_acquire(md_gpu_stream_t s, md_gpu_surface_t sf) 
 
         t = (md_gpu_texture_t)md_alloc(dev->alloc, sizeof(md_gpu_texture));
         if (!t) { md_gpu_fail("out of memory"); return NULL; }
-        memset(t, 0, sizeof(*t));
+        md_memset(t, 0, sizeof(*t));
         MD_MTL_RETAIN(drawable);
         MD_MTL_RETAIN(tex);
         t->device   = dev;
@@ -3180,14 +3179,14 @@ uint32_t md_gpu_device_poll(md_gpu_device_t dev) {
 static bool md_mtl_create_builtin_kernels(md_gpu_device_t dev) {
     @autoreleasepool {
         /* Hand-written MSL, never through slangc, so always compiled from source. */
-        id<MTLLibrary> lib = md_mtl_library_from_blob(dev, md_gpu_make_grid_msl, strlen(md_gpu_make_grid_msl), "md_gpu make_grid", false);
+        id<MTLLibrary> lib = md_mtl_library_from_blob(dev, md_gpu_make_grid_msl, md_str_from_cstr(md_gpu_make_grid_msl).len, "md_gpu make_grid", false);
         if (!lib) return false;
         const uint32_t gs[3] = {1, 1, 1};
         dev->make_grid_kernel = md_mtl_kernel_from_library(dev, lib, "md_gpu_make_grid", "md_gpu make_grid",
                                                            gs, (uint32_t)sizeof(md_mtl_make_grid_args_t), NULL, 0);
         MD_MTL_DROP_NEW(lib);
 
-        id<MTLLibrary> blib = md_mtl_library_from_blob(dev, md_gpu_byte_op_msl, strlen(md_gpu_byte_op_msl), "md_gpu byte_op", false);
+        id<MTLLibrary> blib = md_mtl_library_from_blob(dev, md_gpu_byte_op_msl, md_str_from_cstr(md_gpu_byte_op_msl).len, "md_gpu byte_op", false);
         if (!blib) return false;
         const uint32_t bgs[3] = {MD_MTL_BYTE_OP_GROUP, 1, 1};
         dev->byte_op_kernel = md_mtl_kernel_from_library(dev, blib, "md_gpu_byte_op", "md_gpu byte_op",
@@ -3219,14 +3218,10 @@ static NSArray* md_mtl_all_devices(void) {
 
 /* Metal has no PCI ids; the name tells the vendor. */
 static uint32_t md_mtl_vendor_id(const char* name) {
-    char low[256];
-    size_t i = 0;
-    for (; name[i] && i + 1 < sizeof(low); ++i) low[i] = (char)tolower((unsigned char)name[i]);
-    low[i] = 0;
-    if (strstr(low, "apple"))                           return 0x106B;
-    if (strstr(low, "amd") || strstr(low, "radeon"))    return 0x1002;
-    if (strstr(low, "intel"))                           return 0x8086;
-    if (strstr(low, "nvidia") || strstr(low, "geforce")) return 0x10DE;
+    if (md_gpu_sel_contains(name, "apple"))                                        return 0x106B;
+    if (md_gpu_sel_contains(name, "amd")    || md_gpu_sel_contains(name, "radeon"))  return 0x1002;
+    if (md_gpu_sel_contains(name, "intel"))                                        return 0x8086;
+    if (md_gpu_sel_contains(name, "nvidia") || md_gpu_sel_contains(name, "geforce")) return 0x10DE;
     return 0;
 }
 
@@ -3237,7 +3232,7 @@ static md_gpu_device_type_t md_mtl_device_type(id<MTLDevice> d) {
 }
 
 static void md_mtl_adapter_info(id<MTLDevice> d, md_gpu_adapter_info_t* out) {
-    memset(out, 0, sizeof(*out));
+    md_memset(out, 0, sizeof(*out));
     md_snprintf(out->name, sizeof(out->name), "%s", [[d name] UTF8String]);
     md_snprintf(out->driver, sizeof(out->driver), "Metal, %s",
              [[[NSProcessInfo processInfo] operatingSystemVersionString] UTF8String]);
@@ -3286,12 +3281,12 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
 
     md_gpu_device_t dev = (md_gpu_device_t)md_alloc(alloc, sizeof(md_gpu_device));
     if (!dev) { md_gpu_fail("out of memory"); return NULL; }
-    memset(dev, 0, sizeof(*dev));
+    md_memset(dev, 0, sizeof(*dev));
     dev->alloc = alloc;
     MD_ARRAY_INIT(dev->textures, alloc);
     {
-        const char* env = md_os_env_get("MD_GPU_DEBUG_MEMORY");
-        const bool debug_memory = (desc && desc->debug_memory) || (env && env[0] && strcmp(env, "0") != 0);
+        const md_str_t env = md_str_from_cstr(md_os_env_get("MD_GPU_DEBUG_MEMORY"));
+        const bool debug_memory = (desc && desc->debug_memory) || (!md_str_empty(env) && !md_str_eq_cstr(env, "0"));
         md_mtl_heap_init(dev, desc ? desc->heap_cache_limit : 0, debug_memory);
     }
     MD_ARRAY_INIT(dev->kernels, alloc);
@@ -3376,7 +3371,7 @@ fail:
 
 bool md_gpu_device_info(md_gpu_device_t dev, md_gpu_device_info_t* info) {
     if (!dev || !info) return false;
-    memset(info, 0, sizeof(*info));
+    md_memset(info, 0, sizeof(*info));
     info->is_discrete              = dev->is_discrete;
     info->max_threads_per_group    = (uint32_t)dev->device.maxThreadsPerThreadgroup.width;
     info->preferred_group_multiple = dev->make_grid_kernel ? (uint32_t)dev->make_grid_kernel->pso.threadExecutionWidth : 32;
