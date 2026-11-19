@@ -294,8 +294,8 @@ typedef struct md_gto_iso_gpu_mesh_t {
     md_gpu_addr_t   host_mem;
 } md_gto_iso_gpu_mesh_t;
 
-// Blocking: a job (below) polled until it is done. Returns false on failure (lattice too large for
-// the cell size, out of device memory).
+// Blocking: a job (below) polled until it is done. Returns false on failure (the surfaces spanning more than 4096
+// cells of the cell size, out of device memory).
 bool md_gto_iso_gpu_extract(md_gpu_stream_t stream, const md_gto_iso_gpu_set_t* set, const md_gto_iso_gpu_desc_t* desc, md_gto_iso_gpu_mesh_t* out);
 void md_gto_iso_gpu_mesh_free(md_gpu_stream_t stream, md_gto_iso_gpu_mesh_t* mesh);
 

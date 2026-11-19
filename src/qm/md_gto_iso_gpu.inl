@@ -16,7 +16,7 @@
 #include <gto_iso_gpu_shaders.inl>
 
 // BENCHMARK (temporary, branch gto-iso-gpu-opt): which round of changes this is, in every profile report
-#define ISOG_REVISION "r44 (the GEMMs' widths by the function count alone; r43: chunks by the GEMMs' columns too, and in the blocking extraction)"
+#define ISOG_REVISION "r45 (lattices to 1024 bricks a side: 4096 cells; r44: the GEMMs' widths by the function count alone)"
 
 typedef struct isog_shell_t {        // mirrors IsoShell
     md_gpu_float4 c;
@@ -145,6 +145,10 @@ static uint32_t isog_fn_cap = ISOG_FN_CAP;
 
 #define ISOG_NEWTON_TOL_EXP 2       // converged within 1e-2 h: the facets' own deviation is about 3e-2 h rms
 #define ISOG_OCTREE_START   2       // the first level the octree tests
+// The deepest brick level, 2^L bricks a side (4 << L cells): a brick's coordinates are 10 bits each in the hash's key
+// (brick_key and brick_lookup in gto_iso_gpu.slang; iso_flood_atoms the same), and the levels' marks and counts are
+// sized for it (isog_job_step: level_step[10], cn[12]). At 0.12 bohr, 491 bohr a side.
+#define ISOG_MAX_BRICK_LEVEL 10
 
 // The kernels are made on first use, so initializing costs nothing until a set is made
 void md_gto_iso_gpu_initialize(md_gpu_device_t device) {
@@ -2182,7 +2186,13 @@ md_gto_iso_gpu_job_t* md_gto_iso_gpu_job_begin(md_gpu_stream_t s, const md_gto_i
     }
     double origin[3];
     const int L = iso_root_box(lo, hi, 4.0 * h, origin);
-    if (L > 8) { MD_LOG_ERROR("md_gto_iso_gpu_extract: lattice too large for cell size %g", h); return NULL; }
+    if (L > ISOG_MAX_BRICK_LEVEL) {
+        double ext = 0.0;
+        for (int a = 0; a < 3; ++a) ext = fmax(ext, hi[a] - lo[a]);
+        MD_LOG_ERROR("md_gto_iso_gpu_extract: the surfaces span %.0f bohr, more than %u cells of %g bohr (cells of %.3g bohr or more fit)",
+                     ext, 4u << ISOG_MAX_BRICK_LEVEL, h, ext / (double)(4u << ISOG_MAX_BRICK_LEVEL));
+        return NULL;
+    }
 
     md_gto_iso_gpu_job_t* j = (md_gto_iso_gpu_job_t*)calloc(1, sizeof(md_gto_iso_gpu_job_t));
     if (!j) return NULL;

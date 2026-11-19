@@ -3324,6 +3324,80 @@ UTEST(gto_iso_gpu_lib, matches_cpu_reference) {
     iso_gpu_free(&g);
 }
 
+// A lattice as deep as the GPU's takes (ISOG_MAX_BRICK_LEVEL: 1024 bricks a side): two s functions 150, 300 and 600
+// bohr apart, psi = phi_A + phi_B at 0.05 (a sphere of 1.6 bohr about each), cells of 0.12 bohr - brick levels 9, 10
+// and 11. To 10 the GPU's mesh is the CPU's (its lattice to 2^18 bricks a side): the same level, as many vertices
+// within the corners whose float and double straddle the iso value, closed; past it the job is refused (logged),
+// the extraction false.
+UTEST(gto_iso_gpu_lib, deep_lattice) {
+    iso_gpu_t g;
+    if (!iso_gpu_init(&g)) { iso_gpu_free(&g); UTEST_SKIP(iso_gpu_no_device()); }
+    md_gto_iso_gpu_initialize(g.dev);
+    md_gto_shell_t sh[2] = {{0, 0, 1, 0}, {1, 1, 1, 0}};
+    const float alpha[2] = {1.0f, 1.0f};
+    const float coeff[2] = {(float)pow(2.0 / M_PI, 0.75), (float)pow(2.0 / M_PI, 0.75)};
+    const md_gto_basis_t basis = {2, 2, sh, (float*)alpha, (float*)coeff};
+    const double c[2] = {1.0, 1.0};
+    const double h = 0.12, iso = 0.05;
+    static const double dist[3] = {150.0, 300.0, 600.0};
+    for (int di = 0; di < 3; ++di) {
+        const float xyz[6] = {-0.5f * (float)dist[di], 1.3f, -0.7f, 0.5f * (float)dist[di], -0.4f, 2.1f};
+        md_gto_iso_field_t* field = md_gto_iso_field_create(&basis, xyz, 0, c, md_get_heap_allocator());
+        ASSERT_TRUE(field != NULL);
+        const md_gto_iso_field_t* fl[1] = {field};
+        md_gto_iso_gpu_set_t* set = md_gto_iso_gpu_set_create(g.s, &basis, xyz, 0, fl, 1, md_get_heap_allocator());
+        ASSERT_TRUE(set != NULL);
+        md_gto_iso_gpu_desc_t gd = {.cell_size = h, .project_iterations = 8, .relax_iterations = 3};
+        gd.iso[0] = iso;
+        isog_debug_t dbg = {0};
+        isog_debug = &dbg;
+        md_gto_iso_gpu_mesh_t gm;
+        const bool ok = md_gto_iso_gpu_extract(g.s, set, &gd, &gm);
+        isog_debug = NULL;
+        md_gto_iso_cache_t* cache = md_gto_iso_cache_create(field, &(md_gto_iso_cache_desc_t){.cell_size = h, .iso_min = iso}, md_get_heap_allocator());
+        ASSERT_TRUE(cache != NULL);
+        const int L = cache->brick_levels;
+        if (L > ISOG_MAX_BRICK_LEVEL) {
+            printf("  %3.0f bohr apart: brick level %d, past %d: the GPU's extraction refused (%s)\n", dist[di], L, ISOG_MAX_BRICK_LEVEL, ok ? "it was not" : "it was");
+            EXPECT_FALSE(ok);
+            if (ok) md_gto_iso_gpu_mesh_free(g.s, &gm);
+        } else {
+            md_gto_iso_mesh_t cm, hm;
+            ASSERT_TRUE(md_gto_iso_mesh_extract(&cm, cache, &(md_gto_iso_mesh_desc_t){.iso = iso, .project_iterations = 8, .relax_iterations = 3}, md_get_heap_allocator()));
+            ASSERT_TRUE(ok);
+            ASSERT_TRUE(md_gto_iso_gpu_mesh_read(g.s, &gm, 0, &hm, md_get_heap_allocator()));
+            // the vertices are about the two atoms, within 1.6 bohr and a cell
+            double worst = 0.0;
+            for (uint32_t v = 0; v < hm.vertex_count; ++v) {
+                const float* p = hm.position + 3 * (size_t)v;
+                double r = DBL_MAX;
+                for (int a = 0; a < 2; ++a) {
+                    const double dx = p[0] - xyz[3 * a], dy = p[1] - xyz[3 * a + 1], dz = p[2] - xyz[3 * a + 2];
+                    r = fmin(r, sqrt(dx * dx + dy * dy + dz * dz));
+                }
+                worst = fmax(worst, fabs(r - sqrt(log(coeff[0] / iso))));
+            }
+            printf("  %3.0f bohr apart: brick level GPU %d CPU %d; vertices GPU %u CPU %u, triangles GPU %u CPU %u, open edges %u; "
+                   "max |r - r_iso| %.1e bohr\n", dist[di], dbg.brick_level, L, hm.vertex_count, cm.vertex_count, hm.index_count / 3,
+                   cm.index_count / 3, gm.open_edges, worst);
+            EXPECT_EQ(dbg.brick_level, L);
+            EXPECT_EQ(gm.open_edges, 0u);
+            EXPECT_GT(hm.vertex_count, 0u);
+            EXPECT_LE(fabs((double)hm.vertex_count - cm.vertex_count), 0.01 * cm.vertex_count);
+            EXPECT_LT(worst, 0.01);
+            md_gto_iso_mesh_free(&hm);
+            md_gto_iso_mesh_free(&cm);
+            md_gto_iso_gpu_mesh_free(g.s, &gm);
+        }
+        free(dbg.bricks); free(dbg.slots); free(dbg.corners);
+        md_gto_iso_cache_destroy(cache);
+        md_gto_iso_gpu_set_destroy(g.s, set);
+        md_gto_iso_field_destroy(field);
+    }
+    md_gto_iso_gpu_shutdown();
+    iso_gpu_free(&g);
+}
+
 // Several fields in one set give each field exactly the mesh it gets alone.
 UTEST(gto_iso_gpu_lib, fields_batch_like_alone) {
     iso_gpu_t g;
