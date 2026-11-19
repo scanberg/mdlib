@@ -18,9 +18,10 @@
 // The shape of a block of voxels (BLOCK_VOXELS of them) is an argument (args.block_shape): 8x8x8, or for a grid of one
 // layer (the image of a plane) 32x16x1 - as many voxels as near together, none of the block off the grid. One kernel
 // for both: a group's threads in a row (numthreads(BLOCK_TX, 1, 1)), voxel p of a block at block_voxel(p), x
-// fastest. Measured against a kernel per shape (groups of 8x8x8 and 32x16x1 threads) on an M4 Pro, a GTX 1060 and an
-// HD 530 (gemm-bench r6): the density's, ELF's and the orbitals' GEMM passes with their counts and Phi within 2.2% on
-// volumes; on planes, runs of 0.2-1.6 ms, within their spread (0.95-1.07, one 1.13 of a run that ranged 0.98-1.18).
+// fastest. Measured against a kernel per shape (groups of 8x8x8 and 32x16x1 threads) on an M4 Pro, an RTX 3080, a
+// GTX 1060 and an HD 530 (gemm-bench r6): the density's, ELF's and the orbitals' GEMM passes with their counts and Phi
+// within 2.2% on volumes, but the orbitals' GEMM pass on the RTX 3080's protein (1.037, rounds of 0.99-1.13); runs of
+// about 1 ms or less (planes, mol's volume on the RTX 3080) within their spread, the median at most 1.15.
 #define BLOCK_SHAPE (args.block_shape.xyz)
 #define BLOCK_TX BLOCK_VOXELS
 

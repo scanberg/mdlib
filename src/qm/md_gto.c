@@ -2149,11 +2149,12 @@ typedef enum { GTO_GEMM_PASS_DENSITY, GTO_GEMM_PASS_LOC } gto_gemm_pass_t;
      the density, large systems (C60 on a fine grid, C60 with d/f shells, C240; branch gto_kernel_eval):
        GTX 1060 1.09, L4 0.85, M4 Pro 1.17, HD 530 0.80
      the density, mol and the protein, volumes and planes (gemm-bench r6):
-       M4 Pro 0.95-1.11, GTX 1060 1.06-1.21, HD 530 0.73-0.85
+       M4 Pro 0.95-1.11, RTX 3080 0.92 (the protein's volume; the rest, runs of about 1 ms, 0.97-1.02),
+       GTX 1060 1.06-1.21, HD 530 0.73-0.85
      ELF and LOL, the same (gemm-bench r6):
-       M4 Pro 0.96-1.00 (a plane of mol 1.04-1.11), GTX 1060 0.94-1.00, HD 530 0.78-0.95
-   ELF and LOL take 64 on every GPU; the density 32 on Apple, 64 elsewhere. NVIDIA is split on the density (the L4
-   with 64, the GTX 1060 with 32): the RTX 3080 to decide. AMD is unmeasured and gets the NVIDIA choice. */
+       M4 Pro 0.96-1.00 (a plane of mol 1.04-1.11), RTX 3080 0.84-1.00, GTX 1060 0.94-1.00, HD 530 0.78-0.95
+   ELF and LOL take 64 on every GPU; the density 32 on Apple, 64 elsewhere: on NVIDIA the L4 and the RTX 3080 are
+   faster with 64, the GTX 1060 the exception. AMD is unmeasured and gets the NVIDIA choice. */
 static void gto_gemm_auto_config(gto_gemm_pass_t pass, uint32_t* gm, int32_t* small_n) {
     *gm = 64; *small_n = 32;
     if (pass == GTO_GEMM_PASS_DENSITY && gto_gpu_vendor == 0x106B) {   /* Apple */
@@ -3179,11 +3180,15 @@ void md_gto_gpu_orbital_launch(md_gpu_stream_t stream, const md_gto_gpu_orbital_
         /* The shell kernel re-evaluates the AOs once per GTO_MO_SHELL_MB orbitals; past
            that, evaluating them once and multiplying by the coefficients wins on most
            GPUs (for 32 orbitals on GTX 1060, M4 Pro and HD 530; not on L4, where the
-           shell kernel was still 1.6-2.2x faster). Where the GEMM path overtakes the shell
-           kernel's passes depends on the system as much as the GPU (gemm-bench r6): mol at
-           19-29 orbitals on the M4 Pro, the GTX 1060 and the HD 530; the protein at 22 on
-           the M4 Pro, 9 on the GTX 1060, 12 on the HD 530. Past 8 loses at most 40% at
-           9-16 orbitals on mol; past 16 would lose up to 84% on the GTX 1060's protein. */
+           shell kernel was still 1.6-2.2x faster). The GEMM path's time is flat from 2 to
+           32 orbitals, the shell kernel's by its passes of 8 (gemm-bench r6, mol and the
+           protein): at 9-16 orbitals (two passes) the GEMM path took 1.30-1.90 times the
+           shell kernel's time on mol (0.8 against 0.4 ms on the RTX 3080), on the protein
+           1.13 on the RTX 3080 (+6 ms) and 1.40 on the M4 Pro (+35 ms), but 0.55 on the
+           GTX 1060 (-162 ms) and 0.74 on the HD 530 (-0.9 s); at 17-24 (three passes) it
+           was ahead on the protein on all four (0.37-0.95) and on mol on the M4 Pro and the
+           HD 530 (0.90-0.94), behind on mol on the GTX 1060 and the RTX 3080 (1.23-1.26).
+           Past 8: the large systems on the slow GPUs, where the time is felt. */
         algo = desc->num_orbitals <= GTO_MO_SHELL_MB ? MD_GTO_GPU_ORBITAL_ALGO_SHELL : MD_GTO_GPU_ORBITAL_ALGO_GEMM;
     }
     switch (algo) {
