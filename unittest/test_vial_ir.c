@@ -928,6 +928,60 @@ UTEST(vial_ir, angle_draws_every_form) {
     md_arena_allocator_destroy(alloc);
 }
 
+// The atoms hover highlights at at_text: their count, and each one summed, to tell two selections apart
+static bool vial_ir__atoms(const char* src, const char* at_text, md_allocator_i* alloc, size_t* groups, size_t* count, uint64_t* sum) {
+    const md_system_t* sys = vial_test_system('P');
+    const md_system_state_t* st = vial_test_state('P');
+    md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys}, alloc);
+    const md_vial_diagnostic_t* diags;
+    const size_t nd = md_vial_diagnostics(prog, &diags);
+    for (size_t k = 0; k < nd; ++k) printf("%.5s %.*s\n", diags[k].code, (int)diags[k].message.len, diags[k].message.ptr);
+    if (nd) { md_vial_program_free(prog); return false; }
+    md_vial_draw_desc_t desc = {.prog = prog, .sys = sys, .frame = 0, .state = st, .element = -1};
+    const uint32_t at = md_vial_expr_at(prog, (uint32_t)(strstr(src, at_text) - src) + 1);
+    md_vial_drawing_t d = {0};
+    const bool ok = md_vial_draw(&d, &desc, at, alloc);
+    md_vial_program_free(prog);
+    *groups = d.num_groups;
+    *count = 0;
+    *sum = 0;
+    for (size_t g = 0; g < d.num_groups; ++g) {
+        for (uint32_t i = d.groups[g].beg; i < d.groups[g].end; ++i) { ++*count; *sum += d.atoms[i]; }
+    }
+    return ok;
+}
+
+// A literal is shown through what it selects: 'ALA' in residue('ALA') is those residues, 'CB' in rs['CB'] or
+// rs.particle('CB') those particles, 5 in within(5, of=x) what is within, and 'CB' in rs[['O', 'CB']] its column.
+// Elsewhere, a literal is itself: nothing is drawn
+UTEST(vial_ir, literal_draws_its_context) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
+    size_t g0, n0, g, n;
+    uint64_t s0, s;
+    const char* src = "rs = residue('ALA')\ncz = rs['CB']\ncols = rs[['O', 'CB']]\nw = within(3.0, of=cz)\nq = percentile(distance(rs.com, cz), 90)\n";
+    ASSERT_TRUE(vial_ir__atoms(src, "residue(", alloc, &g0, &n0, &s0));
+    ASSERT_TRUE(g0 > 1 && n0 > g0);
+    ASSERT_TRUE(vial_ir__atoms(src, "'ALA'", alloc, &g, &n, &s));
+    EXPECT_EQ(g0, g); EXPECT_EQ(n0, n); EXPECT_EQ(s0, s);
+    ASSERT_TRUE(vial_ir__atoms(src, "cz)", alloc, &g0, &n0, &s0));
+    EXPECT_EQ(g, g0); EXPECT_EQ(g0, n0);
+    ASSERT_TRUE(vial_ir__atoms(src, "'CB']\n", alloc, &g, &n, &s));
+    EXPECT_EQ(g0, g); EXPECT_EQ(n0, n); EXPECT_EQ(s0, s);
+    // One column of rs[['O', 'CB']]: the CB of every ALA, as rs['CB'] has them, and the O the other
+    ASSERT_TRUE(vial_ir__atoms(src, "'CB']]", alloc, &g, &n, &s));
+    EXPECT_EQ(g0, g); EXPECT_EQ(n0, n); EXPECT_EQ(s0, s);
+    ASSERT_TRUE(vial_ir__atoms(src, "'O'", alloc, &g, &n, &s));
+    EXPECT_EQ(g0, g); EXPECT_EQ(n0, n); EXPECT_NE(s0, s);
+    ASSERT_TRUE(vial_ir__atoms(src, "[['O'", alloc, &g, &n, &s));
+    EXPECT_EQ(2 * g0, g); EXPECT_EQ(2 * n0, n);
+    ASSERT_TRUE(vial_ir__atoms(src, "within(", alloc, &g0, &n0, &s0));
+    ASSERT_TRUE(vial_ir__atoms(src, "3.0", alloc, &g, &n, &s));
+    EXPECT_EQ(g0, g); EXPECT_EQ(n0, n); EXPECT_EQ(s0, s);
+    ASSERT_TRUE(vial_ir__atoms(src, "90", alloc, &g, &n, &s));
+    EXPECT_EQ(0u, g);
+    md_arena_allocator_destroy(alloc);
+}
+
 // What hover draws: the drawing shown() attached, kept through names and calls; built-ins that draw themselves; and
 // values by their type
 // Of more than 1,000 spheres, 1,000 are drawn: distinct, the same at the same frame, others at another, and every

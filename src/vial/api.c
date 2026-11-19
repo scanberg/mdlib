@@ -382,6 +382,45 @@ static void make_marks(md_vial_program_t* prog) {
     }
 }
 
+// A literal shown through what it selects: 'ALA' in residue('ALA') is those residues, 'CA' in s['CA'] or s.particle('CA')
+// those particles, 5 in within(5, of=x) what is within, and 'O' in s[['CA', 'C', 'O']] its column of the sets
+// selected. The literal, a list of them or a number with a unit or sign, as an argument of a call or the index of a
+// subscript that makes a set: that call or subscript, and the column when the literal is one of a list indexing.
+// A literal anywhere else, 90 in percentile(x, 90) or 2 in x + 2, is itself.
+static vial_node_id literal_context(const md_vial_program_t* prog, vial_node_id n, int64_t* col) {
+    const vial_tree_t* t = &prog->tree;
+    const vial_names_t* nm = &prog->check.names;
+    *col = -1;
+    if (!n || n >= md_array_size(nm->parent)) return n;
+    switch (t->nodes[n].kind) {
+    case VIAL_N_INT: case VIAL_N_FLOAT: case VIAL_N_STRING: case VIAL_N_RANGE: break;
+    default: return n;
+    }
+    vial_node_id c = n, p = nm->parent[c];
+    while (p && (t->nodes[p].kind == VIAL_N_QUANTITY || t->nodes[p].kind == VIAL_N_UNARY)) { c = p; p = nm->parent[c]; }
+    int64_t at = -1;
+    if (p && t->nodes[p].kind == VIAL_N_LIST) {
+        for (uint32_t i = 0; i < t->nodes[p].child_count; ++i) if (vial_child(t, p, i) == c) at = i;
+        c = p; p = nm->parent[c];
+    }
+    if (p && t->nodes[p].kind == VIAL_N_KWARG) { c = p; p = nm->parent[c]; }
+    if (!p) return n;
+    const vial_node_kind_t pk = t->nodes[p].kind;
+    const bool arg = pk == VIAL_N_CALL && vial_child(t, p, 0) != c;
+    const bool index = pk == VIAL_N_SUBSCRIPT && vial_child(t, p, 1) == c;
+    if (!(arg || index) || !is_expr(prog, p) || prog->types.types[p].dtype != VIAL_DT_SET) return n;
+    if (index) *col = at;
+    return p;
+}
+
+uint32_t md_vial__expr_target(const md_vial_program_t* prog, uint32_t expr, int64_t* col) {
+    int64_t c = -1;
+    if (prog && expr) expr = literal_context(prog, expr, &c);
+    const uint32_t v = md_vial__expr_value(prog, expr);
+    if (col) *col = v ? c : -1;
+    return v;
+}
+
 uint32_t md_vial__expr_value(const md_vial_program_t* prog, uint32_t expr) {
     if (!prog || !is_expr(prog, expr) || expr - prog->types.base >= md_array_size(prog->types.ssa)) return 0;
     const vial_ir_t* ir = &prog->ir;

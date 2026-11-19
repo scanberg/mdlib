@@ -138,5 +138,8 @@ const struct vial_ir_t* md_vial__run_ir(const md_vial_program_t* prog);   // inl
 // The value in md_vial__ir of the expression hover shows at offset, and its span; 0 when it has none
 uint32_t md_vial__hover_value(const md_vial_program_t* prog, uint32_t offset, md_vial_span_t* span);
 uint32_t md_vial__expr_value(const md_vial_program_t* prog, uint32_t expr);  // its value in the IR as lowered, 0 none
+// What hover shows for expr: a literal argument of a selection or index into one is shown as that selection, and as
+// one column of it (col, else -1) when it is one of a list indexing; anything else is md_vial__expr_value
+uint32_t md_vial__expr_target(const md_vial_program_t* prog, uint32_t expr, int64_t* col);
 // A value of md_vial__ir's top level as it is in md_vial__run_ir; 0 when it has none there
 uint32_t md_vial__run_value(const md_vial_program_t* prog, uint32_t v);
