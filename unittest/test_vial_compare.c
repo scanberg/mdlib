@@ -8,6 +8,8 @@
 #include <md_vial.h>
 #include <md_script.h>
 #include <md_attributes.h>
+#include <md_run.h>
+#include <md_system.h>
 #include "../src/vial/vial_internal.h"
 #include "../src/vial/ir.h"
 #include "../src/vial/interp.h"
@@ -22,7 +24,8 @@
 
 // The gate of phase 3: v2 gives v1's numbers on the same data. Each pair is a v1 script and a v2 script that should
 // compute the same property over every frame of P's run; they agree within a float tolerance, since v1's formulas
-// are not v2's to the last bit.
+// are not v2's to the last bit. Centres of mass are not among them: v1 takes the circular mean, which is off by up to
+// 0.003 Å for P's residues; VIAL's com is the mean of the residue made whole, checked against it below.
 
 typedef struct vial_pair_t {
     const char* v1;         // the v1 script; its property is `p`
@@ -35,19 +38,14 @@ static const vial_pair_t vial_pairs[] = {
     {"p = distance(1, 30);",                                 "p = distance(particle[0], particle[29])", 1e-4},
     {"p = angle(1, 2, 3);",                                  "p = angle(particle[0], particle[1], particle[2])", 1e-3},
     {"p = dihedral(5, 7, 9, 15);",                           "p = dihedral(particle[4], particle[6], particle[8], particle[14])", 1e-3},
-    {"p = distance(residue(1), residue(5));",                "p = distance(residue[0].com, residue[4].com)", 1e-4},
     {"p = distance_min(residue(1), residue(5));",            "p = distance(residue[0], residue[4], between='closest')", 1e-4},
     {"p = distance_max(residue(1), residue(5));",            "p = distance(residue[0], residue[4], between='farthest')", 1e-4},
-    {"p = angle(residue(1), residue(2), residue(3));",       "p = angle(residue[0].com, residue[1].com, residue[2].com)", 1e-3},
     {"p = count(within(5.0, residue(3)));",                  "p = len(within(5.0, of=residue[2]) and not residue[2])", 0.0},
     {"p = count(within(8.0, atom(1:10)));",                  "p = len(within(8.0, of=particle[0:10]) and not particle[0:10])", 0.0},
     {"p = angle(1, 50, 120);",                               "p = angle(particle[0], particle[49], particle[119])", 1e-3},
-    {"p = dihedral(residue(1), residue(2), residue(3), residue(4));",
-                                                             "p = dihedral(residue[0].com, residue[1].com, residue[2].com, residue[3].com)", 1e-3},
     {"p = distance_min(atom(1:20), atom(100:130));",         "p = distance(particle[0:20], particle[99:130], between='closest')", 1e-4},
     {"p = distance_max(atom(1:20), atom(100:130));",         "p = distance(particle[0:20], particle[99:130], between='farthest')", 1e-4},
     {"p = coord_x(atom(10));",                               "p = particle[9].x", 1e-5},
-    {"p = coord_z(com(residue(7)));",                        "p = residue[6].com.z", 1e-4},
     {"p = rmsd(atom(1:40));",                                "x = particle[0:40]\np = rmsd(x, at(x.xyz, frame=0), weights='mass')", 1e-3},
 };
 
@@ -128,6 +126,89 @@ UTEST(vial_compare, v1_and_v2_agree) {
         }
     }
     printf("vial compare: %d of %d pairs agree over %u frames\n", agree, (int)MD_COUNTOF(vial_pairs), nf);
+    md_arena_allocator_destroy(alloc);
+}
+
+// What v1 measured between centres of residues, measured between VIAL's com: the mass-weighted mean of the residue
+// made whole, which P's coordinates are, so it is checked against that mean of them as they are
+typedef enum { CENTRE_DISTANCE, CENTRE_ANGLE, CENTRE_DIHEDRAL, CENTRE_Z } centre_measure_t;
+
+static void centre_of_residue(const md_system_t* sys, const float* xyz, size_t r, double out[3]) {
+    const md_urange_t rg = md_system_residue_atom_range(sys, r);
+    double w = 0.0;
+    out[0] = out[1] = out[2] = 0.0;
+    for (size_t i = rg.beg; i < rg.end; ++i) {
+        const double m = md_atom_mass(&sys->atom, i);
+        for (int q = 0; q < 3; ++q) out[q] += m * xyz[3 * i + q];
+        w += m;
+    }
+    for (int q = 0; q < 3; ++q) out[q] /= w;
+}
+
+static double centre_measure(centre_measure_t what, const double c[4][3]) {
+    double b[3][3];
+    for (int k = 0; k < 3; ++k) for (int q = 0; q < 3; ++q) b[k][q] = c[k + 1][q] - c[k][q];
+    #define DOT(u, v) ((u)[0] * (v)[0] + (u)[1] * (v)[1] + (u)[2] * (v)[2])
+    #define CROSS(o, u, v) ((o)[0] = (u)[1] * (v)[2] - (u)[2] * (v)[1], (o)[1] = (u)[2] * (v)[0] - (u)[0] * (v)[2], (o)[2] = (u)[0] * (v)[1] - (u)[1] * (v)[0])
+    switch (what) {
+    case CENTRE_DISTANCE: return sqrt(DOT(b[0], b[0]));
+    case CENTRE_Z:        return c[0][2];
+    case CENTRE_ANGLE: {
+        const double u[3] = {-b[0][0], -b[0][1], -b[0][2]};
+        return acos(DOT(u, b[1]) / sqrt(DOT(u, u) * DOT(b[1], b[1]))) * 180.0 / MD_PI;
+    }
+    case CENTRE_DIHEDRAL: {
+        // The IUPAC sign: positive turning clockwise looking down the middle bond
+        const double l1 = sqrt(DOT(b[1], b[1]));
+        const double a1[3] = {b[1][0] / l1, b[1][1] / l1, b[1][2] / l1};
+        const double a0[3] = {-b[0][0], -b[0][1], -b[0][2]};
+        double v[3], w[3], bv[3];
+        for (int q = 0; q < 3; ++q) { v[q] = a0[q] - DOT(a0, a1) * a1[q]; w[q] = b[2][q] - DOT(b[2], a1) * a1[q]; }
+        CROSS(bv, a1, v);
+        return atan2(DOT(bv, w), DOT(v, w)) * 180.0 / MD_PI;
+    }
+    }
+    #undef DOT
+    #undef CROSS
+    return NAN;
+}
+
+UTEST(vial_compare, centres_are_means) {
+    const md_system_t* sys = vial_test_system('P');
+    const uint32_t nf = (uint32_t)vial_test_run('P');
+    ASSERT_TRUE(sys != NULL);
+    ASSERT_GT(nf, 1u);
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
+    // The residues measured: res[0] to res[n - 1]; a distance from res[0] to res[1]
+    const struct { centre_measure_t what; int n; size_t res[4]; const char* v2; double tol; } cases[] = {
+        {CENTRE_DISTANCE, 2, {0, 4},       "p = distance(residue[0].com, residue[4].com)", 1e-4},
+        {CENTRE_ANGLE,    3, {0, 1, 2},    "p = angle(residue[0].com, residue[1].com, residue[2].com)", 1e-3},
+        {CENTRE_DIHEDRAL, 4, {0, 1, 2, 3}, "p = dihedral(residue[0].com, residue[1].com, residue[2].com, residue[3].com)", 2e-2},
+        {CENTRE_Z,        1, {6},          "p = residue[6].com.z", 1e-4},
+    };
+    double* b = md_alloc(alloc, nf * sizeof(double));
+    const md_str_t paths[] = {MD_STR_LIT("atom/position"), MD_STR_LIT("unitcell")};
+    for (size_t i = 0; i < MD_COUNTOF(cases); ++i) {
+        ASSERT_TRUE(v2_values(cases[i].v2, sys, nf, b, alloc));
+        md_system_extract_t* ex = md_system_extract_begin(sys, MD_STR_LIT("run"), paths, 2, alloc);
+        ASSERT_TRUE(ex != NULL);
+        md_system_state_t st = {.alloc = alloc};
+        md_system_state_init(&st, sys->atom.count);
+        double worst = 0.0;
+        uint32_t at = 0;
+        for (uint32_t f = 0; f < nf; ++f) {
+            ASSERT_TRUE(md_system_extract_frame(ex, f, &st));
+            double c[4][3];
+            for (int k = 0; k < cases[i].n; ++k) centre_of_residue(sys, (const float*)st.xyz, cases[i].res[k], c[k]);
+            const double want = centre_measure(cases[i].what, c);
+            double d = fabs(want - b[f]);
+            if (cases[i].what == CENTRE_DIHEDRAL) d = MD_MIN(d, 360.0 - d);   // across the seam at ±180
+            if (d > worst) { worst = d; at = f; }
+        }
+        md_system_extract_end(ex);
+        if (worst > cases[i].tol) printf("the centres' %s differs by %g at frame %u\n", cases[i].v2, worst, at);
+        EXPECT_LE(worst, cases[i].tol);
+    }
     md_arena_allocator_destroy(alloc);
 }
 

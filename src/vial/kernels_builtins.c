@@ -305,7 +305,19 @@ static bool k_weight(vial_kctx_t* k, const vial_val_t* pv, const vial_val_t* wei
     return true;
 }
 
-// The centre of mass of each set or group of points; periodic-aware
+// The weighted mean of n points (w NULL: equal weights), periodic-aware: the mean of the points placed in the images
+// nearest it, seeded from their circular mean and settled to a fixed point (md_geom_deperiodize_self), so for a group
+// smaller than half the cell it is the mean of the group made whole. The circular mean alone is not: the farther the
+// points spread, the farther it is from their mean, which then enters every second moment about it squared.
+static md_float3_t centre_of(vial_kctx_t* k, const md_float3_t* p, const float* w, uint32_t n, const md_unitcell_t* cell) {
+    md_float4_t* q = k_alloc64(k, (n ? n : 1) * sizeof(md_float4_t));
+    for (uint32_t i = 0; i < n; ++i) q[i] = (md_float4_t){{p[i].x, p[i].y, p[i].z, w ? w[i] : 1.0f}};
+    md_float3_t c;
+    md_geom_deperiodize_self(q, n, cell, &c);
+    return c;
+}
+
+// The centre of mass of each set or group of points; periodic-aware (centre_of)
 static bool k_com(vial_kctx_t* k, const vial_val_t* s, const vial_val_t* weights, vial_val_t* out) {
     if (!s) return vial_rt_fail(k, "R0103", "a missing argument");
     const md_unitcell_t cell = frame_cell(k);
@@ -329,7 +341,7 @@ static bool k_com(vial_kctx_t* k, const vial_val_t* s, const vial_val_t* weights
                 return vial_rt_fail(k, "R0103", "a particle is beyond the frame's %zu", k->in->frame->num_atoms);
             }
             if (!k_weights(k, weights, true, "com", (const uint32_t*)idx, n, w, &any)) return false;
-            const md_float3_t c = md_geom_com((const float*)g, 0, any ? w : NULL, 0, NULL, n, &cell);
+            const md_float3_t c = centre_of(k, g, any ? w : NULL, n, &cell);
             float* O = (float*)o.data + 3 * i;
             O[0] = c.x; O[1] = c.y; O[2] = c.z;
         }
@@ -354,7 +366,7 @@ static bool k_com(vial_kctx_t* k, const vial_val_t* s, const vial_val_t* weights
         float* O = (float*)o.data + 3 * g;
         if (!n) { for (int c = 0; c < 3; ++c) vial_val_set_missing(&o, 3 * g + c, k->alloc); continue; }
         memcpy(buf, (const float*)p.data + 3 * (size_t)n * g, n * sizeof(md_float3_t));
-        const md_float3_t c = md_geom_com((const float*)buf, 0, w, 0, NULL, n, &cell);
+        const md_float3_t c = centre_of(k, buf, w, n, &cell);
         O[0] = c.x; O[1] = c.y; O[2] = c.z;
     }
     *out = o;

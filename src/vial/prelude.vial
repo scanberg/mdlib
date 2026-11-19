@@ -37,14 +37,11 @@ def normal(p: points):
 def shape_weights(p: points, weights='mass'):
     w = weight(p, weights)
     c = com(p, weights)
-    d = displacement(c, p)                       # placed by the minimum image from a periodic-aware centre
-    m = (d.T @ w) / sum(w)                       # the mean of the placed points, which that centre is not
-    d = d - m
+    d = displacement(c, p)                       # minimum image from a periodic-aware centre
     l, v = eigh((d.T * w) @ d / sum(w))          # the gyration tensor: eigenvalues ascending, Å²
     s = [l[2] - l[1], 2 * (l[1] - l[0]), 3 * l[0]] / sum(l)   # linear, planar, isotropic; they sum to 1
     r = sqrt(max(l, 0.0))                        # the spread along each principal axis
-    o = c + m
-    return shown(s, arrow(o, direction=v[:, 2], length=r[2]) + arrow(o, direction=v[:, 1], length=r[1]) + arrow(o, direction=v[:, 0], length=r[0]))
+    return shown(s, arrow(c, direction=v[:, 2], length=r[2]) + arrow(c, direction=v[:, 1], length=r[1]) + arrow(c, direction=v[:, 0], length=r[0]))
 
 def rmsd(p: points, ref: points, on=None, weights=None, superpose=True):
     q = fit(p, ref, on=on, weights=weights) if superpose else p

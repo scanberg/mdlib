@@ -616,14 +616,11 @@ def normal(p: points):
 def shape_weights(p: points, weights='mass'):
     w = weight(p, weights)
     c = com(p, weights)
-    d = displacement(c, p)                       # placed by the minimum image from a periodic-aware centre
-    m = (d.T @ w) / sum(w)                       # the mean of the placed points, which that centre is not
-    d = d - m
+    d = displacement(c, p)                       # minimum image from a periodic-aware centre
     l, v = eigh((d.T * w) @ d / sum(w))          # the gyration tensor: eigenvalues ascending, Å²
     s = [l[2] - l[1], 2 * (l[1] - l[0]), 3 * l[0]] / sum(l)   # linear, planar, isotropic; they sum to 1
     r = sqrt(max(l, 0.0))                        # the spread along each principal axis
-    o = c + m
-    return shown(s, arrow(o, direction=v[:, 2], length=r[2]) + arrow(o, direction=v[:, 1], length=r[1]) + arrow(o, direction=v[:, 0], length=r[0]))
+    return shown(s, arrow(c, direction=v[:, 2], length=r[2]) + arrow(c, direction=v[:, 1], length=r[1]) + arrow(c, direction=v[:, 0], length=r[0]))
 
 def rmsd(p: points, ref: points, on=None, weights=None, superpose=True):
     q = fit(p, ref, on=on, weights=weights) if superpose else p
@@ -653,7 +650,7 @@ def ema(x, alpha):
     return fold(step, x, init=x)
 ```
 
-The prelude uses nothing a script cannot, drawing included: `shown` attaches what hover draws, as any def may (see Drawing). `_between` is VIAL; only the search for the closest or farthest pair, `closest_pair` and `farthest_pair`, is built in, since a search that skips pairs is not an equation over arrays. `_between`, `gyration`, `normal`, `shape_weights` and `rmsd` annotate their parameters with kinds, so they map over arrays of sets: `_between` only ever sees one body per argument. `_between` calls `norm(displacement())` rather than `distance`, since a cycle of calls is recursion (E0802). `gyration`, `normal` and `shape_weights` measure from a periodic-aware centre under the minimum image, so they are right for any group smaller than half the box, whether or not the trajectory was made whole; positions themselves are as the trajectory gives them. That centre is not the mean of the positions it places, so `shape_weights` takes its tensor about their mean, as v1 does. A fold's step is a nested `def`, which may read the names of the function around it, as `cumulative`'s reads `op` and `ema`'s reads `alpha`; there is no `lambda`. `atom()` and `bead()` are built-in shorthands for `particle(kind=...)`, since forwarding keywords would need `**kwargs`.
+The prelude uses nothing a script cannot, drawing included: `shown` attaches what hover draws, as any def may (see Drawing). `_between` is VIAL; only the search for the closest or farthest pair, `closest_pair` and `farthest_pair`, is built in, since a search that skips pairs is not an equation over arrays. `_between`, `gyration`, `normal`, `shape_weights` and `rmsd` annotate their parameters with kinds, so they map over arrays of sets: `_between` only ever sees one body per argument. `_between` calls `norm(displacement())` rather than `distance`, since a cycle of calls is recursion (E0802). `gyration`, `normal` and `shape_weights` measure from `com`, a periodic-aware centre, under the minimum image, so they are right for any group smaller than half the box, whether or not the trajectory was made whole; positions themselves are as the trajectory gives them. A fold's step is a nested `def`, which may read the names of the function around it, as `cumulative`'s reads `op` and `ema`'s reads `alpha`; there is no `lambda`. `atom()` and `bead()` are built-in shorthands for `particle(kind=...)`, since forwarding keywords would need `**kwargs`.
 
 ## Built-in functions: geometry and structure
 
@@ -678,7 +675,7 @@ Keywords mean the same wherever they appear. `weights=` takes `'mass'`, `None` o
 | `s.xyz` | `float[n][3]` Å | frame stage; n is `count(s)`. On coordinates, a float array whose last dimension is 3, itself. On an array of sets that each hold one particle, one position per set; on other arrays of sets E0318, since their positions do not form one array: `particle(res_a).xyz` merges them, and a def with a `points` or `group` parameter maps over them |
 | `mass(s)`, `charge(s)`, `element(s)`, `name(s)`, `bfactor(s)` | `float[n]` u, e, or `str[n]` | per-particle properties of a set; static, except `bfactor` where the file gives one per frame |
 | `particle(x)` on an array | `set` | the particles an array's first particle dimension describes, so `mass(particle(fit(s.xyz, ref)))` works after a fit; an array with no such dimension is E0311 |
-| `s.com`, `com(s, weights='mass')` | `float[3]` Å | the centre of mass, periodic-aware; takes a set or points, and maps over arrays of sets. `com(s, weights=None)` is the centre of geometry, `centroid(s)`; `weights=` is as everywhere, below |
+| `s.com`, `com(s, weights='mass')` | `float[3]` Å | the centre of mass, periodic-aware: the mean of the points placed in the images nearest it, seeded from their circular mean, so for a group smaller than half the cell it is the mean of the group made whole, wherever the trajectory wrapped it; takes a set or points, and maps over arrays of sets. `com(s, weights=None)` is the centre of geometry, `centroid(s)`; `weights=` is as everywhere, below |
 | `weight(p, weights='mass')` | `float[n]` | one weight per point of p, as `weights=` means it everywhere: the particles' masses (u) for `'mass'`, ones for None, or the array given. What the prelude's defs weigh with, and a def of your own can |
 | `centroid(s)` | `float[3]` Å | prelude: `com(s, weights=None)` |
 | `distance(a: point, b: point)` | `float` Å | prelude: `norm(displacement(a, b))`; leading dimensions broadcast. Also takes one argument of two points stacked along its last dimension, `float[2][3]` or `set[2]` of single particles, as `distance(r[['N', 'CA']])`, mapping over the dimensions before them. Drawn as a line labelled with the value |

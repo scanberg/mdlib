@@ -2848,11 +2848,12 @@ UTEST(vial_ir, rdf) {
     md_arena_allocator_destroy(alloc);
 }
 
-// shape_weights(p): v1's weights, (l2 - l1, 2 (l1 - l0), 3 l0) / sum(l) of the mass-weighted gyration tensor, taken
-// about the mean of the placed points. Checked against the same in double on P's coordinates, which are whole: the
-// peptide in the frames where it is less than half the cell across, and every residue in every frame. (v1's own,
-// md_geom_shape_weights, is in float and off by up to 5e-4 for the elongated peptide.)
-static void vial_ir__shape_weights(const md_system_t* sys, const float* xyz, size_t beg, size_t end, double out[3]) {
+// shape_weights(p): v1's weights, (l2 - l1, 2 (l1 - l0), 3 l0) / sum(l) of the mass-weighted gyration tensor about
+// com, the mean of the points made whole; and gyration(p), the root of its trace. Checked against the same in double
+// on P's coordinates, which are whole: the peptide in the frames where it is less than half the cell across, and every
+// residue in every frame. (v1's own, md_geom_shape_weights, is in float and off by up to 5e-4 for the elongated
+// peptide.)
+static void vial_ir__shape_weights(const md_system_t* sys, const float* xyz, size_t beg, size_t end, double out[3], double* rg) {
     double c[3] = {0}, wsum = 0, M[9] = {0}, l[3];
     for (size_t i = beg; i < end; ++i) {
         const double m = md_atom_mass(&sys->atom, i);
@@ -2864,6 +2865,7 @@ static void vial_ir__shape_weights(const md_system_t* sys, const float* xyz, siz
         const double m = md_atom_mass(&sys->atom, i);
         for (int a = 0; a < 3; ++a) for (int b = 0; b < 3; ++b) M[3 * a + b] += m * (xyz[3 * i + a] - c[a]) * (xyz[3 * i + b] - c[b]) / wsum;
     }
+    if (rg) *rg = sqrt(M[0] + M[4] + M[8]);     // the radius of gyration is the root of the tensor's trace
     md_linalg_sym_eigen(M, l, 3);     // ascending
     const double t = l[0] + l[1] + l[2];
     out[0] = (l[2] - l[1]) / t;
@@ -2877,7 +2879,7 @@ UTEST(vial_ir, shape_weights) {
     const int64_t nf = vial_test_run('P');
     ASSERT_GT(nf, 3);
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
-    const char* src = "w = shape_weights(particle)\nwr = shape_weights(residue)\nlin, plan, iso = shape_weights(particle)\n";
+    const char* src = "w = shape_weights(particle)\nwr = shape_weights(residue)\nlin, plan, iso = shape_weights(particle)\ng = gyration(particle)\n";
     md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = MD_STR_LIT("run")}, alloc);
     ASSERT_TRUE(prog != NULL);
     const md_vial_diagnostic_t* dg;
@@ -2889,7 +2891,8 @@ UTEST(vial_ir, shape_weights) {
     const md_attribute_t* aw = md_attributes_find(at, MD_STR_LIT("script/w"));
     const md_attribute_t* ar = md_attributes_find(at, MD_STR_LIT("script/wr"));
     const md_attribute_t* al = md_attributes_find(at, MD_STR_LIT("script/lin"));
-    ASSERT_TRUE(aw && ar && al);
+    const md_attribute_t* ag = md_attributes_find(at, MD_STR_LIT("script/g"));
+    ASSERT_TRUE(aw && ar && al && ag);
     const size_t nr = sys->residue.count;
     const md_str_t paths[] = {MD_STR_LIT("atom/position"), MD_STR_LIT("unitcell")};
     md_system_extract_t* ex = md_system_extract_begin(sys, MD_STR_LIT("run"), paths, 2, alloc);
@@ -2897,7 +2900,7 @@ UTEST(vial_ir, shape_weights) {
     md_system_state_t st = {.alloc = alloc};
     md_system_state_init(&st, sys->atom.count);
     int whole = 0;
-    double worst = 0, rworst = 0;
+    double worst = 0, rworst = 0, gworst = 0;
     for (int64_t f = 0; f < nf; ++f) {
         ASSERT_TRUE(md_system_extract_frame(ex, f, &st));
         const float* xyz = (const float*)st.xyz;
@@ -2909,15 +2912,16 @@ UTEST(vial_ir, shape_weights) {
         for (size_t i = 0; i < sys->atom.count; ++i) for (int q = 0; q < 3; ++q) { lo[q] = MD_MIN(lo[q], xyz[3 * i + q]); hi[q] = MD_MAX(hi[q], xyz[3 * i + q]); }
         const double L[3] = {st.unitcell.x, st.unitcell.y, st.unitcell.z};
         if (hi[0] - lo[0] < L[0] / 2 && hi[1] - lo[1] < L[1] / 2 && hi[2] - lo[2] < L[2] / 2) {
-            double ref[3];
-            vial_ir__shape_weights(sys, xyz, 0, sys->atom.count, ref);
+            double ref[3], rg;
+            vial_ir__shape_weights(sys, xyz, 0, sys->atom.count, ref, &rg);
             for (int q = 0; q < 3; ++q) worst = MD_MAX(worst, fabs((double)w[q] - ref[q]));
+            gworst = MD_MAX(gworst, fabs((double)((const float*)ag->data)[f] - rg));
             whole += 1;
         }
         for (size_t r = 0; r < nr; ++r) {
             const md_urange_t rg = md_system_residue_atom_range(sys, r);
             double ref[3];
-            vial_ir__shape_weights(sys, xyz, (size_t)rg.beg, (size_t)rg.end, ref);
+            vial_ir__shape_weights(sys, xyz, (size_t)rg.beg, (size_t)rg.end, ref, NULL);
             const float* wr = (const float*)ar->data + (size_t)f * nr * 3 + 3 * r;
             for (int q = 0; q < 3; ++q) rworst = MD_MAX(rworst, fabs((double)wr[q] - ref[q]));
         }
@@ -2926,6 +2930,7 @@ UTEST(vial_ir, shape_weights) {
     EXPECT_GT(whole, 0);
     EXPECT_LT(worst, 1e-4);
     EXPECT_LT(rworst, 1e-4);
+    EXPECT_LT(gworst, 1e-4);    // about com, the mean of the peptide made whole
     md_vial_eval_free(e);
     md_vial_program_free(prog);
     md_arena_allocator_destroy(alloc);
