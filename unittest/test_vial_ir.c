@@ -2931,6 +2931,46 @@ UTEST(vial_ir, shape_weights) {
     md_arena_allocator_destroy(alloc);
 }
 
+// missing_where(c, x) marks entries of a value of its own: marking zeroes what is under the mask, which in x's data
+// would change x for every other reader of it, as filled(m, x) and the next filled did
+UTEST(vial_ir, missing_where_keeps_its_input) {
+    const md_system_t* sys = vial_test_system('P');
+    ASSERT_TRUE(sys != NULL);
+    const int64_t nf = vial_test_run('P');
+    ASSERT_GT(nf, 3);
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(8));
+    const char* src =
+        "d = distance(particle[0], particle[30])\n"
+        "_m = missing_where(d > 0.0, d)\n"
+        "back = filled(_m, d)\n"
+        "ten = filled(_m, 10.0)\n"
+        "again = filled(missing_where(d > 0.0, d), 10.0)\n"
+        "after = d + 0.0\n";
+    md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = MD_STR_LIT("run")}, alloc);
+    ASSERT_TRUE(prog != NULL);
+    md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = MD_STR_LIT("run")}, alloc);
+    ASSERT_TRUE(e != NULL);
+    ASSERT_TRUE(md_vial_eval_run(e));
+    const md_attributes_t* at = md_vial_eval_attributes(e);
+    const md_attribute_t* ad = md_attributes_find(at, MD_STR_LIT("script/d"));
+    const md_attribute_t* ab = md_attributes_find(at, MD_STR_LIT("script/back"));
+    const md_attribute_t* ar = md_attributes_find(at, MD_STR_LIT("script/after"));
+    const md_attribute_t* a10 = md_attributes_find(at, MD_STR_LIT("script/ten"));
+    const md_attribute_t* ag = md_attributes_find(at, MD_STR_LIT("script/again"));
+    ASSERT_TRUE(ad && ab && ar && a10 && ag);
+    for (int64_t f = 0; f < nf; ++f) {
+        const float d = ((const float*)ad->data)[f];
+        EXPECT_GT(d, 0.0f);
+        EXPECT_EQ(d, ((const float*)ab->data)[f]);
+        EXPECT_EQ(d, ((const float*)ar->data)[f]);
+        EXPECT_EQ(10.0f, ((const float*)a10->data)[f]);
+        EXPECT_EQ(10.0f, ((const float*)ag->data)[f]);
+    }
+    md_vial_eval_free(e);
+    md_vial_program_free(prog);
+    md_arena_allocator_destroy(alloc);
+}
+
 UTEST(vial_ir, volume_diagnostics) {
     const md_system_t* sys = vial_test_system('P');
     ASSERT_TRUE(sys != NULL);

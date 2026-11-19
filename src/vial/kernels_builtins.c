@@ -1484,9 +1484,17 @@ static bool k_concatenate(vial_kctx_t* k, const vial_val_t* items, const vial_va
 
 static bool k_missing_where(vial_kctx_t* k, const vial_val_t* c, const vial_val_t* x, vial_val_t* out) {
     if (!c || !x) return vial_rt_fail(k, "R0103", "a missing argument");
+    // Data of its own: marking an entry missing zeroes what is under it, which in x's data would change x, as every
+    // other reader of x sees it
+    const size_t n = vial_val_count(x);
     vial_val_t o = *x;
     o.missing = NULL;
-    const size_t n = vial_val_count(x);
+    if (x->data && vial_dtype_size(x->dtype)) {
+        if (!vial_k_make(k, x->dtype, x->ndim, x->dims, &o)) return false;
+        md_memcpy(o.data, x->data, n * vial_dtype_size(x->dtype));
+        o.origin = x->origin;
+        o.flags = x->flags;
+    }
     // c broadcasts against x
     for (size_t i = 0; i < n; ++i) {
         size_t rem = i, off = 0, s = 1;
