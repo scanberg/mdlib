@@ -53,7 +53,8 @@ struct md_executor_t;
 //
 //   vlx/scf/gostshyp/tessera/{coordinate,normal}             {T} x 3: the GOSTSHYP cavity of a run under pressure,
 //                                                            one point (tessera) per row, Å and unit normals. On the
-//                                                            scaled van der Waals sphere of one QM atom each
+//                                                            scaled van der Waals sphere of one QM atom each. Those
+//                                                            whose amplitude came out negative VeloxChem drops
 //   vlx/scf/gostshyp/tessera/area                            {T} Å^2, as the switching left it (smaller where the
 //                                                            spheres overlap, down to nothing)
 //   vlx/scf/gostshyp/tessera/{amplitude,exponent}            {T}: the normalized 3D Gaussian on each tessera,
@@ -62,10 +63,8 @@ struct md_executor_t;
 //                                                            Å^-2 here, and zeta a is constant
 //   vlx/scf/gostshyp/tessera/decay_length                    {T} Å, <rho|g> / (-d/dn <rho|g>). The amplitudes hold the
 //                                                            pressure: p (-d/dn <rho|g>) = P a
-//   vlx/scf/gostshyp/tessera/atom_index                      {T} u32, the QM atom whose sphere it lies on: read where
-//                                                            the file has it, else found from the distances
-//                                                            (vlx_publish_gostshyp)
-//   vlx/scf/gostshyp/tessera/{lebedev_weight,switching}      {T}, where the file has them: what the area is made of,
+//   vlx/scf/gostshyp/tessera/atom_index                      {T} u32, the QM atom whose sphere it lies on
+//   vlx/scf/gostshyp/tessera/{lebedev_weight,switching}      {T}: what the area is made of,
 //                                                            a = w R^2 F - the Lebedev weight w (the point's solid
 //                                                            angle, 4 pi over a sphere) and the switching F
 //   vlx/scf/gostshyp/sphere_radius                           {A} Å, of each QM atom's sphere: from its tesserae; an
