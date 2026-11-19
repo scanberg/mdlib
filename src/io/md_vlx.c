@@ -3876,8 +3876,8 @@ static void vlx_publish_gostshyp(const vlx_t* vlx, hid_t scf_handle) {
 	const size_t count = dim[0];
 
 	md_temp_scope_t temp = md_temp_begin_avoid(vlx->arena);
-	md_f64x3_t* center = md_temp_alloc_array(temp, md_f64x3_t, count);
-	md_f64x3_t* normal = md_temp_alloc_array(temp, md_f64x3_t, count);
+	md_double3_t* center = md_temp_alloc_array(temp, md_double3_t, count);
+	md_double3_t* normal = md_temp_alloc_array(temp, md_double3_t, count);
 	double* area      = md_temp_alloc_array(temp, double, count);
 	double* amplitude = md_temp_alloc_array(temp, double, count);
 	double* exponent  = md_temp_alloc_array(temp, double, count);
@@ -3933,7 +3933,7 @@ static void vlx_publish_gostshyp(const vlx_t* vlx, hid_t scf_handle) {
 				MD_LOG_ERROR("VeloxChem: a GOSTSHYP tessera names atom %u of %zu; the cavity is not read", atom[j], num_atoms);
 				goto done;
 			}
-			const md_f64x3_t x = vlx->atom_coordinates[atom[j]];
+			const md_double3_t x = vlx->atom_coordinates[atom[j]];
 			const double dx = center[j].x - x.x, dy = center[j].y - x.y, dz = center[j].z - x.z;
 			sum[atom[j]] += sqrt(dx*dx + dy*dy + dz*dz);
 			num[atom[j]] += 1;
