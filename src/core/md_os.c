@@ -522,6 +522,14 @@ bool md_os_env_set(const char* name, const char* value) {
 #endif
 }
 
+void* md_os_module_handle(void) {
+#if MD_PLATFORM_WINDOWS
+    return (void*)GetModuleHandleW(NULL);
+#else
+    return NULL;
+#endif
+}
+
 size_t md_path_write_user_dir(char* buf, size_t buf_cap) {
     MD_ASSERT(buf);
     if (buf_cap == 0) {

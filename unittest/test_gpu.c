@@ -4,6 +4,7 @@
 #include <core/md_gpu_pieces.h>
 #include <core/md_allocator.h>
 #include <core/md_os.h>
+#include <core/md_log.h>
 
 #include <stdint.h>
 #include <stdio.h>
@@ -127,6 +128,13 @@ static void gpu_close(gpu_fixture_t* f) {
                               &f->k_bump, &f->k_layout, &f->k_tex_probe, &f->k_sample, &f->k_spin };
     for (size_t i = 0; i < sizeof(ks) / sizeof(ks[0]); ++i) md_gpu_kernel_destroy(*ks[i]);
     md_gpu_device_destroy(f->dev);
+}
+
+/* Debug memory gives every allocation memory of its own and never reuses
+   it, so tests of reuse and sharing have nothing to test there. */
+static bool gpu_debug_memory(md_gpu_device_t dev) {
+    md_gpu_device_info_t info;
+    return md_gpu_device_info(dev, &info) && info.debug_memory;
 }
 
 /* Device-local allocation. */
@@ -745,6 +753,7 @@ static md_gpu_memory_stats_t gpu_stats(md_gpu_device_t dev, md_gpu_mem_kind_t ki
 UTEST(gpu, heap_stats_and_same_stream_reuse) {
     gpu_fixture_t f;
     if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
+    if (gpu_debug_memory(f.dev)) { gpu_close(&f); UTEST_SKIP("debug memory reuses nothing"); }
 
     const md_gpu_memory_stats_t base = gpu_stats(f.dev, MD_GPU_MEM_DEVICE);
     enum { N = 1024 };
@@ -791,6 +800,7 @@ UTEST(gpu, heap_stats_and_same_stream_reuse) {
 UTEST(gpu, small_allocations_share_chunks) {
     gpu_fixture_t f;
     if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
+    if (gpu_debug_memory(f.dev)) { gpu_close(&f); UTEST_SKIP("debug memory reuses nothing"); }
 
     enum { N = 5000 };
     md_gpu_addr_t* a = (md_gpu_addr_t*)malloc(N * sizeof(md_gpu_addr_t));
@@ -1208,6 +1218,78 @@ UTEST(gpu, explicit_ordering_with_stage_barriers) {
     md_gpu_free(f.compute, a);
     md_gpu_free(f.compute, b);
     md_gpu_free(f.compute, c);
+    gpu_close(&f);
+}
+
+/* A chain of dependent launches in EXPLICIT mode, a barrier between each: on
+   Metal they share one concurrent encoder, ordered only by those barriers. */
+UTEST(gpu, explicit_chain_with_a_barrier_between_each) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
+
+    enum { N = 1 << 14, STEPS = 40 };
+    md_gpu_addr_t a = gpu_alloc(&f, f.compute, N * sizeof(uint32_t));
+    md_gpu_addr_t b = gpu_alloc(&f, f.compute, N * sizeof(uint32_t));
+    ASSERT_TRUE(a && b);
+
+    md_gpu_stream_set_ordering(f.compute, MD_GPU_ORDER_EXPLICIT);
+    fill_args_t fa = {0};
+    fa.n = N; fa.base = 0; fa.dst = a;
+    ASSERT_TRUE(MD_GPU_LAUNCH(f.compute, f.k_fill, grid1(f.k_fill, N), fa));
+    md_gpu_addr_t src = a, dst = b;
+    for (int step = 0; step < STEPS; ++step) {
+        md_gpu_barrier(f.compute, MD_GPU_STAGE_COMPUTE, MD_GPU_STAGE_COMPUTE);
+        scale_args_t sa = {0};
+        sa.n = N; sa.mul = 1; sa.add = 1; sa.src = src; sa.dst = dst;
+        ASSERT_TRUE(MD_GPU_LAUNCH(f.compute, f.k_scale, grid1(f.k_scale, N), sa));
+        md_gpu_addr_t tmp = src; src = dst; dst = tmp;
+    }
+    md_gpu_stream_set_ordering(f.compute, MD_GPU_ORDER_IMPLICIT);
+
+    uint32_t* host = (uint32_t*)malloc(N * sizeof(uint32_t));
+    ASSERT_TRUE(host != NULL);
+    ASSERT_TRUE(gpu_read(&f, f.compute, host, src, N * sizeof(uint32_t)));
+    for (int i = 0; i < N; ++i) ASSERT_EQ((uint32_t)(i + STEPS), host[i]);
+
+    free(host);
+    md_gpu_free(f.compute, a);
+    md_gpu_free(f.compute, b);
+    gpu_close(&f);
+}
+
+/* Memory freed inside an EXPLICIT region and reused at once by the same stream
+   (a pending free taken over by the next malloc) must not let the old writer
+   land after the new one, though the caller placed no barrier: md_gpu does. */
+UTEST(gpu, explicit_region_reuses_freed_memory_safely) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
+    if (gpu_debug_memory(f.dev)) { gpu_close(&f); UTEST_SKIP("debug memory reuses nothing"); }
+
+    enum { N = 1 << 16 };
+    const size_t bytes = N * sizeof(uint32_t);
+    uint32_t* host = (uint32_t*)malloc(bytes);
+    ASSERT_TRUE(host != NULL);
+
+    md_gpu_stream_set_ordering(f.compute, MD_GPU_ORDER_EXPLICIT);
+    md_gpu_addr_t a = gpu_alloc(&f, f.compute, bytes);
+    ASSERT_TRUE(a != 0);
+    /* A slow writer of `a`, then a free that the GPU has not reached. */
+    spin_args_t sp = {0};
+    sp.n = N; sp.iters = 2000; sp.dst = a;
+    ASSERT_TRUE(MD_GPU_LAUNCH(f.compute, f.k_spin, grid1(f.k_spin, N), sp));
+    md_gpu_free(f.compute, a);
+    md_gpu_addr_t b = gpu_alloc(&f, f.compute, bytes);
+    ASSERT_EQ(a, b);              /* the test is only as good as this reuse */
+    fill_args_t fa = {0};
+    fa.n = N; fa.base = 77; fa.dst = b;
+    ASSERT_TRUE(MD_GPU_LAUNCH(f.compute, f.k_fill, grid1(f.k_fill, N), fa));
+    md_gpu_stream_set_ordering(f.compute, MD_GPU_ORDER_IMPLICIT);
+
+    ASSERT_TRUE(gpu_read(&f, f.compute, host, b, bytes));
+    for (int i = 0; i < N; ++i) ASSERT_EQ((uint32_t)(77 + i), host[i]);
+
+    free(host);
+    md_gpu_free(f.compute, b);
     gpu_close(&f);
 }
 
@@ -1744,6 +1826,336 @@ UTEST(gpu, texture_destroy_waits_on_every_stream) {
    Kernels
    ========================================================================= */
 
+static md_gpu_texture_desc_t gpu_volume_desc(uint32_t d, const char* label) {
+    md_gpu_texture_desc_t td = {0};
+    td.type   = MD_GPU_TEX_3D;
+    td.format = MD_GPU_FORMAT_R32_FLOAT;
+    td.usage  = MD_GPU_TEX_STORAGE;
+    td.width  = d; td.height = d; td.depth_or_layers = d;
+    td.label  = label;
+    return td;
+}
+
+/* Write `scale * index` into every voxel of `tex` through a kernel and check it
+   on the host. */
+static bool gpu_write_and_check(gpu_fixture_t* f, md_gpu_texture_t tex, uint32_t d, float scale) {
+    tex_args_t ta = {0};
+    ta.dim[0] = d; ta.dim[1] = d; ta.dim[2] = d;
+    ta.tex = md_gpu_texture_storage(tex, 0);
+    ta.scale = scale;
+    if (!MD_GPU_LAUNCH(f->compute, f->k_tex_write, md_gpu_grid_for(f->k_tex_write, d, d, d), ta)) return false;
+    const size_t n = (size_t)d * d * d;
+    float* host = (float*)malloc(n * sizeof(float));
+    bool ok = host && gpu_read_tex(f, f->compute, host, tex, NULL);
+    for (size_t i = 0; ok && i < n; ++i) ok = host[i] == (float)i * scale;
+    free(host);
+    return ok;
+}
+
+/* A texture placed in DEVICE memory works like any other, takes no texture
+   memory of its own, and can sit at any address in its allocation. */
+UTEST(gpu, texture_placed_in_device_memory) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
+
+    enum { D = 8 };
+    md_gpu_texture_desc_t td = gpu_volume_desc(D, "placed");
+    const uint64_t size = md_gpu_texture_placement_size(f.dev, &td);
+    ASSERT_TRUE(size >= (uint64_t)D * D * D * sizeof(float));
+
+    md_gpu_memory_stats_t before, after;
+    ASSERT_TRUE(md_gpu_memory_stats(f.dev, MD_GPU_MEM_DEVICE, &before));
+
+    /* At the start of an allocation, and at an odd offset into one. */
+    md_gpu_addr_t a = gpu_alloc(&f, f.compute, size);
+    md_gpu_addr_t b = gpu_alloc(&f, f.compute, size + 4);
+    ASSERT_TRUE(a && b);
+    md_gpu_texture_t ta = md_gpu_texture_create_at(f.compute, &td, a);
+    md_gpu_texture_t tb = md_gpu_texture_create_at(f.compute, &td, b + 4);
+    ASSERT_TRUE(ta != NULL);
+    ASSERT_TRUE(tb != NULL);
+    ASSERT_TRUE(md_gpu_memory_stats(f.dev, MD_GPU_MEM_DEVICE, &after));
+    EXPECT_EQ(before.bytes_textures, after.bytes_textures);
+
+    EXPECT_TRUE(gpu_write_and_check(&f, ta, D, 2.0f));
+    EXPECT_TRUE(gpu_write_and_check(&f, tb, D, 3.0f));
+    /* Neither wrote over the other. */
+    float host[D * D * D];
+    ASSERT_TRUE(gpu_read_tex(&f, f.compute, host, ta, NULL));
+    for (int i = 0; i < D * D * D; ++i) EXPECT_EQ((float)i * 2.0f, host[i]);
+
+    md_gpu_texture_destroy(ta);
+    md_gpu_texture_destroy(tb);
+    md_gpu_free(f.compute, a);
+    md_gpu_free(f.compute, b);
+    md_gpu_stream_sync(f.compute);
+    md_gpu_device_poll(f.dev);
+    gpu_close(&f);
+}
+
+/* Two textures and a buffer in the same memory, used in turn, each discarded
+   (or, for the buffer, simply written) before its turn. */
+UTEST(gpu, texture_placed_aliases_share_memory) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
+
+    enum { D = 8, N = D * D * D };
+    md_gpu_texture_desc_t td = gpu_volume_desc(D, "alias a");
+    md_gpu_texture_desc_t ud = gpu_volume_desc(D, "alias b");
+    ud.usage |= MD_GPU_TEX_SAMPLED;
+    uint64_t size = md_gpu_texture_placement_size(f.dev, &td);
+    const uint64_t size_b = md_gpu_texture_placement_size(f.dev, &ud);
+    if (size_b > size) size = size_b;
+    ASSERT_TRUE(size > 0);
+
+    md_gpu_addr_t mem = gpu_alloc(&f, f.compute, size);
+    ASSERT_TRUE(mem != 0);
+    md_gpu_texture_t a = md_gpu_texture_create_at(f.compute, &td, mem);
+    md_gpu_texture_t b = md_gpu_texture_create_at(f.compute, &ud, mem);
+    ASSERT_TRUE(a && b);
+
+    for (int round = 0; round < 3; ++round) {
+        ASSERT_TRUE(md_gpu_texture_discard(f.compute, a));
+        EXPECT_TRUE(gpu_write_and_check(&f, a, D, 1.0f + (float)round));
+        ASSERT_TRUE(md_gpu_texture_discard(f.compute, b));
+        EXPECT_TRUE(gpu_write_and_check(&f, b, D, 10.0f + (float)round));
+
+        /* The memory as a buffer: a fill, then a texture again. */
+        fill_args_t fa = {N, (uint32_t)round, 0, 0, mem};
+        ASSERT_TRUE(MD_GPU_LAUNCH(f.compute, f.k_fill, md_gpu_grid_for(f.k_fill, N, 1, 1), fa));
+        uint32_t words[N];
+        ASSERT_TRUE(gpu_read(&f, f.compute, words, mem, sizeof(words)));
+        for (int i = 0; i < N; ++i) EXPECT_EQ((uint32_t)(round + i), words[i]);
+    }
+
+    md_gpu_texture_destroy(a);
+    md_gpu_texture_destroy(b);
+    md_gpu_free(f.compute, mem);
+    md_gpu_stream_sync(f.compute);
+    md_gpu_device_poll(f.dev);
+    gpu_close(&f);
+}
+
+/* Render targets of passes that do not overlap, in one temp scope. */
+UTEST(gpu, texture_placed_in_temp_memory) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
+
+    enum { D = 8 };
+    md_gpu_texture_desc_t td = gpu_volume_desc(D, "temp placed");
+    const uint64_t size = md_gpu_texture_placement_size(f.dev, &td);
+    ASSERT_TRUE(size > 0);
+    for (int frame = 0; frame < 4; ++frame) {
+        md_gpu_temp_t scope = md_gpu_temp_begin(f.compute);
+        md_gpu_mem_t m = md_gpu_temp_alloc(scope, MD_GPU_MEM_DEVICE, size);
+        ASSERT_TRUE(m.gpu != 0);
+        md_gpu_texture_t t = md_gpu_texture_create_at(f.compute, &td, m.gpu);
+        ASSERT_TRUE(t != NULL);
+        EXPECT_TRUE(gpu_write_and_check(&f, t, D, (float)(frame + 1)));
+        md_gpu_texture_destroy(t);
+        md_gpu_temp_end(scope);
+    }
+    md_gpu_stream_sync(f.compute);
+    md_gpu_device_poll(f.dev);
+    gpu_close(&f);
+}
+
+UTEST(gpu, texture_placement_is_validated) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
+
+    enum { D = 8 };
+    md_gpu_texture_desc_t td = gpu_volume_desc(D, "placed");
+    const uint64_t size = md_gpu_texture_placement_size(f.dev, &td);
+    ASSERT_TRUE(size > 0);
+
+    /* An invalid description has no size. */
+    md_gpu_texture_desc_t bad = td;
+    bad.type = MD_GPU_TEX_TYPE_INVALID;
+    EXPECT_EQ(0u, (unsigned)md_gpu_texture_placement_size(f.dev, &bad));
+
+    /* No memory, memory that is not md_gpu's, too little, the wrong kind. */
+    EXPECT_TRUE(md_gpu_texture_create_at(f.compute, &td, 0) == NULL);
+    md_gpu_addr_t small = gpu_alloc(&f, f.compute, size - 1);
+    md_gpu_mem_t host = md_gpu_malloc(f.compute, MD_GPU_MEM_HOST_WRITE, size);
+    ASSERT_TRUE(small && host.gpu);
+    EXPECT_TRUE(md_gpu_texture_create_at(f.compute, &td, small + (1u << 30)) == NULL);
+    EXPECT_TRUE(md_gpu_texture_create_at(f.compute, &td, small) == NULL);
+    EXPECT_TRUE(md_gpu_texture_create_at(f.compute, &td, host.gpu) == NULL);
+    const char* err = md_gpu_last_error();
+    ASSERT_TRUE(err != NULL);
+    EXPECT_TRUE(strstr(err, "MD_GPU_MEM_DEVICE") != NULL);
+
+    md_gpu_free(f.compute, small);
+    md_gpu_free(f.compute, host.gpu);
+    gpu_close(&f);
+}
+
+/* The bindless heap holds as many texture handles as asked for, and a texture
+   that does not fit says so. Metal has no such heap. */
+UTEST(gpu, max_textures_bounds_the_bindless_heap) {
+    md_gpu_device_desc_t dd = {0};
+    dd.enable_validation = true;
+    dd.max_textures      = 4;
+    dd.label             = "md_gpu unittest (4 textures)";
+    md_gpu_device_t dev = md_gpu_device_create(&dd);
+    if (!dev) UTEST_SKIP(gpu_no_device_reason());
+    md_gpu_stream_t s = md_gpu_stream_default(dev, MD_GPU_STREAM_COMPUTE);
+
+    md_gpu_texture_desc_t td = gpu_volume_desc(4, "slot");
+    md_gpu_texture_t t[5] = {0};
+    for (int i = 0; i < 4; ++i) {
+        t[i] = md_gpu_texture_create(s, &td);
+        ASSERT_TRUE(t[i] != NULL);
+    }
+#if MD_GPU_BACKEND_VULKAN
+    t[4] = md_gpu_texture_create(s, &td);
+    EXPECT_TRUE(t[4] == NULL);
+    const char* err = md_gpu_last_error();
+    ASSERT_TRUE(err != NULL);
+    EXPECT_TRUE(strstr(err, "max_textures") != NULL);
+
+    /* A destroyed texture's slot comes back once the GPU is done with it. */
+    md_gpu_texture_destroy(t[0]);
+    md_gpu_stream_sync(s);
+    md_gpu_device_poll(dev);
+    t[0] = md_gpu_texture_create(s, &td);
+    EXPECT_TRUE(t[0] != NULL);
+#endif
+    md_gpu_device_destroy(dev);
+}
+
+/* What the device reports above the floor is in the log of every run, so a CI
+   or hardware log shows what a kernel may use there. */
+UTEST(gpu, device_info_reports_capabilities) {
+    md_gpu_device_desc_t dd = {0};
+    dd.max_textures = 100;
+    md_gpu_device_t dev = md_gpu_device_create(&dd);
+    if (!dev) UTEST_SKIP(gpu_no_device_reason());
+    md_gpu_device_info_t info;
+    ASSERT_TRUE(md_gpu_device_info(dev, &info));
+    MD_LOG_INFO("md_gpu capabilities of '%s': shared %u B, textures %u, subgroup arith %d shuffle %d, "
+                "f16 %d f64 %d i64 %d, atomics i64 %d f32 add %d f32 min/max %d, timestamps %d, debug memory %d",
+                info.name, info.max_shared_memory, info.max_textures, info.subgroup_arithmetic, info.subgroup_shuffle,
+                info.float16, info.float64, info.int64, info.atomic_int64, info.atomic_float_add,
+                info.atomic_float_min_max, info.timestamps, info.debug_memory);
+    EXPECT_GE(info.max_shared_memory, 16384u);
+    EXPECT_TRUE(!info.atomic_int64 || info.int64);
+#if MD_GPU_BACKEND_VULKAN
+    EXPECT_EQ(100u, info.max_textures);
+#endif
+    md_gpu_device_destroy(dev);
+}
+
+/* A kernel that uses an optional feature works wherever the device reports
+   it: md_gpu enables what the device has. */
+UTEST(gpu, float_atomics_where_reported) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
+    md_gpu_device_info_t info;
+    ASSERT_TRUE(md_gpu_device_info(f.dev, &info));
+    if (!info.atomic_float_add) { gpu_close(&f); UTEST_SKIP("the device has no float atomic add"); }
+
+    enum { N = 1000 };
+    float src[N];
+    for (int i = 0; i < N; ++i) src[i] = 0.25f;
+    md_gpu_addr_t s = gpu_alloc(&f, f.compute, sizeof(src));
+    md_gpu_addr_t d = gpu_alloc(&f, f.compute, sizeof(float));
+    ASSERT_TRUE(s && d);
+    ASSERT_TRUE(md_gpu_upload(f.compute, s, src, sizeof(src)));
+    ASSERT_TRUE(md_gpu_memset(f.compute, d, 0, sizeof(float)));
+
+    md_gpu_kernel_desc_t kd = md_shader_gpu_test_atomic_float_sum_kernel();
+    md_gpu_kernel_t k = md_gpu_kernel_create(f.dev, &kd);
+    ASSERT_TRUE(k != NULL);
+    typedef struct { uint32_t n, pad0, pad1, pad2; md_gpu_addr_t src, dst; } atomic_float_args_t;
+    atomic_float_args_t a = {N, 0, 0, 0, s, d};
+    ASSERT_TRUE(MD_GPU_LAUNCH(f.compute, k, grid1(k, N), a));
+    float sum = 0.0f;
+    ASSERT_TRUE(gpu_read(&f, f.compute, &sum, d, sizeof(sum)));
+    EXPECT_EQ(250.0f, sum);    /* exact: every partial sum is a multiple of 1/4 below 2^22 */
+
+    md_gpu_kernel_destroy(k);
+    md_gpu_free(f.compute, s);
+    md_gpu_free(f.compute, d);
+    gpu_close(&f);
+}
+
+/* Debug memory: each allocation has memory of its own, exactly its size, that
+   goes back to the driver once freed and the GPU is past the free. Everything
+   else works as usual, placed textures included. */
+UTEST(gpu, debug_memory_gives_each_allocation_its_own_memory) {
+    md_gpu_device_desc_t dd = {0};
+    dd.enable_validation = true;
+    dd.debug_memory      = true;
+    dd.label             = "md_gpu unittest (debug memory)";
+    md_gpu_device_t dev = md_gpu_device_create(&dd);
+    if (!dev) UTEST_SKIP(gpu_no_device_reason());
+    md_gpu_device_info_t info;
+    ASSERT_TRUE(md_gpu_device_info(dev, &info));
+    EXPECT_TRUE(info.debug_memory);
+    md_gpu_stream_t s = md_gpu_stream_default(dev, MD_GPU_STREAM_COMPUTE);
+    md_gpu_kernel_desc_t kd = md_shader_gpu_test_fill_kernel();
+    md_gpu_kernel_t fill = md_gpu_kernel_create(dev, &kd);
+    ASSERT_TRUE(fill != NULL);
+
+    md_gpu_memory_stats_t st0, st1, st2;
+    ASSERT_TRUE(md_gpu_memory_stats(dev, MD_GPU_MEM_DEVICE, &st0));
+    const size_t sizes[3] = {4, 100, 4096};
+    md_gpu_addr_t a[3];
+    for (int i = 0; i < 3; ++i) {
+        a[i] = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizes[i]).gpu;
+        ASSERT_TRUE(a[i] != 0);
+        EXPECT_EQ(0u, (unsigned)(a[i] % 256));
+    }
+    ASSERT_TRUE(md_gpu_memory_stats(dev, MD_GPU_MEM_DEVICE, &st1));
+    EXPECT_EQ(st0.chunks + 3, st1.chunks);
+    EXPECT_EQ(st0.bytes_reserved + 4 + 100 + 4096, st1.bytes_reserved);
+    EXPECT_EQ(st0.bytes_in_use + 4 + 100 + 4096, st1.bytes_in_use);
+
+    /* Kernels and copies on exactly-sized allocations. */
+    enum { N = 25 };
+    fill_args_t fa = {N, 7, 0, 0, a[1]};
+    ASSERT_TRUE(MD_GPU_LAUNCH(s, fill, md_gpu_grid_for(fill, N, 1, 1), fa));
+    md_gpu_mem_t rb = md_gpu_malloc(s, MD_GPU_MEM_HOST_READ, N * sizeof(uint32_t));
+    ASSERT_TRUE(rb.cpu != NULL);
+    ASSERT_TRUE(md_gpu_copy(s, rb.gpu, a[1], N * sizeof(uint32_t)));
+    md_gpu_stream_sync(s);
+    for (int i = 0; i < N; ++i) EXPECT_EQ((uint32_t)(7 + i), ((const uint32_t*)rb.cpu)[i]);
+    /* A copy one byte past the end is refused on the host side already. */
+    EXPECT_FALSE(md_gpu_copy(s, rb.gpu, a[1], N * sizeof(uint32_t) + 1));
+
+    /* Temp allocations, each its own too. */
+    md_gpu_temp_t scope = md_gpu_temp_begin(s);
+    md_gpu_mem_t t0 = md_gpu_temp_alloc(scope, MD_GPU_MEM_HOST_WRITE, 12);
+    md_gpu_mem_t t1 = md_gpu_temp_alloc(scope, MD_GPU_MEM_HOST_WRITE, 12);
+    ASSERT_TRUE(t0.cpu && t1.cpu);
+    EXPECT_TRUE(t0.gpu + 12 != t1.gpu);
+    md_gpu_temp_end(scope);
+
+    /* A texture placed in debug memory. */
+    md_gpu_texture_desc_t td = gpu_volume_desc(4, "debug placed");
+    const uint64_t psize = md_gpu_texture_placement_size(dev, &td);
+    md_gpu_addr_t pm = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, psize).gpu;
+    ASSERT_TRUE(pm != 0);
+    md_gpu_texture_t tex = md_gpu_texture_create_at(s, &td, pm);
+    ASSERT_TRUE(tex != NULL);
+    md_gpu_texture_destroy(tex);
+
+    md_gpu_free(s, pm);
+    md_gpu_free(s, rb.gpu);
+    for (int i = 0; i < 3; ++i) md_gpu_free(s, a[i]);
+    md_gpu_stream_sync(s);
+    md_gpu_device_poll(dev);
+    ASSERT_TRUE(md_gpu_memory_stats(dev, MD_GPU_MEM_DEVICE, &st2));
+    EXPECT_EQ(st0.chunks, st2.chunks);
+    EXPECT_EQ(st0.bytes_reserved, st2.bytes_reserved);
+    EXPECT_EQ(st0.bytes_in_use, st2.bytes_in_use);
+
+    md_gpu_kernel_destroy(fill);
+    md_gpu_device_destroy(dev);
+}
+
 /* The generated descriptor carries [numthreads] and the argument-struct size. */
 UTEST(gpu, generated_kernel_descriptors) {
     gpu_fixture_t f;
@@ -1799,6 +2211,63 @@ UTEST(gpu, kernel_group_size_is_required_and_checked) {
 
 /* A launch whose argument block is not the size the kernel was built for is
    rejected before anything is recorded. */
+/* Specialization constants: word i of the block is [vk::constant_id(i)]; a
+   constant without a word keeps its default; a malformed block is rejected. */
+UTEST(gpu, kernel_specialization_constants) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
+
+    enum { N = 300 };
+    static uint32_t host[N];
+    md_gpu_addr_t d = gpu_alloc(&f, f.compute, N * sizeof(uint32_t));
+    ASSERT_TRUE(d != 0);
+    typedef struct { uint32_t n, pad0, pad1, pad2; md_gpu_addr_t dst; } spec_args_t;
+    spec_args_t a = {0};
+    a.n = N; a.dst = d;
+
+    /* Defaults: i * 1 + 2. */
+    md_gpu_kernel_desc_t kd = md_shader_gpu_test_spec_const_kernel();
+    md_gpu_kernel_t k0 = md_gpu_kernel_create(f.dev, &kd);
+    ASSERT_TRUE(k0 != NULL);
+    ASSERT_TRUE(MD_GPU_LAUNCH(f.compute, k0, grid1(k0, N), a));
+    ASSERT_TRUE(gpu_read(&f, f.compute, host, d, sizeof(host)));
+    for (int i = 0; i < N; ++i) EXPECT_EQ((uint32_t)(i + 2), host[i]);
+
+    /* All three: a uint, a float and a bool. */
+    struct { uint32_t mul; float add; uint32_t invert; } c = {3, 8.0f, 1};
+    kd.constants      = &c;
+    kd.constants_size = sizeof(c);
+    md_gpu_kernel_t k1 = md_gpu_kernel_create(f.dev, &kd);
+    ASSERT_TRUE(k1 != NULL);
+    ASSERT_TRUE(MD_GPU_LAUNCH(f.compute, k1, grid1(k1, N), a));
+    ASSERT_TRUE(gpu_read(&f, f.compute, host, d, sizeof(host)));
+    for (int i = 0; i < N; ++i) EXPECT_EQ(~(uint32_t)(3 * i + 8), host[i]);
+
+    /* The first word only: the others keep their defaults. */
+    const uint32_t mul = 5;
+    kd.constants      = &mul;
+    kd.constants_size = sizeof(mul);
+    md_gpu_kernel_t k2 = md_gpu_kernel_create(f.dev, &kd);
+    ASSERT_TRUE(k2 != NULL);
+    ASSERT_TRUE(MD_GPU_LAUNCH(f.compute, k2, grid1(k2, N), a));
+    ASSERT_TRUE(gpu_read(&f, f.compute, host, d, sizeof(host)));
+    for (int i = 0; i < N; ++i) EXPECT_EQ((uint32_t)(5 * i + 2), host[i]);
+
+    /* Not whole words, or more than MD_GPU_MAX_CONSTANTS. */
+    kd.constants_size = 6;
+    EXPECT_TRUE(md_gpu_kernel_create(f.dev, &kd) == NULL);
+    static uint32_t many[MD_GPU_MAX_CONSTANTS + 1];
+    kd.constants      = many;
+    kd.constants_size = sizeof(many);
+    EXPECT_TRUE(md_gpu_kernel_create(f.dev, &kd) == NULL);
+
+    md_gpu_kernel_destroy(k0);
+    md_gpu_kernel_destroy(k1);
+    md_gpu_kernel_destroy(k2);
+    md_gpu_free(f.compute, d);
+    gpu_close(&f);
+}
+
 UTEST(gpu, launch_rejects_wrong_argument_size) {
     gpu_fixture_t f;
     if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
@@ -1864,6 +2333,85 @@ UTEST(gpu, make_grid_and_indirect_launch) {
     md_gpu_free(f.compute, ones);
     md_gpu_free(f.compute, count);
     md_gpu_free(f.compute, grid);
+    gpu_close(&f);
+}
+
+/* Arguments by address: nothing copied, read when the kernel runs. The struct
+   may be written by the host, by a transfer or a kernel earlier in the stream,
+   and a table of them is addressed record by record. */
+UTEST(gpu, launch_at_reads_arguments_from_gpu_memory) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
+
+    enum { N = 1000 };
+    static uint32_t host[N];
+    md_gpu_addr_t d = gpu_alloc(&f, f.compute, N * sizeof(uint32_t));
+    ASSERT_TRUE(d != 0);
+
+    /* Host-written, two records: launch either by address arithmetic. */
+    md_gpu_mem_t table = md_gpu_malloc(f.compute, MD_GPU_MEM_HOST_WRITE, 2 * sizeof(fill_args_t));
+    ASSERT_TRUE(table.cpu != NULL);
+    fill_args_t* rec = (fill_args_t*)table.cpu;
+    memset(rec, 0, 2 * sizeof(fill_args_t));
+    rec[0].n = N;     rec[0].base = 100; rec[0].dst = d;
+    rec[1].n = N / 2; rec[1].base = 7;   rec[1].dst = d;
+    ASSERT_TRUE(md_gpu_launch_at(f.compute, f.k_fill, grid1(f.k_fill, N), table.gpu));
+    ASSERT_TRUE(gpu_read(&f, f.compute, host, d, sizeof(host)));
+    for (int i = 0; i < N; ++i) EXPECT_EQ((uint32_t)(100 + i), host[i]);
+
+    ASSERT_TRUE(md_gpu_launch_at(f.compute, f.k_fill, grid1(f.k_fill, N), table.gpu + sizeof(fill_args_t)));
+    ASSERT_TRUE(gpu_read(&f, f.compute, host, d, sizeof(host)));
+    for (int i = 0; i < N; ++i) EXPECT_EQ((uint32_t)(i < N / 2 ? 7 + i : 100 + i), host[i]);
+
+    /* Written by a transfer earlier in the stream (a staged upload into
+       device memory), then read as arguments. */
+    md_gpu_addr_t dev_args = gpu_alloc(&f, f.compute, sizeof(fill_args_t));
+    ASSERT_TRUE(dev_args != 0);
+    fill_args_t up = {0};
+    up.n = N; up.base = 5000; up.dst = d;
+    ASSERT_TRUE(md_gpu_upload(f.compute, dev_args, &up, sizeof(up)));
+    ASSERT_TRUE(md_gpu_launch_at(f.compute, f.k_fill, grid1(f.k_fill, N), dev_args));
+    ASSERT_TRUE(gpu_read(&f, f.compute, host, d, sizeof(host)));
+    for (int i = 0; i < N; ++i) EXPECT_EQ((uint32_t)(5000 + i), host[i]);
+
+    /* Written by a kernel: scale_add copies the words of a prepared struct
+       (mul 1, add 0) into the argument block the next launch reads. */
+    fill_args_t words = {0};
+    words.n = N; words.base = 9000; words.dst = d;
+    md_gpu_addr_t src_words = gpu_alloc(&f, f.compute, sizeof(words));
+    ASSERT_TRUE(src_words && md_gpu_upload(f.compute, src_words, &words, sizeof(words)));
+    md_gpu_stream_sync(f.compute);
+    ASSERT_TRUE(md_gpu_memset(f.compute, dev_args, 0, sizeof(fill_args_t)));
+    scale_args_t sa = {0};
+    sa.n = (uint32_t)(sizeof(words) / sizeof(uint32_t)); sa.mul = 1; sa.add = 0; sa.src = src_words; sa.dst = dev_args;
+    ASSERT_TRUE(MD_GPU_LAUNCH(f.compute, f.k_scale, grid1(f.k_scale, sa.n), sa));
+    ASSERT_TRUE(md_gpu_launch_at(f.compute, f.k_fill, grid1(f.k_fill, N), dev_args));
+    ASSERT_TRUE(gpu_read(&f, f.compute, host, d, sizeof(host)));
+    for (int i = 0; i < N; ++i) EXPECT_EQ((uint32_t)(9000 + i), host[i]);
+
+    /* Indirect, with both the grid and the arguments in memory. */
+    md_gpu_mem_t grid = md_gpu_malloc(f.compute, MD_GPU_MEM_HOST_WRITE, 3 * sizeof(uint32_t));
+    ASSERT_TRUE(grid.cpu != NULL);
+    const md_gpu_grid_t g = grid1(f.k_fill, N);
+    ((uint32_t*)grid.cpu)[0] = g.x; ((uint32_t*)grid.cpu)[1] = 1; ((uint32_t*)grid.cpu)[2] = 1;
+    ASSERT_TRUE(md_gpu_launch_indirect_at(f.compute, f.k_fill, grid.gpu, table.gpu));
+    ASSERT_TRUE(gpu_read(&f, f.compute, host, d, sizeof(host)));
+    for (int i = 0; i < N; ++i) EXPECT_EQ((uint32_t)(100 + i), host[i]);
+
+    /* What the address must be: non-null, 16-byte aligned, md_gpu memory with
+       the kernel's argument struct behind it. */
+    EXPECT_FALSE(md_gpu_launch_at(f.compute, f.k_fill, grid1(f.k_fill, N), 0));
+    EXPECT_FALSE(md_gpu_launch_at(f.compute, f.k_fill, grid1(f.k_fill, N), table.gpu + 4));
+    EXPECT_FALSE(md_gpu_launch_at(f.compute, f.k_fill, grid1(f.k_fill, N), (md_gpu_addr_t)0x10));
+    EXPECT_FALSE(md_gpu_launch_at(f.compute, f.k_fill, grid1(f.k_fill, N), dev_args + 8));    /* overruns it */
+    EXPECT_FALSE(md_gpu_launch_indirect_at(f.compute, f.k_fill, grid.gpu, 0));
+    md_gpu_stream_sync(f.compute);
+
+    md_gpu_free(f.compute, d);
+    md_gpu_free(f.compute, dev_args);
+    md_gpu_free(f.compute, src_words);
+    md_gpu_free(f.compute, table.gpu);
+    md_gpu_free(f.compute, grid.gpu);
     gpu_close(&f);
 }
 
@@ -2864,6 +3412,131 @@ UTEST(gpu, temp_scopes_nest) {
     ASSERT_TRUE(gpu_read(&f, f.compute, host, z.gpu, sizeof(host)));
     for (int i = 0; i < N; ++i) ASSERT_EQ((uint32_t)(100 + i), host[i]);
     md_gpu_temp_end(outer);
+    gpu_close(&f);
+}
+
+/* A scope per iteration with DEVICE scratch costs one iteration's memory, not
+   all of them, even with nothing submitted in between -- as malloc/free on one
+   stream does -- and every iteration still sees its own data: the reuse is
+   ordered after the work that used the memory before, in both ordering modes. */
+static void temp_loop_reuse(gpu_fixture_t* f, md_gpu_ordering_t ordering, int* bad, uint64_t* temp_bytes) {
+    enum { ITERS = 48, N = 64 * 1024 };        /* 256 KiB of scratch per iteration */
+    md_gpu_addr_t dst = gpu_alloc(f, f->compute, (size_t)ITERS * 64 * sizeof(uint32_t));
+    const md_gpu_memory_stats_t before = gpu_stats(f->dev, MD_GPU_MEM_DEVICE);
+    md_gpu_stream_set_ordering(f->compute, ordering);
+    for (int it = 0; it < ITERS; ++it) {
+        md_gpu_temp_t t = md_gpu_temp_begin(f->compute);
+        md_gpu_addr_t a = md_gpu_temp_alloc(t, MD_GPU_MEM_DEVICE, N * sizeof(uint32_t)).gpu;
+        fill_args_t fa = {0};
+        fa.n = N; fa.base = (uint32_t)(it * 1000); fa.dst = a;
+        MD_GPU_LAUNCH(f->compute, f->k_fill, grid1(f->k_fill, N), fa);
+        if (ordering == MD_GPU_ORDER_EXPLICIT) md_gpu_barrier(f->compute, MD_GPU_STAGE_COMPUTE, MD_GPU_STAGE_TRANSFER);
+        /* The last 64 values, which a stale or overwritten scratch would get wrong. */
+        md_gpu_copy(f->compute, dst + (md_gpu_addr_t)it * 64 * sizeof(uint32_t), a + (N - 64) * sizeof(uint32_t), 64 * sizeof(uint32_t));
+        md_gpu_temp_end(t);
+    }
+    md_gpu_stream_set_ordering(f->compute, MD_GPU_ORDER_IMPLICIT);
+    *temp_bytes = gpu_stats(f->dev, MD_GPU_MEM_DEVICE).bytes_temp - before.bytes_temp;
+
+    static uint32_t host[ITERS * 64];
+    *bad = 0;
+    if (!gpu_read(f, f->compute, host, dst, sizeof(host))) { *bad = -1; return; }
+    for (int it = 0; it < ITERS; ++it)
+        for (int i = 0; i < 64; ++i)
+            if (host[it * 64 + i] != (uint32_t)(it * 1000 + N - 64 + i)) ++*bad;
+    md_gpu_free(f->compute, dst);
+}
+
+UTEST(gpu, temp_device_memory_is_reused_within_the_stream) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
+
+    for (int m = 0; m < 2; ++m) {
+        int bad = 0;
+        uint64_t grew = 0;
+        temp_loop_reuse(&f, m ? MD_GPU_ORDER_EXPLICIT : MD_GPU_ORDER_IMPLICIT, &bad, &grew);
+        EXPECT_EQ(0, bad);
+        if (!gpu_debug_memory(f.dev)) {
+            /* One 4 MiB temp chunk at most; 48 iterations of 256 KiB would
+               need three. */
+            EXPECT_LE(grew, (uint64_t)(4u << 20));
+        }
+    }
+    gpu_close(&f);
+}
+
+/* An inner scope's DEVICE memory goes back at its end, also the part it took
+   from the outer scope's chunk, and the outer scope's own allocations stay
+   untouched while later ones reuse it. */
+UTEST(gpu, temp_inner_scope_rewinds_into_the_outer_chunk) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
+    if (gpu_debug_memory(f.dev)) { gpu_close(&f); UTEST_SKIP("debug memory reuses nothing"); }
+
+    enum { N = 1024 };
+    md_gpu_temp_t outer = md_gpu_temp_begin(f.compute);
+    md_gpu_addr_t x = md_gpu_temp_alloc(outer, MD_GPU_MEM_DEVICE, N * sizeof(uint32_t)).gpu;
+    ASSERT_TRUE(x != 0);
+    fill_args_t fa = {0};
+    fa.n = N; fa.base = 7; fa.dst = x;
+    ASSERT_TRUE(MD_GPU_LAUNCH(f.compute, f.k_fill, grid1(f.k_fill, N), fa));
+
+    md_gpu_temp_t inner = md_gpu_temp_begin(f.compute);
+    md_gpu_addr_t y = md_gpu_temp_alloc(inner, MD_GPU_MEM_DEVICE, N * sizeof(uint32_t)).gpu;
+    ASSERT_TRUE(y == x + N * sizeof(uint32_t));      /* carried on in the outer chunk */
+    ASSERT_TRUE(md_gpu_memset(f.compute, y, 0xEE, N * sizeof(uint32_t)));
+    md_gpu_temp_end(inner);
+
+    md_gpu_addr_t z = md_gpu_temp_alloc(outer, MD_GPU_MEM_DEVICE, N * sizeof(uint32_t)).gpu;
+    EXPECT_TRUE(z == y);                             /* rewound */
+    fa.base = 5000; fa.dst = z;
+    ASSERT_TRUE(MD_GPU_LAUNCH(f.compute, f.k_fill, grid1(f.k_fill, N), fa));
+
+    uint32_t hx[N], hz[N];
+    ASSERT_TRUE(gpu_read(&f, f.compute, hx, x, sizeof(hx)));
+    ASSERT_TRUE(gpu_read(&f, f.compute, hz, z, sizeof(hz)));
+    for (int i = 0; i < N; ++i) {
+        ASSERT_EQ((uint32_t)(7 + i), hx[i]);
+        ASSERT_EQ((uint32_t)(5000 + i), hz[i]);
+    }
+    md_gpu_temp_end(outer);
+    gpu_close(&f);
+}
+
+/* md_gpu_temp_upload hands back GPU-readable bytes, valid for the scope, and
+   consumes the source at once. */
+UTEST(gpu, temp_upload) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
+
+    enum { N = 3000 };                               /* not a multiple of the alignment */
+    static uint32_t src[N], got[N];
+    for (int i = 0; i < N; ++i) src[i] = 0x9E3779B9u * (uint32_t)(i + 1);
+
+    md_gpu_temp_t t = md_gpu_temp_begin(f.compute);
+    EXPECT_EQ(0u, (unsigned)md_gpu_temp_upload(t, src, 0));
+    md_gpu_addr_t a = md_gpu_temp_upload(t, src, sizeof(src));
+    ASSERT_TRUE(a != 0);
+    EXPECT_EQ(0u, (unsigned)(a % 256));
+    memset(src, 0, sizeof(src));                     /* already consumed */
+    ASSERT_TRUE(gpu_read(&f, f.compute, got, a, sizeof(got)));
+    for (int i = 0; i < N; ++i) ASSERT_EQ(0x9E3779B9u * (uint32_t)(i + 1), got[i]);
+
+    /* In an EXPLICIT region it is visible to what follows without a barrier. */
+    for (int i = 0; i < N; ++i) src[i] = (uint32_t)i;
+    md_gpu_stream_set_ordering(f.compute, MD_GPU_ORDER_EXPLICIT);
+    md_gpu_addr_t b = md_gpu_temp_upload(t, src, sizeof(src));
+    md_gpu_addr_t d = md_gpu_temp_alloc(t, MD_GPU_MEM_DEVICE, sizeof(src)).gpu;
+    ASSERT_TRUE(b && d);
+    ASSERT_TRUE(md_gpu_copy(f.compute, d, b, sizeof(src)));
+    md_gpu_stream_set_ordering(f.compute, MD_GPU_ORDER_IMPLICIT);
+    ASSERT_TRUE(gpu_read(&f, f.compute, got, d, sizeof(got)));
+    for (int i = 0; i < N; ++i) ASSERT_EQ((uint32_t)i, got[i]);
+
+    md_gpu_temp_t none = {0};
+    EXPECT_EQ(0u, (unsigned)md_gpu_temp_upload(none, src, sizeof(src)));
+    EXPECT_EQ(0u, (unsigned)md_gpu_temp_upload(t, NULL, 16));
+    md_gpu_temp_end(t);
     gpu_close(&f);
 }
 

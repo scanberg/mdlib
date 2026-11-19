@@ -1,24 +1,15 @@
 /* md_gpu_select.inl — adapter selection shared by the md_gpu backends.
    Included once by md_gpu_vulkan.c and md_gpu_metal.m (internal, not API). */
 
-#include <ctype.h>
-#include <stdlib.h>
-#include <string.h>
+#include <core/md_str.h>
 
 /* The selector of a device description: desc->adapter, else $MD_GPU_DEVICE,
    with surrounding whitespace removed. Returns false when there is none. */
 static bool md_gpu_sel_get(const md_gpu_device_desc_t* desc, char* out, size_t cap) {
-    const char* s = (desc && desc->adapter && desc->adapter[0]) ? desc->adapter : getenv("MD_GPU_DEVICE");
-    out[0] = 0;
-    if (!s) return false;
-    while (*s && isspace((unsigned char)*s)) ++s;
-    size_t n = strlen(s);
-    while (n && isspace((unsigned char)s[n - 1])) --n;
-    if (n == 0) return false;
-    if (n >= cap) n = cap - 1;
-    memcpy(out, s, n);
-    out[n] = 0;
-    return true;
+    const char* s = (desc && desc->adapter && desc->adapter[0]) ? desc->adapter : md_os_env_get("MD_GPU_DEVICE");
+    const md_str_t sel = md_str_trim(md_str_from_cstr(s));
+    md_str_copy_to_char_buf(out, cap, sel);
+    return !md_str_empty(sel);
 }
 
 /* All digits: an index into the adapter list. */
@@ -26,23 +17,28 @@ static bool md_gpu_sel_index(const char* sel, uint32_t* out_index) {
     if (!sel[0]) return false;
     uint32_t v = 0;
     for (const char* p = sel; *p; ++p) {
-        if (!isdigit((unsigned char)*p)) return false;
-        v = v * 10u + (uint32_t)(*p - '0');
+        if (!md_ascii_is_digit(*p)) return false;
+        v = v * 10u + (uint32_t)md_ascii_char_to_digit(*p);
     }
     *out_index = v;
     return true;
 }
 
+/* Whether `needle` occurs in `hay`, ignoring ASCII case. */
+static bool md_gpu_sel_contains(const char* hay, const char* needle) {
+    const md_str_t n = md_str_from_cstr(needle);
+    for (const char* h = hay; *h; ++h) {
+        size_t k = 0;
+        while (k < n.len && h[k] && md_ascii_to_lower(h[k]) == md_ascii_to_lower(n.ptr[k])) ++k;
+        if (k == n.len) return true;
+    }
+    return false;
+}
+
 static bool md_gpu_sel_matches(const char* sel, uint32_t index, const char* name) {
     uint32_t want;
     if (md_gpu_sel_index(sel, &want)) return want == index;
-    const size_t n = strlen(sel);
-    for (const char* h = name; *h; ++h) {
-        size_t k = 0;
-        while (k < n && h[k] && tolower((unsigned char)h[k]) == tolower((unsigned char)sel[k])) ++k;
-        if (k == n) return true;
-    }
-    return false;
+    return md_gpu_sel_contains(name, sel);
 }
 
 /* Higher is better. */

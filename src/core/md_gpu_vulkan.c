@@ -5,13 +5,13 @@ Structure of this file:
 
     1.  Configuration, error handling, small utilities
     2.  Types
-    3.  Allocation registry (device address -> allocation lookup)
+    3.  Address lookup (device address -> buffer)
     4.  Raw buffers and transient arenas (argument blocks and staging)
     5.  Deferred destruction
     6.  Device creation
     7.  Bindless descriptor set
     8.  Streams, command buffers, submission, ordering
-    9.  Memory: heaps, malloc/free, temp arenas, copies, uploads
+    9.  Memory: chunks for md_gpu_heap, malloc/free, temp scopes, copies, uploads
     10. Textures and samplers
     11. Kernels and launches
     12. Rendering: pipelines, passes, dynamic state, draws
@@ -20,8 +20,10 @@ Structure of this file:
     15. Device destruction
 
 The dependency model is program order within a stream, implemented as a single
-global VkMemoryBarrier2 between consecutive operations in a command buffer
-(IMPLICIT ordering), or as caller-placed stage barriers (EXPLICIT ordering).
+global VkMemoryBarrier2 between consecutive operations (IMPLICIT ordering) --
+from the stages the operations before it wrote in to the stages the next one
+reads in, see md_vk_begin_op -- or as caller-placed stage barriers (EXPLICIT
+ordering).
 There is no per-resource state tracking anywhere in this file, and every image
 lives in VK_IMAGE_LAYOUT_GENERAL for its entire life -- render targets
 included, since dynamic rendering takes GENERAL attachments. Swapchain images
@@ -42,28 +44,17 @@ written on one and read on another needs no queue-family ownership transfer.
 */
 
 #include "md_gpu.h"
-#include "md_gpu_tlsf.h"
+#include "md_gpu_heap.h"
+#include "md_gpu_error.h"
 
 #include <core/md_allocator.h>
+#include <core/md_array.h>
 #include <core/md_format.h>
 #include <core/md_common.h>
 #include <core/md_log.h>
 #include <core/md_os.h>
 
-#include <stdarg.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-
-#if defined(_WIN32)
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>   /* GetModuleHandleW, for Win32 surfaces */
-#endif
+#include <core/md_str.h>
 
 #define VOLK_IMPLEMENTATION
 #include <volk.h>
@@ -101,7 +92,7 @@ written on one and read on another needs no queue-family ownership transfer.
 /* Submissions a stream keeps the GPU times of (md_gpu_sync_gpu_seconds): two
    timestamps each, in a ring of query pairs */
 #define MD_VK_TS_RING                256u
-#define MD_VK_MAX_TEXTURE_SLOTS   4096u   /* sampled + storage views share it */
+#define MD_VK_DEFAULT_TEXTURE_SLOTS 4096u /* sampled + storage views share them */
 #define MD_VK_MAX_SAMPLERS         256u
 #define MD_VK_ARENA_PAGE_SIZE   (256u * 1024u)
 /* A transient allocation larger than this (an upload's staging, mostly) gets a page of its own, of its
@@ -111,41 +102,13 @@ written on one and read on another needs no queue-family ownership transfer.
    and keep it for the stream's lifetime. */
 #define MD_VK_ARENA_DEDICATED   (16ull * 1024u * 1024u)
 #define MD_VK_ARG_ALIGN            64u
-#define MD_VK_HEAP_ALIGN          256u              /* every md_gpu_malloc / temp allocation */
-#define MD_VK_HEAP_CHUNK_MIN     (4ull << 20)       /* first heap chunk of a kind            */
-#define MD_VK_HEAP_CHUNK_MAX    (64ull << 20)       /* chunks grow by doubling up to this    */
-#define MD_VK_HEAP_LARGE_ALIGN  (64ull << 10)       /* granularity of oversized chunks       */
-#define MD_VK_HEAP_CACHE_DEFAULT (256ull << 20)
-#define MD_VK_TEMP_CHUNK_MIN     (4ull << 20)
-#define MD_VK_TEMP_KINDS            2u              /* DEVICE, HOST_WRITE                    */
-#define MD_VK_ERROR_BUF           2560u   /* room for an adapter list with missing features */
+#define MD_VK_DEBUG_GUARD        (64ull << 10)     /* each side of a debug memory allocation */
 
-#if defined(_MSC_VER)
-#define MD_VK_THREAD_LOCAL __declspec(thread)
-#else
-#define MD_VK_THREAD_LOCAL __thread
-#endif
 
-static MD_VK_THREAD_LOCAL char md_vk_error_buf[MD_VK_ERROR_BUF];
-static MD_VK_THREAD_LOCAL bool md_vk_has_error;
 
 /* The instance whose entry points volk holds while a device using it is alive
    (VK_NULL_HANDLE otherwise), so md_gpu_enumerate_adapters can put them back. */
 static VkInstance md_vk_live_instance = VK_NULL_HANDLE;
-
-static bool md_vk_fail(const char* fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    md_vsnprintf(md_vk_error_buf, sizeof(md_vk_error_buf), fmt, ap);
-    va_end(ap);
-    md_vk_has_error = true;
-    MD_LOG_ERROR("md_gpu: %s", md_vk_error_buf);
-    return false;
-}
-
-const char* md_gpu_last_error(void) {
-    return md_vk_has_error ? md_vk_error_buf : NULL;
-}
 
 static const char* md_vk_result_str(VkResult r) {
     switch (r) {
@@ -171,137 +134,30 @@ static const char* md_vk_result_str(VkResult r) {
 
 static bool md_vk_check(VkResult r, const char* what) {
     if (r == VK_SUCCESS) return true;
-    return md_vk_fail("%s failed: %s (%d)", what, md_vk_result_str(r), (int)r);
+    return md_gpu_fail("%s failed: %s (%d)", what, md_vk_result_str(r), (int)r);
 }
-
-static inline uint64_t md_vk_align_up(uint64_t v, uint64_t a) {
-    return (v + a - 1) & ~(a - 1);
-}
-
-/* Minimal growable array of pointers / structs. */
-typedef struct md_vk_vec_t {
-    void*  data;
-    size_t count;
-    size_t capacity;
-    size_t stride;
-} md_vk_vec_t;
-
-static void md_vk_vec_init(md_vk_vec_t* v, size_t stride) {
-    v->data = NULL; v->count = 0; v->capacity = 0; v->stride = stride;
-}
-
-static bool md_vk_vec_reserve(md_vk_vec_t* v, struct md_allocator_i* alloc, size_t n) {
-    if (n <= v->capacity) return true;
-    size_t cap = v->capacity ? v->capacity * 2 : 16;
-    while (cap < n) cap *= 2;
-    void* mem = md_alloc(alloc, cap * v->stride);
-    if (!mem) return false;
-    if (v->data) {
-        memcpy(mem, v->data, v->count * v->stride);
-        md_free(alloc, v->data, v->capacity * v->stride);
-    }
-    v->data = mem;
-    v->capacity = cap;
-    return true;
-}
-
-static void* md_vk_vec_push(md_vk_vec_t* v, struct md_allocator_i* alloc) {
-    if (!md_vk_vec_reserve(v, alloc, v->count + 1)) return NULL;
-    void* slot = (char*)v->data + v->count * v->stride;
-    memset(slot, 0, v->stride);
-    v->count++;
-    return slot;
-}
-
-/* Remove element i, preserving order. */
-static void md_vk_vec_remove(md_vk_vec_t* v, size_t i) {
-    char* base = (char*)v->data;
-    memmove(base + i * v->stride, base + (i + 1) * v->stride, (v->count - i - 1) * v->stride);
-    v->count--;
-}
-
-/* Remove the first element equal to the pointer `p` (for vectors of pointers). */
-static void md_vk_vec_remove_ptr(md_vk_vec_t* v, const void* p) {
-    void** arr = (void**)v->data;
-    for (size_t i = 0; i < v->count; ++i) {
-        if (arr[i] == p) { md_vk_vec_remove(v, i); return; }
-    }
-}
-
-static void md_vk_vec_free(md_vk_vec_t* v, struct md_allocator_i* alloc) {
-    if (v->data) md_free(alloc, v->data, v->capacity * v->stride);
-    v->data = NULL; v->count = 0; v->capacity = 0;
-}
-
-#define MD_VK_VEC_AT(v, type, i) (((type*)(v).data)[i])
 
 /* =========================================================================
    2. Types
    ========================================================================= */
 
-/* One VkBuffer: a region of a heap, or a chunk of a stream's temp arena. */
+/* One VkBuffer with its memory: a chunk of a heap or of a temp arena
+   (md_gpu_heap.h), or one debug memory allocation. */
 typedef struct md_vk_chunk_t {
+    md_gpu_chunk_t    base;          /* first: md_gpu_heap hands out &base      */
     VkBuffer          buffer;
     VkDeviceMemory    memory;
-    uint64_t          address;
-    uint8_t*          host;          /* mapped pointer, or NULL                 */
-    uint64_t          size;
-    md_gpu_mem_kind_t kind;
-    /* Heap chunks. */
-    bool              empty;         /* no live allocation in it                */
-    md_tlsf_node_t*   empty_node;    /* its single free node while empty        */
-    /* Temp chunks. */
-    uint64_t          cursor;
-    uint32_t          owner_depth;   /* scope depth that acquired it            */
-    uint64_t          retire_value;  /* reusable once the stream reaches this   */
-    struct md_vk_range_t* range;     /* registry entry                          */
+    uint32_t          memory_type;   /* of `memory`                             */
+    uint64_t          memory_offset; /* of the buffer in `memory`               */
 } md_vk_chunk_t;
-
-/* A registry entry: one live md_gpu_malloc allocation, or one whole temp
-   chunk. What md_vk_resolve checks addresses against. */
-typedef struct md_vk_range_t {
-    uint64_t          address;
-    uint64_t          size;          /* requested bytes, or the chunk's size    */
-    md_vk_chunk_t*    chunk;
-    uint64_t          chunk_offset;  /* of `address` within chunk->buffer       */
-    md_tlsf_node_t*   node;          /* heap allocation; NULL for a temp chunk  */
-    md_gpu_mem_kind_t kind;
-} md_vk_range_t;
 
 /* A resolved address: where to point a command at. */
 typedef struct md_vk_span_t {
-    VkBuffer buffer;
-    uint64_t offset;                 /* within `buffer`                         */
-    uint8_t* host;                   /* host pointer of the address, or NULL    */
+    VkBuffer       buffer;
+    uint64_t       offset;           /* within `buffer`                         */
+    uint8_t*       host;             /* host pointer of the address, or NULL    */
+    md_vk_chunk_t* chunk;            /* the chunk `buffer` is                   */
 } md_vk_span_t;
-
-/* The device-wide heap for one memory kind. */
-typedef struct md_vk_heap_t {
-    md_tlsf_t   tlsf;
-    md_vk_vec_t chunks;              /* md_vk_chunk_t*                          */
-    uint64_t    reserved;
-    uint64_t    empty_bytes;         /* bytes of chunks with nothing in them    */
-    uint64_t    in_use;
-    uint64_t    peak_in_use;
-    uint32_t    allocations;
-    uint64_t    temp_bytes;          /* temp arenas of every stream, this kind  */
-} md_vk_heap_t;
-
-/* A heap allocation freed at a point its stream has not yet reached. */
-typedef struct md_vk_pending_free_t {
-    md_tlsf_node_t*   node;
-    md_gpu_mem_kind_t kind;
-    md_gpu_stream_t   stream;
-    uint64_t          value;
-} md_vk_pending_free_t;
-
-/* One memory kind of a stream's temp arena. `active` is a stack: chunks the
-   open scopes are filling, in the order they were acquired (so owner_depth
-   never decreases towards the top). `spare` holds retired chunks. */
-typedef struct md_vk_temp_arena_t {
-    md_vk_vec_t active;              /* md_vk_chunk_t* */
-    md_vk_vec_t spare;               /* md_vk_chunk_t* */
-} md_vk_temp_arena_t;
 
 /* One page of host-visible, device-addressable transient memory. */
 typedef struct md_vk_page_t {
@@ -316,7 +172,7 @@ typedef struct md_vk_page_t {
 } md_vk_page_t;
 
 typedef struct md_vk_arena_t {
-    md_vk_vec_t pages;     /* md_vk_page_t* */
+    MD_ARRAY_RAW_TYPE(md_vk_page_t*) pages;
     size_t      current;   /* index of the page being filled */
 } md_vk_arena_t;
 
@@ -331,6 +187,12 @@ typedef struct md_vk_wait_t {
     uint64_t        value;
 } md_vk_wait_t;
 
+/* A VkQueue and the lock Vulkan's external synchronisation asks for. */
+typedef struct md_vk_queue_t {
+    VkQueue    queue;
+    md_mutex_t mutex;
+} md_vk_queue_t;
+
 typedef struct md_gpu_stream {
     md_gpu_device_t      device;
     md_gpu_stream_kind_t kind;
@@ -338,25 +200,42 @@ typedef struct md_gpu_stream {
     bool                 can_compute;      /* false on a transfer-only family */
     bool                 can_graphics;     /* GRAPHICS streams                */
     VkQueue              queue;
+    md_vk_queue_t*       q;                /* `queue` with its lock */
     VkSemaphore          timeline;
     uint64_t             next_value;       /* value the next submit signals */
     uint64_t             submitted_value;  /* last value submitted          */
+    /* md_vk_stream_position, published for other threads (deferred
+       destruction reads every stream's); md_atomic_*64. */
+    volatile uint64_t    position;
 
     VkCommandPool        cmd_pool;
-    md_vk_vec_t          cmds;             /* md_vk_cmd_t */
+    MD_ARRAY_RAW_TYPE(md_vk_cmd_t) cmds;
     VkCommandBuffer      open;             /* currently recording, or NULL  */
     bool                 has_work;
-    bool                 needs_barrier;
+    /* Stages of the operations recorded since md_gpu last placed a barrier,
+       across submissions: what the next barrier waits for. */
+    md_gpu_stage_flags_t written;
+    bool                 order_next;       /* order the next op after `written`
+                                              in either ordering mode (the first
+                                              op of an EXPLICIT region)        */
+    bool                 cb_head;          /* nothing recorded yet in `open`   */
     bool                 force_barrier;    /* full barrier before the next op, in
                                               either ordering mode (memory reuse) */
     md_gpu_ordering_t    ordering;
+    /* Bindings in the open command buffer, set once and kept. */
+    struct md_gpu_kernel* bound_kernel;
+    bool                 compute_set_bound;
+    bool                 graphics_set_bound;
 
-    md_vk_vec_t          waits;            /* md_vk_wait_t, pending for the next submit */
+    /* Pending for the next submit. The owner adds and consumes them, and
+       destroying another stream removes the waits on it, so they have a lock:
+       wait_mutex, taken after device_mutex and before a queue's. */
+    MD_ARRAY_RAW_TYPE(md_vk_wait_t) waits;
+    md_mutex_t           wait_mutex;
 
     md_vk_arena_t        arena;
 
-    md_vk_temp_arena_t   temp[MD_VK_TEMP_KINDS];
-    uint32_t             temp_depth;       /* open temp scopes */
+    md_gpu_heap_temps_t  temps;            /* md_gpu_temp_* scopes */
 
     /* Binary semaphores for the next submit: swapchain acquire and present. */
     VkSemaphore          bin_waits[4];
@@ -378,7 +257,8 @@ typedef struct md_gpu_stream {
     bool                 upload_open;
     bool                 upload_direct;
     md_gpu_addr_t        upload_dst;
-    uint64_t             upload_src_addr;
+    VkBuffer             upload_src;           /* staging: an arena page        */
+    uint64_t             upload_src_offset;
     size_t               upload_size;
 
     /* The GPU time of the last MD_VK_TS_RING submissions: a pair of timestamps
@@ -510,13 +390,15 @@ typedef enum md_vk_retire_kind_t {
     MD_VK_RETIRE_KERNEL,
     MD_VK_RETIRE_PIPELINE,
     MD_VK_RETIRE_SWAPCHAIN,
+    MD_VK_RETIRE_SEMAPHORE,     /* a destroyed stream's timeline: other streams' submissions may still wait on it */
 } md_vk_retire_kind_t;
 
 /* An object whose destruction waits for every stream to pass the point at
    which it was destroyed. Owns `waits`. */
 typedef struct md_vk_retire_t {
     md_vk_retire_kind_t kind;
-    void*               object;     /* md_gpu_texture_t / md_gpu_kernel_t */
+    void*               object;     /* md_gpu_texture_t / md_gpu_kernel_t / ... */
+    VkSemaphore         semaphore;  /* MD_VK_RETIRE_SEMAPHORE */
     md_vk_wait_t*       waits;
     uint32_t            wait_count;
     uint32_t            wait_capacity;   /* what md_free must be told */
@@ -538,6 +420,15 @@ typedef struct md_vk_dev_caps_t {
     bool shader_int64;
     bool storage_read_without_format;    /* device-wide; otherwise per format */
     bool storage_write_without_format;
+    /* Above the floor, enabled where present and reported in md_gpu_device_info_t. */
+    bool float16;                        /* shaderFloat16 + storageBuffer16BitAccess */
+    bool float64;
+    bool int64_atomics;                  /* buffer; shared ones too where present */
+    bool int64_shared_atomics;
+    bool float_atomics;                  /* VK_EXT_shader_atomic_float           */
+    VkPhysicalDeviceShaderAtomicFloatFeaturesEXT  atomic_float;
+    bool float_atomics2;                 /* VK_EXT_shader_atomic_float2          */
+    VkPhysicalDeviceShaderAtomicFloat2FeaturesEXT atomic_float2;
 } md_vk_dev_caps_t;
 
 typedef struct md_gpu_device {
@@ -549,6 +440,7 @@ typedef struct md_gpu_device {
     VkPhysicalDeviceMemoryProperties mem_props;
     VkPhysicalDeviceProperties       props;
     uint32_t                         subgroup_size;
+    VkSubgroupFeatureFlags           subgroup_ops;     /* in compute kernels */
     char                             driver_desc[256];
 
     uint32_t compute_family, transfer_family, graphics_family;   /* graphics: UINT32_MAX if none */
@@ -571,8 +463,12 @@ typedef struct md_gpu_device {
     VkQueue  graphics_queues[MD_VK_MAX_QUEUES_PER_FAMILY];
     uint32_t graphics_queue_count;
     uint32_t next_compute_queue, next_transfer_queue, next_graphics_queue;
-    md_mutex_t queue_mutex;      /* streams may share a VkQueue */
-    md_mutex_t device_mutex;     /* heaps, registry, textures, retire and callback lists */
+    /* Each distinct VkQueue once (families may coincide), with the lock that
+       its submissions and presents take: streams may share a queue. */
+    md_vk_queue_t queues[3 * MD_VK_MAX_QUEUES_PER_FAMILY];
+    uint32_t      queue_count;
+    md_mutex_t device_mutex;     /* object lists, deferred destruction, host callbacks, bindless
+                                    slots and their descriptor writes, the sampler cache */
 
     /* Bindless */
     VkDescriptorSetLayout set_layout;
@@ -589,30 +485,27 @@ typedef struct md_gpu_device {
     VkSampler       dummy_sampler;
 
     /* Texture heap slots; slot 0 is never handed out so zero stays null. */
-    uint32_t        tex_free[MD_VK_MAX_TEXTURE_SLOTS];
+    uint32_t*       tex_free;              /* tex_slot_count - 1 entries        */
     uint32_t        tex_free_count;
+    uint32_t        tex_slot_count;        /* slots in each image binding       */
+    uint32_t        device_buffer_types;   /* memory types MD_GPU_MEM_DEVICE chunks may use */
 
     md_vk_sampler_entry_t samplers[MD_VK_MAX_SAMPLERS];
     uint32_t              sampler_count;   /* slots 1..sampler_count used */
 
-    /* Address -> allocation registry, sorted ascending by address. */
-    md_vk_vec_t     registry;   /* md_vk_range_t* */
-
-    md_vk_heap_t    heaps[MD_GPU_MEM_KIND_COUNT];
-    md_vk_vec_t     pending_frees;   /* md_vk_pending_free_t */
-    uint64_t        heap_cache_limit;
-    md_vk_vec_t     textures;   /* md_gpu_texture_t, live */
+    md_gpu_heap_t   heap;       /* md_gpu_malloc, md_gpu_free, temp scopes, address lookup */
+    MD_ARRAY_RAW_TYPE(md_gpu_texture_t) textures; /* live */
     uint64_t        texture_bytes;
-    md_vk_vec_t     kernels;    /* md_gpu_kernel_t */
-    md_vk_vec_t     pipelines;  /* md_gpu_pipeline_t */
-    md_vk_vec_t     surfaces;   /* md_gpu_surface_t */
-    md_vk_vec_t     streams;    /* md_gpu_stream_t */
+    MD_ARRAY_RAW_TYPE(md_gpu_kernel_t) kernels;
+    MD_ARRAY_RAW_TYPE(md_gpu_pipeline_t) pipelines;
+    MD_ARRAY_RAW_TYPE(md_gpu_surface_t) surfaces;
+    MD_ARRAY_RAW_TYPE(md_gpu_stream_t) streams;
     md_gpu_stream_t default_compute;
     md_gpu_stream_t default_transfer;
     md_gpu_stream_t default_graphics;   /* NULL without graphics support */
 
-    md_vk_vec_t     hostfns;    /* md_vk_hostfn_t */
-    md_vk_vec_t     retires;    /* md_vk_retire_t */
+    MD_ARRAY_RAW_TYPE(md_vk_hostfn_t) hostfns;
+    MD_ARRAY_RAW_TYPE(md_vk_retire_t) retires;
 
     md_gpu_kernel_t make_grid_kernel;
 
@@ -640,80 +533,39 @@ static void     md_vk_texture_free(md_gpu_device_t dev, md_gpu_texture_t t);
 static void     md_vk_kernel_free(md_gpu_device_t dev, md_gpu_kernel_t k);
 static void     md_vk_pipeline_free(md_gpu_device_t dev, md_gpu_pipeline_t p);
 static void     md_vk_swapchain_free(md_gpu_device_t dev, md_vk_swapchain_t* sc);
-static void     md_vk_heap_release_node_locked(md_gpu_device_t dev, md_gpu_mem_kind_t kind, md_tlsf_node_t* node);
-static void     md_vk_temp_free_all(md_gpu_stream_t s);
+static void     md_vk_heap_init(md_gpu_device_t dev, uint64_t cache_limit, bool debug);
 static void     md_vk_abandon_pass(md_gpu_stream_t s);
 
-/* =========================================================================
-   3. Allocation registry
-   ========================================================================= */
-
-/* Binary search for the range containing `address`. Caller holds device_mutex. */
-static md_vk_range_t* md_vk_registry_find_locked(md_gpu_device_t dev, uint64_t address) {
-    size_t lo = 0, hi = dev->registry.count;
-    md_vk_range_t** arr = (md_vk_range_t**)dev->registry.data;
-    while (lo < hi) {
-        size_t mid = (lo + hi) / 2;
-        md_vk_range_t* r = arr[mid];
-        if (address < r->address) {
-            hi = mid;
-        } else if (address >= r->address + r->size) {
-            lo = mid + 1;
-        } else {
-            return r;
-        }
+/* The entry of a VkQueue, or NULL. */
+static md_vk_queue_t* md_vk_queue(md_gpu_device_t dev, VkQueue queue) {
+    for (uint32_t i = 0; i < dev->queue_count; ++i) {
+        if (dev->queues[i].queue == queue) return &dev->queues[i];
     }
     return NULL;
 }
 
-static bool md_vk_registry_insert_locked(md_gpu_device_t dev, md_vk_range_t* r) {
-    if (!md_vk_vec_reserve(&dev->registry, dev->alloc, dev->registry.count + 1)) return false;
-    md_vk_range_t** arr = (md_vk_range_t**)dev->registry.data;
-    /* Binary search for the insertion point, then one memmove. */
-    size_t lo = 0, hi = dev->registry.count;
-    while (lo < hi) {
-        size_t mid = (lo + hi) / 2;
-        if (arr[mid]->address < r->address) lo = mid + 1; else hi = mid;
-    }
-    memmove(arr + lo + 1, arr + lo, (dev->registry.count - lo) * sizeof(*arr));
-    arr[lo] = r;
-    dev->registry.count++;
-    return true;
+/* vkDeviceWaitIdle needs every queue to itself. */
+static void md_vk_device_wait_idle(md_gpu_device_t dev) {
+    for (uint32_t i = 0; i < dev->queue_count; ++i) md_mutex_lock(&dev->queues[i].mutex);
+    vkDeviceWaitIdle(dev->device);
+    for (uint32_t i = dev->queue_count; i-- > 0;) md_mutex_unlock(&dev->queues[i].mutex);
 }
 
-static void md_vk_registry_remove_locked(md_gpu_device_t dev, md_vk_range_t* r) {
-    size_t lo = 0, hi = dev->registry.count;
-    md_vk_range_t** arr = (md_vk_range_t**)dev->registry.data;
-    while (lo < hi) {
-        size_t mid = (lo + hi) / 2;
-        if (arr[mid]->address < r->address) lo = mid + 1; else hi = mid;
-    }
-    if (lo < dev->registry.count && arr[lo] == r) md_vk_vec_remove(&dev->registry, lo);
-}
+/* =========================================================================
+   3. Address lookup
+   ========================================================================= */
 
-/* Resolve [addr, addr + size) to where it lives. Takes the device lock for
-   the lookup: the registry is mutated by malloc on other threads, so an
-   unlocked binary search is a data race. `what` names the calling function
-   for the error message. */
+/* Resolve [addr, addr + size) to the buffer it lives in (md_gpu_heap.h keeps
+   the registry). `what` names the calling function for the error message. */
 static bool md_vk_resolve(md_gpu_device_t dev, md_gpu_addr_t addr, uint64_t size,
                           md_vk_span_t* out, const char* what) {
-    md_mutex_lock(&dev->device_mutex);
-    md_vk_range_t* r = md_vk_registry_find_locked(dev, addr);
-    md_vk_range_t  copy;
-    if (r) copy = *r;
-    md_mutex_unlock(&dev->device_mutex);
-    if (!r) {
-        return md_vk_fail("%s: 0x%llx is not a live md_gpu allocation", what, (unsigned long long)addr);
-    }
-    const uint64_t off = addr - copy.address;
-    if (size > copy.size || off > copy.size - size) {
-        return md_vk_fail("%s: range [0x%llx, +%llu) overruns its %llu-byte allocation",
-                          what, (unsigned long long)addr, (unsigned long long)size, (unsigned long long)copy.size);
-    }
+    md_gpu_heap_span_t sp;
+    if (!md_gpu_heap_resolve(&dev->heap, addr, size, &sp, what)) return false;
     if (out) {
-        out->buffer = copy.chunk->buffer;
-        out->offset = copy.chunk_offset + off;
-        out->host   = copy.chunk->host ? copy.chunk->host + copy.chunk_offset + off : NULL;
+        out->chunk  = (md_vk_chunk_t*)sp.chunk;
+        out->buffer = out->chunk->buffer;
+        out->offset = sp.offset;
+        out->host   = sp.host;
     }
     return true;
 }
@@ -721,18 +573,6 @@ static bool md_vk_resolve(md_gpu_device_t dev, md_gpu_addr_t addr, uint64_t size
 /* =========================================================================
    4. Raw buffers and transient arenas
    ========================================================================= */
-
-static uint32_t md_vk_find_memory_type(md_gpu_device_t dev, uint32_t type_bits, VkMemoryPropertyFlags required, VkMemoryPropertyFlags preferred) {
-    uint32_t best = UINT32_MAX;
-    for (uint32_t i = 0; i < dev->mem_props.memoryTypeCount; ++i) {
-        if (!(type_bits & (1u << i))) continue;
-        VkMemoryPropertyFlags f = dev->mem_props.memoryTypes[i].propertyFlags;
-        if ((f & required) != required) continue;
-        if (preferred && (f & preferred) == preferred) return i;
-        if (best == UINT32_MAX) best = i;
-    }
-    return best;
-}
 
 /* The memory types to allocate from, in the order to try them: those with every preferred flag and
    none of the avoided ones, then those with every preferred flag, then the rest with the required
@@ -756,6 +596,22 @@ static uint32_t md_vk_memory_types(md_gpu_device_t dev, uint32_t type_bits, VkMe
     return n;
 }
 
+/* Device local memory of its own for `image`, bound. */
+static bool md_vk_image_memory(md_gpu_device_t dev, VkImage image, VkDeviceMemory* out_mem, uint64_t* out_size) {
+    VkMemoryRequirements req;
+    vkGetImageMemoryRequirements(dev->device, image, &req);
+    uint32_t types[VK_MAX_MEMORY_TYPES];
+    uint32_t n = md_vk_memory_types(dev, req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, 0, types);
+    if (n == 0) n = md_vk_memory_types(dev, req.memoryTypeBits, 0, 0, 0, types);   /* UMA */
+    if (n == 0) return md_gpu_fail("no memory type for an image");
+    VkMemoryAllocateInfo mai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    mai.allocationSize  = req.size;
+    mai.memoryTypeIndex = types[0];
+    if (!md_vk_check(vkAllocateMemory(dev->device, &mai, NULL, out_mem), "vkAllocateMemory (image)")) return false;
+    if (out_size) *out_size = req.size;
+    return md_vk_check(vkBindImageMemory(dev->device, image, *out_mem, 0), "vkBindImageMemory");
+}
+
 static void md_vk_set_sharing(md_gpu_device_t dev, VkSharingMode* mode, uint32_t* count, const uint32_t** families) {
     if (dev->share_family_count > 1) {
         *mode     = VK_SHARING_MODE_CONCURRENT;
@@ -769,8 +625,9 @@ static void md_vk_set_sharing(md_gpu_device_t dev, VkSharingMode* mode, uint32_t
 }
 
 /* staging: host memory, not device local, preferred for a host visible kind (what a copy reads once) */
-static bool md_vk_create_raw_buffer_ex(md_gpu_device_t dev, uint64_t size, md_gpu_mem_kind_t kind, bool staging,
-                                       VkBuffer* out_buf, VkDeviceMemory* out_mem, uint64_t* out_addr, void** out_host) {
+/* Every md_gpu buffer is made alike, so all of them can use the same memory
+   types (memoryTypeBits depends only on usage, flags and sharing). */
+static VkBufferCreateInfo md_vk_buffer_info(md_gpu_device_t dev, uint64_t size) {
     VkBufferCreateInfo bci = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     bci.size  = size;
     bci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
@@ -781,12 +638,68 @@ static bool md_vk_create_raw_buffer_ex(md_gpu_device_t dev, uint64_t size, md_gp
               | VK_BUFFER_USAGE_INDEX_BUFFER_BIT
               | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     md_vk_set_sharing(dev, &bci.sharingMode, &bci.queueFamilyIndexCount, &bci.pQueueFamilyIndices);
+    return bci;
+}
 
+/* The memory types MD_GPU_MEM_DEVICE chunks may use. Where some device local
+   type also takes optimally tiled images, only those, so that textures can be
+   placed in DEVICE memory (md_gpu_texture_create_at). */
+static void md_vk_init_device_types(md_gpu_device_t dev) {
+    VkBufferCreateInfo bci = md_vk_buffer_info(dev, 65536);
+    VkDeviceBufferMemoryRequirements dbmr = {VK_STRUCTURE_TYPE_DEVICE_BUFFER_MEMORY_REQUIREMENTS};
+    dbmr.pCreateInfo = &bci;
+    VkMemoryRequirements2 bmr = {VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2};
+    vkGetDeviceBufferMemoryRequirements(dev->device, &dbmr, &bmr);
+
+    VkImageCreateInfo ici = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    ici.imageType   = VK_IMAGE_TYPE_2D;
+    ici.format      = VK_FORMAT_R8G8B8A8_UNORM;
+    ici.extent      = (VkExtent3D){64, 64, 1};
+    ici.mipLevels   = 1;
+    ici.arrayLayers = 1;
+    ici.samples     = VK_SAMPLE_COUNT_1_BIT;
+    ici.tiling      = VK_IMAGE_TILING_OPTIMAL;
+    ici.usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                      VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
+    md_vk_set_sharing(dev, &ici.sharingMode, &ici.queueFamilyIndexCount, &ici.pQueueFamilyIndices);
+    VkDeviceImageMemoryRequirements dimr = {VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS};
+    dimr.pCreateInfo = &ici;
+    VkMemoryRequirements2 imr = {VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2};
+    vkGetDeviceImageMemoryRequirements(dev->device, &dimr, &imr);
+
+    const uint32_t buf  = bmr.memoryRequirements.memoryTypeBits;
+    const uint32_t both = buf & imr.memoryRequirements.memoryTypeBits;
+    uint32_t types[VK_MAX_MEMORY_TYPES];
+    dev->device_buffer_types = md_vk_memory_types(dev, both, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, 0, types) ? both : buf;
+}
+
+/* A VkBuffer with VkDeviceMemory of its own. */
+typedef struct md_vk_raw_t {
+    VkBuffer       buffer;
+    VkDeviceMemory memory;
+    uint32_t       memory_type;
+    uint64_t       memory_offset;   /* of the buffer in `memory`  */
+    uint64_t       address;
+    uint8_t*       host;            /* of the buffer, or NULL     */
+} md_vk_raw_t;
+
+enum {
+    MD_VK_RAW_STAGING = 1u << 0,    /* host memory, not device local, preferred for a host visible kind
+                                       (what a copy reads once) */
+    MD_VK_RAW_GUARDED = 1u << 1,    /* MD_VK_DEBUG_GUARD bytes of memory no buffer covers on each side */
+};
+
+static bool md_vk_raw_create(md_gpu_device_t dev, uint64_t size, md_gpu_mem_kind_t kind, uint32_t flags, md_vk_raw_t* out) {
+    const bool staging = (flags & MD_VK_RAW_STAGING) != 0;
+    VkBufferCreateInfo bci = md_vk_buffer_info(dev, size);
     VkBuffer buf = VK_NULL_HANDLE;
     if (!md_vk_check(vkCreateBuffer(dev->device, &bci, NULL, &buf), "vkCreateBuffer")) return false;
 
     VkMemoryRequirements req;
     vkGetBufferMemoryRequirements(dev->device, buf, &req);
+    if (kind == MD_GPU_MEM_DEVICE && (req.memoryTypeBits & dev->device_buffer_types)) {
+        req.memoryTypeBits &= dev->device_buffer_types;
+    }
 
     const bool host_visible = kind != MD_GPU_MEM_DEVICE;
     VkMemoryPropertyFlags required = 0, preferred = 0, avoid = 0;
@@ -807,21 +720,26 @@ static bool md_vk_create_raw_buffer_ex(md_gpu_device_t dev, uint64_t size, md_gp
     }
     if (num_types == 0) {
         vkDestroyBuffer(dev->device, buf, NULL);
-        return md_vk_fail("no suitable memory type for %llu bytes (kind %d)", (unsigned long long)size, (int)kind);
+        return md_gpu_fail("no suitable memory type for %llu bytes (kind %d)", (unsigned long long)size, (int)kind);
     }
 
     VkMemoryAllocateFlagsInfo fi = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO};
     fi.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
 
+    /* Guarded: the buffer sits between two stretches of its memory that no
+       buffer covers, so that GPU-assisted validation, which checks pointer
+       accesses against buffer ranges, sees an access past either end. */
+    const uint64_t guard = (flags & MD_VK_RAW_GUARDED) ? MD_ALIGN_TO(MD_VK_DEBUG_GUARD, req.alignment) : 0;
     VkMemoryAllocateInfo mai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
     mai.pNext           = &fi;
-    mai.allocationSize  = req.size;
+    mai.allocationSize  = guard ? guard + MD_ALIGN_TO(req.size, req.alignment) + guard : req.size;
 
     /* the first type whose heap has room */
     VkDeviceMemory mem = VK_NULL_HANDLE;
     VkResult res = VK_ERROR_OUT_OF_DEVICE_MEMORY;
     for (uint32_t t = 0; t < num_types && mem == VK_NULL_HANDLE; ++t) {
         mai.memoryTypeIndex = types[t];
+        out->memory_type    = types[t];
         res = vkAllocateMemory(dev->device, &mai, NULL, &mem);
         if (res != VK_SUCCESS) mem = VK_NULL_HANDLE;
         if (res != VK_SUCCESS && res != VK_ERROR_OUT_OF_DEVICE_MEMORY && res != VK_ERROR_OUT_OF_HOST_MEMORY) break;
@@ -829,9 +747,9 @@ static bool md_vk_create_raw_buffer_ex(md_gpu_device_t dev, uint64_t size, md_gp
     if (mem == VK_NULL_HANDLE) {
         vkDestroyBuffer(dev->device, buf, NULL);
         md_vk_check(res, "vkAllocateMemory");
-        return md_vk_fail("could not allocate %llu bytes (kind %d) from any of %u memory types", (unsigned long long)size, (int)kind, num_types);
+        return md_gpu_fail("could not allocate %llu bytes (kind %d) from any of %u memory types", (unsigned long long)size, (int)kind, num_types);
     }
-    if (!md_vk_check(vkBindBufferMemory(dev->device, buf, mem, 0), "vkBindBufferMemory")) {
+    if (!md_vk_check(vkBindBufferMemory(dev->device, buf, mem, guard), "vkBindBufferMemory")) {
         vkFreeMemory(dev->device, mem, NULL);
         vkDestroyBuffer(dev->device, buf, NULL);
         return false;
@@ -848,15 +766,12 @@ static bool md_vk_create_raw_buffer_ex(md_gpu_device_t dev, uint64_t size, md_gp
 
     VkBufferDeviceAddressInfo bdai = {VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
     bdai.buffer = buf;
-    uint64_t addr = vkGetBufferDeviceAddress(dev->device, &bdai);
-
-    *out_buf = buf; *out_mem = mem; *out_addr = addr; *out_host = host;
+    out->buffer        = buf;
+    out->memory        = mem;
+    out->memory_offset = guard;
+    out->address       = vkGetBufferDeviceAddress(dev->device, &bdai);
+    out->host          = host ? (uint8_t*)host + guard : NULL;
     return true;
-}
-
-static bool md_vk_create_raw_buffer(md_gpu_device_t dev, uint64_t size, md_gpu_mem_kind_t kind,
-                                    VkBuffer* out_buf, VkDeviceMemory* out_mem, uint64_t* out_addr, void** out_host) {
-    return md_vk_create_raw_buffer_ex(dev, size, kind, false, out_buf, out_mem, out_addr, out_host);
 }
 
 static void md_vk_destroy_raw_buffer(md_gpu_device_t dev, VkBuffer buf, VkDeviceMemory mem) {
@@ -867,14 +782,17 @@ static void md_vk_destroy_raw_buffer(md_gpu_device_t dev, VkBuffer buf, VkDevice
 static md_vk_page_t* md_vk_page_create(md_gpu_device_t dev, uint64_t size, bool dedicated) {
     md_vk_page_t* p = (md_vk_page_t*)md_alloc(dev->alloc, sizeof(md_vk_page_t));
     if (!p) return NULL;
-    memset(p, 0, sizeof(*p));
+    md_memset(p, 0, sizeof(*p));
     p->dedicated = dedicated;
-    void* host = NULL;
-    if (!md_vk_create_raw_buffer_ex(dev, size, MD_GPU_MEM_HOST_WRITE, dedicated, &p->buffer, &p->memory, &p->address, &host)) {
+    md_vk_raw_t raw;
+    if (!md_vk_raw_create(dev, size, MD_GPU_MEM_HOST_WRITE, dedicated ? MD_VK_RAW_STAGING : 0, &raw)) {
         md_free(dev->alloc, p, sizeof(md_vk_page_t));
         return NULL;
     }
-    p->host     = (uint8_t*)host;
+    p->buffer   = raw.buffer;
+    p->memory   = raw.memory;
+    p->address  = raw.address;
+    p->host     = raw.host;
     p->capacity = size;
     return p;
 }
@@ -906,11 +824,11 @@ static bool md_vk_arena_alloc(md_gpu_stream_t s, size_t size, uint64_t* out_addr
                               VkBuffer* out_buffer, uint64_t* out_offset) {
     md_gpu_device_t dev = s->device;
     md_vk_arena_t*  a   = &s->arena;
-    uint64_t need = md_vk_align_up(size, MD_VK_ARG_ALIGN);
+    uint64_t need = MD_ALIGN_TO(size, MD_VK_ARG_ALIGN);
 
     /* Try the current page. */
-    if (a->current < a->pages.count) {
-        md_vk_page_t* p = MD_VK_VEC_AT(a->pages, md_vk_page_t*, a->current);
+    if (a->current < a->pages.size) {
+        md_vk_page_t* p = a->pages.data[a->current];
         if (!p->dedicated && p->cursor + need <= p->capacity) {
             md_vk_page_take(p, need, out_addr, out_host, out_buffer, out_offset);
             return true;
@@ -919,14 +837,14 @@ static bool md_vk_arena_alloc(md_gpu_stream_t s, size_t size, uint64_t* out_addr
 
     /* Look for a retired page with room; a retired dedicated page is freed. */
     uint64_t done = md_vk_stream_completed(s);
-    for (size_t i = 0; i < a->pages.count;) {
-        md_vk_page_t* p = MD_VK_VEC_AT(a->pages, md_vk_page_t*, i);
+    for (size_t i = 0; i < a->pages.size;) {
+        md_vk_page_t* p = a->pages.data[i];
         const bool retired = p->retire_value != 0 && p->retire_value <= done;
         if (p->dedicated) {
             if (retired) {
                 md_vk_page_destroy(dev, p);
-                md_vk_vec_remove(&a->pages, i);
-                if (a->current > i || a->current >= a->pages.count) a->current = a->current > 0 ? a->current - 1 : 0;
+                MD_ARRAY_REMOVE(a->pages, i);
+                if (a->current > i || a->current >= a->pages.size) a->current = a->current > 0 ? a->current - 1 : 0;
             } else {
                 ++i;
             }
@@ -947,14 +865,12 @@ static bool md_vk_arena_alloc(md_gpu_stream_t s, size_t size, uint64_t* out_addr
     /* Allocate a new page: shared, or the allocation's own. */
     const bool dedicated = need > MD_VK_ARENA_DEDICATED;
     uint64_t page_size = MD_VK_ARENA_PAGE_SIZE;
-    if (dedicated) page_size = md_vk_align_up(need, 65536);
+    if (dedicated) page_size = MD_ALIGN_TO(need, 65536);
     else while (page_size < need) page_size *= 2;
     md_vk_page_t* p = md_vk_page_create(dev, page_size, dedicated);
-    if (!p) return md_vk_fail("failed to allocate a %llu byte transient page", (unsigned long long)page_size);
-    md_vk_page_t** slot = (md_vk_page_t**)md_vk_vec_push(&a->pages, dev->alloc);
-    if (!slot) { md_vk_page_destroy(dev, p); return md_vk_fail("out of memory"); }
-    *slot = p;
-    if (!dedicated) a->current = a->pages.count - 1;
+    if (!p) return md_gpu_fail("failed to allocate a %llu byte transient page", (unsigned long long)page_size);
+    if (!MD_ARRAY_TRY_PUSH(a->pages, p)) { md_vk_page_destroy(dev, p); return md_gpu_fail("out of memory"); }
+    if (!dedicated) a->current = a->pages.size - 1;
     md_vk_page_take(p, need, out_addr, out_host, out_buffer, out_offset);
     return true;
 }
@@ -971,17 +887,17 @@ static bool md_vk_arena_alloc(md_gpu_stream_t s, size_t size, uint64_t* out_addr
    finished. */
 static void md_vk_arena_retire(md_gpu_stream_t s, uint64_t value) {
     md_vk_arena_t* a = &s->arena;
-    for (size_t i = 0; i < a->pages.count; ++i) {
-        md_vk_page_t* p = MD_VK_VEC_AT(a->pages, md_vk_page_t*, i);
+    for (size_t i = 0; i < a->pages.size; ++i) {
+        md_vk_page_t* p = a->pages.data[i];
         if (p->cursor > 0) p->retire_value = value;
     }
 }
 
 static void md_vk_arena_free(md_gpu_device_t dev, md_vk_arena_t* a) {
-    for (size_t i = 0; i < a->pages.count; ++i) {
-        md_vk_page_destroy(dev, MD_VK_VEC_AT(a->pages, md_vk_page_t*, i));
+    for (size_t i = 0; i < a->pages.size; ++i) {
+        md_vk_page_destroy(dev, a->pages.data[i]);
     }
-    md_vk_vec_free(&a->pages, dev->alloc);
+    MD_ARRAY_FREE(a->pages);
 }
 
 /* =========================================================================
@@ -994,23 +910,38 @@ static uint64_t md_vk_stream_position(md_gpu_stream_t s) {
     return s->has_work ? s->next_value : s->submitted_value;
 }
 
-/* Queue `object` for destruction once every stream has passed its current
-   position. Caller holds device_mutex. If the wait list cannot be allocated,
-   falls back to idling the device -- the one case in which this blocks,
-   because freeing under the GPU is not an option. */
-static void md_vk_retire_locked(md_gpu_device_t dev, md_vk_retire_kind_t kind, void* object) {
-    md_vk_retire_t r = {0};
-    r.kind   = kind;
-    r.object = object;
+/* Something was recorded: the stream's position moves to its next value. */
+static void md_vk_mark_work(md_gpu_stream_t s) {
+    if (s->has_work) return;
+    s->has_work = true;
+    md_atomic_store64(&s->position, s->next_value);
+}
 
-    uint32_t n = (uint32_t)dev->streams.count;
+static void md_vk_retire_release(md_gpu_device_t dev, const md_vk_retire_t* e) {
+    switch (e->kind) {
+    case MD_VK_RETIRE_TEXTURE:   md_vk_texture_free(dev, (md_gpu_texture_t)e->object);    break;
+    case MD_VK_RETIRE_KERNEL:    md_vk_kernel_free(dev, (md_gpu_kernel_t)e->object);      break;
+    case MD_VK_RETIRE_PIPELINE:  md_vk_pipeline_free(dev, (md_gpu_pipeline_t)e->object);  break;
+    case MD_VK_RETIRE_SWAPCHAIN: md_vk_swapchain_free(dev, (md_vk_swapchain_t*)e->object); break;
+    case MD_VK_RETIRE_SEMAPHORE: vkDestroySemaphore(dev->device, e->semaphore, NULL);      break;
+    }
+}
+
+/* Queue `r` for destruction once every stream has passed its current
+   position. Caller holds device_mutex. Other streams' positions are read as
+   they last published them: work that uses `r` was recorded before this call,
+   so its position was published before too. If the wait list cannot be
+   allocated, falls back to idling the device -- the one case in which this
+   blocks, because freeing under the GPU is not an option. */
+static void md_vk_retire_entry_locked(md_gpu_device_t dev, md_vk_retire_t r) {
+    uint32_t n = (uint32_t)dev->streams.size;
     if (n > 0) {
         r.waits = (md_vk_wait_t*)md_alloc(dev->alloc, n * sizeof(md_vk_wait_t));
     }
     if (n > 0 && r.waits) {
         md_gpu_stream_t* arr = (md_gpu_stream_t*)dev->streams.data;
         for (uint32_t i = 0; i < n; ++i) {
-            uint64_t v = md_vk_stream_position(arr[i]);
+            const uint64_t v = md_atomic_load64(&arr[i]->position);
             if (v > 0 && md_vk_stream_completed(arr[i]) < v) {
                 r.waits[r.wait_count].stream = arr[i];
                 r.waits[r.wait_count].value  = v;
@@ -1021,41 +952,34 @@ static void md_vk_retire_locked(md_gpu_device_t dev, md_vk_retire_kind_t kind, v
 
     r.wait_capacity = r.waits ? n : 0;
 
-    md_vk_retire_t* slot = NULL;
-    if (n == 0 || r.waits) slot = (md_vk_retire_t*)md_vk_vec_push(&dev->retires, dev->alloc);
-    if (!slot) {
-        md_vk_fail("out of memory recording a deferred destruction; waiting for the device");
+    if (!((n == 0 || r.waits) && MD_ARRAY_TRY_PUSH(dev->retires, r))) {
+        md_gpu_fail("out of memory recording a deferred destruction; waiting for the device");
         if (r.waits) md_free(dev->alloc, r.waits, n * sizeof(md_vk_wait_t));
-        vkDeviceWaitIdle(dev->device);
-        switch (kind) {
-        case MD_VK_RETIRE_TEXTURE: md_vk_texture_free(dev, (md_gpu_texture_t)object); break;
-        case MD_VK_RETIRE_KERNEL:  md_vk_kernel_free(dev, (md_gpu_kernel_t)object);   break;
-        case MD_VK_RETIRE_PIPELINE:  md_vk_pipeline_free(dev, (md_gpu_pipeline_t)object); break;
-        case MD_VK_RETIRE_SWAPCHAIN: md_vk_swapchain_free(dev, (md_vk_swapchain_t*)object); break;
-        }
-        return;
+        md_vk_device_wait_idle(dev);
+        md_vk_retire_release(dev, &r);
     }
-    *slot = r;
+}
+
+static void md_vk_retire_locked(md_gpu_device_t dev, md_vk_retire_kind_t kind, void* object) {
+    md_vk_retire_t r = {0};
+    r.kind   = kind;
+    r.object = object;
+    md_vk_retire_entry_locked(dev, r);
 }
 
 /* Release every retire entry whose waits have all completed (all of them when
    `force`). Caller holds device_mutex. */
 static void md_vk_process_retires_locked(md_gpu_device_t dev, bool force) {
-    for (size_t i = 0; i < dev->retires.count;) {
-        md_vk_retire_t* r = &MD_VK_VEC_AT(dev->retires, md_vk_retire_t, i);
+    for (size_t i = 0; i < dev->retires.size;) {
+        md_vk_retire_t* r = &dev->retires.data[i];
         bool done = true;
         for (uint32_t w = 0; w < r->wait_count && done && !force; ++w) {
             if (md_vk_stream_completed(r->waits[w].stream) < r->waits[w].value) done = false;
         }
         if (!done) { ++i; continue; }
         md_vk_retire_t e = *r;
-        md_vk_vec_remove(&dev->retires, i);
-        switch (e.kind) {
-        case MD_VK_RETIRE_TEXTURE: md_vk_texture_free(dev, (md_gpu_texture_t)e.object); break;
-        case MD_VK_RETIRE_KERNEL:  md_vk_kernel_free(dev, (md_gpu_kernel_t)e.object);   break;
-        case MD_VK_RETIRE_PIPELINE:  md_vk_pipeline_free(dev, (md_gpu_pipeline_t)e.object); break;
-        case MD_VK_RETIRE_SWAPCHAIN: md_vk_swapchain_free(dev, (md_vk_swapchain_t*)e.object); break;
-        }
+        MD_ARRAY_REMOVE(dev->retires, i);
+        md_vk_retire_release(dev, &e);
         if (e.waits) md_free(dev->alloc, e.waits, e.wait_capacity * sizeof(md_vk_wait_t));
     }
 }
@@ -1065,41 +989,35 @@ static void md_vk_process_retires_locked(md_gpu_device_t dev, bool force) {
    releases memory it freed -- the free points would otherwise never be
    reached. Caller holds device_mutex. */
 static void md_vk_forget_stream_locked(md_gpu_device_t dev, md_gpu_stream_t s) {
-    for (size_t i = 0; i < dev->pending_frees.count;) {
-        md_vk_pending_free_t pf = MD_VK_VEC_AT(dev->pending_frees, md_vk_pending_free_t, i);
-        if (pf.stream == s) {
-            md_vk_vec_remove(&dev->pending_frees, i);
-            md_vk_heap_release_node_locked(dev, pf.kind, pf.node);
-        } else {
-            ++i;
-        }
-    }
+    md_gpu_heap_forget_stream(&dev->heap, s);
     /* Clearing the sync makes a pending callback unconditionally ready, so it
        still fires on the next md_gpu_device_poll, on the polling thread. */
-    for (size_t i = 0; i < dev->hostfns.count; ++i) {
-        md_vk_hostfn_t* h = &MD_VK_VEC_AT(dev->hostfns, md_vk_hostfn_t, i);
+    for (size_t i = 0; i < dev->hostfns.size; ++i) {
+        md_vk_hostfn_t* h = &dev->hostfns.data[i];
         if (h->sync.stream == s) h->sync = md_gpu_sync_none();
     }
-    for (size_t i = 0; i < dev->retires.count; ++i) {
-        md_vk_retire_t* r = &MD_VK_VEC_AT(dev->retires, md_vk_retire_t, i);
+    for (size_t i = 0; i < dev->retires.size; ++i) {
+        md_vk_retire_t* r = &dev->retires.data[i];
         for (uint32_t w = 0; w < r->wait_count;) {
             if (r->waits[w].stream == s) r->waits[w] = r->waits[--r->wait_count];
             else ++w;
         }
     }
-    for (size_t i = 0; i < dev->surfaces.count; ++i) {
-        md_gpu_surface_t sf = MD_VK_VEC_AT(dev->surfaces, md_gpu_surface_t, i);
+    for (size_t i = 0; i < dev->surfaces.size; ++i) {
+        md_gpu_surface_t sf = dev->surfaces.data[i];
         for (uint32_t k = 0; k < MD_VK_ACQUIRE_SEMS; ++k) {
             if (sf->acquire_stream[k] == s) { sf->acquire_stream[k] = NULL; sf->acquire_value[k] = 0; }
         }
         if (sf->acquired_stream == s) { sf->acquired = false; sf->acquired_stream = NULL; }
     }
-    for (size_t i = 0; i < dev->streams.count; ++i) {
-        md_gpu_stream_t o = MD_VK_VEC_AT(dev->streams, md_gpu_stream_t, i);
-        for (size_t w = 0; w < o->waits.count;) {
-            if (MD_VK_VEC_AT(o->waits, md_vk_wait_t, w).stream == s) md_vk_vec_remove(&o->waits, w);
+    for (size_t i = 0; i < dev->streams.size; ++i) {
+        md_gpu_stream_t o = dev->streams.data[i];
+        md_mutex_lock(&o->wait_mutex);
+        for (size_t w = 0; w < o->waits.size;) {
+            if (o->waits.data[w].stream == s) MD_ARRAY_REMOVE(o->waits, w);
             else ++w;
         }
+        md_mutex_unlock(&o->wait_mutex);
     }
 }
 
@@ -1127,14 +1045,15 @@ static bool md_vk_layer_available(const char* name) {
     uint32_t n = 0;
     vkEnumerateInstanceLayerProperties(&n, NULL);
     if (n == 0) return false;
-    VkLayerProperties* props = (VkLayerProperties*)malloc(n * sizeof(VkLayerProperties));
+    const size_t bytes = n * sizeof(VkLayerProperties);
+    VkLayerProperties* props = (VkLayerProperties*)md_alloc(md_get_heap_allocator(), bytes);
     if (!props) return false;
     vkEnumerateInstanceLayerProperties(&n, props);
     bool found = false;
     for (uint32_t i = 0; i < n && !found; ++i) {
-        if (strcmp(props[i].layerName, name) == 0) found = true;
+        if (md_str_eq_cstr(md_str_from_cstr(props[i].layerName), name)) found = true;
     }
-    free(props);
+    md_free(md_get_heap_allocator(), props, bytes);
     return found;
 }
 
@@ -1142,14 +1061,15 @@ static bool md_vk_device_ext_available(VkPhysicalDevice pd, const char* name) {
     uint32_t n = 0;
     vkEnumerateDeviceExtensionProperties(pd, NULL, &n, NULL);
     if (n == 0) return false;
-    VkExtensionProperties* props = (VkExtensionProperties*)malloc(n * sizeof(VkExtensionProperties));
+    const size_t bytes = n * sizeof(VkExtensionProperties);
+    VkExtensionProperties* props = (VkExtensionProperties*)md_alloc(md_get_heap_allocator(), bytes);
     if (!props) return false;
     vkEnumerateDeviceExtensionProperties(pd, NULL, &n, props);
     bool found = false;
     for (uint32_t i = 0; i < n && !found; ++i) {
-        if (strcmp(props[i].extensionName, name) == 0) found = true;
+        if (md_str_eq_cstr(md_str_from_cstr(props[i].extensionName), name)) found = true;
     }
-    free(props);
+    md_free(md_get_heap_allocator(), props, bytes);
     return found;
 }
 
@@ -1157,14 +1077,15 @@ static bool md_vk_ext_available(const char* name) {
     uint32_t n = 0;
     vkEnumerateInstanceExtensionProperties(NULL, &n, NULL);
     if (n == 0) return false;
-    VkExtensionProperties* props = (VkExtensionProperties*)malloc(n * sizeof(VkExtensionProperties));
+    const size_t bytes = n * sizeof(VkExtensionProperties);
+    VkExtensionProperties* props = (VkExtensionProperties*)md_alloc(md_get_heap_allocator(), bytes);
     if (!props) return false;
     vkEnumerateInstanceExtensionProperties(NULL, &n, props);
     bool found = false;
     for (uint32_t i = 0; i < n && !found; ++i) {
-        if (strcmp(props[i].extensionName, name) == 0) found = true;
+        if (md_str_eq_cstr(md_str_from_cstr(props[i].extensionName), name)) found = true;
     }
-    free(props);
+    md_free(md_get_heap_allocator(), props, bytes);
     return found;
 }
 
@@ -1174,7 +1095,7 @@ static bool md_vk_ext_available(const char* name) {
 static bool md_vk_probe_device(VkPhysicalDevice pd, struct md_allocator_i* alloc,
                                md_vk_dev_caps_t* out_caps, char* missing, size_t missing_cap)
 {
-    memset(out_caps, 0, sizeof(*out_caps));
+    md_memset(out_caps, 0, sizeof(*out_caps));
     missing[0] = 0;
     size_t missing_len = 0;
     bool ok = true;
@@ -1205,10 +1126,11 @@ static bool md_vk_probe_device(VkPhysicalDevice pd, struct md_allocator_i* alloc
     /* The 1.2 / 1.3 feature structs may only be chained on devices of that version. */
     VkPhysicalDeviceVulkan13Features f13 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
     VkPhysicalDeviceVulkan12Features f12 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+    VkPhysicalDeviceVulkan11Features f11 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
     VkPhysicalDeviceFeatures2        f2  = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     const bool has12 = props.apiVersion >= VK_API_VERSION_1_2;
     const bool has13 = props.apiVersion >= VK_API_VERSION_1_3;
-    if (has12) { f2.pNext = &f12; if (has13) f12.pNext = &f13; }
+    if (has12) { f2.pNext = &f11; f11.pNext = &f12; if (has13) f12.pNext = &f13; }
     vkGetPhysicalDeviceFeatures2(pd, &f2);
 
     if (has12) {
@@ -1267,6 +1189,29 @@ static bool md_vk_probe_device(VkPhysicalDevice pd, struct md_allocator_i* alloc
     out_caps->dynamic_storage_image       = f2.features.shaderStorageImageArrayDynamicIndexing;
     out_caps->dynamic_sampled_image       = f2.features.shaderSampledImageArrayDynamicIndexing;
     out_caps->shader_int64                = f2.features.shaderInt64;
+
+    /* Above the floor: optional, enabled where present. */
+    out_caps->float16              = f12.shaderFloat16 && f11.storageBuffer16BitAccess;
+    out_caps->float64              = f2.features.shaderFloat64;
+    out_caps->int64_atomics        = f2.features.shaderInt64 && f12.shaderBufferInt64Atomics;
+    out_caps->int64_shared_atomics = out_caps->int64_atomics && f12.shaderSharedInt64Atomics;
+    if (md_vk_device_ext_available(pd, VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME)) {
+        VkPhysicalDeviceShaderAtomicFloatFeaturesEXT af = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT};
+        VkPhysicalDeviceFeatures2 q = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &af};
+        vkGetPhysicalDeviceFeatures2(pd, &q);
+        af.pNext = NULL;
+        out_caps->atomic_float  = af;
+        out_caps->float_atomics = af.shaderBufferFloat32Atomics || af.shaderBufferFloat32AtomicAdd ||
+                                  af.shaderSharedFloat32Atomics || af.shaderSharedFloat32AtomicAdd;
+    }
+    if (md_vk_device_ext_available(pd, VK_EXT_SHADER_ATOMIC_FLOAT_2_EXTENSION_NAME)) {
+        VkPhysicalDeviceShaderAtomicFloat2FeaturesEXT af = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_2_FEATURES_EXT};
+        VkPhysicalDeviceFeatures2 q = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &af};
+        vkGetPhysicalDeviceFeatures2(pd, &q);
+        af.pNext = NULL;
+        out_caps->atomic_float2  = af;
+        out_caps->float_atomics2 = af.shaderBufferFloat32AtomicMinMax || af.shaderSharedFloat32AtomicMinMax;
+    }
     return true;
 }
 
@@ -1321,7 +1266,7 @@ static uint32_t md_vk_collect_adapters(VkInstance instance, struct md_allocator_
         return 0;
     }
     vkEnumeratePhysicalDevices(instance, &n, pds);
-    memset(ad, 0, n * sizeof(md_vk_adapter_t));
+    md_memset(ad, 0, n * sizeof(md_vk_adapter_t));
     for (uint32_t i = 0; i < n; ++i) {
         VkPhysicalDeviceProperties p;
         vkGetPhysicalDeviceProperties(pds[i], &p);
@@ -1341,9 +1286,9 @@ static uint32_t md_vk_collect_adapters(VkInstance instance, struct md_allocator_
 }
 
 uint32_t md_gpu_enumerate_adapters(md_gpu_adapter_info_t* out, uint32_t max) {
-    md_vk_has_error = false;
+    md_gpu_clear_error();
     if (volkInitialize() != VK_SUCCESS) {
-        md_vk_fail("volkInitialize failed — no Vulkan loader present");
+        md_gpu_fail("volkInitialize failed — no Vulkan loader present");
         return 0;
     }
     VkApplicationInfo ai = {VK_STRUCTURE_TYPE_APPLICATION_INFO};
@@ -1371,35 +1316,33 @@ uint32_t md_gpu_enumerate_adapters(md_gpu_adapter_info_t* out, uint32_t max) {
 }
 
 md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
-    md_vk_has_error = false;
+    md_gpu_clear_error();
 
     struct md_allocator_i* alloc = (desc && desc->alloc) ? desc->alloc : md_get_heap_allocator();
 
     if (volkInitialize() != VK_SUCCESS) {
-        md_vk_fail("volkInitialize failed — no Vulkan loader present");
+        md_gpu_fail("volkInitialize failed — no Vulkan loader present");
         return NULL;
     }
 
     md_gpu_device_t dev = (md_gpu_device_t)md_alloc(alloc, sizeof(md_gpu_device));
-    if (!dev) { md_vk_fail("out of memory"); return NULL; }
-    memset(dev, 0, sizeof(*dev));
+    if (!dev) { md_gpu_fail("out of memory"); return NULL; }
+    md_memset(dev, 0, sizeof(*dev));
     dev->alloc = alloc;
     dev->validation = desc && desc->enable_validation;
-
-    md_vk_vec_init(&dev->registry, sizeof(md_vk_range_t*));
-    md_vk_vec_init(&dev->pending_frees, sizeof(md_vk_pending_free_t));
-    md_vk_vec_init(&dev->textures, sizeof(md_gpu_texture_t));
-    for (uint32_t k = 0; k < MD_GPU_MEM_KIND_COUNT; ++k) {
-        md_tlsf_init(&dev->heaps[k].tlsf, alloc, MD_VK_HEAP_ALIGN);
-        md_vk_vec_init(&dev->heaps[k].chunks, sizeof(md_vk_chunk_t*));
+    {
+        const md_str_t env = md_str_from_cstr(md_os_env_get("MD_GPU_DEBUG_MEMORY"));
+        const bool debug_memory = (desc && desc->debug_memory) || (!md_str_empty(env) && !md_str_eq_cstr(env, "0"));
+        md_vk_heap_init(dev, desc ? desc->heap_cache_limit : 0, debug_memory);
     }
-    dev->heap_cache_limit = (desc && desc->heap_cache_limit) ? desc->heap_cache_limit : MD_VK_HEAP_CACHE_DEFAULT;
-    md_vk_vec_init(&dev->kernels,  sizeof(md_gpu_kernel_t));
-    md_vk_vec_init(&dev->pipelines, sizeof(md_gpu_pipeline_t));
-    md_vk_vec_init(&dev->surfaces, sizeof(md_gpu_surface_t));
-    md_vk_vec_init(&dev->streams,  sizeof(md_gpu_stream_t));
-    md_vk_vec_init(&dev->hostfns,  sizeof(md_vk_hostfn_t));
-    md_vk_vec_init(&dev->retires,  sizeof(md_vk_retire_t));
+
+    MD_ARRAY_INIT(dev->textures, alloc);
+    MD_ARRAY_INIT(dev->kernels, alloc);
+    MD_ARRAY_INIT(dev->pipelines, alloc);
+    MD_ARRAY_INIT(dev->surfaces, alloc);
+    MD_ARRAY_INIT(dev->streams, alloc);
+    MD_ARRAY_INIT(dev->hostfns, alloc);
+    MD_ARRAY_INIT(dev->retires, alloc);
 
     /* ---- instance ---- */
     VkApplicationInfo ai = {VK_STRUCTURE_TYPE_APPLICATION_INFO};
@@ -1477,7 +1420,7 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
     md_vk_adapter_t* adapters = NULL;
     const uint32_t adapter_count = md_vk_collect_adapters(dev->instance, alloc, &adapters);
     if (adapter_count == 0) {
-        md_vk_fail("no Vulkan physical devices");
+        md_gpu_fail("no Vulkan physical devices");
         goto fail_instance;
     }
     md_gpu_adapter_info_t* infos = (md_gpu_adapter_info_t*)md_alloc(alloc, adapter_count * sizeof(md_gpu_adapter_info_t));
@@ -1499,7 +1442,7 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
     }
     md_free(alloc, adapters, adapter_count * sizeof(md_vk_adapter_t));
     if (!chosen) {
-        md_vk_fail("md_gpu_device_create: %s", why);
+        md_gpu_fail("md_gpu_device_create: %s", why);
         goto fail_instance;
     }
     dev->phys = chosen;
@@ -1511,6 +1454,7 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
         VkPhysicalDeviceProperties2 p2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &sgp};
         vkGetPhysicalDeviceProperties2(dev->phys, &p2);
         dev->subgroup_size = sgp.subgroupSize ? sgp.subgroupSize : 32;
+        dev->subgroup_ops  = (sgp.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT) ? sgp.supportedOperations : 0;
         md_vk_driver_string(dev->phys, &dev->props, dev->driver_desc, sizeof(dev->driver_desc));
     }
 
@@ -1567,7 +1511,7 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
 
     if (dev->compute_family == UINT32_MAX) {
         md_free(alloc, qfs, qf_count * sizeof(VkQueueFamilyProperties));
-        md_vk_fail("no compute-capable queue family");
+        md_gpu_fail("no compute-capable queue family");
         goto fail_instance;
     }
     /* What each family's timestamps hold: the GPU time of a submission
@@ -1626,10 +1570,14 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
     f12.descriptorBindingUpdateUnusedWhilePending = caps.update_unused_while_pending ? VK_TRUE : VK_FALSE;
     f12.shaderStorageImageArrayNonUniformIndexing = caps.nonuniform_storage_image    ? VK_TRUE : VK_FALSE;
     f12.shaderSampledImageArrayNonUniformIndexing = caps.nonuniform_sampled_image    ? VK_TRUE : VK_FALSE;
+    f12.shaderFloat16                             = caps.float16                     ? VK_TRUE : VK_FALSE;
+    f12.shaderBufferInt64Atomics                  = caps.int64_atomics               ? VK_TRUE : VK_FALSE;
+    f12.shaderSharedInt64Atomics                  = caps.int64_shared_atomics        ? VK_TRUE : VK_FALSE;
 
     VkPhysicalDeviceVulkan11Features f11 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
     f11.pNext = &f12;
-    f11.shaderDrawParameters = caps.graphics ? VK_TRUE : VK_FALSE;
+    f11.shaderDrawParameters     = caps.graphics ? VK_TRUE : VK_FALSE;
+    f11.storageBuffer16BitAccess = caps.float16  ? VK_TRUE : VK_FALSE;
 
     VkPhysicalDeviceFeatures2 f2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     f2.pNext = &f11;
@@ -1644,11 +1592,23 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
     f2.features.shaderStorageImageArrayDynamicIndexing = caps.dynamic_storage_image ? VK_TRUE : VK_FALSE;
     f2.features.shaderSampledImageArrayDynamicIndexing = caps.dynamic_sampled_image ? VK_TRUE : VK_FALSE;
     f2.features.shaderInt64                            = caps.shader_int64          ? VK_TRUE : VK_FALSE;
+    f2.features.shaderFloat64                          = caps.float64               ? VK_TRUE : VK_FALSE;
 
     /* Swapchains, when the instance can make surfaces and the device can
        present through a graphics queue. */
-    const char* dev_exts[2];
+    const char* dev_exts[4];
     uint32_t    dev_ext_count = 0;
+    /* Float atomics, exactly as the probe found them. */
+    if (caps.float_atomics) {
+        dev_exts[dev_ext_count++] = VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME;
+        caps.atomic_float.pNext = f13.pNext;
+        f13.pNext = &caps.atomic_float;
+    }
+    if (caps.float_atomics2) {
+        dev_exts[dev_ext_count++] = VK_EXT_SHADER_ATOMIC_FLOAT_2_EXTENSION_NAME;
+        caps.atomic_float2.pNext = f13.pNext;
+        f13.pNext = &caps.atomic_float2;
+    }
     if (caps.graphics && surface_ext_count > 0 && md_vk_device_ext_available(dev->phys, VK_KHR_SWAPCHAIN_EXTENSION_NAME)) {
         dev_exts[dev_ext_count++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
         dev->supports_present = true;
@@ -1661,7 +1621,7 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
         q2.pNext = &fpe;
         vkGetPhysicalDeviceFeatures2(dev->phys, &q2);
         if (fpe.pipelineExecutableInfo) {
-            fpe.pNext = NULL;
+            fpe.pNext = f13.pNext;
             f13.pNext = &fpe;
             dev_exts[dev_ext_count++] = VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME;
             dev->pipeline_stats = true;
@@ -1676,6 +1636,8 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
     dci.ppEnabledExtensionNames  = dev_exts;
 
     if (!md_vk_check(vkCreateDevice(dev->phys, &dci, NULL, &dev->device), "vkCreateDevice")) goto fail_instance;
+    caps.atomic_float.pNext  = NULL;
+    caps.atomic_float2.pNext = NULL;
     dev->caps = caps;
     dev->supports_graphics = dev->graphics_family != UINT32_MAX;
     dev->depth_bias_clamp  = caps.depth_bias_clamp;
@@ -1701,7 +1663,19 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
         }
     }
 
-    md_mutex_init(&dev->queue_mutex);
+    {
+        const VkQueue* lists[3]  = {dev->compute_queues, dev->transfer_queues, dev->graphics_queues};
+        const uint32_t counts[3] = {dev->compute_queue_count, dev->transfer_queue_count,
+                                    dev->graphics_family != UINT32_MAX ? dev->graphics_queue_count : 0};
+        for (uint32_t l = 0; l < 3; ++l) {
+            for (uint32_t i = 0; i < counts[l]; ++i) {
+                if (md_vk_queue(dev, lists[l][i])) continue;
+                md_vk_queue_t* q = &dev->queues[dev->queue_count++];
+                q->queue = lists[l][i];
+                md_mutex_init(&q->mutex);
+            }
+        }
+    }
     md_mutex_init(&dev->device_mutex);
 
     dev->share_families[0]  = dev->compute_family;
@@ -1714,10 +1688,33 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
         dev->share_families[dev->share_family_count++] = dev->graphics_family;
     }
 
-    /* Heap free list, allocated high-to-low so slots are handed out from 1.
-       Slot 0 is never handed out so that a zero handle stays the null handle. */
-    for (uint32_t i = 0; i < MD_VK_MAX_TEXTURE_SLOTS - 1; ++i) dev->tex_free[i] = MD_VK_MAX_TEXTURE_SLOTS - 1 - i;
-    dev->tex_free_count = MD_VK_MAX_TEXTURE_SLOTS - 1;
+    /* Heap slots: as many as asked for, within what the device can bind
+       update-after-bind in one stage. The free list runs high-to-low so slots
+       are handed out from 1; slot 0 is never handed out so that a zero handle
+       stays the null handle. */
+    {
+        VkPhysicalDeviceVulkan12Properties p12 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES};
+        VkPhysicalDeviceProperties2 p2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &p12};
+        vkGetPhysicalDeviceProperties2(dev->phys, &p2);
+        uint32_t want = (desc && desc->max_textures) ? desc->max_textures + 1 : MD_VK_DEFAULT_TEXTURE_SLOTS;
+        uint32_t lim  = p12.maxPerStageDescriptorUpdateAfterBindSampledImages;
+        if (p12.maxPerStageDescriptorUpdateAfterBindStorageImages < lim) lim = p12.maxPerStageDescriptorUpdateAfterBindStorageImages;
+        if (p12.maxDescriptorSetUpdateAfterBindSampledImages < lim) lim = p12.maxDescriptorSetUpdateAfterBindSampledImages;
+        if (p12.maxDescriptorSetUpdateAfterBindStorageImages < lim) lim = p12.maxDescriptorSetUpdateAfterBindStorageImages;
+        const uint64_t res = p12.maxPerStageUpdateAfterBindResources;
+        if (res > MD_VK_MAX_SAMPLERS && (res - MD_VK_MAX_SAMPLERS) / 2 < lim) lim = (uint32_t)((res - MD_VK_MAX_SAMPLERS) / 2);
+        if (want > lim) {
+            MD_LOG_INFO("md_gpu: %u texture slots requested; this device binds at most %u", want - 1, lim - 1);
+            want = lim;
+        }
+        if (want < 2) { md_gpu_fail("md_gpu: the device has no bindless texture slots"); goto fail_device; }
+        dev->tex_slot_count = want;
+        dev->tex_free = (uint32_t*)md_alloc(alloc, (want - 1) * sizeof(uint32_t));
+        if (!dev->tex_free) { md_gpu_fail("out of memory"); goto fail_device; }
+        for (uint32_t i = 0; i < want - 1; ++i) dev->tex_free[i] = want - 1 - i;
+        dev->tex_free_count = want - 1;
+    }
+    md_vk_init_device_types(dev);
 
     if (!md_vk_create_bindless(dev)) goto fail_device;
     if (!md_vk_create_dummies(dev))  goto fail_device;
@@ -1751,7 +1748,7 @@ fail_instance:
 
 bool md_gpu_device_info(md_gpu_device_t dev, md_gpu_device_info_t* info) {
     if (!dev || !info) return false;
-    memset(info, 0, sizeof(*info));
+    md_memset(info, 0, sizeof(*info));
     info->is_discrete              = dev->is_discrete;
     info->max_threads_per_group    = dev->props.limits.maxComputeWorkGroupInvocations;
     info->preferred_group_multiple = dev->subgroup_size;
@@ -1763,6 +1760,21 @@ bool md_gpu_device_info(md_gpu_device_t dev, md_gpu_device_info_t* info) {
     info->adapter_index            = dev->adapter_index;
     md_snprintf(info->driver, sizeof(info->driver), "%s", dev->driver_desc);
     md_snprintf(info->name, sizeof(info->name), "%s", dev->props.deviceName);
+
+    const VkSubgroupFeatureFlags arith = VK_SUBGROUP_FEATURE_BASIC_BIT | VK_SUBGROUP_FEATURE_ARITHMETIC_BIT |
+                                         VK_SUBGROUP_FEATURE_BALLOT_BIT;
+    info->max_shared_memory    = dev->props.limits.maxComputeSharedMemorySize;
+    info->max_textures         = dev->tex_slot_count - 1;
+    info->subgroup_arithmetic  = (dev->subgroup_ops & arith) == arith;
+    info->subgroup_shuffle     = (dev->subgroup_ops & VK_SUBGROUP_FEATURE_SHUFFLE_BIT) != 0;
+    info->float16              = dev->caps.float16;
+    info->float64              = dev->caps.float64;
+    info->int64                = dev->caps.shader_int64;
+    info->atomic_int64         = dev->caps.int64_atomics;
+    info->atomic_float_add     = dev->caps.atomic_float.shaderBufferFloat32AtomicAdd;
+    info->atomic_float_min_max = dev->caps.atomic_float2.shaderBufferFloat32AtomicMinMax;
+    info->timestamps           = dev->ts_bits_compute > 0;
+    info->debug_memory         = dev->heap.debug;
     return true;
 }
 
@@ -1789,16 +1801,7 @@ static bool md_vk_create_dummies(md_gpu_device_t dev) {
 
     if (!md_vk_check(vkCreateImage(dev->device, &ici, NULL, &dev->dummy_image), "vkCreateImage (dummy)")) return false;
 
-    VkMemoryRequirements req;
-    vkGetImageMemoryRequirements(dev->device, dev->dummy_image, &req);
-    uint32_t type = md_vk_find_memory_type(dev, req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0);
-    if (type == UINT32_MAX) type = md_vk_find_memory_type(dev, req.memoryTypeBits, 0, 0);
-
-    VkMemoryAllocateInfo mai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-    mai.allocationSize  = req.size;
-    mai.memoryTypeIndex = type;
-    if (!md_vk_check(vkAllocateMemory(dev->device, &mai, NULL, &dev->dummy_mem), "vkAllocateMemory (dummy)")) return false;
-    vkBindImageMemory(dev->device, dev->dummy_image, dev->dummy_mem, 0);
+    if (!md_vk_image_memory(dev, dev->dummy_image, &dev->dummy_mem, NULL)) return false;
 
     VkImageViewCreateInfo vci = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     vci.image    = dev->dummy_image;
@@ -1860,10 +1863,10 @@ static bool md_vk_create_bindless(md_gpu_device_t dev) {
     bindings[0].descriptorCount = MD_VK_MAX_SAMPLERS;
     bindings[1].binding         = MD_VK_BINDING_SAMPLED_IMAGE;
     bindings[1].descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-    bindings[1].descriptorCount = MD_VK_MAX_TEXTURE_SLOTS;
+    bindings[1].descriptorCount = dev->tex_slot_count;
     bindings[2].binding         = MD_VK_BINDING_STORAGE_IMAGE;
     bindings[2].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    bindings[2].descriptorCount = MD_VK_MAX_TEXTURE_SLOTS;
+    bindings[2].descriptorCount = dev->tex_slot_count;
 
     for (uint32_t i = 0; i < MD_VK_BINDING_COUNT; ++i) {
         bindings[i].stageFlags = VK_SHADER_STAGE_ALL;
@@ -1888,8 +1891,8 @@ static bool md_vk_create_bindless(md_gpu_device_t dev) {
 
     VkDescriptorPoolSize sizes[3];
     sizes[0] = (VkDescriptorPoolSize){VK_DESCRIPTOR_TYPE_SAMPLER,       MD_VK_MAX_SAMPLERS};
-    sizes[1] = (VkDescriptorPoolSize){VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, MD_VK_MAX_TEXTURE_SLOTS};
-    sizes[2] = (VkDescriptorPoolSize){VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, MD_VK_MAX_TEXTURE_SLOTS};
+    sizes[1] = (VkDescriptorPoolSize){VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, dev->tex_slot_count};
+    sizes[2] = (VkDescriptorPoolSize){VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, dev->tex_slot_count};
 
     VkDescriptorPoolCreateInfo pci = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pci.flags         = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
@@ -1958,9 +1961,10 @@ static bool md_vk_immediate(md_gpu_device_t dev, void (*record)(VkCommandBuffer,
     VkFence fence;
     vkCreateFence(dev->device, &fci, NULL, &fence);
 
-    md_mutex_lock(&dev->queue_mutex);
-    VkResult r = vkQueueSubmit2(dev->compute_queues[0], 1, &si, fence);
-    md_mutex_unlock(&dev->queue_mutex);
+    md_vk_queue_t* q = md_vk_queue(dev, dev->compute_queues[0]);
+    md_mutex_lock(&q->mutex);
+    VkResult r = vkQueueSubmit2(q->queue, 1, &si, fence);
+    md_mutex_unlock(&q->mutex);
 
     if (r == VK_SUCCESS) vkWaitForFences(dev->device, 1, &fence, VK_TRUE, UINT64_MAX);
     vkDestroyFence(dev->device, fence, NULL);
@@ -1968,32 +1972,48 @@ static bool md_vk_immediate(md_gpu_device_t dev, void (*record)(VkCommandBuffer,
     return md_vk_check(r, "vkQueueSubmit2 (immediate)");
 }
 
-static void md_vk_record_to_general(VkCommandBuffer cmd, void* user) {
-    VkImage image = *(VkImage*)user;
+/* A layout transition of every subresource of `image`, with the given scopes.
+   The only image barrier md_gpu records: images live in GENERAL, and change
+   layout only when they start (UNDEFINED, at creation and discards) and
+   around a present. */
+static void md_vk_cmd_image_barrier(VkCommandBuffer cmd, VkImage image, VkImageAspectFlags aspect,
+                                    VkImageLayout from, VkImageLayout to,
+                                    VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
+                                    VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access) {
     VkImageMemoryBarrier2 b = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
-    b.srcStageMask  = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
-    b.srcAccessMask = 0;
-    b.dstStageMask  = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-    b.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
-    b.oldLayout     = VK_IMAGE_LAYOUT_UNDEFINED;
-    b.newLayout     = VK_IMAGE_LAYOUT_GENERAL;
+    b.srcStageMask  = src_stage;
+    b.srcAccessMask = src_access;
+    b.dstStageMask  = dst_stage;
+    b.dstAccessMask = dst_access;
+    b.oldLayout     = from;
+    b.newLayout     = to;
     b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     b.image = image;
-    b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    b.subresourceRange.levelCount = 1;
-    b.subresourceRange.layerCount = 1;
-
+    b.subresourceRange.aspectMask = aspect;
+    b.subresourceRange.levelCount = VK_REMAINING_MIP_LEVELS;
+    b.subresourceRange.layerCount = VK_REMAINING_ARRAY_LAYERS;
     VkDependencyInfo di = {VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
     di.imageMemoryBarrierCount = 1;
     di.pImageMemoryBarriers    = &b;
     vkCmdPipelineBarrier2(cmd, &di);
 }
 
-/* Take a slot from the heap free list. Slot 0 is reserved as the null handle. */
-static uint32_t md_vk_alloc_slot(md_gpu_device_t dev) {
-    if (dev->tex_free_count == 0) return UINT32_MAX;
-    return dev->tex_free[--dev->tex_free_count];
+/* The same, into a stream: a barrier, not an operation. */
+static bool md_vk_record_image_barrier(md_gpu_stream_t s, VkImage image, VkImageAspectFlags aspect,
+                                       VkImageLayout from, VkImageLayout to,
+                                       VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
+                                       VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access) {
+    if (!md_vk_stream_ensure_cmd(s)) return false;
+    md_vk_cmd_image_barrier(s->open, image, aspect, from, to, src_stage, src_access, dst_stage, dst_access);
+    md_vk_mark_work(s);
+    return true;
+}
+
+static void md_vk_record_to_general(VkCommandBuffer cmd, void* user) {
+    md_vk_cmd_image_barrier(cmd, *(VkImage*)user, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+                            VK_PIPELINE_STAGE_2_NONE, 0,
+                            VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
 }
 
 static void md_vk_write_image_slot(md_gpu_device_t dev, uint32_t slot, VkImageView view, VkDescriptorType type) {
@@ -2023,8 +2043,8 @@ static uint64_t md_vk_stream_completed(md_gpu_stream_t s) {
 
 static md_gpu_stream_t md_vk_stream_create_internal(md_gpu_device_t dev, md_gpu_stream_kind_t kind, const char* label, bool is_default) {
     md_gpu_stream_t s = (md_gpu_stream_t)md_alloc(dev->alloc, sizeof(md_gpu_stream));
-    if (!s) { md_vk_fail("out of memory"); return NULL; }
-    memset(s, 0, sizeof(*s));
+    if (!s) { md_gpu_fail("out of memory"); return NULL; }
+    md_memset(s, 0, sizeof(*s));
     s->device     = dev;
     s->kind       = kind;
     s->ordering   = MD_GPU_ORDER_IMPLICIT;
@@ -2051,14 +2071,12 @@ static md_gpu_stream_t md_vk_stream_create_internal(md_gpu_device_t dev, md_gpu_
         dev->next_compute_queue++;
     }
     md_mutex_unlock(&dev->device_mutex);
+    s->q = md_vk_queue(dev, s->queue);
 
-    md_vk_vec_init(&s->cmds, sizeof(md_vk_cmd_t));
-    md_vk_vec_init(&s->waits, sizeof(md_vk_wait_t));
-    md_vk_vec_init(&s->arena.pages, sizeof(md_vk_page_t*));
-    for (uint32_t k = 0; k < MD_VK_TEMP_KINDS; ++k) {
-        md_vk_vec_init(&s->temp[k].active, sizeof(md_vk_chunk_t*));
-        md_vk_vec_init(&s->temp[k].spare,  sizeof(md_vk_chunk_t*));
-    }
+    MD_ARRAY_INIT(s->cmds, dev->alloc);
+    MD_ARRAY_INIT(s->waits, dev->alloc);
+    MD_ARRAY_INIT(s->arena.pages, dev->alloc);
+    md_gpu_heap_temps_init(&dev->heap, &s->temps);
 
     VkSemaphoreTypeCreateInfo stci = {VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO};
     stci.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
@@ -2097,28 +2115,30 @@ static md_gpu_stream_t md_vk_stream_create_internal(md_gpu_device_t dev, md_gpu_
         }
     }
 
+    md_mutex_init(&s->wait_mutex);
     md_mutex_lock(&dev->device_mutex);
-    md_gpu_stream_t* slot = (md_gpu_stream_t*)md_vk_vec_push(&dev->streams, dev->alloc);
-    if (slot) *slot = s;
+    const bool listed = MD_ARRAY_TRY_PUSH(dev->streams, s);
     md_mutex_unlock(&dev->device_mutex);
-    if (!slot) {
+    if (!listed) {
+        md_mutex_destroy(&s->wait_mutex);
+        if (s->ts_pool) vkDestroyQueryPool(dev->device, s->ts_pool, NULL);
         vkDestroyCommandPool(dev->device, s->cmd_pool, NULL);
         vkDestroySemaphore(dev->device, s->timeline, NULL);
         md_free(dev->alloc, s, sizeof(*s));
-        md_vk_fail("out of memory");
+        md_gpu_fail("out of memory");
         return NULL;
     }
     return s;
 }
 
 md_gpu_stream_t md_gpu_stream_create(md_gpu_device_t dev, md_gpu_stream_kind_t kind, const char* label) {
-    if (!dev) { md_vk_fail("md_gpu_stream_create: null device"); return NULL; }
+    if (!dev) { md_gpu_fail("md_gpu_stream_create: null device"); return NULL; }
     if (kind != MD_GPU_STREAM_COMPUTE && kind != MD_GPU_STREAM_TRANSFER && kind != MD_GPU_STREAM_GRAPHICS) {
-        md_vk_fail("md_gpu_stream_create: invalid stream kind %d", (int)kind);
+        md_gpu_fail("md_gpu_stream_create: invalid stream kind %d", (int)kind);
         return NULL;
     }
     if (kind == MD_GPU_STREAM_GRAPHICS && !dev->supports_graphics) {
-        md_vk_fail("md_gpu_stream_create: the device has no graphics support (md_gpu_device_info_t.supports_graphics)");
+        md_gpu_fail("md_gpu_stream_create: the device has no graphics support (md_gpu_device_info_t.supports_graphics)");
         return NULL;
     }
     return md_vk_stream_create_internal(dev, kind, label, false);
@@ -2129,7 +2149,7 @@ md_gpu_stream_t md_gpu_stream_default(md_gpu_device_t dev, md_gpu_stream_kind_t 
     switch (kind) {
     case MD_GPU_STREAM_TRANSFER: return dev->default_transfer;
     case MD_GPU_STREAM_GRAPHICS:
-        if (!dev->default_graphics) md_vk_fail("md_gpu_stream_default: the device has no graphics support");
+        if (!dev->default_graphics) md_gpu_fail("md_gpu_stream_default: the device has no graphics support");
         return dev->default_graphics;
     default:                     return dev->default_compute;
     }
@@ -2144,8 +2164,8 @@ static bool md_vk_stream_ensure_cmd(md_gpu_stream_t s) {
 
     uint64_t done = md_vk_stream_completed(s);
     md_vk_cmd_t* found = NULL;
-    for (size_t i = 0; i < s->cmds.count; ++i) {
-        md_vk_cmd_t* c = &MD_VK_VEC_AT(s->cmds, md_vk_cmd_t, i);
+    for (size_t i = 0; i < s->cmds.size; ++i) {
+        md_vk_cmd_t* c = &s->cmds.data[i];
         if (c->pending && c->value <= done) c->pending = false;
         if (!c->pending && !found) found = c;
     }
@@ -2157,10 +2177,9 @@ static bool md_vk_stream_ensure_cmd(md_gpu_stream_t s) {
         cbai.commandBufferCount = 1;
         VkCommandBuffer cb = VK_NULL_HANDLE;
         if (!md_vk_check(vkAllocateCommandBuffers(dev->device, &cbai, &cb), "vkAllocateCommandBuffers")) return false;
-        md_vk_cmd_t* slot = (md_vk_cmd_t*)md_vk_vec_push(&s->cmds, dev->alloc);
-        if (!slot) { vkFreeCommandBuffers(dev->device, s->cmd_pool, 1, &cb); return md_vk_fail("out of memory"); }
-        slot->cmd = cb;
-        found = slot;
+        const md_vk_cmd_t c = {cb, 0, false};
+        if (!MD_ARRAY_TRY_PUSH(s->cmds, c)) { vkFreeCommandBuffers(dev->device, s->cmd_pool, 1, &cb); return md_gpu_fail("out of memory"); }
+        found = &MD_ARRAY_BACK(s->cmds);
     }
 
     vkResetCommandBuffer(found->cmd, 0);
@@ -2168,8 +2187,12 @@ static bool md_vk_stream_ensure_cmd(md_gpu_stream_t s) {
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     if (!md_vk_check(vkBeginCommandBuffer(found->cmd, &bi), "vkBeginCommandBuffer")) return false;
 
-    s->open     = found->cmd;
-    s->has_work = false;
+    s->open               = found->cmd;
+    s->has_work           = false;
+    s->cb_head            = true;
+    s->bound_kernel       = NULL;
+    s->compute_set_bound  = false;
+    s->graphics_set_bound = false;
     /* The GPU time of the submission this buffer becomes, which signals
        next_value: from here to its end (md_vk_stream_submit) */
     if (s->ts_pool) {
@@ -2177,14 +2200,15 @@ static bool md_vk_stream_ensure_cmd(md_gpu_stream_t s) {
         vkCmdResetQueryPool(s->open, s->ts_pool, q, 2);
         vkCmdWriteTimestamp2(s->open, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, s->ts_pool, q);
     }
-    /* If this stream has already submitted, the first operation recorded here
-       still needs a dependency on that earlier work. Batches submitted to one
-       queue may overlap -- submission order alone creates no memory
-       dependency. A barrier's first synchronisation scope covers everything
-       earlier in submission order, which spans command buffers and batches, so
-       one barrier at the top of the buffer closes it. (In EXPLICIT mode the
-       caller's own barriers carry the same scope across submissions.) */
-    if (s->submitted_value > 0) s->needs_barrier = true;
+    /* The first operation recorded here still needs a dependency on earlier
+       work: batches submitted to one queue may overlap -- submission order
+       alone creates no memory dependency. A barrier's first synchronisation
+       scope covers everything earlier in submission order, which spans
+       command buffers and batches, so md_vk_begin_op gives the buffer's first
+       operation a barrier from every stage (cb_head). That also covers other
+       streams' work on the same VkQueue, which matters when memory one of
+       them freed is reused by another. (In EXPLICIT mode the caller's own
+       barriers carry the same scope across submissions.) */
     return true;
 }
 
@@ -2229,46 +2253,62 @@ static void md_vk_emit_barrier(md_gpu_stream_t s, VkPipelineStageFlags2 src_stag
     vkCmdPipelineBarrier2(s->open, &di);
 }
 
-/* The command buffer an operation records into, with IMPLICIT ordering
-   applied: one global barrier before the operation if anything precedes it.
-   Returns VK_NULL_HANDLE on failure. */
 /* Operations that record work outside a render pass fail inside one. */
 static bool md_vk_not_in_pass(md_gpu_stream_t s, const char* what) {
     if (!s->in_pass) return true;
-    return md_vk_fail("%s: stream '%s' is inside a render pass; call md_gpu_render_end first", what, s->label);
+    return md_gpu_fail("%s: stream '%s' is inside a render pass; call md_gpu_render_end first", what, s->label);
 }
 
-static VkCommandBuffer md_vk_begin_op(md_gpu_stream_t s) {
-    if (s->upload_open) { md_vk_fail("stream '%s' has an open upload; call md_gpu_upload_end first", s->label); return VK_NULL_HANDLE; }
+static void md_vk_stage_masks(md_gpu_stream_t s, md_gpu_stage_flags_t stages, bool producer,
+                              VkPipelineStageFlags2* out_stage, VkAccessFlags2* out_access);
+
+/* The command buffer an operation records into, with ordering applied. IMPLICIT
+   ordering is one global memory barrier before the operation, from the stages
+   the operations since the last such barrier wrote in, to the stages this one
+   reads in (`consumers`). Chained, these order every operation after all the
+   ones before it: each barrier's first scope includes the previous barrier's
+   second. Nothing waits for more than it must -- a kernel after a kernel does
+   not flush render targets. Returns VK_NULL_HANDLE on failure. */
+static VkCommandBuffer md_vk_begin_op(md_gpu_stream_t s, md_gpu_stage_flags_t consumers) {
+    if (s->upload_open) { md_gpu_fail("stream '%s' has an open upload; call md_gpu_upload_end first", s->label); return VK_NULL_HANDLE; }
     if (!md_vk_not_in_pass(s, "operation")) return VK_NULL_HANDLE;
     if (!md_vk_stream_ensure_cmd(s)) return VK_NULL_HANDLE;
-    if ((s->needs_barrier && s->ordering == MD_GPU_ORDER_IMPLICIT) || s->force_barrier) {
-        VkPipelineStageFlags2 ss, ds; VkAccessFlags2 sa, da;
+    VkPipelineStageFlags2 ss = 0, ds = 0; VkAccessFlags2 sa = 0, da = 0;
+    if (s->force_barrier) {
         md_vk_stream_full_masks(s, &ss, &sa, &ds, &da);
+    } else if (s->ordering == MD_GPU_ORDER_IMPLICIT || s->order_next) {
+        /* At the head of a command buffer: after everything earlier on the
+           queue (see md_vk_stream_ensure_cmd). Within it: after what the
+           operations since the last barrier wrote. */
+        md_gpu_stage_flags_t from = s->cb_head ? MD_GPU_STAGE_ALL : s->written;
+        if (from) {
+            md_vk_stage_masks(s, from,      true,  &ss, &sa);
+            md_vk_stage_masks(s, consumers, false, &ds, &da);
+        }
+    }
+    if (ss && ds) {
         md_vk_emit_barrier(s, ss, sa, ds, da);
-        s->needs_barrier = false;
+        s->written = 0;
     }
     s->force_barrier = false;
+    s->order_next    = false;
+    s->cb_head       = false;
     return s->open;
 }
 
-/* Mark that an operation was recorded. */
-static void md_vk_end_op(md_gpu_stream_t s) {
-    s->needs_barrier = true;
-    s->has_work      = true;
+/* Mark that an operation was recorded, writing in `producers`. */
+static void md_vk_end_op(md_gpu_stream_t s, md_gpu_stage_flags_t producers) {
+    s->written |= producers;
+    md_vk_mark_work(s);
 }
 
+/* Both edges of an EXPLICIT region are ordered: its first operation after
+   everything before it, and, back in IMPLICIT, the next operation after
+   everything in it -- which `written` already covers, as it is only cleared
+   by a barrier md_gpu places. */
 void md_gpu_stream_set_ordering(md_gpu_stream_t s, md_gpu_ordering_t ordering) {
     if (!s) return;
-    if (ordering == MD_GPU_ORDER_IMPLICIT && s->ordering != MD_GPU_ORDER_IMPLICIT) {
-        /* Order the next operation after everything in the explicit region. */
-        s->needs_barrier = true;
-    }
-    if (ordering == MD_GPU_ORDER_EXPLICIT && s->ordering == MD_GPU_ORDER_IMPLICIT && s->needs_barrier) {
-        /* And the region's first operation after everything before it: both
-           edges of an explicit region are ordered. */
-        s->force_barrier = true;
-    }
+    if (ordering == MD_GPU_ORDER_EXPLICIT && s->ordering == MD_GPU_ORDER_IMPLICIT) s->order_next = true;
     s->ordering = ordering;
 }
 
@@ -2329,7 +2369,7 @@ static void md_vk_stage_masks(md_gpu_stream_t s, md_gpu_stage_flags_t stages, bo
 
 void md_gpu_barrier(md_gpu_stream_t s, md_gpu_stage_flags_t producers, md_gpu_stage_flags_t consumers) {
     if (!s) return;
-    if (s->upload_open) { md_vk_fail("md_gpu_barrier: stream '%s' has an open upload", s->label); return; }
+    if (s->upload_open) { md_gpu_fail("md_gpu_barrier: stream '%s' has an open upload", s->label); return; }
     if (!md_vk_not_in_pass(s, "md_gpu_barrier")) return;
     VkPipelineStageFlags2 ss, ds; VkAccessFlags2 sa, da;
     md_vk_stage_masks(s, producers, true,  &ss, &sa);
@@ -2360,16 +2400,21 @@ static bool md_vk_stream_submit(md_gpu_stream_t s) {
     VkCommandBufferSubmitInfo cbsi = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
     cbsi.commandBuffer = s->open;
 
+    /* Held across the submission: the waits name other streams' timelines,
+       and destroying one of those streams removes its waits under this lock.
+       (Its timeline outlives the submission: it is retired behind this
+       stream's position, which has been signal_value since work was recorded.) */
+    md_mutex_lock(&s->wait_mutex);
     VkSemaphoreSubmitInfo  wait_stack[8];
     VkSemaphoreSubmitInfo* waits = wait_stack;
-    const uint32_t tl_wait_count = (uint32_t)s->waits.count;
+    const uint32_t tl_wait_count = (uint32_t)s->waits.size;
     const uint32_t wait_count    = tl_wait_count + s->bin_wait_count;
     if (wait_count > 8) {
         waits = (VkSemaphoreSubmitInfo*)md_alloc(dev->alloc, wait_count * sizeof(VkSemaphoreSubmitInfo));
-        if (!waits) return md_vk_fail("out of memory");
+        if (!waits) { md_mutex_unlock(&s->wait_mutex); return md_gpu_fail("out of memory"); }
     }
     for (uint32_t i = 0; i < tl_wait_count; ++i) {
-        md_vk_wait_t w = MD_VK_VEC_AT(s->waits, md_vk_wait_t, i);
+        md_vk_wait_t w = s->waits.data[i];
         waits[i] = (VkSemaphoreSubmitInfo){VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
         waits[i].semaphore = w.stream->timeline;
         waits[i].value     = w.value;
@@ -2401,35 +2446,34 @@ static bool md_vk_stream_submit(md_gpu_stream_t s) {
     si.signalSemaphoreInfoCount = 1 + s->bin_signal_count;
     si.pSignalSemaphoreInfos    = signals;
 
-    md_mutex_lock(&dev->queue_mutex);
+    md_mutex_lock(&s->q->mutex);
     VkResult r = vkQueueSubmit2(s->queue, 1, &si, VK_NULL_HANDLE);
-    md_mutex_unlock(&dev->queue_mutex);
+    md_mutex_unlock(&s->q->mutex);
     if (waits != wait_stack) md_free(dev->alloc, waits, wait_count * sizeof(VkSemaphoreSubmitInfo));
+    if (r == VK_SUCCESS) s->waits.size = 0;
+    md_mutex_unlock(&s->wait_mutex);
     if (!md_vk_check(r, "vkQueueSubmit2")) return false;
 
     /* Tag the command buffer and arena pages with the value that frees them. */
-    for (size_t i = 0; i < s->cmds.count; ++i) {
-        md_vk_cmd_t* c = &MD_VK_VEC_AT(s->cmds, md_vk_cmd_t, i);
+    for (size_t i = 0; i < s->cmds.size; ++i) {
+        md_vk_cmd_t* c = &s->cmds.data[i];
         if (c->cmd == s->open) { c->value = signal_value; c->pending = true; break; }
     }
     md_vk_arena_retire(s, signal_value);
 
-    s->submitted_value = signal_value;
+    s->submitted_value = signal_value;      /* `position` already says so */
     s->next_value      = signal_value + 1;
-    s->waits.count     = 0;
     s->bin_wait_count  = 0;
     s->bin_signal_count = 0;
     s->open            = VK_NULL_HANDLE;
     s->has_work        = false;
-    /* md_vk_stream_ensure_cmd re-arms needs_barrier for the next buffer. */
-    s->needs_barrier   = false;
     return true;
 }
 
 md_gpu_sync_t md_gpu_stream_record(md_gpu_stream_t s) {
     md_gpu_sync_t out = md_gpu_sync_none();
     if (!s) return out;
-    if (s->upload_open) { md_vk_fail("md_gpu_stream_record: stream '%s' has an open upload", s->label); return out; }
+    if (s->upload_open) { md_gpu_fail("md_gpu_stream_record: stream '%s' has an open upload", s->label); return out; }
     if (!md_vk_not_in_pass(s, "md_gpu_stream_record")) return out;
     md_vk_stream_submit(s);
     if (s->submitted_value == 0) return out;
@@ -2441,7 +2485,7 @@ md_gpu_sync_t md_gpu_stream_record(md_gpu_stream_t s) {
 void md_gpu_stream_wait(md_gpu_stream_t s, md_gpu_sync_t sync) {
     if (!s || !md_gpu_sync_is_valid(sync)) return;
     if (sync.stream == s) return;                    /* already ordered */
-    if (sync.stream->device != s->device) { md_vk_fail("md_gpu_stream_wait: sync from another device"); return; }
+    if (sync.stream->device != s->device) { md_gpu_fail("md_gpu_stream_wait: sync from another device"); return; }
     if (!md_vk_not_in_pass(s, "md_gpu_stream_wait")) return;
     if (md_gpu_sync_is_complete(sync)) return;       /* nothing to wait for */
 
@@ -2449,17 +2493,19 @@ void md_gpu_stream_wait(md_gpu_stream_t s, md_gpu_sync_t sync) {
     if (s->has_work) md_vk_stream_submit(s);
 
     /* Collapse duplicate waits on the same timeline, keeping the larger value. */
-    for (size_t i = 0; i < s->waits.count; ++i) {
-        md_vk_wait_t* w = &MD_VK_VEC_AT(s->waits, md_vk_wait_t, i);
+    md_mutex_lock(&s->wait_mutex);
+    bool merged = false;
+    for (size_t i = 0; i < s->waits.size && !merged; ++i) {
+        md_vk_wait_t* w = &s->waits.data[i];
         if (w->stream == sync.stream) {
             if (sync.value > w->value) w->value = sync.value;
-            return;
+            merged = true;
         }
     }
-    md_vk_wait_t* w = (md_vk_wait_t*)md_vk_vec_push(&s->waits, s->device->alloc);
-    if (!w) { md_vk_fail("out of memory queueing a stream wait"); return; }
-    w->stream = sync.stream;
-    w->value  = sync.value;
+    const md_vk_wait_t w = {sync.stream, sync.value};
+    const bool ok = merged || MD_ARRAY_TRY_PUSH(s->waits, w);
+    md_mutex_unlock(&s->wait_mutex);
+    if (!ok) md_gpu_fail("out of memory queueing a stream wait");
 }
 
 void md_gpu_stream_flush(md_gpu_stream_t s) {
@@ -2517,17 +2563,18 @@ static void md_vk_stream_free(md_gpu_stream_t s) {
         vkEndCommandBuffer(s->open);
         s->open = VK_NULL_HANDLE;
     }
-    for (size_t i = 0; i < s->cmds.count; ++i) {
-        md_vk_cmd_t* c = &MD_VK_VEC_AT(s->cmds, md_vk_cmd_t, i);
+    for (size_t i = 0; i < s->cmds.size; ++i) {
+        md_vk_cmd_t* c = &s->cmds.data[i];
         vkFreeCommandBuffers(dev->device, s->cmd_pool, 1, &c->cmd);
     }
-    md_vk_vec_free(&s->cmds, dev->alloc);
-    md_vk_vec_free(&s->waits, dev->alloc);
+    MD_ARRAY_FREE(s->cmds);
+    MD_ARRAY_FREE(s->waits);
     md_vk_arena_free(dev, &s->arena);
-    md_vk_temp_free_all(s);
+    md_gpu_heap_temps_free(&dev->heap, &s->temps);
     if (s->ts_pool) vkDestroyQueryPool(dev->device, s->ts_pool, NULL);
     vkDestroyCommandPool(dev->device, s->cmd_pool, NULL);
-    vkDestroySemaphore(dev->device, s->timeline, NULL);
+    if (s->timeline) vkDestroySemaphore(dev->device, s->timeline, NULL);
+    md_mutex_destroy(&s->wait_mutex);
     md_free(dev->alloc, s, sizeof(*s));
 }
 
@@ -2542,8 +2589,14 @@ void md_gpu_stream_destroy(md_gpu_stream_t s) {
     md_gpu_stream_sync(s);
 
     md_mutex_lock(&dev->device_mutex);
-    md_vk_vec_remove_ptr(&dev->streams, s);
+    MD_ARRAY_REMOVE_ITEM(dev->streams, s);
     md_vk_forget_stream_locked(dev, s);
+    /* Other streams' submissions may still wait on the timeline. */
+    md_vk_retire_t r = {0};
+    r.kind      = MD_VK_RETIRE_SEMAPHORE;
+    r.semaphore = s->timeline;
+    s->timeline = VK_NULL_HANDLE;
+    md_vk_retire_entry_locked(dev, r);
     md_mutex_unlock(&dev->device_mutex);
 
     md_vk_stream_free(s);
@@ -2553,426 +2606,118 @@ void md_gpu_stream_destroy(md_gpu_stream_t s) {
    9. Memory
    =========================================================================
 
-   md_gpu_malloc draws from one heap per memory kind: a TLSF sub-allocator
-   (md_gpu_tlsf.c) over large chunks, each chunk one VkBuffer with its own
-   VkDeviceMemory. Chunks start at MD_VK_HEAP_CHUNK_MIN and double up to
-   MD_VK_HEAP_CHUNK_MAX; a request bigger than that gets a chunk of its own.
-   So a thousand small buffers cost a handful of driver allocations, not a
-   thousand -- the driver's limit (maxMemoryAllocationCount, commonly 4096)
-   is never in reach.
+   md_gpu_malloc, md_gpu_free and the temp scopes are md_gpu_heap.c's, shared
+   with the Metal backend. What is Vulkan's is a chunk: one VkBuffer with
+   VkDeviceMemory of its own, every buffer usage md_gpu needs and a device
+   address -- guarded in debug memory, so that GPU-assisted validation sees an
+   access past either end. Reusing freed memory early needs a barrier, which
+   cannot be placed inside a render pass. */
 
-   md_gpu_free is stream-ordered. At a point the GPU has already passed, the
-   node goes straight back to the heap. Otherwise it waits on pending_frees
-   until the stream gets there (checked at malloc and poll). While it waits,
-   the freeing stream itself may reuse it for DEVICE memory: stream order
-   puts the new work after the old, and force_barrier covers EXPLICIT mode.
-   Host-visible memory is never reused early, because the CPU would write
-   it at once.
-
-   A chunk whose last allocation is released counts as empty. Empty chunks
-   are kept, up to heap_cache_limit bytes per kind, and beyond that returned
-   to the driver. That is safe at once, because a node is released only
-   after the GPU has passed its free. */
-
-static uint64_t md_vk_heap_chunk_size(const md_vk_heap_t* h, uint64_t need) {
-    uint64_t size = MD_VK_HEAP_CHUNK_MIN;
-    for (size_t i = 0; i < h->chunks.count && size < MD_VK_HEAP_CHUNK_MAX; ++i) size *= 2;
-    if (need > size) size = md_vk_align_up(need, MD_VK_HEAP_LARGE_ALIGN);
-    return size;
-}
-
-static md_vk_chunk_t* md_vk_chunk_create(md_gpu_device_t dev, md_gpu_mem_kind_t kind, uint64_t size) {
+static md_gpu_chunk_t* md_vk_chunk_create(void* user, md_gpu_mem_kind_t kind, uint64_t size) {
+    md_gpu_device_t dev = (md_gpu_device_t)user;
     md_vk_chunk_t* c = (md_vk_chunk_t*)md_alloc(dev->alloc, sizeof(md_vk_chunk_t));
-    if (!c) { md_vk_fail("out of memory"); return NULL; }
-    memset(c, 0, sizeof(*c));
-    void* host = NULL;
-    if (!md_vk_create_raw_buffer(dev, size, kind, &c->buffer, &c->memory, &c->address, &host)) {
+    if (!c) { md_gpu_fail("out of memory"); return NULL; }
+    md_memset(c, 0, sizeof(*c));
+    md_vk_raw_t raw;
+    if (!md_vk_raw_create(dev, size, kind, dev->heap.debug ? MD_VK_RAW_GUARDED : 0, &raw)) {
         md_free(dev->alloc, c, sizeof(*c));
         return NULL;
     }
-    c->host = (uint8_t*)host;
-    c->size = size;
-    c->kind = kind;
-    return c;
+    c->buffer        = raw.buffer;
+    c->memory        = raw.memory;
+    c->memory_type   = raw.memory_type;
+    c->memory_offset = raw.memory_offset;
+    c->base.address  = raw.address;
+    c->base.host     = raw.host;
+    c->base.size     = size;
+    c->base.kind     = kind;
+    c->base.device_local = (dev->mem_props.memoryTypes[raw.memory_type].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0;
+    return &c->base;
 }
 
-static void md_vk_chunk_destroy(md_gpu_device_t dev, md_vk_chunk_t* c) {
+static void md_vk_chunk_destroy(void* user, md_gpu_chunk_t* chunk) {
+    md_gpu_device_t dev = (md_gpu_device_t)user;
+    md_vk_chunk_t* c = (md_vk_chunk_t*)chunk;
     md_vk_destroy_raw_buffer(dev, c->buffer, c->memory);
     md_free(dev->alloc, c, sizeof(*c));
 }
 
-/* Give a heap node back to its heap: the GPU is done with it. Caller holds
-   device_mutex. */
-static void md_vk_heap_release_node_locked(md_gpu_device_t dev, md_gpu_mem_kind_t kind, md_tlsf_node_t* node) {
-    md_vk_heap_t* h = &dev->heaps[kind];
-    md_tlsf_node_t* f = md_tlsf_free(&h->tlsf, node);
-    if (!md_tlsf_region_empty(f)) return;
-    md_vk_chunk_t* c = (md_vk_chunk_t*)f->region;
-    c->empty      = true;
-    c->empty_node = f;
-    h->empty_bytes += c->size;
-    if (h->empty_bytes > dev->heap_cache_limit) {
-        md_tlsf_remove_region(&h->tlsf, f);
-        md_vk_vec_remove_ptr(&h->chunks, c);
-        h->empty_bytes -= c->size;
-        h->reserved    -= c->size;
-        md_vk_chunk_destroy(dev, c);
-    }
+static bool md_vk_reuse_early(md_gpu_stream_t s) {
+    if (s->in_pass) return false;
+    s->force_barrier = true;
+    return true;
 }
 
-/* Release pending frees whose point has been reached. Caller holds device_mutex. */
-static void md_vk_process_pending_frees_locked(md_gpu_device_t dev) {
-    for (size_t i = 0; i < dev->pending_frees.count;) {
-        md_vk_pending_free_t pf = MD_VK_VEC_AT(dev->pending_frees, md_vk_pending_free_t, i);
-        if (md_vk_stream_completed(pf.stream) >= pf.value) {
-            md_vk_vec_remove(&dev->pending_frees, i);
-            md_vk_heap_release_node_locked(dev, pf.kind, pf.node);
-        } else {
-            ++i;
-        }
-    }
+static void md_vk_heap_init(md_gpu_device_t dev, uint64_t cache_limit, bool debug) {
+    const md_gpu_heap_backend_t backend = {
+        dev, md_vk_chunk_create, md_vk_chunk_destroy,
+        md_vk_stream_position, md_vk_stream_completed, md_vk_reuse_early,
+    };
+    md_gpu_heap_init(&dev->heap, dev->alloc, &backend, cache_limit, debug);
 }
 
-/* A node for `need` bytes: the stream's own pending frees first (DEVICE only,
-   and only when little of the node would be wasted), then the heap, then a new
-   chunk. Caller holds device_mutex. */
-static md_tlsf_node_t* md_vk_heap_alloc_locked(md_gpu_device_t dev, md_gpu_stream_t s,
-                                               md_gpu_mem_kind_t kind, uint64_t need) {
-    md_vk_heap_t* h = &dev->heaps[kind];
-    md_tlsf_node_t* node = NULL;
-
-    /* Not inside a render pass: the barrier that makes early reuse safe
-       cannot be placed there. */
-    if (kind == MD_GPU_MEM_DEVICE && !s->in_pass) {
-        for (size_t i = 0; i < dev->pending_frees.count; ++i) {
-            md_vk_pending_free_t* pf = &MD_VK_VEC_AT(dev->pending_frees, md_vk_pending_free_t, i);
-            if (pf->stream != s || pf->kind != kind) continue;
-            if (pf->node->size < need || pf->node->size > need + need / 4 + MD_VK_HEAP_ALIGN) continue;
-            node = pf->node;
-            md_vk_vec_remove(&dev->pending_frees, i);
-            s->force_barrier = true;
-            break;
-        }
-    }
-    if (!node) node = md_tlsf_alloc(&h->tlsf, need);
-    if (!node) {
-        const uint64_t size = md_vk_heap_chunk_size(h, need);
-        md_vk_chunk_t* c = md_vk_chunk_create(dev, kind, size);
-        if (!c) return NULL;
-        md_vk_chunk_t** slot = (md_vk_chunk_t**)md_vk_vec_push(&h->chunks, dev->alloc);
-        if (!slot || !md_tlsf_add_region(&h->tlsf, c, size)) {
-            if (slot) h->chunks.count--;
-            md_vk_chunk_destroy(dev, c);
-            md_vk_fail("out of memory");
-            return NULL;
-        }
-        *slot = c;
-        h->reserved += size;
-        node = md_tlsf_alloc(&h->tlsf, need);
-        if (!node) { md_vk_fail("md_gpu_malloc: internal error, a fresh chunk did not fit"); return NULL; }
-    }
-    md_vk_chunk_t* c = (md_vk_chunk_t*)node->region;
-    if (c->empty) {
-        c->empty      = false;
-        c->empty_node = NULL;
-        h->empty_bytes -= c->size;
-    }
-    return node;
+md_gpu_mem_t md_gpu_malloc(md_gpu_stream_t s, md_gpu_mem_kind_t kind, size_t size) {
+    const md_gpu_mem_t none = {0, NULL};
+    if (!s) { md_gpu_fail("md_gpu_malloc: null stream"); return none; }
+    return md_gpu_heap_malloc(&s->device->heap, s, kind, size);
 }
 
-md_gpu_mem_t md_gpu_malloc(md_gpu_stream_t stream, md_gpu_mem_kind_t kind, size_t size) {
-    md_gpu_mem_t out = {0, NULL};
-    if (!stream) { md_vk_fail("md_gpu_malloc: null stream"); return out; }
-    if ((unsigned)kind >= (unsigned)MD_GPU_MEM_KIND_COUNT) { md_vk_fail("md_gpu_malloc: invalid memory kind %d", (int)kind); return out; }
-    if (size == 0) return out;
-    md_gpu_device_t dev = stream->device;
-    const uint64_t need = md_vk_align_up(size, MD_VK_HEAP_ALIGN);
-
-    md_vk_range_t* r = (md_vk_range_t*)md_alloc(dev->alloc, sizeof(md_vk_range_t));
-    if (!r) { md_vk_fail("out of memory"); return out; }
-
-    md_mutex_lock(&dev->device_mutex);
-    md_vk_process_pending_frees_locked(dev);
-    md_tlsf_node_t* node = md_vk_heap_alloc_locked(dev, stream, kind, need);
-    if (!node) {
-        md_mutex_unlock(&dev->device_mutex);
-        md_free(dev->alloc, r, sizeof(*r));
-        return out;
-    }
-    md_vk_chunk_t* c = (md_vk_chunk_t*)node->region;
-    r->address      = c->address + node->offset;
-    r->size         = size;
-    r->chunk        = c;
-    r->chunk_offset = node->offset;
-    r->node         = node;
-    r->kind         = kind;
-    if (!md_vk_registry_insert_locked(dev, r)) {
-        md_vk_heap_release_node_locked(dev, kind, node);
-        md_mutex_unlock(&dev->device_mutex);
-        md_free(dev->alloc, r, sizeof(*r));
-        md_vk_fail("out of memory");
-        return out;
-    }
-    md_vk_heap_t* h = &dev->heaps[kind];
-    h->in_use += node->size;
-    if (h->in_use > h->peak_in_use) h->peak_in_use = h->in_use;
-    h->allocations++;
-    md_mutex_unlock(&dev->device_mutex);
-
-    out.gpu = r->address;
-    out.cpu = c->host ? c->host + node->offset : NULL;
-    return out;
-}
-
-void md_gpu_free(md_gpu_stream_t stream, md_gpu_addr_t addr) {
+void md_gpu_free(md_gpu_stream_t s, md_gpu_addr_t addr) {
     if (!addr) return;
-    if (!stream) { md_vk_fail("md_gpu_free: a stream is required"); return; }
-    md_gpu_device_t dev = stream->device;
-
-    md_mutex_lock(&dev->device_mutex);
-    md_vk_range_t* r = md_vk_registry_find_locked(dev, addr);
-    if (!r || !r->node || r->address != addr) {
-        md_mutex_unlock(&dev->device_mutex);
-        md_vk_fail("md_gpu_free: 0x%llx is not the start of a live md_gpu_malloc allocation", (unsigned long long)addr);
-        return;
-    }
-    md_vk_registry_remove_locked(dev, r);
-    md_vk_heap_t* h = &dev->heaps[r->kind];
-    h->in_use -= r->node->size;
-    h->allocations--;
-
-    const uint64_t at = md_vk_stream_position(stream);
-    bool queued = false;
-    if (at != 0 && md_vk_stream_completed(stream) < at) {
-        md_vk_pending_free_t* pf = (md_vk_pending_free_t*)md_vk_vec_push(&dev->pending_frees, dev->alloc);
-        if (pf) {
-            pf->node   = r->node;
-            pf->kind   = r->kind;
-            pf->stream = stream;
-            pf->value  = at;
-            queued = true;
-        } else {
-            /* Cannot remember it: leak the node rather than free it under the GPU. */
-            md_vk_fail("out of memory recording a free; %llu bytes leaked", (unsigned long long)r->node->size);
-            queued = true;
-        }
-    }
-    if (!queued) md_vk_heap_release_node_locked(dev, r->kind, r->node);
-    md_mutex_unlock(&dev->device_mutex);
-    md_free(dev->alloc, r, sizeof(*r));
+    if (!s) { md_gpu_fail("md_gpu_free: a stream is required"); return; }
+    md_gpu_heap_free(&s->device->heap, s, addr);
 }
 
-/* ---- Temp arenas ----------------------------------------------------------------
-
-   Per stream and per kind, a stack of chunks being filled by the open scopes.
-   A chunk belongs to the scope depth that acquired it. Inner scopes bump into
-   an outer scope's chunk as well; when an inner scope ends, only chunks it
-   acquired itself are retired, and what it used of an outer chunk stays used
-   until the outer scope ends. That costs at most one chunk's tail per level
-   and needs no per-allocation bookkeeping. A retired chunk is stamped with
-   the stream's position and reused only once the GPU has passed it -- the CPU
-   may write it at once, so stream order alone is not enough. */
-
-static int md_vk_temp_index(md_gpu_mem_kind_t kind) {
-    return kind == MD_GPU_MEM_DEVICE ? 0 : (kind == MD_GPU_MEM_HOST_WRITE ? 1 : -1);
-}
-
-/* Caller holds device_mutex. */
-static void md_vk_temp_chunk_destroy_locked(md_gpu_device_t dev, md_vk_chunk_t* c) {
-    if (c->range) {
-        md_vk_registry_remove_locked(dev, c->range);
-        md_free(dev->alloc, c->range, sizeof(md_vk_range_t));
-    }
-    dev->heaps[c->kind].temp_bytes -= c->size;
-    md_vk_chunk_destroy(dev, c);
-}
-
-static md_vk_chunk_t* md_vk_temp_acquire(md_gpu_stream_t s, md_gpu_mem_kind_t kind, uint64_t need) {
-    md_gpu_device_t dev = s->device;
-    md_vk_temp_arena_t* a = &s->temp[md_vk_temp_index(kind)];
-    const uint64_t done = md_vk_stream_completed(s);
-
-    /* 1. A retired chunk the GPU is done with: start it over.
-       2. A retired chunk with room left after its cursor: carry on filling it.
-          The bytes before the cursor may still be in use, but the tail never
-          was; the chunk is restamped when this scope ends, and only a later,
-          complete retirement ever rewinds it. Small scopes (a frame's worth of
-          constants) thus share a chunk instead of taking one each.
-       3. A new chunk. */
-    md_vk_chunk_t* c = NULL;
-    for (size_t i = 0; i < a->spare.count && !c; ++i) {
-        md_vk_chunk_t* sp = MD_VK_VEC_AT(a->spare, md_vk_chunk_t*, i);
-        if (sp->retire_value <= done && sp->size >= need) {
-            c = sp;
-            c->cursor = 0;
-            md_vk_vec_remove(&a->spare, i);
-        }
-    }
-    for (size_t i = a->spare.count; i-- > 0 && !c;) {
-        md_vk_chunk_t* sp = MD_VK_VEC_AT(a->spare, md_vk_chunk_t*, i);
-        if (sp->cursor + need <= sp->size) {
-            c = sp;
-            md_vk_vec_remove(&a->spare, i);
-        }
-    }
-    if (!c) {
-        const uint64_t size = need > MD_VK_TEMP_CHUNK_MIN ? md_vk_align_up(need, MD_VK_HEAP_LARGE_ALIGN) : MD_VK_TEMP_CHUNK_MIN;
-        c = md_vk_chunk_create(dev, kind, size);
-        if (!c) return NULL;
-        md_vk_range_t* r = (md_vk_range_t*)md_alloc(dev->alloc, sizeof(md_vk_range_t));
-        if (!r) { md_vk_chunk_destroy(dev, c); md_vk_fail("out of memory"); return NULL; }
-        r->address      = c->address;
-        r->size         = c->size;
-        r->chunk        = c;
-        r->chunk_offset = 0;
-        r->node         = NULL;
-        r->kind         = kind;
-        md_mutex_lock(&dev->device_mutex);
-        const bool ok = md_vk_registry_insert_locked(dev, r);
-        if (ok) { c->range = r; dev->heaps[kind].temp_bytes += c->size; }
-        md_mutex_unlock(&dev->device_mutex);
-        if (!ok) { md_free(dev->alloc, r, sizeof(*r)); md_vk_chunk_destroy(dev, c); md_vk_fail("out of memory"); return NULL; }
-    }
-    md_vk_chunk_t** slot = (md_vk_chunk_t**)md_vk_vec_push(&a->active, dev->alloc);
-    if (!slot) {
-        md_mutex_lock(&dev->device_mutex);
-        md_vk_temp_chunk_destroy_locked(dev, c);
-        md_mutex_unlock(&dev->device_mutex);
-        md_vk_fail("out of memory");
-        return NULL;
-    }
-    *slot = c;
-    c->retire_value = 0;
-    c->owner_depth  = s->temp_depth;
-    return c;
-}
-
-md_gpu_temp_t md_gpu_temp_begin(md_gpu_stream_t stream) {
-    md_gpu_temp_t t = {NULL, 0};
-    if (!stream) { md_vk_fail("md_gpu_temp_begin: null stream"); return t; }
-    t.stream = stream;
-    t.depth  = ++stream->temp_depth;
-    return t;
+md_gpu_temp_t md_gpu_temp_begin(md_gpu_stream_t s) {
+    const md_gpu_temp_t none = {NULL, 0};
+    if (!s) { md_gpu_fail("md_gpu_temp_begin: null stream"); return none; }
+    return md_gpu_heap_temp_begin(&s->temps, s);
 }
 
 md_gpu_mem_t md_gpu_temp_alloc(md_gpu_temp_t scope, md_gpu_mem_kind_t kind, size_t size) {
-    md_gpu_mem_t out = {0, NULL};
+    const md_gpu_mem_t none = {0, NULL};
     md_gpu_stream_t s = scope.stream;
-    if (!s) { md_vk_fail("md_gpu_temp_alloc: null scope"); return out; }
-    /* Chunks belong to the innermost scope, so memory for an outer one would be
-       reclaimed by the inner one's end. */
-    if (scope.depth == 0 || scope.depth != s->temp_depth) {
-        md_vk_fail("md_gpu_temp_alloc: stream '%s': the scope (depth %u) is not the innermost open one (%u)",
-                   s->label, scope.depth, s->temp_depth);
-        return out;
-    }
-    const int ti = md_vk_temp_index(kind);
-    if (ti < 0) { md_vk_fail("md_gpu_temp_alloc: only MD_GPU_MEM_DEVICE and MD_GPU_MEM_HOST_WRITE memory is temporary"); return out; }
-    if (size == 0) return out;
-    const uint64_t need = md_vk_align_up(size, MD_VK_HEAP_ALIGN);
+    if (!s) { md_gpu_fail("md_gpu_temp_alloc: null scope"); return none; }
+    return md_gpu_heap_temp_alloc(&s->device->heap, &s->temps, scope, kind, size, s->label);
+}
 
-    md_vk_temp_arena_t* a = &s->temp[ti];
-    md_vk_chunk_t* c = a->active.count ? MD_VK_VEC_AT(a->active, md_vk_chunk_t*, a->active.count - 1) : NULL;
-    if (!c || c->cursor + need > c->size) {
-        c = md_vk_temp_acquire(s, kind, need);
-        if (!c) return out;
-    }
-    out.gpu = c->address + c->cursor;
-    out.cpu = c->host ? c->host + c->cursor : NULL;
-    c->cursor += need;
-    return out;
+md_gpu_addr_t md_gpu_temp_upload(md_gpu_temp_t scope, const void* src, size_t size) {
+    md_gpu_stream_t s = scope.stream;
+    if (!s) { md_gpu_fail("md_gpu_temp_upload: null scope"); return 0; }
+    const bool can_copy = !s->in_pass && !s->upload_open;
+    return md_gpu_heap_temp_upload(&s->device->heap, &s->temps, scope, src, size, can_copy, s->label);
 }
 
 void md_gpu_temp_end(md_gpu_temp_t scope) {
     md_gpu_stream_t s = scope.stream;
-    if (!s) { md_vk_fail("md_gpu_temp_end: null scope"); return; }
-    if (scope.depth == 0 || scope.depth != s->temp_depth) {
-        md_vk_fail("md_gpu_temp_end: scopes must end in reverse order (ending depth %u, innermost open is %u)",
-                   scope.depth, s->temp_depth);
-        return;
-    }
-    const uint64_t at = md_vk_stream_position(s);
-    for (uint32_t k = 0; k < MD_VK_TEMP_KINDS; ++k) {
-        md_vk_temp_arena_t* a = &s->temp[k];
-        while (a->active.count > 0) {
-            md_vk_chunk_t* c = MD_VK_VEC_AT(a->active, md_vk_chunk_t*, a->active.count - 1);
-            if (c->owner_depth < scope.depth) break;
-            a->active.count--;
-            c->retire_value = at;
-            md_vk_chunk_t** slot = (md_vk_chunk_t**)md_vk_vec_push(&a->spare, s->device->alloc);
-            if (slot) {
-                *slot = c;
-            } else {
-                /* Cannot keep it for reuse, and cannot free it under the GPU: leak. */
-                md_vk_fail("out of memory retiring a temp chunk; %llu bytes leaked", (unsigned long long)c->size);
-            }
-        }
-    }
-    s->temp_depth--;
-}
-
-/* Every chunk of a stream's temp arenas. The stream must be idle. */
-static void md_vk_temp_free_all(md_gpu_stream_t s) {
-    md_gpu_device_t dev = s->device;
-    md_mutex_lock(&dev->device_mutex);
-    for (uint32_t k = 0; k < MD_VK_TEMP_KINDS; ++k) {
-        md_vk_temp_arena_t* a = &s->temp[k];
-        for (size_t i = 0; i < a->active.count; ++i) md_vk_temp_chunk_destroy_locked(dev, MD_VK_VEC_AT(a->active, md_vk_chunk_t*, i));
-        for (size_t i = 0; i < a->spare.count;  ++i) md_vk_temp_chunk_destroy_locked(dev, MD_VK_VEC_AT(a->spare,  md_vk_chunk_t*, i));
-        md_vk_vec_free(&a->active, dev->alloc);
-        md_vk_vec_free(&a->spare,  dev->alloc);
-    }
-    md_mutex_unlock(&dev->device_mutex);
-    s->temp_depth = 0;
+    if (!s) { md_gpu_fail("md_gpu_temp_end: null scope"); return; }
+    md_gpu_heap_temp_end(&s->device->heap, &s->temps, scope);
 }
 
 bool md_gpu_memory_stats(md_gpu_device_t dev, md_gpu_mem_kind_t kind, md_gpu_memory_stats_t* out) {
-    if (!dev || !out || (unsigned)kind >= (unsigned)MD_GPU_MEM_KIND_COUNT) return md_vk_fail("md_gpu_memory_stats: invalid argument");
-    memset(out, 0, sizeof(*out));
+    if (!dev || !out || (unsigned)kind >= (unsigned)MD_GPU_MEM_KIND_COUNT) return md_gpu_fail("md_gpu_memory_stats: invalid argument");
+    md_memset(out, 0, sizeof(*out));
+    md_gpu_heap_stats(&dev->heap, kind, out);
     md_mutex_lock(&dev->device_mutex);
-    const md_vk_heap_t* h = &dev->heaps[kind];
-    out->bytes_in_use      = h->in_use;
-    out->bytes_peak_in_use = h->peak_in_use;
-    out->bytes_reserved    = h->reserved;
-    out->bytes_temp        = h->temp_bytes;
-    out->bytes_textures    = kind == MD_GPU_MEM_DEVICE ? dev->texture_bytes : 0;
-    out->allocations       = h->allocations;
-    out->chunks            = (uint32_t)h->chunks.count;
+    out->bytes_textures = kind == MD_GPU_MEM_DEVICE ? dev->texture_bytes : 0;
     md_mutex_unlock(&dev->device_mutex);
     return true;
-}
-
-/* Everything left in the heaps at device destruction. Caller holds device_mutex;
-   every stream is idle and every temp chunk already gone. */
-static void md_vk_heaps_free_locked(md_gpu_device_t dev) {
-    for (size_t i = 0; i < dev->registry.count; ++i) {
-        md_free(dev->alloc, MD_VK_VEC_AT(dev->registry, md_vk_range_t*, i), sizeof(md_vk_range_t));
-    }
-    dev->registry.count = 0;
-    dev->pending_frees.count = 0;
-    for (uint32_t k = 0; k < MD_GPU_MEM_KIND_COUNT; ++k) {
-        md_vk_heap_t* h = &dev->heaps[k];
-        for (size_t i = 0; i < h->chunks.count; ++i) md_vk_chunk_destroy(dev, MD_VK_VEC_AT(h->chunks, md_vk_chunk_t*, i));
-        md_vk_vec_free(&h->chunks, dev->alloc);
-        md_tlsf_destroy(&h->tlsf);
-    }
-    md_vk_vec_free(&dev->pending_frees, dev->alloc);
 }
 
 /* ---- Copies ------------------------------------------------------------------ */
 
 static bool md_vk_record_buffer_copy(md_gpu_stream_t s, VkBuffer src, uint64_t src_off,
                                      VkBuffer dst, uint64_t dst_off, uint64_t size) {
-    VkCommandBuffer cmd = md_vk_begin_op(s);
+    VkCommandBuffer cmd = md_vk_begin_op(s, MD_GPU_STAGE_TRANSFER);
     if (!cmd) return false;
     VkBufferCopy region = {src_off, dst_off, size};
     vkCmdCopyBuffer(cmd, src, dst, 1, &region);
-    md_vk_end_op(s);
+    md_vk_end_op(s, MD_GPU_STAGE_TRANSFER);
     return true;
 }
 
 bool md_gpu_copy(md_gpu_stream_t s, md_gpu_addr_t dst, md_gpu_addr_t src, size_t size) {
-    if (!s) return md_vk_fail("md_gpu_copy: null stream");
+    if (!s) return md_gpu_fail("md_gpu_copy: null stream");
     if (size == 0) return true;
     md_vk_span_t d, sp;
     if (!md_vk_resolve(s->device, dst, size, &d,  "md_gpu_copy (dst)")) return false;
@@ -2985,35 +2730,38 @@ bool md_gpu_copy(md_gpu_stream_t s, md_gpu_addr_t dst, md_gpu_addr_t src, size_t
    queued by md_gpu_stream_wait already satisfied. */
 static bool md_vk_stream_idle(md_gpu_stream_t s) {
     if (s->has_work || md_vk_stream_completed(s) < s->submitted_value) return false;
-    for (size_t i = 0; i < s->waits.count; ++i) {
-        md_vk_wait_t w = MD_VK_VEC_AT(s->waits, md_vk_wait_t, i);
-        if (md_vk_stream_completed(w.stream) < w.value) return false;
+    bool idle = true;
+    md_mutex_lock(&s->wait_mutex);
+    for (size_t i = 0; i < s->waits.size && idle; ++i) {
+        md_vk_wait_t w = s->waits.data[i];
+        if (md_vk_stream_completed(w.stream) < w.value) idle = false;
     }
-    return true;
+    md_mutex_unlock(&s->wait_mutex);
+    return idle;
 }
 
 bool md_gpu_upload(md_gpu_stream_t s, md_gpu_addr_t dst, const void* src, size_t size) {
-    if (!s) return md_vk_fail("md_gpu_upload: null stream");
+    if (!s) return md_gpu_fail("md_gpu_upload: null stream");
     if (size == 0) return true;
-    if (!src) return md_vk_fail("md_gpu_upload: null source");
-    if (s->upload_open) return md_vk_fail("md_gpu_upload: stream '%s' has an open upload", s->label);
+    if (!src) return md_gpu_fail("md_gpu_upload: null source");
+    if (s->upload_open) return md_gpu_fail("md_gpu_upload: stream '%s' has an open upload", s->label);
     if (!md_vk_not_in_pass(s, "md_gpu_upload")) return false;
     md_vk_span_t d;
     if (!md_vk_resolve(s->device, dst, size, &d, "md_gpu_upload")) return false;
 
     /* Fast path: host-writable destination and nothing in flight here. */
     if (d.host && md_vk_stream_idle(s)) {
-        memcpy(d.host, src, size);
+        md_memcpy(d.host, src, size);
         return true;
     }
     uint64_t addr; void* host; VkBuffer buf; uint64_t off;
     if (!md_vk_arena_alloc(s, size, &addr, &host, &buf, &off)) return false;
-    memcpy(host, src, size);
+    md_memcpy(host, src, size);
     return md_vk_record_buffer_copy(s, buf, off, d.buffer, d.offset, size);
 }
 
 bool md_gpu_memset(md_gpu_stream_t s, md_gpu_addr_t dst, uint8_t value, size_t size) {
-    if (!s) return md_vk_fail("md_gpu_memset: null stream");
+    if (!s) return md_gpu_fail("md_gpu_memset: null stream");
     if (!md_vk_not_in_pass(s, "md_gpu_memset")) return false;
     if (size == 0) return true;
     md_vk_span_t b;
@@ -3021,14 +2769,14 @@ bool md_gpu_memset(md_gpu_stream_t s, md_gpu_addr_t dst, uint8_t value, size_t s
 
     const uint64_t begin = b.offset;
     const uint64_t end   = b.offset + size;
-    uint64_t abeg = md_vk_align_up(begin, 4);
+    uint64_t abeg = MD_ALIGN_TO(begin, 4);
     uint64_t aend = end & ~3ull;
 
     if (aend > abeg) {
-        VkCommandBuffer cmd = md_vk_begin_op(s);
+        VkCommandBuffer cmd = md_vk_begin_op(s, MD_GPU_STAGE_TRANSFER);
         if (!cmd) return false;
         vkCmdFillBuffer(cmd, b.buffer, abeg, aend - abeg, ((uint32_t)value) * 0x01010101u);
-        md_vk_end_op(s);
+        md_vk_end_op(s, MD_GPU_STAGE_TRANSFER);
     }
 
     /* Unaligned head and tail go through a small staged copy. */
@@ -3044,15 +2792,15 @@ bool md_gpu_memset(md_gpu_stream_t s, md_gpu_addr_t dst, uint8_t value, size_t s
         if (pieces[i][1] == 0) continue;
         uint64_t addr; void* host; VkBuffer buf; uint64_t soff;
         if (!md_vk_arena_alloc(s, (size_t)pieces[i][1], &addr, &host, &buf, &soff)) return false;
-        memset(host, value, (size_t)pieces[i][1]);
+        md_memset(host, value, (size_t)pieces[i][1]);
         if (!md_vk_record_buffer_copy(s, buf, soff, b.buffer, pieces[i][0], pieces[i][1])) return false;
     }
     return true;
 }
 
 void* md_gpu_upload_begin(md_gpu_stream_t s, md_gpu_addr_t dst, size_t size) {
-    if (!s || !dst || size == 0) { md_vk_fail("md_gpu_upload_begin: null argument"); return NULL; }
-    if (s->upload_open) { md_vk_fail("an upload is already open on stream '%s'", s->label); return NULL; }
+    if (!s || !dst || size == 0) { md_gpu_fail("md_gpu_upload_begin: null argument"); return NULL; }
+    if (s->upload_open) { md_gpu_fail("an upload is already open on stream '%s'", s->label); return NULL; }
     if (!md_vk_not_in_pass(s, "md_gpu_upload_begin")) return NULL;
     md_vk_span_t b;
     if (!md_vk_resolve(s->device, dst, size, &b, "md_gpu_upload_begin")) return NULL;
@@ -3067,31 +2815,22 @@ void* md_gpu_upload_begin(md_gpu_stream_t s, md_gpu_addr_t dst, size_t size) {
     }
 
     uint64_t addr; void* host;
-    if (!md_vk_arena_alloc(s, size, &addr, &host, NULL, NULL)) return NULL;
-    s->upload_open     = true;
-    s->upload_direct   = false;
-    s->upload_dst      = dst;
-    s->upload_src_addr = addr;
-    s->upload_size     = size;
+    if (!md_vk_arena_alloc(s, size, &addr, &host, &s->upload_src, &s->upload_src_offset)) return NULL;
+    s->upload_open   = true;
+    s->upload_direct = false;
+    s->upload_dst    = dst;
+    s->upload_size   = size;
     return host;
 }
 
 bool md_gpu_upload_end(md_gpu_stream_t s) {
-    if (!s || !s->upload_open) return md_vk_fail("md_gpu_upload_end: no upload is open");
+    if (!s || !s->upload_open) return md_gpu_fail("md_gpu_upload_end: no upload is open");
     s->upload_open = false;
     if (s->upload_direct) return true;
 
     md_vk_span_t d;
     if (!md_vk_resolve(s->device, s->upload_dst, s->upload_size, &d, "md_gpu_upload_end")) return false;
-    /* Find the staging page again; it is one of this stream's arena pages. */
-    for (size_t i = 0; i < s->arena.pages.count; ++i) {
-        md_vk_page_t* p = MD_VK_VEC_AT(s->arena.pages, md_vk_page_t*, i);
-        if (s->upload_src_addr >= p->address && s->upload_src_addr < p->address + p->capacity) {
-            return md_vk_record_buffer_copy(s, p->buffer, s->upload_src_addr - p->address,
-                                            d.buffer, d.offset, s->upload_size);
-        }
-    }
-    return md_vk_fail("md_gpu_upload_end: staging page not found");
+    return md_vk_record_buffer_copy(s, s->upload_src, s->upload_src_offset, d.buffer, d.offset, s->upload_size);
 }
 
 /* =========================================================================
@@ -3159,7 +2898,7 @@ static uint32_t md_vk_alloc_slot_locked(md_gpu_device_t dev) {
 static void md_vk_free_slot_locked(md_gpu_device_t dev, uint32_t slot, VkDescriptorType type) {
     if (slot == 0) return;
     md_vk_clear_slot(dev, slot, type);
-    if (dev->tex_free_count < MD_VK_MAX_TEXTURE_SLOTS) dev->tex_free[dev->tex_free_count++] = slot;
+    if (dev->tex_free_count < dev->tex_slot_count - 1) dev->tex_free[dev->tex_free_count++] = slot;
 }
 
 /* Destroy a texture's device objects, return its heap slots and free it. It
@@ -3200,104 +2939,149 @@ static VkImageView md_vk_create_view(md_gpu_device_t dev, md_gpu_texture_t t, ui
     return view;
 }
 
-md_gpu_texture_t md_gpu_texture_create(md_gpu_stream_t s, const md_gpu_texture_desc_t* desc) {
-    if (!s || !desc) { md_vk_fail("md_gpu_texture_create: null argument"); return NULL; }
-    md_gpu_device_t dev = s->device;
-    if (s->upload_open)                  { md_vk_fail("md_gpu_texture_create: stream '%s' has an open upload", s->label); return NULL; }
-    if (!md_vk_not_in_pass(s, "md_gpu_texture_create")) return NULL;
-
+/* Validate and normalise a texture description and fill in the VkImageCreateInfo
+   for it. Fails, by name, on anything the device cannot make. */
+static bool md_vk_texture_image_info(md_gpu_device_t dev, const md_gpu_texture_desc_t* desc, const char* what,
+                                     md_gpu_texture_desc_t* out_d, md_vk_format_info_t* out_fi, VkImageCreateInfo* ici) {
     md_gpu_texture_desc_t d = *desc;
     const char* label = d.label ? d.label : "texture";
     md_vk_format_info_t fi = md_vk_format_info(d.format);
-    if (fi.format == VK_FORMAT_UNDEFINED) { md_vk_fail("texture '%s': invalid format %d", label, (int)d.format); return NULL; }
+    if (fi.format == VK_FORMAT_UNDEFINED) return md_gpu_fail("%s '%s': invalid format %d", what, label, (int)d.format);
     if (d.type != MD_GPU_TEX_2D && d.type != MD_GPU_TEX_2D_ARRAY && d.type != MD_GPU_TEX_3D) {
-        md_vk_fail("texture '%s': invalid type %d (a zero-initialised desc has no type)", label, (int)d.type);
-        return NULL;
+        return md_gpu_fail("%s '%s': invalid type %d (a zero-initialised desc has no type)", what, label, (int)d.type);
     }
     if (!(d.usage & (MD_GPU_TEX_STORAGE | MD_GPU_TEX_SAMPLED | MD_GPU_TEX_RENDER_TARGET))) {
-        md_vk_fail("texture '%s': usage is empty", label);
-        return NULL;
+        return md_gpu_fail("%s '%s': usage is empty", what, label);
     }
-    if (d.width == 0 || d.height == 0) { md_vk_fail("texture '%s': zero width or height", label); return NULL; }
+    if (d.width == 0 || d.height == 0) return md_gpu_fail("%s '%s': zero width or height", what, label);
     if ((d.usage & MD_GPU_TEX_RENDER_TARGET) && d.type == MD_GPU_TEX_3D) {
-        md_vk_fail("texture '%s': RENDER_TARGET needs a 2D or 2D_ARRAY texture", label);
-        return NULL;
+        return md_gpu_fail("%s '%s': RENDER_TARGET needs a 2D or 2D_ARRAY texture", what, label);
     }
     if ((d.usage & MD_GPU_TEX_RENDER_TARGET) && !dev->supports_graphics) {
-        md_vk_fail("texture '%s': RENDER_TARGET usage on a device without graphics support", label);
-        return NULL;
+        return md_gpu_fail("%s '%s': RENDER_TARGET usage on a device without graphics support", what, label);
     }
     if (d.type == MD_GPU_TEX_2D && d.depth_or_layers > 1) {
-        md_vk_fail("texture '%s': a 2D texture has depth_or_layers %u; use MD_GPU_TEX_3D or MD_GPU_TEX_2D_ARRAY",
-                   label, d.depth_or_layers);
-        return NULL;
+        return md_gpu_fail("%s '%s': a 2D texture has depth_or_layers %u; use MD_GPU_TEX_3D or MD_GPU_TEX_2D_ARRAY",
+                          what, label, d.depth_or_layers);
     }
     if (d.depth_or_layers == 0) d.depth_or_layers = 1;
     if (d.mip_levels == 0) d.mip_levels = 1;
 
-    VkImageCreateInfo ici = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
-    ici.imageType     = d.type == MD_GPU_TEX_3D ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
-    ici.format        = fi.format;
-    ici.extent.width  = d.width;
-    ici.extent.height = d.height;
-    ici.extent.depth  = d.type == MD_GPU_TEX_3D ? d.depth_or_layers : 1;
-    ici.mipLevels     = d.mip_levels;
-    ici.arrayLayers   = d.type == MD_GPU_TEX_2D_ARRAY ? d.depth_or_layers : 1;
-    ici.samples       = VK_SAMPLE_COUNT_1_BIT;
-    ici.tiling        = VK_IMAGE_TILING_OPTIMAL;
-    ici.usage         = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-    if (d.usage & MD_GPU_TEX_STORAGE) ici.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
-    if (d.usage & MD_GPU_TEX_SAMPLED) ici.usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
+    *ici = (VkImageCreateInfo){VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    ici->imageType     = d.type == MD_GPU_TEX_3D ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
+    ici->format        = fi.format;
+    ici->extent.width  = d.width;
+    ici->extent.height = d.height;
+    ici->extent.depth  = d.type == MD_GPU_TEX_3D ? d.depth_or_layers : 1;
+    ici->mipLevels     = d.mip_levels;
+    ici->arrayLayers   = d.type == MD_GPU_TEX_2D_ARRAY ? d.depth_or_layers : 1;
+    ici->samples       = VK_SAMPLE_COUNT_1_BIT;
+    ici->tiling        = VK_IMAGE_TILING_OPTIMAL;
+    ici->usage         = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    if (d.usage & MD_GPU_TEX_STORAGE) ici->usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+    if (d.usage & MD_GPU_TEX_SAMPLED) ici->usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
     if (d.usage & MD_GPU_TEX_RENDER_TARGET) {
-        ici.usage |= fi.depth ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        ici->usage |= fi.depth ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     }
-    md_vk_set_sharing(dev, &ici.sharingMode, &ici.queueFamilyIndexCount, &ici.pQueueFamilyIndices);
-    ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    md_vk_set_sharing(dev, &ici->sharingMode, &ici->queueFamilyIndexCount, &ici->pQueueFamilyIndices);
+    ici->initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
-    /* Reject what the device cannot do, by name, before anything is created. */
-    {
-        VkImageFormatProperties ifp;
-        VkResult r = vkGetPhysicalDeviceImageFormatProperties(dev->phys, ici.format, ici.imageType, ici.tiling, ici.usage, 0, &ifp);
-        if (r != VK_SUCCESS) {
-            md_vk_fail("texture '%s': the device does not support %s %s with usage%s%s%s",
-                       label, md_vk_tex_type_name(d.type), fi.name,
-                       (d.usage & MD_GPU_TEX_STORAGE) ? " STORAGE" : "",
-                       (d.usage & MD_GPU_TEX_SAMPLED) ? " SAMPLED" : "",
-                       (d.usage & MD_GPU_TEX_RENDER_TARGET) ? " RENDER_TARGET" : "");
-            return NULL;
+    VkImageFormatProperties ifp;
+    if (vkGetPhysicalDeviceImageFormatProperties(dev->phys, ici->format, ici->imageType, ici->tiling, ici->usage, 0, &ifp) != VK_SUCCESS) {
+        return md_gpu_fail("%s '%s': the device does not support %s %s with usage%s%s%s",
+                          what, label, md_vk_tex_type_name(d.type), fi.name,
+                          (d.usage & MD_GPU_TEX_STORAGE) ? " STORAGE" : "",
+                          (d.usage & MD_GPU_TEX_SAMPLED) ? " SAMPLED" : "",
+                          (d.usage & MD_GPU_TEX_RENDER_TARGET) ? " RENDER_TARGET" : "");
+    }
+    /* Storage access goes through descriptors without a format qualifier.
+       Where the device-wide features are missing, it is up to the format:
+       writes are essential; a format that can only be written still works for
+       kernels that do not read it, so that is a warning, once per format. */
+    if ((d.usage & MD_GPU_TEX_STORAGE) &&
+        !(dev->caps.storage_read_without_format && dev->caps.storage_write_without_format)) {
+        VkFormatProperties3 fp3 = {VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3};
+        VkFormatProperties2 fp2 = {VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2, &fp3};
+        vkGetPhysicalDeviceFormatProperties2(dev->phys, ici->format, &fp2);
+        const VkFormatFeatureFlags2 ff = fp3.optimalTilingFeatures;
+        if (!(ff & VK_FORMAT_FEATURE_2_STORAGE_WRITE_WITHOUT_FORMAT_BIT)) {
+            return md_gpu_fail("%s '%s': the device cannot write %s storage images without a format qualifier", what, label, fi.name);
         }
-        /* Storage access goes through descriptors without a format qualifier.
-           Where the device-wide features are missing, it is up to the format:
-           writes are essential; a format that can only be written still works
-           for kernels that do not read it, so that is a warning, once per format. */
-        if ((d.usage & MD_GPU_TEX_STORAGE) &&
-            !(dev->caps.storage_read_without_format && dev->caps.storage_write_without_format)) {
-            VkFormatProperties3 fp3 = {VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3};
-            VkFormatProperties2 fp2 = {VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2, &fp3};
-            vkGetPhysicalDeviceFormatProperties2(dev->phys, ici.format, &fp2);
-            const VkFormatFeatureFlags2 ff = fp3.optimalTilingFeatures;
-            if (!(ff & VK_FORMAT_FEATURE_2_STORAGE_WRITE_WITHOUT_FORMAT_BIT)) {
-                md_vk_fail("texture '%s': the device cannot write %s storage images without a format qualifier", label, fi.name);
-                return NULL;
-            }
-            if (!(ff & VK_FORMAT_FEATURE_2_STORAGE_READ_WITHOUT_FORMAT_BIT) && (uint32_t)d.format < 64u &&
-                !(dev->warned_storage_read & (1ull << (uint32_t)d.format))) {
-                dev->warned_storage_read |= 1ull << (uint32_t)d.format;
-                MD_LOG_INFO("md_gpu: this device cannot read %s storage images without a format qualifier; "
-                            "kernels may write '%s' but reads of it through a storage handle are undefined", fi.name, label);
-            }
-        }
-        if (d.width > ifp.maxExtent.width || d.height > ifp.maxExtent.height || ici.extent.depth > ifp.maxExtent.depth ||
-            d.mip_levels > ifp.maxMipLevels || ici.arrayLayers > ifp.maxArrayLayers) {
-            md_vk_fail("texture '%s': %ux%ux%u with %u mips and %u layers exceeds the device limits for %s",
-                       label, d.width, d.height, ici.extent.depth, d.mip_levels, ici.arrayLayers, fi.name);
-            return NULL;
+        if (!(ff & VK_FORMAT_FEATURE_2_STORAGE_READ_WITHOUT_FORMAT_BIT) && (uint32_t)d.format < 64u &&
+            !(dev->warned_storage_read & (1ull << (uint32_t)d.format))) {
+            dev->warned_storage_read |= 1ull << (uint32_t)d.format;
+            MD_LOG_INFO("md_gpu: this device cannot read %s storage images without a format qualifier; "
+                        "kernels may write '%s' but reads of it through a storage handle are undefined", fi.name, label);
         }
     }
+    if (d.width > ifp.maxExtent.width || d.height > ifp.maxExtent.height || ici->extent.depth > ifp.maxExtent.depth ||
+        d.mip_levels > ifp.maxMipLevels || ici->arrayLayers > ifp.maxArrayLayers) {
+        return md_gpu_fail("%s '%s': %ux%ux%u with %u mips and %u layers exceeds the device limits for %s",
+                          what, label, d.width, d.height, ici->extent.depth, d.mip_levels, ici->arrayLayers, fi.name);
+    }
+    *out_d  = d;
+    *out_fi = fi;
+    return true;
+}
+
+/* Where a texture placed in md_gpu memory goes: its own alignment, raised to
+   bufferImageGranularity so that it shares no granularity page with the
+   linear resources around it, and its size rounded to whole pages. */
+typedef struct md_vk_placement_t {
+    uint64_t align;
+    uint64_t total;     /* the texture's pages, plus room to align any start address:
+                           what md_gpu_texture_placement_size reports */
+} md_vk_placement_t;
+
+static void md_vk_placement(md_gpu_device_t dev, const VkMemoryRequirements* req, md_vk_placement_t* out) {
+    const uint64_t gran = dev->props.limits.bufferImageGranularity > 1 ? dev->props.limits.bufferImageGranularity : 1;
+    out->align = req->alignment > gran ? req->alignment : gran;
+    out->total = MD_ALIGN_TO(req->size, gran) + out->align - 1;
+}
+
+uint64_t md_gpu_texture_placement_size(md_gpu_device_t dev, const md_gpu_texture_desc_t* desc) {
+    if (!dev || !desc) { md_gpu_fail("md_gpu_texture_placement_size: null argument"); return 0; }
+    md_gpu_texture_desc_t d; md_vk_format_info_t fi; VkImageCreateInfo ici;
+    if (!md_vk_texture_image_info(dev, desc, "md_gpu_texture_placement_size: texture", &d, &fi, &ici)) return 0;
+    VkDeviceImageMemoryRequirements dimr = {VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS};
+    dimr.pCreateInfo = &ici;
+    VkMemoryRequirements2 mr = {VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2};
+    vkGetDeviceImageMemoryRequirements(dev->device, &dimr, &mr);
+    if (!(mr.memoryRequirements.memoryTypeBits & dev->device_buffer_types)) {
+        md_gpu_fail("md_gpu_texture_placement_size: this device cannot place %s textures in MD_GPU_MEM_DEVICE memory", fi.name);
+        return 0;
+    }
+    md_vk_placement_t pl;
+    md_vk_placement(dev, &mr.memoryRequirements, &pl);
+    return pl.total;
+}
+
+/* Record a layout transition of every subresource of `t` from UNDEFINED to
+   GENERAL. A barrier, not an operation: it orders itself after everything
+   before it and before everything after it, in either ordering mode. */
+static bool md_vk_texture_init(md_gpu_stream_t s, md_gpu_texture_t t) {
+    const VkImageAspectFlags aspect = t->fi.depth
+        ? (VK_IMAGE_ASPECT_DEPTH_BIT | (t->desc.format == MD_GPU_FORMAT_D32_FLOAT_S8_UINT ? VK_IMAGE_ASPECT_STENCIL_BIT : 0))
+        : VK_IMAGE_ASPECT_COLOR_BIT;
+    return md_vk_record_image_barrier(s, t->image, aspect, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+                                      VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
+                                      VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
+}
+
+/* Both texture creations: in memory of its own (`at` 0), or placed at `at`. */
+static md_gpu_texture_t md_vk_texture_create(md_gpu_stream_t s, const md_gpu_texture_desc_t* desc, md_gpu_addr_t at, const char* what) {
+    if (!s || !desc) { md_gpu_fail("%s: null argument", what); return NULL; }
+    md_gpu_device_t dev = s->device;
+    if (s->upload_open) { md_gpu_fail("%s: stream '%s' has an open upload", what, s->label); return NULL; }
+    if (!md_vk_not_in_pass(s, what)) return NULL;
+
+    md_gpu_texture_desc_t d; md_vk_format_info_t fi; VkImageCreateInfo ici;
+    if (!md_vk_texture_image_info(dev, desc, "texture", &d, &fi, &ici)) return NULL;
+    const char* label = d.label ? d.label : "texture";
 
     md_gpu_texture_t t = (md_gpu_texture_t)md_alloc(dev->alloc, sizeof(md_gpu_texture));
-    if (!t) { md_vk_fail("out of memory"); return NULL; }
-    memset(t, 0, sizeof(*t));
+    if (!t) { md_gpu_fail("out of memory"); return NULL; }
+    md_memset(t, 0, sizeof(*t));
     t->device = dev;
     t->fi     = fi;
     t->desc   = d;
@@ -3305,18 +3089,28 @@ md_gpu_texture_t md_gpu_texture_create(md_gpu_stream_t s, const md_gpu_texture_d
     t->desc.label = t->label;
 
     if (!md_vk_check(vkCreateImage(dev->device, &ici, NULL, &t->image), "vkCreateImage")) goto fail;
-
-    {
+    if (!at) {
+        if (!md_vk_image_memory(dev, t->image, &t->memory, &t->bytes)) goto fail;
+    } else {
+        /* Placed: the texture's pages lie inside [at, at + placement size) of
+           a live DEVICE allocation, in its chunk's VkDeviceMemory. */
         VkMemoryRequirements req;
         vkGetImageMemoryRequirements(dev->device, t->image, &req);
-        uint32_t type = md_vk_find_memory_type(dev, req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0);
-        if (type == UINT32_MAX) type = md_vk_find_memory_type(dev, req.memoryTypeBits, 0, 0);
-        VkMemoryAllocateInfo mai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-        mai.allocationSize  = req.size;
-        mai.memoryTypeIndex = type;
-        if (!md_vk_check(vkAllocateMemory(dev->device, &mai, NULL, &t->memory), "vkAllocateMemory (texture)")) goto fail;
-        if (!md_vk_check(vkBindImageMemory(dev->device, t->image, t->memory, 0), "vkBindImageMemory")) goto fail;
-        t->bytes = req.size;
+        md_vk_placement_t pl;
+        md_vk_placement(dev, &req, &pl);
+        md_vk_span_t sp;
+        if (!md_vk_resolve(dev, at, pl.total, &sp, what)) goto fail;
+        if (sp.chunk->base.kind != MD_GPU_MEM_DEVICE) {
+            md_gpu_fail("%s '%s': textures are placed in MD_GPU_MEM_DEVICE memory", what, label);
+            goto fail;
+        }
+        if (!(req.memoryTypeBits & (1u << sp.chunk->memory_type))) {
+            md_gpu_fail("%s '%s': this device cannot place %s textures in MD_GPU_MEM_DEVICE memory", what, label, fi.name);
+            goto fail;
+        }
+        const uint64_t off = MD_ALIGN_TO(sp.chunk->memory_offset + sp.offset, pl.align);
+        if (!md_vk_check(vkBindImageMemory(dev->device, t->image, sp.chunk->memory, off), "vkBindImageMemory (placed)")) goto fail;
+        /* The memory is the caller's: t->memory stays null, nothing frees it. */
     }
 
     if (d.usage & MD_GPU_TEX_SAMPLED) {
@@ -3326,55 +3120,29 @@ md_gpu_texture_t md_gpu_texture_create(md_gpu_stream_t s, const md_gpu_texture_d
     if (d.usage & MD_GPU_TEX_STORAGE) {
         t->storage_views = (VkImageView*)md_alloc(dev->alloc, d.mip_levels * sizeof(VkImageView));
         t->storage_slots = (uint32_t*)md_alloc(dev->alloc, d.mip_levels * sizeof(uint32_t));
-        if (!t->storage_views || !t->storage_slots) { md_vk_fail("out of memory"); goto fail; }
-        memset(t->storage_views, 0, d.mip_levels * sizeof(VkImageView));
-        memset(t->storage_slots, 0, d.mip_levels * sizeof(uint32_t));
+        if (!t->storage_views || !t->storage_slots) { md_gpu_fail("out of memory"); goto fail; }
+        md_memset(t->storage_views, 0, d.mip_levels * sizeof(VkImageView));
+        md_memset(t->storage_slots, 0, d.mip_levels * sizeof(uint32_t));
         for (uint32_t m = 0; m < d.mip_levels; ++m) {
             t->storage_views[m] = md_vk_create_view(dev, t, m, 1);
             if (!t->storage_views[m]) goto fail;
         }
     }
 
-    /* Record the one layout transition this image ever gets into the stream,
-       so creation is stream-ordered like md_gpu_malloc and never waits for
-       anything. The barrier's second scope is ALL_COMMANDS, so it orders
-       itself before every later operation in the stream in either ordering
-       mode. */
-    {
-        if (!md_vk_stream_ensure_cmd(s)) goto fail;
-        VkImageMemoryBarrier2 b = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
-        b.srcStageMask  = VK_PIPELINE_STAGE_2_NONE;
-        b.srcAccessMask = 0;
-        b.dstStageMask  = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-        b.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
-        b.oldLayout     = VK_IMAGE_LAYOUT_UNDEFINED;
-        b.newLayout     = VK_IMAGE_LAYOUT_GENERAL;
-        b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        b.image = t->image;
-        b.subresourceRange.aspectMask = fi.depth
-            ? (VK_IMAGE_ASPECT_DEPTH_BIT | (d.format == MD_GPU_FORMAT_D32_FLOAT_S8_UINT ? VK_IMAGE_ASPECT_STENCIL_BIT : 0))
-            : VK_IMAGE_ASPECT_COLOR_BIT;
-        b.subresourceRange.levelCount = VK_REMAINING_MIP_LEVELS;
-        b.subresourceRange.layerCount = VK_REMAINING_ARRAY_LAYERS;
-        VkDependencyInfo di = {VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-        di.imageMemoryBarrierCount = 1;
-        di.pImageMemoryBarriers    = &b;
-        vkCmdPipelineBarrier2(s->open, &di);
-        s->has_work = true;
-    }
+    /* The one layout transition this image ever gets (but for discards),
+       recorded into the stream, so creation is stream-ordered like
+       md_gpu_malloc and never waits for anything. */
+    if (!md_vk_texture_init(s, t)) goto fail;
 
     md_mutex_lock(&dev->device_mutex);
     {
         uint32_t needed = ((d.usage & MD_GPU_TEX_SAMPLED) ? 1u : 0u) + ((d.usage & MD_GPU_TEX_STORAGE) ? d.mip_levels : 0u);
         if (dev->tex_free_count < needed) {
-            md_mutex_unlock(&dev->device_mutex);
-            md_vk_fail("texture '%s': out of bindless heap slots (max %u)", label, MD_VK_MAX_TEXTURE_SLOTS - 1);
             /* The transition is already recorded; destroy through the retire
                path so the image outlives that command buffer. */
-            md_mutex_lock(&dev->device_mutex);
             md_vk_retire_locked(dev, MD_VK_RETIRE_TEXTURE, t);
             md_mutex_unlock(&dev->device_mutex);
+            md_gpu_fail("texture '%s': out of bindless heap slots (%u; md_gpu_device_desc_t.max_textures)", label, dev->tex_slot_count - 1);
             return NULL;
         }
         if (d.usage & MD_GPU_TEX_SAMPLED) {
@@ -3387,14 +3155,12 @@ md_gpu_texture_t md_gpu_texture_create(md_gpu_stream_t s, const md_gpu_texture_d
                 md_vk_write_image_slot(dev, t->storage_slots[m], t->storage_views[m], VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
             }
         }
-        md_gpu_texture_t* slot = (md_gpu_texture_t*)md_vk_vec_push(&dev->textures, dev->alloc);
-        if (!slot) {
+        if (!MD_ARRAY_TRY_PUSH(dev->textures, t)) {
             md_vk_retire_locked(dev, MD_VK_RETIRE_TEXTURE, t);
             md_mutex_unlock(&dev->device_mutex);
-            md_vk_fail("out of memory");
+            md_gpu_fail("out of memory");
             return NULL;
         }
-        *slot = t;
         dev->texture_bytes += t->bytes;
     }
     md_mutex_unlock(&dev->device_mutex);
@@ -3408,12 +3174,30 @@ fail:
     return NULL;
 }
 
+md_gpu_texture_t md_gpu_texture_create(md_gpu_stream_t s, const md_gpu_texture_desc_t* desc) {
+    return md_vk_texture_create(s, desc, 0, "md_gpu_texture_create");
+}
+
+md_gpu_texture_t md_gpu_texture_create_at(md_gpu_stream_t s, const md_gpu_texture_desc_t* desc, md_gpu_addr_t memory) {
+    if (!memory) { md_gpu_fail("md_gpu_texture_create_at: null memory address"); return NULL; }
+    return md_vk_texture_create(s, desc, memory, "md_gpu_texture_create_at");
+}
+
+bool md_gpu_texture_discard(md_gpu_stream_t s, md_gpu_texture_t t) {
+    if (!s || !t) return md_gpu_fail("md_gpu_texture_discard: null argument");
+    if (t->device != s->device) return md_gpu_fail("md_gpu_texture_discard: texture '%s' belongs to another device", t->label);
+    if (t->external) return md_gpu_fail("md_gpu_texture_discard: '%s' belongs to a surface", t->label);
+    if (s->upload_open) return md_gpu_fail("md_gpu_texture_discard: stream '%s' has an open upload", s->label);
+    if (!md_vk_not_in_pass(s, "md_gpu_texture_discard")) return false;
+    return md_vk_texture_init(s, t);
+}
+
 void md_gpu_texture_destroy(md_gpu_texture_t t) {
     if (!t) return;
-    if (t->external) { md_vk_fail("md_gpu_texture_destroy: '%s' belongs to a surface and is not destroyed by the caller", t->label); return; }
+    if (t->external) { md_gpu_fail("md_gpu_texture_destroy: '%s' belongs to a surface and is not destroyed by the caller", t->label); return; }
     md_gpu_device_t dev = t->device;
     md_mutex_lock(&dev->device_mutex);
-    md_vk_vec_remove_ptr(&dev->textures, t);
+    MD_ARRAY_REMOVE_ITEM(dev->textures, t);
     dev->texture_bytes -= t->bytes;
     md_vk_retire_locked(dev, MD_VK_RETIRE_TEXTURE, t);
     md_mutex_unlock(&dev->device_mutex);
@@ -3444,9 +3228,9 @@ static bool md_vk_sampler_desc_eq(const md_gpu_sampler_desc_t* a, const md_gpu_s
 
 md_gpu_sampler_t md_gpu_sampler(md_gpu_device_t dev, const md_gpu_sampler_desc_t* desc) {
     md_gpu_sampler_t h = {0};
-    if (!dev) { md_vk_fail("md_gpu_sampler: null device"); return h; }
+    if (!dev) { md_gpu_fail("md_gpu_sampler: null device"); return h; }
     md_gpu_sampler_desc_t d;
-    memset(&d, 0, sizeof(d));
+    md_memset(&d, 0, sizeof(d));
     if (desc) d = *desc;
 
     md_mutex_lock(&dev->device_mutex);
@@ -3459,7 +3243,7 @@ md_gpu_sampler_t md_gpu_sampler(md_gpu_device_t dev, const md_gpu_sampler_desc_t
     }
     if (dev->sampler_count + 1 >= MD_VK_MAX_SAMPLERS) {
         md_mutex_unlock(&dev->device_mutex);
-        md_vk_fail("md_gpu_sampler: more than %u distinct samplers", MD_VK_MAX_SAMPLERS - 1);
+        md_gpu_fail("md_gpu_sampler: more than %u distinct samplers", MD_VK_MAX_SAMPLERS - 1);
         return h;
     }
 
@@ -3516,10 +3300,10 @@ typedef struct md_vk_copy_region_t {
    VkBufferImageCopy (buffer offset left 0). */
 static bool md_vk_resolve_region(md_gpu_texture_t t, const md_gpu_tex_region_t* r, md_vk_copy_region_t* out, const char* what) {
     md_gpu_tex_region_t z;
-    memset(&z, 0, sizeof(z));
+    md_memset(&z, 0, sizeof(z));
     if (!r) r = &z;
     const md_gpu_texture_desc_t* d = &t->desc;
-    if (r->mip >= d->mip_levels) return md_vk_fail("%s: mip %u out of range (texture '%s' has %u)", what, r->mip, t->label, d->mip_levels);
+    if (r->mip >= d->mip_levels) return md_gpu_fail("%s: mip %u out of range (texture '%s' has %u)", what, r->mip, t->label, d->mip_levels);
 
     uint32_t dim[3];
     dim[0] = d->width  >> r->mip; if (!dim[0]) dim[0] = 1;
@@ -3530,17 +3314,17 @@ static bool md_vk_resolve_region(md_gpu_texture_t t, const md_gpu_tex_region_t* 
     uint32_t ext[3];
     for (int i = 0; i < 3; ++i) {
         if (r->offset[i] >= dim[i]) {
-            return md_vk_fail("%s: offset[%d] = %u is outside texture '%s' (extent %u at mip %u)",
+            return md_gpu_fail("%s: offset[%d] = %u is outside texture '%s' (extent %u at mip %u)",
                               what, i, r->offset[i], t->label, dim[i], r->mip);
         }
         ext[i] = r->extent[i] ? r->extent[i] : dim[i] - r->offset[i];
         if (ext[i] > dim[i] - r->offset[i]) {
-            return md_vk_fail("%s: region [%u, +%u) on axis %d overruns texture '%s' (extent %u at mip %u)",
+            return md_gpu_fail("%s: region [%u, +%u) on axis %d overruns texture '%s' (extent %u at mip %u)",
                               what, r->offset[i], ext[i], i, t->label, dim[i], r->mip);
         }
     }
 
-    memset(out, 0, sizeof(*out));
+    md_memset(out, 0, sizeof(*out));
     VkBufferImageCopy* c = &out->copy;
     c->imageSubresource.aspectMask = t->fi.copy_aspect;
     c->imageSubresource.mipLevel   = r->mip;
@@ -3574,23 +3358,23 @@ static bool md_vk_check_buffer_offset(md_gpu_texture_t t, uint64_t off, const ch
     /* Vulkan requires a multiple of the texel size, and of 4 for depth. */
     const uint64_t a = t->fi.depth ? 4 : t->fi.bytes;
     if (off % a != 0) {
-        return md_vk_fail("%s: buffer address must be %llu-byte aligned for %s", what, (unsigned long long)a, t->fi.name);
+        return md_gpu_fail("%s: buffer address must be %llu-byte aligned for %s", what, (unsigned long long)a, t->fi.name);
     }
     return true;
 }
 
 static bool md_vk_record_texture_copy(md_gpu_stream_t s, md_gpu_texture_t t, VkBuffer buffer,
                                       const VkBufferImageCopy* copy, bool to_texture) {
-    VkCommandBuffer cmd = md_vk_begin_op(s);
+    VkCommandBuffer cmd = md_vk_begin_op(s, MD_GPU_STAGE_TRANSFER);
     if (!cmd) return false;
     if (to_texture) vkCmdCopyBufferToImage(cmd, buffer, t->image, VK_IMAGE_LAYOUT_GENERAL, 1, copy);
     else            vkCmdCopyImageToBuffer(cmd, t->image, VK_IMAGE_LAYOUT_GENERAL, buffer, 1, copy);
-    md_vk_end_op(s);
+    md_vk_end_op(s, MD_GPU_STAGE_TRANSFER);
     return true;
 }
 
 bool md_gpu_copy_to_texture(md_gpu_stream_t s, md_gpu_texture_t t, const md_gpu_tex_region_t* region, md_gpu_addr_t src) {
-    if (!s || !t) return md_vk_fail("md_gpu_copy_to_texture: null argument");
+    if (!s || !t) return md_gpu_fail("md_gpu_copy_to_texture: null argument");
     md_vk_copy_region_t cr;
     if (!md_vk_resolve_region(t, region, &cr, "md_gpu_copy_to_texture")) return false;
     md_vk_span_t b;
@@ -3601,7 +3385,7 @@ bool md_gpu_copy_to_texture(md_gpu_stream_t s, md_gpu_texture_t t, const md_gpu_
 }
 
 bool md_gpu_copy_from_texture(md_gpu_stream_t s, md_gpu_addr_t dst, md_gpu_texture_t t, const md_gpu_tex_region_t* region) {
-    if (!s || !t) return md_vk_fail("md_gpu_copy_from_texture: null argument");
+    if (!s || !t) return md_gpu_fail("md_gpu_copy_from_texture: null argument");
     md_vk_copy_region_t cr;
     if (!md_vk_resolve_region(t, region, &cr, "md_gpu_copy_from_texture")) return false;
     md_vk_span_t b;
@@ -3612,61 +3396,61 @@ bool md_gpu_copy_from_texture(md_gpu_stream_t s, md_gpu_addr_t dst, md_gpu_textu
 }
 
 bool md_gpu_upload_texture(md_gpu_stream_t s, md_gpu_texture_t t, const md_gpu_tex_region_t* region, const void* src, size_t size) {
-    if (!s || !t || !src) return md_vk_fail("md_gpu_upload_texture: null argument");
-    if (s->upload_open) return md_vk_fail("md_gpu_upload_texture: stream '%s' has an open upload", s->label);
+    if (!s || !t || !src) return md_gpu_fail("md_gpu_upload_texture: null argument");
+    if (s->upload_open) return md_gpu_fail("md_gpu_upload_texture: stream '%s' has an open upload", s->label);
     if (!md_vk_not_in_pass(s, "md_gpu_upload_texture")) return false;
     md_vk_copy_region_t cr;
     if (!md_vk_resolve_region(t, region, &cr, "md_gpu_upload_texture")) return false;
     if ((uint64_t)size != cr.bytes) {
-        return md_vk_fail("md_gpu_upload_texture: region of texture '%s' is %llu bytes but %zu were given",
+        return md_gpu_fail("md_gpu_upload_texture: region of texture '%s' is %llu bytes but %zu were given",
                           t->label, (unsigned long long)cr.bytes, size);
     }
     uint64_t addr; void* host; VkBuffer buf; uint64_t off;
     if (!md_vk_arena_alloc(s, size, &addr, &host, &buf, &off)) return false;
-    memcpy(host, src, size);
+    md_memcpy(host, src, size);
     cr.copy.bufferOffset = off;
     return md_vk_record_texture_copy(s, t, buf, &cr.copy, true);
 }
 
 bool md_gpu_copy_texture(md_gpu_stream_t s, md_gpu_texture_t dst, const md_gpu_tex_region_t* dst_region,
                          md_gpu_texture_t src, const md_gpu_tex_region_t* src_region) {
-    if (!s || !dst || !src) return md_vk_fail("md_gpu_copy_texture: null argument");
-    if (dst->device != s->device || src->device != s->device) return md_vk_fail("md_gpu_copy_texture: texture from another device");
+    if (!s || !dst || !src) return md_gpu_fail("md_gpu_copy_texture: null argument");
+    if (dst->device != s->device || src->device != s->device) return md_gpu_fail("md_gpu_copy_texture: texture from another device");
     if (dst->desc.format != src->desc.format) {
-        return md_vk_fail("md_gpu_copy_texture: formats differ ('%s' is %s, '%s' is %s); a converting copy is a draw or a kernel",
+        return md_gpu_fail("md_gpu_copy_texture: formats differ ('%s' is %s, '%s' is %s); a converting copy is a draw or a kernel",
                           src->label, src->fi.name, dst->label, dst->fi.name);
     }
     if ((dst->desc.type == MD_GPU_TEX_3D) != (src->desc.type == MD_GPU_TEX_3D)) {
-        return md_vk_fail("md_gpu_copy_texture: cannot copy between a 3D texture and a 2D one ('%s' -> '%s')", src->label, dst->label);
+        return md_gpu_fail("md_gpu_copy_texture: cannot copy between a 3D texture and a 2D one ('%s' -> '%s')", src->label, dst->label);
     }
     md_vk_copy_region_t sr, dr;
     if (!md_vk_resolve_region(src, src_region, &sr, "md_gpu_copy_texture (src)")) return false;
     /* The destination takes the source's extent. On axis 2 that is layers
        for arrays (and plain 2D, one layer) and depth for 3D. */
     md_gpu_tex_region_t d;
-    memset(&d, 0, sizeof(d));
+    md_memset(&d, 0, sizeof(d));
     if (dst_region) d = *dst_region;
     d.extent[0] = sr.copy.imageExtent.width;
     d.extent[1] = sr.copy.imageExtent.height;
     d.extent[2] = src->desc.type == MD_GPU_TEX_3D ? sr.copy.imageExtent.depth : sr.copy.imageSubresource.layerCount;
     if (dst->desc.type == MD_GPU_TEX_2D && d.extent[2] != 1) {
-        return md_vk_fail("md_gpu_copy_texture: %u layers of '%s' do not fit 2D texture '%s'", d.extent[2], src->label, dst->label);
+        return md_gpu_fail("md_gpu_copy_texture: %u layers of '%s' do not fit 2D texture '%s'", d.extent[2], src->label, dst->label);
     }
     if (!md_vk_resolve_region(dst, &d, &dr, "md_gpu_copy_texture (dst)")) return false;
     if (!md_vk_not_in_pass(s, "md_gpu_copy_texture")) return false;
 
     VkImageCopy ic;
-    memset(&ic, 0, sizeof(ic));
+    md_memset(&ic, 0, sizeof(ic));
     ic.srcSubresource = sr.copy.imageSubresource;
     ic.srcOffset      = sr.copy.imageOffset;
     ic.dstSubresource = dr.copy.imageSubresource;
     ic.dstOffset      = dr.copy.imageOffset;
     ic.extent         = sr.copy.imageExtent;
 
-    VkCommandBuffer cmd = md_vk_begin_op(s);
+    VkCommandBuffer cmd = md_vk_begin_op(s, MD_GPU_STAGE_TRANSFER);
     if (!cmd) return false;
     vkCmdCopyImage(cmd, src->image, VK_IMAGE_LAYOUT_GENERAL, dst->image, VK_IMAGE_LAYOUT_GENERAL, 1, &ic);
-    md_vk_end_op(s);
+    md_vk_end_op(s, MD_GPU_STAGE_TRANSFER);
     return true;
 }
 
@@ -3733,35 +3517,68 @@ static void md_vk_kernel_stats(md_gpu_device_t dev, md_gpu_kernel_t k) {
 static bool md_vk_debug_labels(md_gpu_device_t dev);
 static void md_vk_set_name(md_gpu_device_t dev, VkObjectType type, uint64_t handle, const char* name);
 
+/* A constants block as specialization info: word i is constant_id i. */
+typedef struct md_vk_spec_t {
+    VkSpecializationInfo     info;
+    VkSpecializationMapEntry entries[MD_GPU_MAX_CONSTANTS];
+} md_vk_spec_t;
+
+/* NULL when there are no constants, the info otherwise; fails on a malformed
+   block. */
+static bool md_vk_spec_init(md_vk_spec_t* sp, const void* data, uint32_t size, const char* label,
+                            const VkSpecializationInfo** out) {
+    *out = NULL;
+    if (size == 0) return true;
+    if (!data) return md_gpu_fail("'%s': %u bytes of constants but no data", label, size);
+    if (size % 4 != 0 || size / 4 > MD_GPU_MAX_CONSTANTS) {
+        return md_gpu_fail("'%s': constants_size %u is not a multiple of 4 up to %u", label, size, 4 * MD_GPU_MAX_CONSTANTS);
+    }
+    const uint32_t n = size / 4;
+    for (uint32_t i = 0; i < n; ++i) {
+        sp->entries[i].constantID = i;
+        sp->entries[i].offset     = 4 * i;
+        sp->entries[i].size       = 4;
+    }
+    sp->info.mapEntryCount = n;
+    sp->info.pMapEntries   = sp->entries;
+    sp->info.dataSize      = size;
+    sp->info.pData         = data;
+    *out = &sp->info;
+    return true;
+}
+
 md_gpu_kernel_t md_gpu_kernel_create(md_gpu_device_t dev, const md_gpu_kernel_desc_t* desc) {
     if (!dev || !desc || !desc->code || desc->code_size == 0) {
-        md_vk_fail("md_gpu_kernel_create: missing code");
+        md_gpu_fail("md_gpu_kernel_create: missing code");
         return NULL;
     }
     const char* label = desc->label ? desc->label : "kernel";
-    if (desc->code_size % 4 != 0) { md_vk_fail("kernel '%s': SPIR-V size must be a multiple of 4", label); return NULL; }
+    if (desc->code_size % 4 != 0) { md_gpu_fail("kernel '%s': SPIR-V size must be a multiple of 4", label); return NULL; }
     if (desc->group_size[0] == 0 || desc->group_size[1] == 0 || desc->group_size[2] == 0) {
-        md_vk_fail("kernel '%s': group_size is required ({%u,%u,%u} given); use the generated kernel descriptor",
+        md_gpu_fail("kernel '%s': group_size is required ({%u,%u,%u} given); use the generated kernel descriptor",
                    label, desc->group_size[0], desc->group_size[1], desc->group_size[2]);
         return NULL;
     }
     uint32_t spv[3];
     if (md_vk_spirv_local_size((const uint32_t*)desc->code, desc->code_size / 4, spv) &&
         (spv[0] != desc->group_size[0] || spv[1] != desc->group_size[1] || spv[2] != desc->group_size[2])) {
-        md_vk_fail("kernel '%s': group_size {%u,%u,%u} does not match [numthreads(%u,%u,%u)] in the shader",
+        md_gpu_fail("kernel '%s': group_size {%u,%u,%u} does not match [numthreads(%u,%u,%u)] in the shader",
                    label, desc->group_size[0], desc->group_size[1], desc->group_size[2], spv[0], spv[1], spv[2]);
         return NULL;
     }
     const uint64_t threads = (uint64_t)desc->group_size[0] * desc->group_size[1] * desc->group_size[2];
     if (threads > dev->props.limits.maxComputeWorkGroupInvocations) {
-        md_vk_fail("kernel '%s': %llu threads per group exceeds the device limit of %u",
+        md_gpu_fail("kernel '%s': %llu threads per group exceeds the device limit of %u",
                    label, (unsigned long long)threads, dev->props.limits.maxComputeWorkGroupInvocations);
         return NULL;
     }
+    md_vk_spec_t spec;
+    const VkSpecializationInfo* spec_info = NULL;
+    if (!md_vk_spec_init(&spec, desc->constants, desc->constants_size, label, &spec_info)) return NULL;
 
     md_gpu_kernel_t k = (md_gpu_kernel_t)md_alloc(dev->alloc, sizeof(md_gpu_kernel));
-    if (!k) { md_vk_fail("out of memory"); return NULL; }
-    memset(k, 0, sizeof(*k));
+    if (!k) { md_gpu_fail("out of memory"); return NULL; }
+    md_memset(k, 0, sizeof(*k));
     k->device       = dev;
     k->group_size[0] = desc->group_size[0];
     k->group_size[1] = desc->group_size[1];
@@ -3782,6 +3599,7 @@ md_gpu_kernel_t md_gpu_kernel_create(md_gpu_device_t dev, const md_gpu_kernel_de
     cpci.stage.stage  = VK_SHADER_STAGE_COMPUTE_BIT;
     cpci.stage.module = k->module;
     cpci.stage.pName  = desc->entry_point ? desc->entry_point : "main";
+    cpci.stage.pSpecializationInfo = spec_info;
     cpci.layout       = dev->pipeline_layout;
     if (dev->pipeline_stats) cpci.flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
     if (!md_vk_check(vkCreateComputePipelines(dev->device, VK_NULL_HANDLE, 1, &cpci, NULL, &k->pipeline), "vkCreateComputePipelines")) {
@@ -3792,7 +3610,7 @@ md_gpu_kernel_t md_gpu_kernel_create(md_gpu_device_t dev, const md_gpu_kernel_de
        pipeline when their shader compiler rejects the module; binding that
        later faults inside the driver, so treat it as the failure it is. */
     if (k->pipeline == VK_NULL_HANDLE) {
-        md_vk_fail("kernel '%s': vkCreateComputePipelines returned VK_SUCCESS but no pipeline "
+        md_gpu_fail("kernel '%s': vkCreateComputePipelines returned VK_SUCCESS but no pipeline "
                    "(the driver could not compile the shader)", label);
         md_vk_kernel_free(dev, k);
         return NULL;
@@ -3802,10 +3620,9 @@ md_gpu_kernel_t md_gpu_kernel_create(md_gpu_device_t dev, const md_gpu_kernel_de
     md_vk_set_name(dev, VK_OBJECT_TYPE_PIPELINE, (uint64_t)k->pipeline, k->label);
 
     md_mutex_lock(&dev->device_mutex);
-    md_gpu_kernel_t* slot = (md_gpu_kernel_t*)md_vk_vec_push(&dev->kernels, dev->alloc);
-    if (slot) *slot = k;
+    const bool listed = MD_ARRAY_TRY_PUSH(dev->kernels, k);
     md_mutex_unlock(&dev->device_mutex);
-    if (!slot) { md_vk_kernel_free(dev, k); md_vk_fail("out of memory"); return NULL; }
+    if (!listed) { md_vk_kernel_free(dev, k); md_gpu_fail("out of memory"); return NULL; }
     return k;
 }
 
@@ -3813,14 +3630,14 @@ void md_gpu_kernel_destroy(md_gpu_kernel_t k) {
     if (!k) return;
     md_gpu_device_t dev = k->device;
     md_mutex_lock(&dev->device_mutex);
-    md_vk_vec_remove_ptr(&dev->kernels, k);
+    MD_ARRAY_REMOVE_ITEM(dev->kernels, k);
     md_vk_retire_locked(dev, MD_VK_RETIRE_KERNEL, k);
     md_mutex_unlock(&dev->device_mutex);
 }
 
 bool md_gpu_kernel_info(md_gpu_kernel_t k, md_gpu_kernel_info_t* info) {
     if (!k || !info) return false;
-    memset(info, 0, sizeof(*info));
+    md_memset(info, 0, sizeof(*info));
     info->group_size[0]            = k->group_size[0];
     info->group_size[1]            = k->group_size[1];
     info->group_size[2]            = k->group_size[2];
@@ -3852,65 +3669,133 @@ static void md_vk_dispatch_label_end(md_gpu_device_t dev, VkCommandBuffer cmd) {
     if (md_vk_debug_labels(dev)) vkCmdEndDebugUtilsLabelEXT(cmd);
 }
 
-static VkCommandBuffer md_vk_launch_common(md_gpu_stream_t s, md_gpu_kernel_t k, const void* args, size_t args_size) {
-    md_gpu_device_t dev = s->device;
-    if (k->device != dev) { md_vk_fail("kernel '%s' belongs to a different device", k->label); return VK_NULL_HANDLE; }
-    if (s->kind == MD_GPU_STREAM_TRANSFER) {
-        md_vk_fail("kernel '%s' launched into '%s', a transfer stream; kernels run on compute streams", k->label, s->label);
-        return VK_NULL_HANDLE;
-    }
-    if (k->args_size != 0 && args_size != k->args_size) {
-        md_vk_fail("kernel '%s' expects a %u-byte argument struct but %zu bytes were passed", k->label, k->args_size, args_size);
-        return VK_NULL_HANDLE;
-    }
-    if (args_size > 0 && !args) { md_vk_fail("kernel '%s': null args with non-zero size", k->label); return VK_NULL_HANDLE; }
+/* ---- Argument blocks ----------------------------------------------------------
+   A launch or draw passes one 8-byte address in its push constant: of a copy
+   of the caller's struct in the stream's arena, or (the _at forms) of a block
+   the caller placed. */
 
-    uint64_t arg_addr = 0;
-    if (args_size > 0) {
-        void* host;
-        if (!md_vk_arena_alloc(s, args_size, &arg_addr, &host, NULL, NULL)) return VK_NULL_HANDLE;
-        memcpy(host, args, args_size);
+static bool md_vk_args_copy(md_gpu_stream_t s, uint32_t expected, const void* args, size_t args_size,
+                            uint64_t* out_addr, const char* what, const char* name) {
+    *out_addr = 0;
+    if (expected != 0 && args_size != expected) {
+        return md_gpu_fail("%s: '%s' expects a %u-byte argument struct but %zu bytes were passed", what, name, expected, args_size);
     }
-
-    VkCommandBuffer cmd = md_vk_begin_op(s);
-    if (!cmd) return VK_NULL_HANDLE;
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, k->pipeline);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, dev->pipeline_layout, 0, 1, &dev->desc_set, 0, NULL);
-    vkCmdPushConstants(cmd, dev->pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 8, &arg_addr);
-    return cmd;
+    if (args_size == 0) return true;
+    if (!args) return md_gpu_fail("%s: '%s': null args with non-zero size", what, name);
+    void* host;
+    if (!md_vk_arena_alloc(s, args_size, out_addr, &host, NULL, NULL)) return false;
+    md_memcpy(host, args, args_size);
+    return true;
 }
 
-bool md_gpu_launch(md_gpu_stream_t s, md_gpu_kernel_t k, md_gpu_grid_t grid, const void* args, size_t args_size) {
-    if (!s || !k) return md_vk_fail("md_gpu_launch: null stream or kernel");
-    if (grid.x == 0 || grid.y == 0 || grid.z == 0) return true;   /* empty launch */
+/* The alignment an argument struct of `size` bytes has in C, and so in an
+   array of them: the largest power of two that divides its size, at most 16
+   (md_gpu_*4, md_gpu_float4x4), at least 4. */
+static uint64_t md_vk_args_align(uint32_t size) {
+    uint64_t a = size ? (uint64_t)(size & (~size + 1u)) : 4u;
+    return a < 4 ? 4 : (a > 16 ? 16 : a);
+}
+
+static bool md_vk_args_at(md_gpu_stream_t s, uint32_t expected, md_gpu_addr_t args, const char* what) {
+    if (!args) return md_gpu_fail("%s: null argument address", what);
+    const uint64_t align = md_vk_args_align(expected);
+    if (args % align != 0) {
+        return md_gpu_fail("%s: argument address 0x%llx is not %llu-byte aligned, as its %u-byte struct is",
+                          what, (unsigned long long)args, (unsigned long long)align, expected);
+    }
+    return md_vk_resolve(s->device, args, expected ? expected : 1, NULL, what);
+}
+
+/* ---- Launches ------------------------------------------------------------------ */
+
+static bool md_vk_launch_check(md_gpu_stream_t s, md_gpu_kernel_t k, const char* what) {
+    if (k->device != s->device) return md_gpu_fail("%s: kernel '%s' belongs to a different device", what, k->label);
+    if (s->kind == MD_GPU_STREAM_TRANSFER) {
+        return md_gpu_fail("%s: kernel '%s' launched into '%s', a transfer stream; kernels run on compute streams", what, k->label, s->label);
+    }
+    return true;
+}
+
+static bool md_vk_grid_check(md_gpu_stream_t s, md_gpu_kernel_t k, md_gpu_grid_t grid) {
     const VkPhysicalDeviceLimits* lim = &s->device->props.limits;
     if (grid.x > lim->maxComputeWorkGroupCount[0] || grid.y > lim->maxComputeWorkGroupCount[1] ||
         grid.z > lim->maxComputeWorkGroupCount[2]) {
-        return md_vk_fail("kernel '%s': grid {%u,%u,%u} exceeds the device limit {%u,%u,%u}", k->label,
+        return md_gpu_fail("kernel '%s': grid {%u,%u,%u} exceeds the device limit {%u,%u,%u}", k->label,
                           grid.x, grid.y, grid.z, lim->maxComputeWorkGroupCount[0],
                           lim->maxComputeWorkGroupCount[1], lim->maxComputeWorkGroupCount[2]);
     }
-    VkCommandBuffer cmd = md_vk_launch_common(s, k, args, args_size);
-    if (!cmd) return false;
-    md_vk_dispatch_label_begin(s->device, cmd, k);
-    vkCmdDispatch(cmd, grid.x, grid.y, grid.z);
-    md_vk_dispatch_label_end(s->device, cmd);
-    md_vk_end_op(s);
     return true;
 }
 
-bool md_gpu_launch_indirect(md_gpu_stream_t s, md_gpu_kernel_t k, md_gpu_addr_t grid, const void* args, size_t args_size) {
-    if (!s || !k || !grid) return md_vk_fail("md_gpu_launch_indirect: null argument");
-    md_vk_span_t b;
-    if (!md_vk_resolve(s->device, grid, 3 * sizeof(uint32_t), &b, "md_gpu_launch_indirect")) return false;
-    if (b.offset % 4 != 0) return md_vk_fail("md_gpu_launch_indirect: grid address must be 4-byte aligned");
-    VkCommandBuffer cmd = md_vk_launch_common(s, k, args, args_size);
+/* Record one dispatch: direct over `grid`, or indirect from `indirect`. */
+static bool md_vk_dispatch(md_gpu_stream_t s, md_gpu_kernel_t k, uint64_t args_addr, md_gpu_grid_t grid,
+                           const md_vk_span_t* indirect) {
+    md_gpu_device_t dev = s->device;
+    VkCommandBuffer cmd = md_vk_begin_op(s, indirect ? (MD_GPU_STAGE_COMPUTE | MD_GPU_STAGE_INDIRECT) : MD_GPU_STAGE_COMPUTE);
     if (!cmd) return false;
-    md_vk_dispatch_label_begin(s->device, cmd, k);
-    vkCmdDispatchIndirect(cmd, b.buffer, b.offset);
-    md_vk_dispatch_label_end(s->device, cmd);
-    md_vk_end_op(s);
+    /* Every kernel shares one pipeline layout, so the set stays bound across
+       pipelines; both are bound once per command buffer and kept. */
+    if (s->bound_kernel != k) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, k->pipeline);
+        s->bound_kernel = k;
+    }
+    if (!s->compute_set_bound) {
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, dev->pipeline_layout, 0, 1, &dev->desc_set, 0, NULL);
+        s->compute_set_bound = true;
+    }
+    vkCmdPushConstants(cmd, dev->pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 8, &args_addr);
+    md_vk_dispatch_label_begin(dev, cmd, k);
+    if (indirect) vkCmdDispatchIndirect(cmd, indirect->buffer, indirect->offset);
+    else          vkCmdDispatch(cmd, grid.x, grid.y, grid.z);
+    md_vk_dispatch_label_end(dev, cmd);
+    md_vk_end_op(s, MD_GPU_STAGE_COMPUTE);
     return true;
+}
+
+static bool md_vk_resolve_grid(md_gpu_stream_t s, md_gpu_addr_t grid, md_vk_span_t* out, const char* what) {
+    if (!md_vk_resolve(s->device, grid, 3 * sizeof(uint32_t), out, what)) return false;
+    if (out->offset % 4 != 0) return md_gpu_fail("%s: grid address must be 4-byte aligned", what);
+    return true;
+}
+
+bool md_gpu_launch(md_gpu_stream_t s, md_gpu_kernel_t k, md_gpu_grid_t grid, const void* args, size_t args_size) {
+    const char* what = "md_gpu_launch";
+    if (!s || !k) return md_gpu_fail("%s: null stream or kernel", what);
+    if (grid.x == 0 || grid.y == 0 || grid.z == 0) return true;   /* empty launch */
+    if (!md_vk_launch_check(s, k, what) || !md_vk_grid_check(s, k, grid)) return false;
+    uint64_t a;
+    if (!md_vk_args_copy(s, k->args_size, args, args_size, &a, what, k->label)) return false;
+    return md_vk_dispatch(s, k, a, grid, NULL);
+}
+
+bool md_gpu_launch_at(md_gpu_stream_t s, md_gpu_kernel_t k, md_gpu_grid_t grid, md_gpu_addr_t args) {
+    const char* what = "md_gpu_launch_at";
+    if (!s || !k) return md_gpu_fail("%s: null stream or kernel", what);
+    if (grid.x == 0 || grid.y == 0 || grid.z == 0) return true;
+    if (!md_vk_launch_check(s, k, what) || !md_vk_grid_check(s, k, grid)) return false;
+    if (!md_vk_args_at(s, k->args_size, args, what)) return false;
+    return md_vk_dispatch(s, k, args, grid, NULL);
+}
+
+bool md_gpu_launch_indirect(md_gpu_stream_t s, md_gpu_kernel_t k, md_gpu_addr_t grid, const void* args, size_t args_size) {
+    const char* what = "md_gpu_launch_indirect";
+    if (!s || !k || !grid) return md_gpu_fail("%s: null argument", what);
+    if (!md_vk_launch_check(s, k, what)) return false;
+    md_vk_span_t b;
+    if (!md_vk_resolve_grid(s, grid, &b, what)) return false;
+    uint64_t a;
+    if (!md_vk_args_copy(s, k->args_size, args, args_size, &a, what, k->label)) return false;
+    return md_vk_dispatch(s, k, a, md_gpu_grid(0, 0, 0), &b);
+}
+
+bool md_gpu_launch_indirect_at(md_gpu_stream_t s, md_gpu_kernel_t k, md_gpu_addr_t grid, md_gpu_addr_t args) {
+    const char* what = "md_gpu_launch_indirect_at";
+    if (!s || !k || !grid) return md_gpu_fail("%s: null argument", what);
+    if (!md_vk_launch_check(s, k, what)) return false;
+    md_vk_span_t b;
+    if (!md_vk_resolve_grid(s, grid, &b, what)) return false;
+    if (!md_vk_args_at(s, k->args_size, args, what)) return false;
+    return md_vk_dispatch(s, k, args, md_gpu_grid(0, 0, 0), &b);
 }
 
 /* Mirrors Args in src/shaders/gpu/md_gpu_make_grid.slang. */
@@ -3922,7 +3807,7 @@ typedef struct md_vk_make_grid_args_t {
 
 static bool md_vk_create_builtin_kernels(md_gpu_device_t dev) {
     md_gpu_kernel_desc_t d;
-    memset(&d, 0, sizeof(d));
+    md_memset(&d, 0, sizeof(d));
     d.code          = md_gpu_make_grid_spv;
     d.code_size     = sizeof(md_gpu_make_grid_spv);
     d.label         = "md_gpu make_grid";
@@ -3934,17 +3819,17 @@ static bool md_vk_create_builtin_kernels(md_gpu_device_t dev) {
     if (!dev->make_grid_kernel) return false;
     /* Internal: owned by the device, not listed with the user's kernels. */
     md_mutex_lock(&dev->device_mutex);
-    md_vk_vec_remove_ptr(&dev->kernels, dev->make_grid_kernel);
+    MD_ARRAY_REMOVE_ITEM(dev->kernels, dev->make_grid_kernel);
     md_mutex_unlock(&dev->device_mutex);
     return true;
 }
 
 bool md_gpu_make_grid(md_gpu_stream_t s, md_gpu_addr_t out_grid, md_gpu_addr_t count, md_gpu_kernel_t k) {
-    if (!s || !out_grid || !count || !k) return md_vk_fail("md_gpu_make_grid: null argument");
+    if (!s || !out_grid || !count || !k) return md_gpu_fail("md_gpu_make_grid: null argument");
     if (!md_vk_resolve(s->device, out_grid, 3 * sizeof(uint32_t), NULL, "md_gpu_make_grid (out_grid)")) return false;
     if (!md_vk_resolve(s->device, count, sizeof(uint32_t), NULL, "md_gpu_make_grid (count)")) return false;
     md_vk_make_grid_args_t a;
-    memset(&a, 0, sizeof(a));
+    md_memset(&a, 0, sizeof(a));
     a.count    = count;
     a.out_grid = out_grid;
     a.local.x  = k->group_size[0];
@@ -4038,63 +3923,63 @@ static void md_vk_pipeline_free(md_gpu_device_t dev, md_gpu_pipeline_t p) {
 }
 
 static bool md_vk_check_shader(const md_gpu_shader_t* sh, const char* stage, const char* label) {
-    if (sh->code_size % 4 != 0) return md_vk_fail("pipeline '%s': %s shader SPIR-V size must be a multiple of 4", label, stage);
+    if (sh->code_size % 4 != 0) return md_gpu_fail("pipeline '%s': %s shader SPIR-V size must be a multiple of 4", label, stage);
     const uint32_t* w = (const uint32_t*)sh->code;
-    if (sh->code_size < 20 || w[0] != 0x07230203u) return md_vk_fail("pipeline '%s': %s shader is not SPIR-V", label, stage);
+    if (sh->code_size < 20 || w[0] != 0x07230203u) return md_gpu_fail("pipeline '%s': %s shader is not SPIR-V", label, stage);
     return true;
 }
 
 md_gpu_pipeline_t md_gpu_pipeline_create(md_gpu_device_t dev, const md_gpu_pipeline_desc_t* desc) {
-    if (!dev || !desc) { md_vk_fail("md_gpu_pipeline_create: null argument"); return NULL; }
+    if (!dev || !desc) { md_gpu_fail("md_gpu_pipeline_create: null argument"); return NULL; }
     const char* label = desc->label ? desc->label : "pipeline";
-    if (!dev->supports_graphics) { md_vk_fail("pipeline '%s': the device has no graphics support", label); return NULL; }
-    if (!desc->vertex.code || desc->vertex.code_size == 0) { md_vk_fail("pipeline '%s': no vertex shader", label); return NULL; }
+    if (!dev->supports_graphics) { md_gpu_fail("pipeline '%s': the device has no graphics support", label); return NULL; }
+    if (!desc->vertex.code || desc->vertex.code_size == 0) { md_gpu_fail("pipeline '%s': no vertex shader", label); return NULL; }
     if (!md_vk_check_shader(&desc->vertex, "vertex", label)) return NULL;
     const bool has_fs = desc->fragment.code != NULL;
     if (has_fs && !md_vk_check_shader(&desc->fragment, "fragment", label)) return NULL;
     if (desc->color_count > MD_GPU_MAX_COLOR_TARGETS) {
-        md_vk_fail("pipeline '%s': %u colour targets, at most %u", label, desc->color_count, MD_GPU_MAX_COLOR_TARGETS);
+        md_gpu_fail("pipeline '%s': %u colour targets, at most %u", label, desc->color_count, MD_GPU_MAX_COLOR_TARGETS);
         return NULL;
     }
     if (!has_fs && desc->color_count > 0) {
-        md_vk_fail("pipeline '%s': colour targets without a fragment shader", label);
+        md_gpu_fail("pipeline '%s': colour targets without a fragment shader", label);
         return NULL;
     }
     const VkPrimitiveTopology topo = md_vk_topology(desc->topology);
-    if (topo == VK_PRIMITIVE_TOPOLOGY_MAX_ENUM) { md_vk_fail("pipeline '%s': invalid topology %d", label, (int)desc->topology); return NULL; }
+    if (topo == VK_PRIMITIVE_TOPOLOGY_MAX_ENUM) { md_gpu_fail("pipeline '%s': invalid topology %d", label, (int)desc->topology); return NULL; }
     const uint32_t vs_args = desc->vertex.args_size;
     const uint32_t fs_args = has_fs ? desc->fragment.args_size : 0;
     if (vs_args && fs_args && vs_args != fs_args) {
-        md_vk_fail("pipeline '%s': the vertex shader takes a %u-byte argument struct and the fragment shader %u bytes; "
+        md_gpu_fail("pipeline '%s': the vertex shader takes a %u-byte argument struct and the fragment shader %u bytes; "
                    "both stages read the same one", label, vs_args, fs_args);
         return NULL;
     }
 
     VkFormat color_formats[MD_GPU_MAX_COLOR_TARGETS];
     VkPipelineColorBlendAttachmentState blend[MD_GPU_MAX_COLOR_TARGETS];
-    memset(blend, 0, sizeof(blend));
+    md_memset(blend, 0, sizeof(blend));
     for (uint32_t i = 0; i < desc->color_count; ++i) {
         const md_gpu_color_target_t* ct = &desc->color[i];
         md_vk_format_info_t fi = md_vk_format_info(ct->format);
         if (fi.format == VK_FORMAT_UNDEFINED || fi.depth) {
-            md_vk_fail("pipeline '%s': colour target %u has %s, which is not a colour format", label, i,
+            md_gpu_fail("pipeline '%s': colour target %u has %s, which is not a colour format", label, i,
                        fi.format == VK_FORMAT_UNDEFINED ? "no format" : fi.name);
             return NULL;
         }
         VkFormatProperties fp;
         vkGetPhysicalDeviceFormatProperties(dev->phys, fi.format, &fp);
         if (!(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)) {
-            md_vk_fail("pipeline '%s': the device cannot render to %s (colour target %u)", label, fi.name, i);
+            md_gpu_fail("pipeline '%s': the device cannot render to %s (colour target %u)", label, fi.name, i);
             return NULL;
         }
         const md_gpu_blend_t* b = &ct->blend;
         if (b->enable) {
             if (md_vk_format_is_uint(ct->format)) {
-                md_vk_fail("pipeline '%s': colour target %u is %s, an integer format, and cannot blend", label, i, fi.name);
+                md_gpu_fail("pipeline '%s': colour target %u is %s, an integer format, and cannot blend", label, i, fi.name);
                 return NULL;
             }
             if (!(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT)) {
-                md_vk_fail("pipeline '%s': the device cannot blend %s (colour target %u)", label, fi.name, i);
+                md_gpu_fail("pipeline '%s': the device cannot blend %s (colour target %u)", label, fi.name, i);
                 return NULL;
             }
             blend[i].blendEnable         = VK_TRUE;
@@ -4107,7 +3992,7 @@ md_gpu_pipeline_t md_gpu_pipeline_create(md_gpu_device_t dev, const md_gpu_pipel
             if (blend[i].srcColorBlendFactor == VK_BLEND_FACTOR_MAX_ENUM || blend[i].dstColorBlendFactor == VK_BLEND_FACTOR_MAX_ENUM ||
                 blend[i].srcAlphaBlendFactor == VK_BLEND_FACTOR_MAX_ENUM || blend[i].dstAlphaBlendFactor == VK_BLEND_FACTOR_MAX_ENUM ||
                 blend[i].colorBlendOp == VK_BLEND_OP_MAX_ENUM || blend[i].alphaBlendOp == VK_BLEND_OP_MAX_ENUM) {
-                md_vk_fail("pipeline '%s': invalid blend factor or op on colour target %u", label, i);
+                md_gpu_fail("pipeline '%s': invalid blend factor or op on colour target %u", label, i);
                 return NULL;
             }
         }
@@ -4119,22 +4004,26 @@ md_gpu_pipeline_t md_gpu_pipeline_create(md_gpu_device_t dev, const md_gpu_pipel
     if (desc->depth_format != MD_GPU_FORMAT_INVALID) {
         md_vk_format_info_t fi = md_vk_format_info(desc->depth_format);
         if (!fi.depth) {
-            md_vk_fail("pipeline '%s': depth_format %s is not a depth format", label,
+            md_gpu_fail("pipeline '%s': depth_format %s is not a depth format", label,
                        fi.format == VK_FORMAT_UNDEFINED ? "(invalid)" : fi.name);
             return NULL;
         }
         VkFormatProperties fp;
         vkGetPhysicalDeviceFormatProperties(dev->phys, fi.format, &fp);
         if (!(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)) {
-            md_vk_fail("pipeline '%s': the device cannot use %s as a depth attachment", label, fi.name);
+            md_gpu_fail("pipeline '%s': the device cannot use %s as a depth attachment", label, fi.name);
             return NULL;
         }
         depth_format = fi.format;
     }
 
+    md_vk_spec_t spec;
+    const VkSpecializationInfo* spec_info = NULL;
+    if (!md_vk_spec_init(&spec, desc->constants, desc->constants_size, label, &spec_info)) return NULL;
+
     md_gpu_pipeline_t p = (md_gpu_pipeline_t)md_alloc(dev->alloc, sizeof(md_gpu_pipeline));
-    if (!p) { md_vk_fail("out of memory"); return NULL; }
-    memset(p, 0, sizeof(*p));
+    if (!p) { md_gpu_fail("out of memory"); return NULL; }
+    md_memset(p, 0, sizeof(*p));
     p->device      = dev;
     p->color_count = desc->color_count;
     for (uint32_t i = 0; i < desc->color_count; ++i) p->color[i] = desc->color[i].format;
@@ -4144,7 +4033,7 @@ md_gpu_pipeline_t md_gpu_pipeline_create(md_gpu_device_t dev, const md_gpu_pipel
 
     VkShaderModule modules[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
     VkPipelineShaderStageCreateInfo stages[2];
-    memset(stages, 0, sizeof(stages));
+    md_memset(stages, 0, sizeof(stages));
     const md_gpu_shader_t* sh[2] = {&desc->vertex, &desc->fragment};
     const VkShaderStageFlagBits bits[2] = {VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_FRAGMENT_BIT};
     const uint32_t stage_count = has_fs ? 2u : 1u;
@@ -4160,6 +4049,7 @@ md_gpu_pipeline_t md_gpu_pipeline_create(md_gpu_device_t dev, const md_gpu_pipel
         /* A single-entry SPIR-V module from compile_gpu_shaders names its
            entry "main"; the generated descriptors leave entry_point NULL. */
         stages[i].pName  = sh[i]->entry_point ? sh[i]->entry_point : "main";
+        stages[i].pSpecializationInfo = spec_info;
     }
 
     if (ok) {
@@ -4225,10 +4115,9 @@ md_gpu_pipeline_t md_gpu_pipeline_create(md_gpu_device_t dev, const md_gpu_pipel
     md_vk_set_name(dev, VK_OBJECT_TYPE_PIPELINE, (uint64_t)p->pipeline, p->label);
 
     md_mutex_lock(&dev->device_mutex);
-    md_gpu_pipeline_t* slot = (md_gpu_pipeline_t*)md_vk_vec_push(&dev->pipelines, dev->alloc);
-    if (slot) *slot = p;
+    const bool listed = MD_ARRAY_TRY_PUSH(dev->pipelines, p);
     md_mutex_unlock(&dev->device_mutex);
-    if (!slot) { md_vk_pipeline_free(dev, p); md_vk_fail("out of memory"); return NULL; }
+    if (!listed) { md_vk_pipeline_free(dev, p); md_gpu_fail("out of memory"); return NULL; }
     return p;
 }
 
@@ -4236,7 +4125,7 @@ void md_gpu_pipeline_destroy(md_gpu_pipeline_t p) {
     if (!p) return;
     md_gpu_device_t dev = p->device;
     md_mutex_lock(&dev->device_mutex);
-    md_vk_vec_remove_ptr(&dev->pipelines, p);
+    MD_ARRAY_REMOVE_ITEM(dev->pipelines, p);
     md_vk_retire_locked(dev, MD_VK_RETIRE_PIPELINE, p);
     md_mutex_unlock(&dev->device_mutex);
 }
@@ -4259,9 +4148,9 @@ static VkImageView md_vk_attach_view(md_gpu_texture_t t, uint32_t mip, uint32_t 
     if (t->attach_view_count == t->attach_view_cap) {
         const uint32_t cap = t->attach_view_cap ? t->attach_view_cap * 2 : 2;
         md_vk_attach_view_t* arr = (md_vk_attach_view_t*)md_alloc(dev->alloc, cap * sizeof(md_vk_attach_view_t));
-        if (!arr) { md_mutex_unlock(&dev->device_mutex); md_vk_fail("out of memory"); return VK_NULL_HANDLE; }
+        if (!arr) { md_mutex_unlock(&dev->device_mutex); md_gpu_fail("out of memory"); return VK_NULL_HANDLE; }
         if (t->attach_views) {
-            memcpy(arr, t->attach_views, t->attach_view_count * sizeof(md_vk_attach_view_t));
+            md_memcpy(arr, t->attach_views, t->attach_view_count * sizeof(md_vk_attach_view_t));
             md_free(dev->alloc, t->attach_views, t->attach_view_cap * sizeof(md_vk_attach_view_t));
         }
         t->attach_views    = arr;
@@ -4291,27 +4180,27 @@ static bool md_vk_check_attachment(md_gpu_stream_t s, md_gpu_texture_t t, uint32
     char what[32];
     if (depth) md_snprintf(what, sizeof(what), "depth attachment");
     else       md_snprintf(what, sizeof(what), "colour attachment %u", index);
-    if (!t) return md_vk_fail("md_gpu_render_begin: %s has no texture", what);
-    if (t->device != s->device) return md_vk_fail("md_gpu_render_begin: %s '%s' belongs to another device", what, t->label);
+    if (!t) return md_gpu_fail("md_gpu_render_begin: %s has no texture", what);
+    if (t->device != s->device) return md_gpu_fail("md_gpu_render_begin: %s '%s' belongs to another device", what, t->label);
     if (!(t->desc.usage & MD_GPU_TEX_RENDER_TARGET)) {
-        return md_vk_fail("md_gpu_render_begin: %s '%s' lacks MD_GPU_TEX_RENDER_TARGET usage", what, t->label);
+        return md_gpu_fail("md_gpu_render_begin: %s '%s' lacks MD_GPU_TEX_RENDER_TARGET usage", what, t->label);
     }
     if (t->fi.depth != depth) {
-        return md_vk_fail("md_gpu_render_begin: %s '%s' is %s; %s", what, t->label, t->fi.name,
+        return md_gpu_fail("md_gpu_render_begin: %s '%s' is %s; %s", what, t->label, t->fi.name,
                           depth ? "a depth attachment needs a depth format" : "depth formats go in md_gpu_render_desc_t.depth");
     }
     if (mip >= t->desc.mip_levels) {
-        return md_vk_fail("md_gpu_render_begin: %s '%s': mip %u out of range (%u levels)", what, t->label, mip, t->desc.mip_levels);
+        return md_gpu_fail("md_gpu_render_begin: %s '%s': mip %u out of range (%u levels)", what, t->label, mip, t->desc.mip_levels);
     }
     const uint32_t layers = t->desc.type == MD_GPU_TEX_2D_ARRAY ? t->desc.depth_or_layers : 1u;
     if (layer >= layers) {
-        return md_vk_fail("md_gpu_render_begin: %s '%s': layer %u out of range (%u layers)", what, t->label, layer, layers);
+        return md_gpu_fail("md_gpu_render_begin: %s '%s': layer %u out of range (%u layers)", what, t->label, layer, layers);
     }
     uint32_t mw = t->desc.width  >> mip; if (!mw) mw = 1;
     uint32_t mh = t->desc.height >> mip; if (!mh) mh = 1;
     if (*w == 0) { *w = mw; *h = mh; }
     else if (*w != mw || *h != mh) {
-        return md_vk_fail("md_gpu_render_begin: %s '%s' is %ux%u at mip %u but the pass is %ux%u; every attachment must be the same size",
+        return md_gpu_fail("md_gpu_render_begin: %s '%s' is %ux%u at mip %u but the pass is %ux%u; every attachment must be the same size",
                           what, t->label, mw, mh, mip, *w, *h);
     }
     return true;
@@ -4371,7 +4260,7 @@ static void md_vk_apply_draw_state(md_gpu_stream_t s, const md_gpu_draw_state_t*
     if (all || n->depth_bias != o->depth_bias || n->depth_bias_slope != o->depth_bias_slope || n->depth_bias_clamp != o->depth_bias_clamp) {
         vkCmdSetDepthBias(cmd, n->depth_bias, n->depth_bias_clamp, n->depth_bias_slope);
     }
-    if (all || memcmp(n->blend_constant, o->blend_constant, sizeof(n->blend_constant)) != 0) {
+    if (all || md_memcmp(n->blend_constant, o->blend_constant, sizeof(n->blend_constant)) != 0) {
         vkCmdSetBlendConstants(cmd, n->blend_constant);
     }
     s->draw_state = *n;
@@ -4401,14 +4290,14 @@ static void md_vk_apply_scissor(md_gpu_stream_t s, const md_gpu_rect_t* r) {
 }
 
 bool md_gpu_render_begin(md_gpu_stream_t s, const md_gpu_render_desc_t* desc) {
-    if (!s || !desc) return md_vk_fail("md_gpu_render_begin: null argument");
-    if (!s->can_graphics) return md_vk_fail("md_gpu_render_begin: stream '%s' is not a GRAPHICS stream", s->label);
-    if (s->in_pass) return md_vk_fail("md_gpu_render_begin: stream '%s' is already inside a render pass", s->label);
-    if (s->upload_open) return md_vk_fail("md_gpu_render_begin: stream '%s' has an open upload", s->label);
+    if (!s || !desc) return md_gpu_fail("md_gpu_render_begin: null argument");
+    if (!s->can_graphics) return md_gpu_fail("md_gpu_render_begin: stream '%s' is not a GRAPHICS stream", s->label);
+    if (s->in_pass) return md_gpu_fail("md_gpu_render_begin: stream '%s' is already inside a render pass", s->label);
+    if (s->upload_open) return md_gpu_fail("md_gpu_render_begin: stream '%s' has an open upload", s->label);
     if (desc->color_count > MD_GPU_MAX_COLOR_TARGETS) {
-        return md_vk_fail("md_gpu_render_begin: %u colour attachments, at most %u", desc->color_count, MD_GPU_MAX_COLOR_TARGETS);
+        return md_gpu_fail("md_gpu_render_begin: %u colour attachments, at most %u", desc->color_count, MD_GPU_MAX_COLOR_TARGETS);
     }
-    if (desc->color_count == 0 && !desc->depth.texture) return md_vk_fail("md_gpu_render_begin: the pass has no attachments");
+    if (desc->color_count == 0 && !desc->depth.texture) return md_gpu_fail("md_gpu_render_begin: the pass has no attachments");
 
     uint32_t w = 0, h = 0;
     VkRenderingAttachmentInfo ca[MD_GPU_MAX_COLOR_TARGETS];
@@ -4422,7 +4311,7 @@ bool md_gpu_render_begin(md_gpu_stream_t s, const md_gpu_render_desc_t* desc) {
         ca[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
         ca[i].loadOp      = md_vk_load_op(a->load);
         ca[i].storeOp     = md_vk_store_op(a->store);
-        memcpy(&ca[i].clearValue.color, &a->clear, sizeof(a->clear));
+        md_memcpy(&ca[i].clearValue.color, &a->clear, sizeof(a->clear));
     }
     VkRenderingAttachmentInfo da = {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
     if (desc->depth.texture) {
@@ -4437,7 +4326,9 @@ bool md_gpu_render_begin(md_gpu_stream_t s, const md_gpu_render_desc_t* desc) {
         da.clearValue.depthStencil.depth = a->clear_depth;
     }
 
-    VkCommandBuffer cmd = md_vk_begin_op(s);
+    /* A pass reads in every raster stage: indirect commands, indices, vertex
+       and fragment shaders, and its attachments' load actions. */
+    VkCommandBuffer cmd = md_vk_begin_op(s, MD_GPU_STAGE_INDIRECT | MD_GPU_STAGE_VERTEX | MD_GPU_STAGE_FRAGMENT | MD_GPU_STAGE_ATTACHMENT);
     if (!cmd) return false;
     md_gpu_device_t dev = s->device;
     s->pass_labelled = desc->label && md_vk_debug_labels(dev);
@@ -4455,10 +4346,13 @@ bool md_gpu_render_begin(md_gpu_stream_t s, const md_gpu_render_desc_t* desc) {
     ri.pColorAttachments    = ca;
     ri.pDepthAttachment     = desc->depth.texture ? &da : NULL;
     vkCmdBeginRendering(cmd, &ri);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, dev->raster_layout, 0, 1, &dev->desc_set, 0, NULL);
+    if (!s->graphics_set_bound) {
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, dev->raster_layout, 0, 1, &dev->desc_set, 0, NULL);
+        s->graphics_set_bound = true;
+    }
 
     s->in_pass          = true;
-    s->has_work         = true;
+    md_vk_mark_work(s);
     s->pass_width       = w;
     s->pass_height      = h;
     s->pass_color_count = desc->color_count;
@@ -4469,7 +4363,7 @@ bool md_gpu_render_begin(md_gpu_stream_t s, const md_gpu_render_desc_t* desc) {
     s->bound_pipeline   = NULL;
 
     md_gpu_draw_state_t zero;
-    memset(&zero, 0, sizeof(zero));
+    md_memset(&zero, 0, sizeof(zero));
     md_vk_apply_draw_state(s, &zero, true);
     md_vk_apply_viewport(s, &(md_gpu_viewport_t){0, 0, (float)w, (float)h, 0, 0});
     md_vk_apply_scissor(s, &(md_gpu_rect_t){0, 0, w, h});
@@ -4477,14 +4371,14 @@ bool md_gpu_render_begin(md_gpu_stream_t s, const md_gpu_render_desc_t* desc) {
 }
 
 bool md_gpu_render_end(md_gpu_stream_t s) {
-    if (!s) return md_vk_fail("md_gpu_render_end: null stream");
-    if (!s->in_pass) return md_vk_fail("md_gpu_render_end: stream '%s' has no open render pass", s->label);
+    if (!s) return md_gpu_fail("md_gpu_render_end: null stream");
+    if (!s->in_pass) return md_gpu_fail("md_gpu_render_end: stream '%s' has no open render pass", s->label);
     vkCmdEndRendering(s->open);
     if (s->pass_labelled) vkCmdEndDebugUtilsLabelEXT(s->open);
     s->in_pass        = false;
     s->pass_labelled  = false;
     s->bound_pipeline = NULL;
-    md_vk_end_op(s);
+    md_vk_end_op(s, MD_GPU_STAGE_VERTEX | MD_GPU_STAGE_FRAGMENT | MD_GPU_STAGE_ATTACHMENT);
     return true;
 }
 
@@ -4495,16 +4389,16 @@ static void md_vk_abandon_pass(md_gpu_stream_t s) {
 
 void md_gpu_set_draw_state(md_gpu_stream_t s, const md_gpu_draw_state_t* state) {
     if (!s) return;
-    if (!s->in_pass) { md_vk_fail("md_gpu_set_draw_state: stream '%s' has no open render pass", s->label); return; }
+    if (!s->in_pass) { md_gpu_fail("md_gpu_set_draw_state: stream '%s' has no open render pass", s->label); return; }
     md_gpu_draw_state_t n;
-    memset(&n, 0, sizeof(n));
+    md_memset(&n, 0, sizeof(n));
     if (state) n = *state;
     if ((unsigned)n.depth_compare > (unsigned)MD_GPU_COMPARE_GREATER || (unsigned)n.cull > (unsigned)MD_GPU_CULL_FRONT) {
-        md_vk_fail("md_gpu_set_draw_state: invalid depth_compare or cull");
+        md_gpu_fail("md_gpu_set_draw_state: invalid depth_compare or cull");
         return;
     }
     if (n.depth_bias_clamp != 0.0f && !s->device->depth_bias_clamp) {
-        md_vk_fail("md_gpu_set_draw_state: the device does not support depth_bias_clamp; leave it 0");
+        md_gpu_fail("md_gpu_set_draw_state: the device does not support depth_bias_clamp; leave it 0");
         return;
     }
     md_vk_apply_draw_state(s, &n, false);
@@ -4512,12 +4406,12 @@ void md_gpu_set_draw_state(md_gpu_stream_t s, const md_gpu_draw_state_t* state) 
 
 void md_gpu_set_viewport(md_gpu_stream_t s, const md_gpu_viewport_t* viewport) {
     if (!s) return;
-    if (!s->in_pass) { md_vk_fail("md_gpu_set_viewport: stream '%s' has no open render pass", s->label); return; }
+    if (!s->in_pass) { md_gpu_fail("md_gpu_set_viewport: stream '%s' has no open render pass", s->label); return; }
     md_gpu_viewport_t v = {0, 0, (float)s->pass_width, (float)s->pass_height, 0, 0};
     if (viewport) v = *viewport;
-    if (!(v.width > 0.0f) || !(v.height > 0.0f)) { md_vk_fail("md_gpu_set_viewport: width and height must be positive"); return; }
+    if (!(v.width > 0.0f) || !(v.height > 0.0f)) { md_gpu_fail("md_gpu_set_viewport: width and height must be positive"); return; }
     if (v.min_depth < 0.0f || v.min_depth > 1.0f || v.max_depth < 0.0f || v.max_depth > 1.0f) {
-        md_vk_fail("md_gpu_set_viewport: depth range must lie in [0, 1]");
+        md_gpu_fail("md_gpu_set_viewport: depth range must lie in [0, 1]");
         return;
     }
     md_vk_apply_viewport(s, &v);
@@ -4525,7 +4419,7 @@ void md_gpu_set_viewport(md_gpu_stream_t s, const md_gpu_viewport_t* viewport) {
 
 void md_gpu_set_scissor(md_gpu_stream_t s, const md_gpu_rect_t* scissor) {
     if (!s) return;
-    if (!s->in_pass) { md_vk_fail("md_gpu_set_scissor: stream '%s' has no open render pass", s->label); return; }
+    if (!s->in_pass) { md_gpu_fail("md_gpu_set_scissor: stream '%s' has no open render pass", s->label); return; }
     md_gpu_rect_t r = {0, 0, s->pass_width, s->pass_height};
     if (scissor) r = *scissor;
     md_vk_apply_scissor(s, &r);
@@ -4533,129 +4427,174 @@ void md_gpu_set_scissor(md_gpu_stream_t s, const md_gpu_rect_t* scissor) {
 
 /* ---- Draws ------------------------------------------------------------------ */
 
-/* Validation shared by every draw; nothing is recorded. */
-static bool md_vk_draw_check(md_gpu_stream_t s, md_gpu_pipeline_t p, const void* args, size_t args_size, const char* what) {
-    if (!s || !p) return md_vk_fail("%s: null stream or pipeline", what);
-    if (p->device != s->device) return md_vk_fail("%s: pipeline '%s' belongs to another device", what, p->label);
-    if (!s->in_pass) return md_vk_fail("%s: stream '%s' has no open render pass", what, s->label);
+/* Every draw goes through md_vk_draw: one kind of four, its arguments copied
+   or by address, validated before anything is recorded. */
+typedef enum md_vk_draw_kind_t {
+    MD_VK_DRAW,
+    MD_VK_DRAW_INDEXED,
+    MD_VK_DRAW_INDIRECT,
+    MD_VK_DRAW_INDEXED_INDIRECT,
+} md_vk_draw_kind_t;
+
+typedef struct md_vk_draw_t {
+    md_vk_draw_kind_t   kind;
+    uint32_t            count;            /* vertices, indices, or indirect commands */
+    uint32_t            instance_count;   /* direct draws                            */
+    md_gpu_addr_t       indices;
+    md_gpu_index_type_t index_type;
+    md_gpu_addr_t       cmds;
+    /* The argument struct: copied from `args` (args_size bytes), or at
+       `args_at` when by_address. */
+    bool                by_address;
+    const void*         args;
+    size_t              args_size;
+    md_gpu_addr_t       args_at;
+} md_vk_draw_t;
+
+static const char* md_vk_draw_name(const md_vk_draw_t* d) {
+    static const char* names[2][4] = {
+        {"md_gpu_draw", "md_gpu_draw_indexed", "md_gpu_draw_indirect", "md_gpu_draw_indexed_indirect"},
+        {"md_gpu_draw_at", "md_gpu_draw_indexed_at", "md_gpu_draw_indirect_at", "md_gpu_draw_indexed_indirect_at"},
+    };
+    return names[d->by_address ? 1 : 0][d->kind];
+}
+
+/* The pass and the pipeline agree; nothing is recorded. */
+static bool md_vk_draw_check(md_gpu_stream_t s, md_gpu_pipeline_t p, const char* what) {
+    if (!s || !p) return md_gpu_fail("%s: null stream or pipeline", what);
+    if (p->device != s->device) return md_gpu_fail("%s: pipeline '%s' belongs to another device", what, p->label);
+    if (!s->in_pass) return md_gpu_fail("%s: stream '%s' has no open render pass", what, s->label);
     if (p->color_count != s->pass_color_count) {
-        return md_vk_fail("%s: pipeline '%s' has %u colour targets but the pass has %u attachments",
+        return md_gpu_fail("%s: pipeline '%s' has %u colour targets but the pass has %u attachments",
                           what, p->label, p->color_count, s->pass_color_count);
     }
     for (uint32_t i = 0; i < p->color_count; ++i) {
         if (p->color[i] != s->pass_color[i]) {
-            return md_vk_fail("%s: pipeline '%s' colour target %u is %s but the pass attachment is %s",
+            return md_gpu_fail("%s: pipeline '%s' colour target %u is %s but the pass attachment is %s",
                               what, p->label, i, md_vk_format_info(p->color[i]).name, md_vk_format_info(s->pass_color[i]).name);
         }
     }
     if (p->depth != s->pass_depth) {
-        return md_vk_fail("%s: pipeline '%s' depth format is %s but the pass has %s", what, p->label,
+        return md_gpu_fail("%s: pipeline '%s' depth format is %s but the pass has %s", what, p->label,
                           p->depth ? md_vk_format_info(p->depth).name : "none",
                           s->pass_depth ? md_vk_format_info(s->pass_depth).name : "none");
     }
-    if (p->args_size != 0 && args_size != p->args_size) {
-        return md_vk_fail("%s: pipeline '%s' expects a %u-byte argument struct but %zu bytes were passed",
-                          what, p->label, p->args_size, args_size);
-    }
-    if (args_size > 0 && !args) return md_vk_fail("%s: null args with non-zero size", what);
     return true;
 }
 
-/* Copy the arguments, bind, push the root pointer. */
-static VkCommandBuffer md_vk_draw_bind(md_gpu_stream_t s, md_gpu_pipeline_t p, const void* args, size_t args_size) {
-    uint64_t arg_addr = 0;
-    if (args_size > 0) {
-        void* host;
-        if (!md_vk_arena_alloc(s, args_size, &arg_addr, &host, NULL, NULL)) return VK_NULL_HANDLE;
-        memcpy(host, args, args_size);
+static bool md_vk_resolve_indices(md_gpu_stream_t s, md_gpu_addr_t indices, md_gpu_index_type_t type, uint64_t count,
+                                  md_vk_span_t* out, const char* what) {
+    if (type != MD_GPU_INDEX_U32 && type != MD_GPU_INDEX_U16) return md_gpu_fail("%s: invalid index type %d", what, (int)type);
+    const uint64_t isize = type == MD_GPU_INDEX_U16 ? 2 : 4;
+    if (!indices) return md_gpu_fail("%s: null index address", what);
+    if (indices % isize != 0) return md_gpu_fail("%s: index address must be %llu-byte aligned", what, (unsigned long long)isize);
+    return md_vk_resolve(s->device, indices, count * isize, out, what);
+}
+
+static bool md_vk_draw(md_gpu_stream_t s, md_gpu_pipeline_t p, const md_vk_draw_t* d) {
+    const char* what = md_vk_draw_name(d);
+    if (!md_vk_draw_check(s, p, what)) return false;
+    const bool indirect = d->kind == MD_VK_DRAW_INDIRECT || d->kind == MD_VK_DRAW_INDEXED_INDIRECT;
+    const bool indexed  = d->kind == MD_VK_DRAW_INDEXED  || d->kind == MD_VK_DRAW_INDEXED_INDIRECT;
+    if (d->count == 0 || (!indirect && d->instance_count == 0)) return true;
+
+    /* Indirect commands are tightly packed in the layout both APIs read. The
+       index range of an indirect draw is known only to the GPU; the address
+       must at least start a live allocation. */
+    const uint32_t stride = d->kind == MD_VK_DRAW_INDIRECT ? (uint32_t)sizeof(md_gpu_draw_cmd_t)
+                                                           : (uint32_t)sizeof(md_gpu_draw_indexed_cmd_t);
+    md_vk_span_t ib = {0}, cb = {0};
+    if (indexed && !md_vk_resolve_indices(s, d->indices, d->index_type, indirect ? 1 : d->count, &ib, what)) return false;
+    if (indirect) {
+        if (!d->cmds) return md_gpu_fail("%s: null command address", what);
+        if (d->cmds % 4 != 0) return md_gpu_fail("%s: command address must be 4-byte aligned", what);
+        if (!md_vk_resolve(s->device, d->cmds, (uint64_t)d->count * stride, &cb, what)) return false;
     }
+
+    uint64_t args_addr = d->args_at;
+    if (d->by_address) {
+        if (!md_vk_args_at(s, p->args_size, d->args_at, what)) return false;
+    } else if (!md_vk_args_copy(s, p->args_size, d->args, d->args_size, &args_addr, what, p->label)) {
+        return false;
+    }
+
     VkCommandBuffer cmd = s->open;
     if (s->bound_pipeline != p) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p->pipeline);
         s->bound_pipeline = p;
     }
-    vkCmdPushConstants(cmd, s->device->raster_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 8, &arg_addr);
-    return cmd;
+    vkCmdPushConstants(cmd, s->device->raster_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 8, &args_addr);
+    if (indexed) vkCmdBindIndexBuffer(cmd, ib.buffer, ib.offset, d->index_type == MD_GPU_INDEX_U16 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
+
+    switch (d->kind) {
+    case MD_VK_DRAW:         vkCmdDraw(cmd, d->count, d->instance_count, 0, 0); break;
+    case MD_VK_DRAW_INDEXED: vkCmdDrawIndexed(cmd, d->count, d->instance_count, 0, 0, 0); break;
+    default: {
+        const uint32_t max = s->device->props.limits.maxDrawIndirectCount;
+        for (uint32_t done = 0; done < d->count;) {
+            const uint32_t n = d->count - done < max ? d->count - done : max;
+            const uint64_t off = cb.offset + (uint64_t)done * stride;
+            if (indexed) vkCmdDrawIndexedIndirect(cmd, cb.buffer, off, n, stride);
+            else         vkCmdDrawIndirect(cmd, cb.buffer, off, n, stride);
+            done += n;
+        }
+    } break;
+    }
+    return true;
 }
 
 bool md_gpu_draw(md_gpu_stream_t s, md_gpu_pipeline_t p, uint32_t vertex_count, uint32_t instance_count,
                  const void* args, size_t args_size) {
-    if (!md_vk_draw_check(s, p, args, args_size, "md_gpu_draw")) return false;
-    if (vertex_count == 0 || instance_count == 0) return true;
-    VkCommandBuffer cmd = md_vk_draw_bind(s, p, args, args_size);
-    if (!cmd) return false;
-    vkCmdDraw(cmd, vertex_count, instance_count, 0, 0);
-    return true;
+    md_vk_draw_t d = {MD_VK_DRAW, vertex_count, instance_count};
+    d.args = args; d.args_size = args_size;
+    return md_vk_draw(s, p, &d);
 }
 
-static bool md_vk_bind_indices(md_gpu_stream_t s, md_gpu_addr_t indices, md_gpu_index_type_t type, uint64_t count, const char* what) {
-    if (type != MD_GPU_INDEX_U32 && type != MD_GPU_INDEX_U16) return md_vk_fail("%s: invalid index type %d", what, (int)type);
-    const uint64_t isize = type == MD_GPU_INDEX_U16 ? 2 : 4;
-    if (!indices) return md_vk_fail("%s: null index address", what);
-    if (indices % isize != 0) return md_vk_fail("%s: index address must be %llu-byte aligned", what, (unsigned long long)isize);
-    md_vk_span_t b;
-    if (!md_vk_resolve(s->device, indices, count * isize, &b, what)) return false;
-    vkCmdBindIndexBuffer(s->open, b.buffer, b.offset, type == MD_GPU_INDEX_U16 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
-    return true;
+bool md_gpu_draw_at(md_gpu_stream_t s, md_gpu_pipeline_t p, uint32_t vertex_count, uint32_t instance_count, md_gpu_addr_t args) {
+    md_vk_draw_t d = {MD_VK_DRAW, vertex_count, instance_count};
+    d.by_address = true; d.args_at = args;
+    return md_vk_draw(s, p, &d);
 }
 
 bool md_gpu_draw_indexed(md_gpu_stream_t s, md_gpu_pipeline_t p, md_gpu_addr_t indices, md_gpu_index_type_t index_type,
                          uint32_t index_count, uint32_t instance_count, const void* args, size_t args_size) {
-    if (!md_vk_draw_check(s, p, args, args_size, "md_gpu_draw_indexed")) return false;
-    if (index_count == 0 || instance_count == 0) return true;
-    if (!md_vk_bind_indices(s, indices, index_type, index_count, "md_gpu_draw_indexed")) return false;
-    VkCommandBuffer cmd = md_vk_draw_bind(s, p, args, args_size);
-    if (!cmd) return false;
-    vkCmdDrawIndexed(cmd, index_count, instance_count, 0, 0, 0);
-    return true;
+    md_vk_draw_t d = {MD_VK_DRAW_INDEXED, index_count, instance_count, indices, index_type};
+    d.args = args; d.args_size = args_size;
+    return md_vk_draw(s, p, &d);
 }
 
-static bool md_vk_resolve_cmds(md_gpu_stream_t s, md_gpu_addr_t cmds, uint32_t count, uint32_t stride,
-                               md_vk_span_t* out, const char* what) {
-    if (!cmds) return md_vk_fail("%s: null command address", what);
-    if (cmds % 4 != 0) return md_vk_fail("%s: command address must be 4-byte aligned", what);
-    return md_vk_resolve(s->device, cmds, (uint64_t)count * stride, out, what);
+bool md_gpu_draw_indexed_at(md_gpu_stream_t s, md_gpu_pipeline_t p, md_gpu_addr_t indices, md_gpu_index_type_t index_type,
+                            uint32_t index_count, uint32_t instance_count, md_gpu_addr_t args) {
+    md_vk_draw_t d = {MD_VK_DRAW_INDEXED, index_count, instance_count, indices, index_type};
+    d.by_address = true; d.args_at = args;
+    return md_vk_draw(s, p, &d);
 }
 
 bool md_gpu_draw_indirect(md_gpu_stream_t s, md_gpu_pipeline_t p, md_gpu_addr_t cmds, uint32_t count,
                           const void* args, size_t args_size) {
-    const char* what = "md_gpu_draw_indirect";
-    if (!md_vk_draw_check(s, p, args, args_size, what)) return false;
-    if (count == 0) return true;
-    const uint32_t stride = (uint32_t)sizeof(md_gpu_draw_cmd_t);
-    md_vk_span_t b;
-    if (!md_vk_resolve_cmds(s, cmds, count, stride, &b, what)) return false;
-    VkCommandBuffer cmd = md_vk_draw_bind(s, p, args, args_size);
-    if (!cmd) return false;
-    const uint32_t max = s->device->props.limits.maxDrawIndirectCount;
-    for (uint32_t done = 0; done < count;) {
-        const uint32_t n = count - done < max ? count - done : max;
-        vkCmdDrawIndirect(cmd, b.buffer, b.offset + (uint64_t)done * stride, n, stride);
-        done += n;
-    }
-    return true;
+    md_vk_draw_t d = {MD_VK_DRAW_INDIRECT, count};
+    d.cmds = cmds; d.args = args; d.args_size = args_size;
+    return md_vk_draw(s, p, &d);
+}
+
+bool md_gpu_draw_indirect_at(md_gpu_stream_t s, md_gpu_pipeline_t p, md_gpu_addr_t cmds, uint32_t count, md_gpu_addr_t args) {
+    md_vk_draw_t d = {MD_VK_DRAW_INDIRECT, count};
+    d.cmds = cmds; d.by_address = true; d.args_at = args;
+    return md_vk_draw(s, p, &d);
 }
 
 bool md_gpu_draw_indexed_indirect(md_gpu_stream_t s, md_gpu_pipeline_t p, md_gpu_addr_t indices, md_gpu_index_type_t index_type,
                                   md_gpu_addr_t cmds, uint32_t count, const void* args, size_t args_size) {
-    const char* what = "md_gpu_draw_indexed_indirect";
-    if (!md_vk_draw_check(s, p, args, args_size, what)) return false;
-    if (count == 0) return true;
-    const uint32_t stride = (uint32_t)sizeof(md_gpu_draw_indexed_cmd_t);
-    md_vk_span_t b;
-    if (!md_vk_resolve_cmds(s, cmds, count, stride, &b, what)) return false;
-    /* The index range is known only to the GPU; the address must at least
-       start a live allocation. */
-    if (!md_vk_bind_indices(s, indices, index_type, 1, what)) return false;
-    VkCommandBuffer cmd = md_vk_draw_bind(s, p, args, args_size);
-    if (!cmd) return false;
-    const uint32_t max = s->device->props.limits.maxDrawIndirectCount;
-    for (uint32_t done = 0; done < count;) {
-        const uint32_t n = count - done < max ? count - done : max;
-        vkCmdDrawIndexedIndirect(cmd, b.buffer, b.offset + (uint64_t)done * stride, n, stride);
-        done += n;
-    }
-    return true;
+    md_vk_draw_t d = {MD_VK_DRAW_INDEXED_INDIRECT, count, 0, indices, index_type, cmds};
+    d.args = args; d.args_size = args_size;
+    return md_vk_draw(s, p, &d);
+}
+
+bool md_gpu_draw_indexed_indirect_at(md_gpu_stream_t s, md_gpu_pipeline_t p, md_gpu_addr_t indices, md_gpu_index_type_t index_type,
+                                     md_gpu_addr_t cmds, uint32_t count, md_gpu_addr_t args) {
+    md_vk_draw_t d = {MD_VK_DRAW_INDEXED_INDIRECT, count, 0, indices, index_type, cmds};
+    d.by_address = true; d.args_at = args;
+    return md_vk_draw(s, p, &d);
 }
 
 /* =========================================================================
@@ -4696,9 +4635,10 @@ typedef VkResult (VKAPI_PTR *md_vk_create_surface_fn)(VkInstance, const void*, c
    rebuild or surface destruction, never per frame. Caller holds device_mutex. */
 static void md_vk_swapchain_free(md_gpu_device_t dev, md_vk_swapchain_t* sc) {
     if (sc->present_queue) {
-        md_mutex_lock(&dev->queue_mutex);
-        vkQueueWaitIdle(sc->present_queue);
-        md_mutex_unlock(&dev->queue_mutex);
+        md_vk_queue_t* q = md_vk_queue(dev, sc->present_queue);
+        md_mutex_lock(&q->mutex);
+        vkQueueWaitIdle(q->queue);
+        md_mutex_unlock(&q->mutex);
     }
     for (uint32_t i = 0; i < sc->image_count; ++i) {
         if (sc->textures && sc->textures[i]) md_vk_texture_free(dev, sc->textures[i]);
@@ -4717,8 +4657,8 @@ static void md_vk_swapchain_free(md_gpu_device_t dev, md_vk_swapchain_t* sc) {
 static md_gpu_texture_t md_vk_wrap_image_locked(md_gpu_surface_t sf, VkImage image, uint32_t w, uint32_t h, uint32_t index) {
     md_gpu_device_t dev = sf->device;
     md_gpu_texture_t t = (md_gpu_texture_t)md_alloc(dev->alloc, sizeof(md_gpu_texture));
-    if (!t) { md_vk_fail("out of memory"); return NULL; }
-    memset(t, 0, sizeof(*t));
+    if (!t) { md_gpu_fail("out of memory"); return NULL; }
+    md_memset(t, 0, sizeof(*t));
     t->device   = dev;
     t->image    = image;
     t->external = true;
@@ -4737,7 +4677,7 @@ static md_gpu_texture_t md_vk_wrap_image_locked(md_gpu_surface_t sf, VkImage ima
         t->sampled_view = md_vk_create_view(dev, t, 0, 1);
         if (!t->sampled_view) goto fail;
         t->sampled_slot = md_vk_alloc_slot_locked(dev);
-        if (!t->sampled_slot) { md_vk_fail("surface '%s': out of bindless heap slots", sf->label); goto fail; }
+        if (!t->sampled_slot) { md_gpu_fail("surface '%s': out of bindless heap slots", sf->label); goto fail; }
         md_vk_write_image_slot(dev, t->sampled_slot, t->sampled_view, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE);
     }
     if (sf->desc.usage & MD_GPU_TEX_STORAGE) {
@@ -4745,11 +4685,11 @@ static md_gpu_texture_t md_vk_wrap_image_locked(md_gpu_surface_t sf, VkImage ima
         if (t->storage_views) t->storage_views[0] = VK_NULL_HANDLE;
         t->storage_slots = (uint32_t*)md_alloc(dev->alloc, sizeof(uint32_t));
         if (t->storage_slots) t->storage_slots[0] = 0;
-        if (!t->storage_views || !t->storage_slots) { md_vk_fail("out of memory"); goto fail; }
+        if (!t->storage_views || !t->storage_slots) { md_gpu_fail("out of memory"); goto fail; }
         t->storage_views[0] = md_vk_create_view(dev, t, 0, 1);
         if (!t->storage_views[0]) goto fail;
         t->storage_slots[0] = md_vk_alloc_slot_locked(dev);
-        if (!t->storage_slots[0]) { md_vk_fail("surface '%s': out of bindless heap slots", sf->label); goto fail; }
+        if (!t->storage_slots[0]) { md_gpu_fail("surface '%s': out of bindless heap slots", sf->label); goto fail; }
         md_vk_write_image_slot(dev, t->storage_slots[0], t->storage_views[0], VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
     }
     return t;
@@ -4806,8 +4746,8 @@ static bool md_vk_surface_rebuild(md_gpu_surface_t sf, bool* zero_size) {
     sci.oldSwapchain     = sf->sc ? sf->sc->swapchain : VK_NULL_HANDLE;
 
     md_vk_swapchain_t* sc = (md_vk_swapchain_t*)md_alloc(dev->alloc, sizeof(md_vk_swapchain_t));
-    if (!sc) return md_vk_fail("out of memory");
-    memset(sc, 0, sizeof(*sc));
+    if (!sc) return md_gpu_fail("out of memory");
+    md_memset(sc, 0, sizeof(*sc));
     sc->width  = ext.width;
     sc->height = ext.height;
     if (!md_vk_check(vkCreateSwapchainKHR(dev->device, &sci, NULL, &sc->swapchain), "vkCreateSwapchainKHR")) {
@@ -4831,11 +4771,11 @@ static bool md_vk_surface_rebuild(md_gpu_surface_t sf, bool* zero_size) {
             if (sc->textures)     md_free(dev->alloc, sc->textures, n * sizeof(md_gpu_texture_t));
             if (sc->present_sems) md_free(dev->alloc, sc->present_sems, n * sizeof(VkSemaphore));
             sc->textures = NULL; sc->present_sems = NULL;
-            ok = md_vk_fail("out of memory");
+            ok = md_gpu_fail("out of memory");
         } else {
             sc->image_count = n;
-            memset(sc->textures, 0, n * sizeof(md_gpu_texture_t));
-            memset(sc->present_sems, 0, n * sizeof(VkSemaphore));
+            md_memset(sc->textures, 0, n * sizeof(md_gpu_texture_t));
+            md_memset(sc->present_sems, 0, n * sizeof(VkSemaphore));
         }
     }
     for (uint32_t i = 0; i < sc->image_count && ok; ++i) {
@@ -4868,18 +4808,18 @@ static md_gpu_format_t md_vk_surface_format_from_vk(VkFormat f) {
 }
 
 md_gpu_surface_t md_gpu_surface_create(md_gpu_device_t dev, const md_gpu_surface_desc_t* desc) {
-    if (!dev || !desc) { md_vk_fail("md_gpu_surface_create: null argument"); return NULL; }
+    if (!dev || !desc) { md_gpu_fail("md_gpu_surface_create: null argument"); return NULL; }
     const char* label = desc->label ? desc->label : "surface";
     if (!dev->supports_present) {
-        md_vk_fail("surface '%s': the device cannot present (VK_KHR_surface / VK_KHR_swapchain unavailable)", label);
+        md_gpu_fail("surface '%s': the device cannot present (VK_KHR_surface / VK_KHR_swapchain unavailable)", label);
         return NULL;
     }
     if (desc->system != MD_GPU_WINDOW_HEADLESS && !desc->window) {
-        md_vk_fail("surface '%s': no window handle", label);
+        md_gpu_fail("surface '%s': no window handle", label);
         return NULL;
     }
     if (desc->usage & ~(MD_GPU_TEX_SAMPLED | MD_GPU_TEX_STORAGE | MD_GPU_TEX_RENDER_TARGET)) {
-        md_vk_fail("surface '%s': invalid usage bits", label);
+        md_gpu_fail("surface '%s': invalid usage bits", label);
         return NULL;
     }
 
@@ -4891,16 +4831,14 @@ md_gpu_surface_t md_gpu_surface_create(md_gpu_device_t dev, const md_gpu_surface
         md_vk_create_surface_fn fn = (md_vk_create_surface_fn)vkGetInstanceProcAddr(dev->instance, "vkCreateWin32SurfaceKHR");
         if (!dev->has_win32_surface || !fn) { ext_missing = "VK_KHR_win32_surface"; break; }
         md_vk_win32_surface_ci_t ci = {MD_VK_STYPE_WIN32_SURFACE, NULL, 0, desc->display, desc->window};
-#if defined(_WIN32)
-        if (!ci.hinstance) ci.hinstance = (void*)GetModuleHandleW(NULL);
-#endif
+        if (!ci.hinstance) ci.hinstance = md_os_module_handle();
         r = fn(dev->instance, &ci, NULL, &vs);
         break;
     }
     case MD_GPU_WINDOW_X11: {
         md_vk_create_surface_fn fn = (md_vk_create_surface_fn)vkGetInstanceProcAddr(dev->instance, "vkCreateXlibSurfaceKHR");
         if (!dev->has_xlib_surface || !fn) { ext_missing = "VK_KHR_xlib_surface"; break; }
-        if (!desc->display) { md_vk_fail("surface '%s': X11 needs the Display* in `display`", label); return NULL; }
+        if (!desc->display) { md_gpu_fail("surface '%s': X11 needs the Display* in `display`", label); return NULL; }
         md_vk_xlib_surface_ci_t ci = {MD_VK_STYPE_XLIB_SURFACE, NULL, 0, desc->display, (unsigned long)(uintptr_t)desc->window};
         r = fn(dev->instance, &ci, NULL, &vs);
         break;
@@ -4908,7 +4846,7 @@ md_gpu_surface_t md_gpu_surface_create(md_gpu_device_t dev, const md_gpu_surface
     case MD_GPU_WINDOW_WAYLAND: {
         md_vk_create_surface_fn fn = (md_vk_create_surface_fn)vkGetInstanceProcAddr(dev->instance, "vkCreateWaylandSurfaceKHR");
         if (!dev->has_wayland_surface || !fn) { ext_missing = "VK_KHR_wayland_surface"; break; }
-        if (!desc->display) { md_vk_fail("surface '%s': Wayland needs the wl_display* in `display`", label); return NULL; }
+        if (!desc->display) { md_gpu_fail("surface '%s': Wayland needs the wl_display* in `display`", label); return NULL; }
         md_vk_wayland_surface_ci_t ci = {MD_VK_STYPE_WAYLAND_SURFACE, NULL, 0, desc->display, desc->window};
         r = fn(dev->instance, &ci, NULL, &vs);
         break;
@@ -4921,18 +4859,18 @@ md_gpu_surface_t md_gpu_surface_create(md_gpu_device_t dev, const md_gpu_surface
         break;
     }
     case MD_GPU_WINDOW_COCOA:
-        md_vk_fail("surface '%s': COCOA windows present through the Metal backend", label);
+        md_gpu_fail("surface '%s': COCOA windows present through the Metal backend", label);
         return NULL;
     default:
-        md_vk_fail("surface '%s': invalid window system %d", label, (int)desc->system);
+        md_gpu_fail("surface '%s': invalid window system %d", label, (int)desc->system);
         return NULL;
     }
-    if (ext_missing) { md_vk_fail("surface '%s': the Vulkan instance lacks %s", label, ext_missing); return NULL; }
+    if (ext_missing) { md_gpu_fail("surface '%s': the Vulkan instance lacks %s", label, ext_missing); return NULL; }
     if (!md_vk_check(r, "vkCreate*SurfaceKHR")) return NULL;
 
     md_gpu_surface_t sf = (md_gpu_surface_t)md_alloc(dev->alloc, sizeof(md_gpu_surface));
-    if (!sf) { vkDestroySurfaceKHR(dev->instance, vs, NULL); md_vk_fail("out of memory"); return NULL; }
-    memset(sf, 0, sizeof(*sf));
+    if (!sf) { vkDestroySurfaceKHR(dev->instance, vs, NULL); md_gpu_fail("out of memory"); return NULL; }
+    md_memset(sf, 0, sizeof(*sf));
     sf->device  = dev;
     sf->surface = vs;
     sf->desc    = *desc;
@@ -4947,7 +4885,7 @@ md_gpu_surface_t md_gpu_surface_create(md_gpu_device_t dev, const md_gpu_surface
 
     VkBool32 supported = VK_FALSE;
     vkGetPhysicalDeviceSurfaceSupportKHR(dev->phys, dev->graphics_family, vs, &supported);
-    if (!supported) { md_vk_fail("surface '%s': the graphics queue cannot present to it", label); goto fail; }
+    if (!supported) { md_gpu_fail("surface '%s': the graphics queue cannot present to it", label); goto fail; }
 
     /* Format: exactly the one asked for, no silent substitute. */
     {
@@ -4970,7 +4908,7 @@ md_gpu_surface_t md_gpu_surface_create(md_gpu_device_t dev, const md_gpu_surface
                 if (mf == MD_GPU_FORMAT_INVALID) continue;
                 len += (size_t)md_snprintf(avail + len, sizeof(avail) - len, "%s%s", len ? ", " : "", md_vk_format_info(mf).name);
             }
-            md_vk_fail("surface '%s': %s is not supported (the surface offers: %s)", label, fi.name, len ? avail : "nothing md_gpu knows");
+            md_gpu_fail("surface '%s': %s is not supported (the surface offers: %s)", label, fi.name, len ? avail : "nothing md_gpu knows");
             goto fail;
         }
     }
@@ -4985,19 +4923,19 @@ md_gpu_surface_t md_gpu_surface_create(md_gpu_device_t dev, const md_gpu_surface
         sf->image_usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
         sf->image_usage |= caps.supportedUsageFlags & (VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
         if (!(caps.supportedUsageFlags & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)) {
-            md_vk_fail("surface '%s': images cannot be rendered to", label);
+            md_gpu_fail("surface '%s': images cannot be rendered to", label);
             goto fail;
         }
         if (sf->desc.usage & MD_GPU_TEX_SAMPLED) {
             if (!(caps.supportedUsageFlags & VK_IMAGE_USAGE_SAMPLED_BIT) || !(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)) {
-                md_vk_fail("surface '%s': SAMPLED usage is not supported for %s", label, fi.name);
+                md_gpu_fail("surface '%s': SAMPLED usage is not supported for %s", label, fi.name);
                 goto fail;
             }
             sf->image_usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
         }
         if (sf->desc.usage & MD_GPU_TEX_STORAGE) {
             if (!(caps.supportedUsageFlags & VK_IMAGE_USAGE_STORAGE_BIT) || !(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) {
-                md_vk_fail("surface '%s': STORAGE usage is not supported for %s", label, fi.name);
+                md_gpu_fail("surface '%s': STORAGE usage is not supported for %s", label, fi.name);
                 goto fail;
             }
             sf->image_usage |= VK_IMAGE_USAGE_STORAGE_BIT;
@@ -5036,10 +4974,9 @@ md_gpu_surface_t md_gpu_surface_create(md_gpu_device_t dev, const md_gpu_surface
     }
 
     md_mutex_lock(&dev->device_mutex);
-    md_gpu_surface_t* slot = (md_gpu_surface_t*)md_vk_vec_push(&dev->surfaces, dev->alloc);
-    if (slot) *slot = sf;
+    const bool listed = MD_ARRAY_TRY_PUSH(dev->surfaces, sf);
     md_mutex_unlock(&dev->device_mutex);
-    if (!slot) { md_vk_fail("out of memory"); goto fail; }
+    if (!listed) { md_gpu_fail("out of memory"); goto fail; }
     return sf;
 
 fail:
@@ -5056,23 +4993,23 @@ void md_gpu_surface_destroy(md_gpu_surface_t sf) {
     if (!sf) return;
     md_gpu_device_t dev = sf->device;
     md_mutex_lock(&dev->device_mutex);
-    md_vk_vec_remove_ptr(&dev->surfaces, sf);
+    MD_ARRAY_REMOVE_ITEM(dev->surfaces, sf);
     md_vk_swapchain_t* sc = sf->sc;
     if (!sc) {
         sc = (md_vk_swapchain_t*)md_alloc(dev->alloc, sizeof(md_vk_swapchain_t));
-        if (sc) memset(sc, 0, sizeof(*sc));
+        if (sc) md_memset(sc, 0, sizeof(*sc));
     }
     VkSemaphore* sems = (VkSemaphore*)md_alloc(dev->alloc, MD_VK_ACQUIRE_SEMS * sizeof(VkSemaphore));
     if (!sc || !sems) {
         /* Cannot defer: idle and free now. */
-        md_vk_fail("out of memory destroying surface '%s'; waiting for the device", sf->label);
-        vkDeviceWaitIdle(dev->device);
+        md_gpu_fail("out of memory destroying surface '%s'; waiting for the device", sf->label);
+        md_vk_device_wait_idle(dev);
         if (sems) md_free(dev->alloc, sems, MD_VK_ACQUIRE_SEMS * sizeof(VkSemaphore));
         if (sc) { sc->present_queue = NULL; md_vk_swapchain_free(dev, sc); }
         for (uint32_t i = 0; i < MD_VK_ACQUIRE_SEMS; ++i) vkDestroySemaphore(dev->device, sf->acquire_sems[i], NULL);
         vkDestroySurfaceKHR(dev->instance, sf->surface, NULL);
     } else {
-        memcpy(sems, sf->acquire_sems, MD_VK_ACQUIRE_SEMS * sizeof(VkSemaphore));
+        md_memcpy(sems, sf->acquire_sems, MD_VK_ACQUIRE_SEMS * sizeof(VkSemaphore));
         sc->extra_sems      = sems;
         sc->extra_sem_count = MD_VK_ACQUIRE_SEMS;
         sc->surface         = sf->surface;
@@ -5093,40 +5030,15 @@ void md_gpu_surface_resize(md_gpu_surface_t sf, uint32_t width, uint32_t height)
     md_mutex_unlock(&dev->device_mutex);
 }
 
-static bool md_vk_record_image_barrier(md_gpu_stream_t s, VkImage image, VkImageLayout from, VkImageLayout to,
-                                       VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
-                                       VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access) {
-    if (!md_vk_stream_ensure_cmd(s)) return false;
-    VkImageMemoryBarrier2 b = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
-    b.srcStageMask  = src_stage;
-    b.srcAccessMask = src_access;
-    b.dstStageMask  = dst_stage;
-    b.dstAccessMask = dst_access;
-    b.oldLayout     = from;
-    b.newLayout     = to;
-    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    b.image = image;
-    b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    b.subresourceRange.levelCount = 1;
-    b.subresourceRange.layerCount = 1;
-    VkDependencyInfo di = {VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-    di.imageMemoryBarrierCount = 1;
-    di.pImageMemoryBarriers    = &b;
-    vkCmdPipelineBarrier2(s->open, &di);
-    s->has_work = true;
-    return true;
-}
-
 md_gpu_texture_t md_gpu_surface_acquire(md_gpu_stream_t s, md_gpu_surface_t sf) {
-    if (!s || !sf) { md_vk_fail("md_gpu_surface_acquire: null argument"); return NULL; }
+    if (!s || !sf) { md_gpu_fail("md_gpu_surface_acquire: null argument"); return NULL; }
     md_gpu_device_t dev = s->device;
-    if (sf->device != dev) { md_vk_fail("md_gpu_surface_acquire: surface '%s' belongs to another device", sf->label); return NULL; }
-    if (!s->can_graphics) { md_vk_fail("md_gpu_surface_acquire: stream '%s' is not a GRAPHICS stream", s->label); return NULL; }
+    if (sf->device != dev) { md_gpu_fail("md_gpu_surface_acquire: surface '%s' belongs to another device", sf->label); return NULL; }
+    if (!s->can_graphics) { md_gpu_fail("md_gpu_surface_acquire: stream '%s' is not a GRAPHICS stream", s->label); return NULL; }
     if (!md_vk_not_in_pass(s, "md_gpu_surface_acquire")) return NULL;
-    if (s->upload_open) { md_vk_fail("md_gpu_surface_acquire: stream '%s' has an open upload", s->label); return NULL; }
-    if (sf->acquired) { md_vk_fail("md_gpu_surface_acquire: surface '%s' already has an acquired image; present it first", sf->label); return NULL; }
-    if (s->bin_wait_count >= 4) { md_vk_fail("md_gpu_surface_acquire: too many acquires pending on stream '%s'", s->label); return NULL; }
+    if (s->upload_open) { md_gpu_fail("md_gpu_surface_acquire: stream '%s' has an open upload", s->label); return NULL; }
+    if (sf->acquired) { md_gpu_fail("md_gpu_surface_acquire: surface '%s' already has an acquired image; present it first", sf->label); return NULL; }
+    if (s->bin_wait_count >= 4) { md_gpu_fail("md_gpu_surface_acquire: too many acquires pending on stream '%s'", s->label); return NULL; }
 
     for (int attempt = 0; attempt < 3; ++attempt) {
         if (!sf->sc || sf->dirty) {
@@ -5162,7 +5074,7 @@ md_gpu_texture_t md_gpu_surface_acquire(md_gpu_stream_t s, md_gpu_surface_t sf) 
         /* Work already recorded must not wait for the image. */
         if (s->has_work) md_vk_stream_submit(s);
         md_gpu_texture_t tex = sf->sc->textures[index];
-        if (!md_vk_record_image_barrier(s, tex->image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+        if (!md_vk_record_image_barrier(s, tex->image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
                                         VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0,
                                         VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                                         VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT)) {
@@ -5179,24 +5091,23 @@ md_gpu_texture_t md_gpu_surface_acquire(md_gpu_stream_t s, md_gpu_surface_t sf) 
         sf->acquired_stream = s;
         return tex;
     }
-    md_vk_fail("md_gpu_surface_acquire: surface '%s' stayed out of date", sf->label);
+    md_gpu_fail("md_gpu_surface_acquire: surface '%s' stayed out of date", sf->label);
     return NULL;
 }
 
 bool md_gpu_surface_present(md_gpu_stream_t s, md_gpu_surface_t sf) {
-    if (!s || !sf) return md_vk_fail("md_gpu_surface_present: null argument");
-    if (!sf->acquired) return md_vk_fail("md_gpu_surface_present: surface '%s' has no acquired image", sf->label);
-    if (sf->acquired_stream != s) return md_vk_fail("md_gpu_surface_present: surface '%s' was acquired on another stream", sf->label);
+    if (!s || !sf) return md_gpu_fail("md_gpu_surface_present: null argument");
+    if (!sf->acquired) return md_gpu_fail("md_gpu_surface_present: surface '%s' has no acquired image", sf->label);
+    if (sf->acquired_stream != s) return md_gpu_fail("md_gpu_surface_present: surface '%s' was acquired on another stream", sf->label);
     if (!md_vk_not_in_pass(s, "md_gpu_surface_present")) return false;
-    if (s->upload_open) return md_vk_fail("md_gpu_surface_present: stream '%s' has an open upload", s->label);
-    if (s->bin_signal_count >= 4) return md_vk_fail("md_gpu_surface_present: too many presents pending on stream '%s'", s->label);
+    if (s->upload_open) return md_gpu_fail("md_gpu_surface_present: stream '%s' has an open upload", s->label);
+    if (s->bin_signal_count >= 4) return md_gpu_fail("md_gpu_surface_present: too many presents pending on stream '%s'", s->label);
 
-    md_gpu_device_t dev = s->device;
     md_vk_swapchain_t* sc = sf->sc;
     const uint32_t index = sf->image_index;
     sf->acquired = false;
     sf->acquired_stream = NULL;
-    if (!md_vk_record_image_barrier(s, sc->textures[index]->image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+    if (!md_vk_record_image_barrier(s, sc->textures[index]->image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                                     VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
                                     /* Chains into the semaphore signal below,
                                        whose stage is ALL_COMMANDS, so the
@@ -5214,9 +5125,9 @@ bool md_gpu_surface_present(md_gpu_stream_t s, md_gpu_surface_t sf) {
     pi.swapchainCount     = 1;
     pi.pSwapchains        = &sc->swapchain;
     pi.pImageIndices      = &index;
-    md_mutex_lock(&dev->queue_mutex);
+    md_mutex_lock(&s->q->mutex);
     VkResult r = vkQueuePresentKHR(s->queue, &pi);
-    md_mutex_unlock(&dev->queue_mutex);
+    md_mutex_unlock(&s->q->mutex);
     sf->present_queue = s->queue;
     sc->present_queue = s->queue;
     if (r == VK_SUBOPTIMAL_KHR || r == VK_ERROR_OUT_OF_DATE_KHR) {
@@ -5231,17 +5142,17 @@ bool md_gpu_surface_present(md_gpu_stream_t s, md_gpu_surface_t sf) {
    ========================================================================= */
 
 bool md_gpu_sync_on_complete(md_gpu_device_t dev, md_gpu_sync_t sync, md_gpu_host_fn fn, void* user) {
-    if (!dev || !fn) return md_vk_fail("md_gpu_sync_on_complete: null argument");
-    if (md_gpu_sync_is_valid(sync) && sync.stream->device != dev) return md_vk_fail("md_gpu_sync_on_complete: sync from another device");
+    if (!dev || !fn) return md_gpu_fail("md_gpu_sync_on_complete: null argument");
+    if (md_gpu_sync_is_valid(sync) && sync.stream->device != dev) return md_gpu_fail("md_gpu_sync_on_complete: sync from another device");
     md_mutex_lock(&dev->device_mutex);
-    md_vk_hostfn_t* h = (md_vk_hostfn_t*)md_vk_vec_push(&dev->hostfns, dev->alloc);
-    if (h) { h->sync = sync; h->fn = fn; h->user = user; }
+    const md_vk_hostfn_t h = {sync, fn, user};
+    const bool listed = MD_ARRAY_TRY_PUSH(dev->hostfns, h);
     md_mutex_unlock(&dev->device_mutex);
-    return h ? true : md_vk_fail("out of memory");
+    return listed ? true : md_gpu_fail("out of memory");
 }
 
 bool md_gpu_launch_host_fn(md_gpu_stream_t s, md_gpu_host_fn fn, void* user) {
-    if (!s || !fn) return md_vk_fail("md_gpu_launch_host_fn: null argument");
+    if (!s || !fn) return md_gpu_fail("md_gpu_launch_host_fn: null argument");
     if (!md_vk_not_in_pass(s, "md_gpu_launch_host_fn")) return false;
     md_gpu_sync_t sync = md_gpu_stream_record(s);
     return md_gpu_sync_on_complete(s->device, sync, fn, user);
@@ -5259,16 +5170,17 @@ typedef struct md_vk_snapshot_t {
     md_gpu_stream_t stream;
     uint64_t        completed;
 } md_vk_snapshot_t;
+MD_ARRAY_RAW_DEFINE_TYPE(md_vk_snapshot_array_t, md_vk_snapshot_t);
 
-static bool md_vk_snapshot_complete(md_gpu_device_t dev, md_vk_vec_t* snap, md_gpu_sync_t sync) {
+static bool md_vk_snapshot_complete(md_gpu_device_t dev, md_vk_snapshot_array_t* snap, md_gpu_sync_t sync) {
     if (!md_gpu_sync_is_valid(sync)) return true;
-    for (size_t i = 0; i < snap->count; ++i) {
-        md_vk_snapshot_t* e = &MD_VK_VEC_AT(*snap, md_vk_snapshot_t, i);
+    for (size_t i = 0; i < snap->size; ++i) {
+        md_vk_snapshot_t* e = &snap->data[i];
         if (e->stream == sync.stream) return e->completed >= sync.value;
     }
     uint64_t completed = md_vk_stream_completed(sync.stream);
-    md_vk_snapshot_t* e = (md_vk_snapshot_t*)md_vk_vec_push(snap, dev->alloc);
-    if (e) { e->stream = sync.stream; e->completed = completed; }
+    const md_vk_snapshot_t e = {sync.stream, completed};
+    (void)MD_ARRAY_TRY_PUSH(*snap, e);
     /* If the push failed, readiness falls back to this instant's reading; the
        ordering guarantee then degrades, but nothing fires early. */
     return completed >= sync.value;
@@ -5277,8 +5189,8 @@ static bool md_vk_snapshot_complete(md_gpu_device_t dev, md_vk_vec_t* snap, md_g
 uint32_t md_gpu_device_poll(md_gpu_device_t dev) {
     if (!dev) return 0;
     uint32_t fired = 0;
-    md_vk_vec_t snap;
-    md_vk_vec_init(&snap, sizeof(md_vk_snapshot_t));
+    md_vk_snapshot_array_t snap;
+    MD_ARRAY_INIT(snap, dev->alloc);
 
     /* Callbacks run outside the lock, one at a time, in registration order.
        Each may register new callbacks or free memory; those are seen by the
@@ -5287,11 +5199,11 @@ uint32_t md_gpu_device_poll(md_gpu_device_t dev) {
         md_vk_hostfn_t ready;
         bool have = false;
         md_mutex_lock(&dev->device_mutex);
-        for (size_t i = 0; i < dev->hostfns.count; ++i) {
-            md_vk_hostfn_t* h = &MD_VK_VEC_AT(dev->hostfns, md_vk_hostfn_t, i);
+        for (size_t i = 0; i < dev->hostfns.size; ++i) {
+            md_vk_hostfn_t* h = &dev->hostfns.data[i];
             if (!md_vk_snapshot_complete(dev, &snap, h->sync)) continue;
             ready = *h;
-            md_vk_vec_remove(&dev->hostfns, i);
+            MD_ARRAY_REMOVE(dev->hostfns, i);
             have = true;
             break;
         }
@@ -5300,12 +5212,12 @@ uint32_t md_gpu_device_poll(md_gpu_device_t dev) {
         ready.fn(ready.user);
         fired++;
     }
-    md_vk_vec_free(&snap, dev->alloc);
+    MD_ARRAY_FREE(snap);
 
     md_mutex_lock(&dev->device_mutex);
     md_vk_process_retires_locked(dev, false);
-    md_vk_process_pending_frees_locked(dev);
     md_mutex_unlock(&dev->device_mutex);
+    md_gpu_heap_poll(&dev->heap);
     return fired;
 }
 
@@ -5318,51 +5230,49 @@ void md_gpu_device_destroy(md_gpu_device_t dev) {
     struct md_allocator_i* alloc = dev->alloc;
     if (dev->device) {
         /* Flush and idle every stream, then fire what is pending. */
-        for (size_t i = 0; i < dev->streams.count; ++i) {
-            md_gpu_stream_t s = MD_VK_VEC_AT(dev->streams, md_gpu_stream_t, i);
+        for (size_t i = 0; i < dev->streams.size; ++i) {
+            md_gpu_stream_t s = dev->streams.data[i];
             s->upload_open = false;
             md_vk_abandon_pass(s);
             md_vk_stream_submit(s);
         }
-        vkDeviceWaitIdle(dev->device);
+        md_vk_device_wait_idle(dev);
         md_gpu_device_poll(dev);
 
         /* Everything the caller did not destroy, the device does. */
-        while (dev->textures.count > 0) md_gpu_texture_destroy(MD_VK_VEC_AT(dev->textures, md_gpu_texture_t, 0));
-        while (dev->kernels.count > 0) md_gpu_kernel_destroy(MD_VK_VEC_AT(dev->kernels, md_gpu_kernel_t, 0));
-        while (dev->pipelines.count > 0) md_gpu_pipeline_destroy(MD_VK_VEC_AT(dev->pipelines, md_gpu_pipeline_t, 0));
-        while (dev->surfaces.count > 0) md_gpu_surface_destroy(MD_VK_VEC_AT(dev->surfaces, md_gpu_surface_t, 0));
+        while (dev->textures.size > 0) md_gpu_texture_destroy(dev->textures.data[0]);
+        while (dev->kernels.size > 0) md_gpu_kernel_destroy(dev->kernels.data[0]);
+        while (dev->pipelines.size > 0) md_gpu_pipeline_destroy(dev->pipelines.data[0]);
+        while (dev->surfaces.size > 0) md_gpu_surface_destroy(dev->surfaces.data[0]);
         if (dev->make_grid_kernel) md_vk_kernel_free(dev, dev->make_grid_kernel);
 
         md_mutex_lock(&dev->device_mutex);
         md_vk_process_retires_locked(dev, true);
         md_mutex_unlock(&dev->device_mutex);
 
-        for (size_t i = 0; i < dev->streams.count; ++i) {
-            md_vk_stream_free(MD_VK_VEC_AT(dev->streams, md_gpu_stream_t, i));
+        for (size_t i = 0; i < dev->streams.size; ++i) {
+            md_vk_stream_free(dev->streams.data[i]);
         }
-        md_vk_vec_free(&dev->streams, alloc);
-        md_mutex_lock(&dev->device_mutex);
-        md_vk_heaps_free_locked(dev);
-        md_mutex_unlock(&dev->device_mutex);
-        md_vk_vec_free(&dev->textures, alloc);
-        md_vk_vec_free(&dev->kernels, alloc);
-        md_vk_vec_free(&dev->pipelines, alloc);
-        md_vk_vec_free(&dev->surfaces, alloc);
+        MD_ARRAY_FREE(dev->streams);
+        md_gpu_heap_destroy(&dev->heap);
+        MD_ARRAY_FREE(dev->textures);
+        MD_ARRAY_FREE(dev->kernels);
+        MD_ARRAY_FREE(dev->pipelines);
+        MD_ARRAY_FREE(dev->surfaces);
 
         for (uint32_t i = 0; i < dev->sampler_count; ++i) vkDestroySampler(dev->device, dev->samplers[i].sampler, NULL);
         if (dev->dummy_view)    vkDestroyImageView(dev->device, dev->dummy_view, NULL);
         if (dev->dummy_image)   vkDestroyImage(dev->device, dev->dummy_image, NULL);
         if (dev->dummy_mem)     vkFreeMemory(dev->device, dev->dummy_mem, NULL);
         if (dev->dummy_sampler) vkDestroySampler(dev->device, dev->dummy_sampler, NULL);
-        md_vk_vec_free(&dev->hostfns,  alloc);
-        md_vk_vec_free(&dev->retires,  alloc);
-        md_vk_vec_free(&dev->registry, alloc);
+        MD_ARRAY_FREE(dev->hostfns);
+        MD_ARRAY_FREE(dev->retires);
         if (dev->pipeline_layout) vkDestroyPipelineLayout(dev->device, dev->pipeline_layout, NULL);
         if (dev->raster_layout)   vkDestroyPipelineLayout(dev->device, dev->raster_layout, NULL);
         if (dev->desc_pool)       vkDestroyDescriptorPool(dev->device, dev->desc_pool, NULL);
         if (dev->set_layout)      vkDestroyDescriptorSetLayout(dev->device, dev->set_layout, NULL);
-        md_mutex_destroy(&dev->queue_mutex);
+        if (dev->tex_free)        md_free(alloc, dev->tex_free, (dev->tex_slot_count - 1) * sizeof(uint32_t));
+        for (uint32_t i = 0; i < dev->queue_count; ++i) md_mutex_destroy(&dev->queues[i].mutex);
         md_mutex_destroy(&dev->device_mutex);
         vkDestroyDevice(dev->device, NULL);
     }

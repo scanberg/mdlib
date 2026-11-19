@@ -18,7 +18,7 @@ struct Args {
     uint4  local;      // xyz = threads per group; w unused -- argument structs
                        // may not contain 3-vectors (see md_gpu.slang)
 };
-MD_KERNEL_ARGS(Args);
+MD_SHADER_ARGS(Args);
 
 [shader("compute")]
 [numthreads(1, 1, 1)]

@@ -291,3 +291,56 @@ void spin(uint3 tid : SV_DispatchThreadID) {
     for (uint i = 0; i < a.iters; ++i) x = x * 1664525u + 1013904223u;
     a.dst[tid.x] = x;
 }
+
+// ---------------------------------------------------------------------------
+// spec_const: dst[i] = i * SPEC_MUL + uint(SPEC_ADD), complemented when
+// SPEC_INVERT -- each a specialization constant, set at kernel creation.
+// ---------------------------------------------------------------------------
+[SpecializationConstant] const uint  SPEC_MUL    = 1;     // constant 0
+[SpecializationConstant] const float SPEC_ADD    = 2.0;   // constant 1
+[SpecializationConstant] const bool  SPEC_INVERT = false; // constant 2
+
+struct SpecArgs {
+    uint   n;
+    uint   _pad0;
+    uint   _pad1;
+    uint   _pad2;
+    uint*  dst;
+};
+
+struct SpecRoot { SpecArgs* args; };
+[[vk::push_constant]] ConstantBuffer<SpecRoot> spec_root;
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void spec_const(uint3 tid : SV_DispatchThreadID) {
+    SpecArgs a = *spec_root.args;
+    if (tid.x >= a.n) return;
+    uint v = tid.x * SPEC_MUL + uint(SPEC_ADD);
+    if (SPEC_INVERT) v = ~v;
+    a.dst[tid.x] = v;
+}
+
+// ---------------------------------------------------------------------------
+// atomic_float_sum: *dst += src[i] for every i, by float atomics -- only where
+// md_gpu_device_info_t.atomic_float_add says the device has them.
+// ---------------------------------------------------------------------------
+struct AtomicFloatArgs {
+    uint   n;
+    uint   _pad0;
+    uint   _pad1;
+    uint   _pad2;
+    float* src;
+    float* dst;
+};
+
+struct AtomicFloatRoot { AtomicFloatArgs* args; };
+[[vk::push_constant]] ConstantBuffer<AtomicFloatRoot> atomic_float_root;
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void atomic_float_sum(uint3 tid : SV_DispatchThreadID) {
+    AtomicFloatArgs a = *atomic_float_root.args;
+    if (tid.x >= a.n) return;
+    InterlockedAdd(a.dst[0], a.src[tid.x]);
+}

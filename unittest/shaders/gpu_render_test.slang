@@ -70,6 +70,20 @@ VOut indirect_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
     return o;
 }
 
+// Indirect draws given a table of argument structs (md_gpu_draw_indirect_at):
+// first_instance picks the draw's own RArgs, first_vertex its vertices.
+[shader("vertex")]
+VOut table_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
+              uint base_vertex : SV_StartVertexLocation, uint base_instance : SV_StartInstanceLocation) {
+    RArgs a = MD_ARGS_AT(base_instance);
+    VOut  o;
+    o.pos  = a.pos[base_vertex + md_draw_vertex(vid, base_vertex)];
+    o.col  = a.color;
+    o.uv   = float2(0.0, 0.0);
+    o.inst = base_instance + 16u * md_draw_instance(iid, base_instance);
+    return o;
+}
+
 struct PVOut {
     float4 pos : SV_Position;
     float4 col : COLOR;
@@ -115,6 +129,20 @@ MrtOut mrt_fs(VOut i) {
 [shader("fragment")]
 uint id_fs(VOut i) : SV_Target0 {
     return MD_ARGS.id + i.inst;
+}
+
+// The draw's own record, as table_vs chose it.
+[shader("fragment")]
+uint table_fs(VOut i) : SV_Target0 {
+    return MD_ARGS_AT(i.inst % 16u).id + i.inst / 16u;
+}
+
+// The id plus a specialization constant set at pipeline creation.
+[SpecializationConstant] const uint SPEC_ID = 7;     // constant 0
+
+[shader("fragment")]
+uint spec_fs(VOut i) : SV_Target0 {
+    return MD_ARGS.id + SPEC_ID;
 }
 
 struct DepthOut {

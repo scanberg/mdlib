@@ -94,7 +94,8 @@ typedef struct md_array_header_t {
 // Notes:
 // - The RAW operations are strongly typed through 'data' (T*).
 // - Use TRY variants when allocation failure should be handled gracefully.
-// - Non-TRY variants MD_ASSERT on allocation failure.
+// - Non-TRY variants MD_ASSERT on allocation failure. The operation itself runs outside the MD_ASSERT, which
+//   expands to nothing in builds without assertions.
 
 // Define a standalone typed array struct.
 // Example:
@@ -139,16 +140,20 @@ typedef struct md_array_header_t {
     md_array_raw_set_capacity_impl(&(data), &(capacity), &(size), (size_t)(new_capacity), sizeof(*(data)), (alloc), __FILE__, __LINE__)
 
 #define MD_ARRAY_RAW_SET_CAPACITY(capacity, size, data, new_capacity, alloc) \
-    do {                                                                       \
-        MD_ASSERT(MD_ARRAY_RAW_TRY_SET_CAPACITY((capacity), (size), (data), (new_capacity), (alloc))); \
+    do {                                                           \
+        const bool md_array_ok_ = MD_ARRAY_RAW_TRY_SET_CAPACITY((capacity), (size), (data), (new_capacity), (alloc)); \
+        MD_ASSERT(md_array_ok_);                                   \
+        (void)md_array_ok_;                                        \
     } while (0)
 
 #define MD_ARRAY_RAW_TRY_ENSURE(capacity, size, data, min_capacity, alloc) \
     md_array_raw_ensure_impl(&(data), &(capacity), (size), (size_t)(min_capacity), sizeof(*(data)), (alloc), __FILE__, __LINE__)
 
 #define MD_ARRAY_RAW_ENSURE(capacity, size, data, min_capacity, alloc) \
-    do {                                                                 \
-        MD_ASSERT(MD_ARRAY_RAW_TRY_ENSURE((capacity), (size), (data), (min_capacity), (alloc))); \
+    do {                                                           \
+        const bool md_array_ok_ = MD_ARRAY_RAW_TRY_ENSURE((capacity), (size), (data), (min_capacity), (alloc)); \
+        MD_ASSERT(md_array_ok_);                                   \
+        (void)md_array_ok_;                                        \
     } while (0)
 
 // RAW element operations
@@ -156,8 +161,10 @@ typedef struct md_array_header_t {
     md_array_raw_push_impl(&(data), &(capacity), &(size), sizeof(*(data)), &(item), (alloc), __FILE__, __LINE__)
 
 #define MD_ARRAY_RAW_PUSH(capacity, size, data, item, alloc) \
-    do {                                                       \
-        MD_ASSERT(MD_ARRAY_RAW_TRY_PUSH((capacity), (size), (data), (item), (alloc))); \
+    do {                                                           \
+        const bool md_array_ok_ = MD_ARRAY_RAW_TRY_PUSH((capacity), (size), (data), (item), (alloc)); \
+        MD_ASSERT(md_array_ok_);                                   \
+        (void)md_array_ok_;                                        \
     } while (0)
 
 #define MD_ARRAY_RAW_POP(size) (--(size))
@@ -181,12 +188,33 @@ typedef struct md_array_header_t {
         (data)[(idx)] = (data)[--(size)];               \
     } while (0)
 
+// Remove element idx, keeping the order of the rest.
+#define MD_ARRAY_RAW_REMOVE(data, size, idx) \
+    md_array_raw_remove_impl((data), &(size), sizeof(*(data)), (size_t)(idx))
+
+// Insert item before element idx (idx == size appends), keeping the order of the rest. False if the array could
+// not grow; it is unchanged then.
+#define MD_ARRAY_RAW_TRY_INSERT(capacity, size, data, idx, item, alloc) \
+    ((void)sizeof((data)[0] = (item)), \
+     md_array_raw_insert_impl(&(data), &(capacity), &(size), sizeof(*(data)), (size_t)(idx), &(item), (alloc), __FILE__, __LINE__))
+
+// The index of the first element equal to item, or size when there is none. Equality is bytewise, so this is for
+// elements compared with == (pointers, handles, scalars), which the type check below insists on.
+#define MD_ARRAY_RAW_INDEX_OF(data, size, item) \
+    ((void)sizeof((data)[0] == (item)), md_array_raw_index_of_impl((data), (size), sizeof(*(data)), &(item)))
+
+// Remove the first element equal to item (as MD_ARRAY_RAW_INDEX_OF), keeping the order. True if one was removed.
+#define MD_ARRAY_RAW_REMOVE_ITEM(data, size, item) \
+    ((void)sizeof((data)[0] == (item)), md_array_raw_remove_item_impl((data), &(size), sizeof(*(data)), &(item)))
+
 #define MD_ARRAY_RAW_TRY_FREE(capacity, size, data, alloc) \
     md_array_raw_set_capacity_impl(&(data), &(capacity), &(size), 0, sizeof(*(data)), (alloc), __FILE__, __LINE__)
 
 #define MD_ARRAY_RAW_FREE(capacity, size, data, alloc) \
-    do {                                                \
-        MD_ASSERT(MD_ARRAY_RAW_TRY_FREE((capacity), (size), (data), (alloc))); \
+    do {                                                           \
+        const bool md_array_ok_ = MD_ARRAY_RAW_TRY_FREE((capacity), (size), (data), (alloc)); \
+        MD_ASSERT(md_array_ok_);                                   \
+        (void)md_array_ok_;                                        \
     } while (0)
 
 // STRUCT convenience wrappers (expects fields: capacity, size, data, alloc)
@@ -233,6 +261,18 @@ typedef struct md_array_header_t {
 
 #define MD_ARRAY_SWAP_BACK_AND_POP(arr, idx) \
     MD_ARRAY_RAW_SWAP_BACK_AND_POP((arr).data, (arr).size, (idx))
+
+#define MD_ARRAY_REMOVE(arr, idx) \
+    MD_ARRAY_RAW_REMOVE((arr).data, (arr).size, (idx))
+
+#define MD_ARRAY_TRY_INSERT(arr, idx, item) \
+    MD_ARRAY_RAW_TRY_INSERT((arr).capacity, (arr).size, (arr).data, (idx), (item), (arr).alloc)
+
+#define MD_ARRAY_INDEX_OF(arr, item) \
+    MD_ARRAY_RAW_INDEX_OF((arr).data, (arr).size, (item))
+
+#define MD_ARRAY_REMOVE_ITEM(arr, item) \
+    MD_ARRAY_RAW_REMOVE_ITEM((arr).data, (arr).size, (item))
 
 #define MD_ARRAY_TRY_FREE(arr) \
     MD_ARRAY_RAW_TRY_FREE((arr).capacity, (arr).size, (arr).data, (arr).alloc)
@@ -440,6 +480,44 @@ static inline void* md_array_raw_extend_assert_impl(void* data_addr, size_t* cap
     void* ptr = md_array_raw_extend_impl(data_addr, capacity, size, item_size, count, alloc, file, line);
     MD_ASSERT(ptr || count == 0);
     return ptr;
+}
+
+static inline void md_array_raw_remove_impl(void* data, size_t* size, size_t item_size, size_t idx) {
+    MD_ASSERT(size && idx < *size);
+    uint8_t* base = (uint8_t*)data;
+    md_memmove(base + idx * item_size, base + (idx + 1) * item_size, (*size - idx - 1) * item_size);
+    *size -= 1;
+}
+
+static inline bool md_array_raw_insert_impl(void* data_addr, size_t* capacity, size_t* size, size_t item_size, size_t idx, const void* item, struct md_allocator_i* alloc, const char* file, size_t line) {
+    MD_ASSERT(size && item && idx <= *size);
+    size_t needed = 0;
+    if (!md_array_raw_count_add(*size, 1, &needed)) {
+        return false;
+    }
+    if (!md_array_raw_ensure_impl(data_addr, capacity, *size, needed, item_size, alloc, file, line)) {
+        return false;
+    }
+    uint8_t* base = *(uint8_t**)data_addr;
+    md_memmove(base + (idx + 1) * item_size, base + idx * item_size, (*size - idx) * item_size);
+    md_memcpy(base + idx * item_size, item, item_size);
+    *size += 1;
+    return true;
+}
+
+static inline size_t md_array_raw_index_of_impl(const void* data, size_t size, size_t item_size, const void* item) {
+    const uint8_t* base = (const uint8_t*)data;
+    for (size_t i = 0; i < size; ++i) {
+        if (md_memcmp(base + i * item_size, item, item_size) == 0) return i;
+    }
+    return size;
+}
+
+static inline bool md_array_raw_remove_item_impl(void* data, size_t* size, size_t item_size, const void* item) {
+    const size_t idx = md_array_raw_index_of_impl(data, *size, item_size, item);
+    if (idx == *size) return false;
+    md_array_raw_remove_impl(data, size, item_size, idx);
+    return true;
 }
 
 static inline void* md_array_create_internal(size_t size, size_t item_size, struct md_allocator_i* alloc, const char* file, size_t line) {

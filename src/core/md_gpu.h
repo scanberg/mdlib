@@ -57,7 +57,9 @@ Kernel arguments
 ----------------
 A kernel receives one pointer to a caller-defined argument struct. The backend
 copies the struct into device memory and passes its address in an 8-byte push
-constant, so there is no size limit and no portability cliff:
+constant, so there is no size limit and no portability cliff. The _at forms of
+launches and draws take that address from the caller instead, so the struct
+can live in GPU memory, written by the GPU itself:
 
     struct Args { uint n; uint _pad; float* dst; };
     MD_SHADER_ARGS(Args);                   // from md_gpu.slang
@@ -75,7 +77,12 @@ never repeats [numthreads] by hand.
 Threading
 ---------
   * A stream is used by one thread at a time. Different streams may be used
-    concurrently from different threads.
+    -- created, recorded, submitted, destroyed -- concurrently from different
+    threads.
+  * A surface is used by one thread at a time, together with every stream
+    that acquires from it: acquire may submit the stream that last acquired
+    the same swapchain slot, and destroying a stream updates the surfaces it
+    acquired from.
   * Allocation (md_gpu_malloc / md_gpu_free), texture, sampler and kernel
     creation/destruction are thread-safe. Temp scopes belong to their stream
     and follow the stream's one-thread rule.
@@ -89,19 +96,15 @@ Threading
 #include <stddef.h>
 #include <stdbool.h>
 
+#include <core/md_common.h>
+
 struct md_allocator_i;
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#if defined(__cplusplus)
-#  define MD_GPU_STATIC_ASSERT(c, m) static_assert(c, m)
-#else
-#  define MD_GPU_STATIC_ASSERT(c, m) _Static_assert(c, m)
-#endif
-
-MD_GPU_STATIC_ASSERT(sizeof(void*) == 8, "md_gpu requires a 64-bit target");
+MD_STATIC_ASSERT(sizeof(void*) == 8, "md_gpu requires a 64-bit target");
 
 /* =========================================================================
    Handles and value types
@@ -217,19 +220,9 @@ static inline bool md_gpu_sync_is_valid(md_gpu_sync_t s) {
    (The alignment specifier sits on the first member only -- applying it to a
    multi-declarator line would align every declarator and inflate the struct.) */
 
-#if defined(__cplusplus)
-#  define MD_GPU_ALIGNAS(n) alignas(n)
-#elif defined(_MSC_VER)
-   /* _Alignas needs /std:c11 or later in MSVC's C mode; __declspec(align)
-      works regardless of the language level. */
-#  define MD_GPU_ALIGNAS(n) __declspec(align(n))
-#else
-#  define MD_GPU_ALIGNAS(n) _Alignas(n)
-#endif
-
-#define MD_GPU_DEFINE_VEC(name, T)                                             \
-    typedef struct { MD_GPU_ALIGNAS(8)  T x; T y; }       name##2;             \
-    typedef struct { MD_GPU_ALIGNAS(16) T x; T y, z, w; } name##4
+#define MD_GPU_DEFINE_VEC(name, T)                                         \
+    typedef struct { MD_ALIGNAS(8)  T x; T y; }       name##2;             \
+    typedef struct { MD_ALIGNAS(16) T x; T y, z, w; } name##4
 
 MD_GPU_DEFINE_VEC(md_gpu_uint,  uint32_t);
 MD_GPU_DEFINE_VEC(md_gpu_int,   int32_t);
@@ -238,11 +231,10 @@ MD_GPU_DEFINE_VEC(md_gpu_float, float);
 /* Slang lowers a float4x4 to four 16-byte columns: 64 bytes on both targets.
    Same rule as a 4-vector -- store column-major, matching Slang. */
 typedef struct {
-    MD_GPU_ALIGNAS(16) float m[16];
+    MD_ALIGNAS(16) float m[16];
 } md_gpu_float4x4;
 
 #undef MD_GPU_DEFINE_VEC
-#undef MD_GPU_ALIGNAS
 
 /* A toolchain that quietly drops the alignment specifier would reintroduce
    exactly the bug these types exist to prevent, so say so at compile time.
@@ -252,22 +244,21 @@ struct md_gpu_align_probe2_ { char c; md_gpu_uint2    v; };
 struct md_gpu_align_probe4_ { char c; md_gpu_uint4    v; };
 struct md_gpu_align_probem_ { char c; md_gpu_float4x4 v; };
 
-MD_GPU_STATIC_ASSERT(sizeof(md_gpu_uint2)    ==  8, "md_gpu_*2 must be 8 bytes");
-MD_GPU_STATIC_ASSERT(sizeof(md_gpu_uint4)    == 16, "md_gpu_*4 must be 16 bytes");
-MD_GPU_STATIC_ASSERT(sizeof(md_gpu_float4x4) == 64, "md_gpu_float4x4 must be 64 bytes");
-MD_GPU_STATIC_ASSERT(offsetof(struct md_gpu_align_probe2_, v) ==  8,
+MD_STATIC_ASSERT(sizeof(md_gpu_uint2)    ==  8, "md_gpu_*2 must be 8 bytes");
+MD_STATIC_ASSERT(sizeof(md_gpu_uint4)    == 16, "md_gpu_*4 must be 16 bytes");
+MD_STATIC_ASSERT(sizeof(md_gpu_float4x4) == 64, "md_gpu_float4x4 must be 64 bytes");
+MD_STATIC_ASSERT(offsetof(struct md_gpu_align_probe2_, v) ==  8,
                      "md_gpu_*2 must be 8-byte aligned");
-MD_GPU_STATIC_ASSERT(offsetof(struct md_gpu_align_probe4_, v) == 16,
+MD_STATIC_ASSERT(offsetof(struct md_gpu_align_probe4_, v) == 16,
                      "md_gpu_*4 must be 16-byte aligned");
-MD_GPU_STATIC_ASSERT(offsetof(struct md_gpu_align_probem_, v) == 16,
+MD_STATIC_ASSERT(offsetof(struct md_gpu_align_probem_, v) == 16,
                      "md_gpu_float4x4 must be 16-byte aligned");
 
 
 /* Handles are plain 8-byte values in argument structs. */
-MD_GPU_STATIC_ASSERT(sizeof(md_gpu_storage_tex_t) == 8, "handle must be 8 bytes");
-MD_GPU_STATIC_ASSERT(sizeof(md_gpu_sampled_tex_t) == 8, "handle must be 8 bytes");
-MD_GPU_STATIC_ASSERT(sizeof(md_gpu_sampler_t)     == 8, "handle must be 8 bytes");
-#undef MD_GPU_STATIC_ASSERT
+MD_STATIC_ASSERT(sizeof(md_gpu_storage_tex_t) == 8, "handle must be 8 bytes");
+MD_STATIC_ASSERT(sizeof(md_gpu_sampled_tex_t) == 8, "handle must be 8 bytes");
+MD_STATIC_ASSERT(sizeof(md_gpu_sampler_t)     == 8, "handle must be 8 bytes");
 
 /* Launch geometry, in thread groups. */
 typedef struct md_gpu_grid_t {
@@ -350,6 +341,26 @@ typedef struct md_gpu_device_desc_t {
        returning them to the driver. 0 selects 256 MiB. */
     uint64_t heap_cache_limit;
 
+    /* Debug memory, for finding out-of-bounds and use-after-free accesses in
+       kernels: every md_gpu_malloc and md_gpu_temp_alloc allocation gets
+       memory of its own, exactly its size, and freed memory is never reused.
+       On Vulkan each allocation is a buffer of its own with 64 KiB of memory
+       no buffer covers on either side, so GPU-assisted validation (enable_validation
+       plus GPU-AV, e.g. VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_GPU_ASSISTED_EXT
+       or vkconfig) reports a pointer access that leaves its allocation. On
+       Metal each allocation is an MTLBuffer of its own, for Metal shader
+       validation (MTL_SHADER_VALIDATION=1). Slow, and each allocation counts
+       against the driver's allocation limit (4096 on some drivers): for
+       debugging only. The environment variable MD_GPU_DEBUG_MEMORY=1 turns it
+       on as well. */
+    bool debug_memory;
+
+    /* Texture handles the device can hold at once: a texture takes one if it
+       is SAMPLED and one per mip level if it is STORAGE. 0 selects 4095.
+       Clamped to what the device can bind (the clamp is logged); Metal has no
+       such limit and ignores it. */
+    uint32_t max_textures;
+
     const char* label;
 } md_gpu_device_desc_t;
 
@@ -367,6 +378,33 @@ typedef struct md_gpu_device_info_t {
     uint32_t adapter_index;              /* index in md_gpu_enumerate_adapters */
     char     name[256];
     char     driver[256];                /* driver name and version, for logs */
+
+    /* ---- Capabilities beyond the floor -----------------------------------
+       The floor is what every device md_gpu creates has: Vulkan 1.3 with
+       buffer device addresses, descriptor indexing and timeline semaphores
+       (Pascal, Intel Gen9, RDNA, ...), or Metal 3 (Apple silicon, recent Intel
+       and AMD Macs). What lies above it is reported here, and enabled
+       wherever the device has it; a kernel that uses what its device lacks
+       fails to create. Each says only that the operation exists, not that it
+       is fast (Pascal and Intel do float64 at a small fraction of float32). */
+    uint32_t max_shared_memory;          /* bytes of groupshared memory per group */
+    uint32_t max_textures;               /* texture handles held at once
+                                            (md_gpu_device_desc_t.max_textures as
+                                            granted); UINT32_MAX without a limit */
+    bool     subgroup_arithmetic;        /* WaveActiveSum/Min/Max, WavePrefixSum, ...
+                                            in kernels                              */
+    bool     subgroup_shuffle;           /* WaveReadLaneAt with any lane            */
+    bool     float16;                    /* half arithmetic, and half in device memory */
+    bool     float64;                    /* double arithmetic                       */
+    bool     int64;                      /* 64-bit integer arithmetic               */
+    bool     atomic_int64;               /* every 64-bit integer atomic on device
+                                            memory, add and compare-exchange included */
+    bool     atomic_float_add;           /* InterlockedAdd on float in device memory */
+    bool     atomic_float_min_max;       /* InterlockedMin/Max on float in device memory */
+    bool     timestamps;                 /* md_gpu_sync_gpu_seconds measures work on
+                                            COMPUTE streams                          */
+    bool     debug_memory;               /* md_gpu_device_desc_t.debug_memory, or
+                                            MD_GPU_DEBUG_MEMORY, is in effect          */
 } md_gpu_device_info_t;
 
 /* `desc` may be NULL for defaults. Returns NULL on failure; see
@@ -468,10 +506,12 @@ bool md_gpu_sync_gpu_seconds(md_gpu_sync_t sync, double* seconds);
        md_gpu_launch(s, k_consume_both, ...);
        md_gpu_stream_set_ordering(s, MD_GPU_ORDER_IMPLICIT);
 
-   Vulkan: one global VkMemoryBarrier2 with the given stage masks. Metal 3:
-   serial encoders already order everything, so md_gpu_barrier is a no-op and
-   EXPLICIT is merely slower than possible, never incorrect. Code written for
-   EXPLICIT is correct on every backend. */
+   Vulkan: one global VkMemoryBarrier2 with the given stage masks. Metal:
+   launches in an EXPLICIT region go into a concurrent compute encoder, and
+   md_gpu_barrier is a memory barrier inside it; copies, fills and passes
+   stay ordered at encoder boundaries, so there EXPLICIT is merely more
+   ordered than asked for. Code written for EXPLICIT is correct on every
+   backend. */
 
 typedef enum md_gpu_ordering_t {
     MD_GPU_ORDER_IMPLICIT,
@@ -487,8 +527,8 @@ enum {
     MD_GPU_STAGE_FRAGMENT   = 1 << 4, /* fragment shading                        */
     MD_GPU_STAGE_ATTACHMENT = 1 << 5, /* depth test, colour output, attachment
                                           load and store                         */
-    MD_GPU_STAGE_ALL        = -1,
 };
+#define MD_GPU_STAGE_ALL (~(md_gpu_stage_flags_t)0)   /* every stage, present and future */
 
 void md_gpu_stream_set_ordering(md_gpu_stream_t stream, md_gpu_ordering_t ordering);
 md_gpu_ordering_t md_gpu_stream_ordering(md_gpu_stream_t stream);
@@ -546,16 +586,23 @@ void md_gpu_free(md_gpu_stream_t stream, md_gpu_addr_t addr);
 /* ---- Temporary memory -------------------------------------------------------
    The GPU form of a CPU temp arena. Allocation bumps a pointer; there is no
    per-allocation free. The free is md_gpu_temp_end, and like md_gpu_free it
-   is recorded on the stream: everything allocated since the matching begin
-   is reclaimed once the GPU passes that point. The CPU never waits for it.
-   Allocations after the end go into other memory until then, so double or
-   triple buffering falls out without the caller counting frames.
+   is recorded on the stream: work recorded before the end may use the memory
+   whenever it runs, and the CPU never waits for it.
 
        md_gpu_temp_t frame = md_gpu_temp_begin(gfx);
-       md_gpu_mem_t v = md_gpu_temp_alloc(frame, MD_GPU_MEM_HOST_WRITE, bytes);
-       memcpy(v.cpu, verts, bytes);
-       ... work that reads v.gpu ...
+       md_gpu_addr_t v = md_gpu_temp_upload(frame, verts, bytes);
+       ... work that reads v ...
        md_gpu_temp_end(frame);
+
+   What happens to the memory after the end follows md_gpu_free.
+   MD_GPU_MEM_DEVICE memory is rewound: later temp allocations on the same
+   stream take it again at once, because stream order puts their work after
+   the old (md_gpu adds the barrier EXPLICIT mode needs; inside a render pass,
+   where it cannot, the memory waits). So a scope per iteration of a loop costs
+   the memory of one iteration, not of all of them. MD_GPU_MEM_HOST_WRITE
+   memory, which the CPU writes the moment it is handed out, is reused only
+   once the GPU has passed the end -- so double or triple buffering falls out
+   without the caller counting frames.
 
    Scopes nest, and must end in reverse order of beginning, exactly as CPU temp
    arenas do. That lets a library take temp memory inside its caller's scope
@@ -582,11 +629,26 @@ void md_gpu_free(md_gpu_stream_t stream, md_gpu_addr_t addr);
 typedef struct md_gpu_temp_t {
     md_gpu_stream_t stream;
     uint32_t        depth;
+    /* Where the scope began, for rewinding its DEVICE memory. Internal. */
+    uint32_t        mark_chunks;
+    uint64_t        mark_cursor;
 } md_gpu_temp_t;
 
 md_gpu_temp_t md_gpu_temp_begin(md_gpu_stream_t stream);
 md_gpu_mem_t  md_gpu_temp_alloc(md_gpu_temp_t scope, md_gpu_mem_kind_t kind, size_t size);
 void          md_gpu_temp_end(md_gpu_temp_t scope);
+
+/* `size` bytes from `src`, in the scope's temp memory, for the GPU to read:
+   the usual way to hand CPU data to work recorded later in the scope. `src`
+   is consumed before this returns. The data is written into
+   MD_GPU_MEM_HOST_WRITE memory and used from there where that memory is
+   device-local (unified memory, resizable BAR, the small device-local window
+   discrete GPUs have without it); otherwise it is copied on into
+   MD_GPU_MEM_DEVICE memory, a copy recorded on the stream. Inside a render
+   pass, where no copy can be recorded, it is always read in place. Either way
+   it is visible to everything recorded after this call, in either ordering
+   mode. Returns 0 for size 0 and on failure. */
+md_gpu_addr_t md_gpu_temp_upload(md_gpu_temp_t scope, const void* src, size_t size);
 
 /* ---- Statistics -------------------------------------------------------------- */
 
@@ -712,6 +774,42 @@ typedef struct md_gpu_texture_desc_t {
    on failure. */
 md_gpu_texture_t md_gpu_texture_create(md_gpu_stream_t stream, const md_gpu_texture_desc_t* desc);
 
+/* ---- Textures in md_gpu memory ---------------------------------------------
+   A texture can instead be placed in MD_GPU_MEM_DEVICE memory the caller
+   allocated, so that textures that are never live at the same time share it
+   (render targets of passes that do not overlap, scratch volumes), and so
+   that their memory comes from the same stream-ordered heaps and temp scopes
+   as everything else:
+
+       uint64_t size = md_gpu_texture_placement_size(dev, &desc);
+       md_gpu_addr_t mem = md_gpu_malloc(s, size, MD_GPU_MEM_DEVICE);
+       md_gpu_texture_t t = md_gpu_texture_create_at(s, &desc, mem);
+       ...
+       md_gpu_texture_destroy(t);
+       md_gpu_free(s, mem);
+
+   The memory may be aliased by buffers and other placed textures. Whatever
+   was last written through one alias, the others read as undefined; before a
+   placed texture is used after its memory was written through anything else,
+   discard it (below). Destroying the texture does not free the memory, and
+   the texture must not be used once its memory is freed. */
+
+/* The bytes of MD_GPU_MEM_DEVICE memory a texture of `desc` needs, from any
+   start address (alignment included), or 0 if it cannot be made or placed;
+   the reason is reported through the error callback. */
+uint64_t md_gpu_texture_placement_size(md_gpu_device_t device, const md_gpu_texture_desc_t* desc);
+
+/* As md_gpu_texture_create, but in [memory, memory + placement size), which
+   must lie within one live MD_GPU_MEM_DEVICE allocation. Nothing is
+   allocated. The texture's contents start undefined. */
+md_gpu_texture_t md_gpu_texture_create_at(md_gpu_stream_t stream, const md_gpu_texture_desc_t* desc, md_gpu_addr_t memory);
+
+/* Give up the contents of `tex`, ordered after everything issued into
+   `stream` before it and before everything after it, in either ordering
+   mode. Required before using a placed texture after its memory was written
+   through another alias; harmless otherwise. */
+bool md_gpu_texture_discard(md_gpu_stream_t stream, md_gpu_texture_t tex);
+
 /* Deferred and non-blocking: the texture and its handles are released once
    every stream has completed the work issued before this call. */
 void md_gpu_texture_destroy(md_gpu_texture_t tex);
@@ -808,7 +906,34 @@ typedef struct md_gpu_kernel_desc_t {
        was compiled with -fno-fast-math already). No effect on Vulkan. Set by
        the generated descriptor of a shader compiled with PRECISE_MATH. */
     bool        precise_math;
+
+    /* Specialization constants, compiled into the kernel at creation so that
+       one shader serves several variants (a width, a mode, an unrolled count)
+       and the compiler folds and removes what they decide. See
+       MD_GPU_MAX_CONSTANTS. */
+    const void* constants;
+    uint32_t    constants_size;
 } md_gpu_kernel_desc_t;
+
+/* A constants block is an array of 32-bit words: word i is the value of the
+   i-th constant the shader file declares with [SpecializationConstant] -- an
+   int, uint, float or bool (bool as 0 or 1). Slang numbers them in
+   declaration order across the file, whichever an entry point uses, so a C
+   struct of 32-bit scalars in that order is such a block:
+
+       [SpecializationConstant] const uint  WIDTH = 64;    // word 0
+       [SpecializationConstant] const float SCALE = 1.0;   // word 1
+
+       struct { uint32_t width; float scale; } c = {128, 0.5f};
+
+   A constant without a word keeps the default its declaration gives; a word
+   without a constant is ignored. constants_size is in bytes, a multiple of
+   4, at most 4 * MD_GPU_MAX_CONSTANTS. Vulkan passes the block as
+   specialization constants, Metal as function constants, which is what
+   Slang lowers [SpecializationConstant] to on each. Not [vk::constant_id]:
+   it moves Slang's bindless heap off its descriptor set, which the shader
+   build rejects. */
+#define MD_GPU_MAX_CONSTANTS 64
 
 /* Normally fed straight from the generated descriptor:
 
@@ -848,6 +973,17 @@ bool md_gpu_launch(md_gpu_stream_t stream, md_gpu_kernel_t kernel, md_gpu_grid_t
 bool md_gpu_launch_indirect(md_gpu_stream_t stream, md_gpu_kernel_t kernel, md_gpu_addr_t grid,
                             const void* args, size_t args_size);
 
+/* The argument struct by address rather than by value: nothing is copied, and
+   the kernel reads whatever is at `args` when it runs. That lets the struct be
+   written by an earlier kernel (ordered like any other write in the stream),
+   kept and reused across launches, or chosen per launch from a table. `args`
+   must lie in md_gpu memory (malloc or temp), be aligned as the struct is in
+   C (the largest power of two dividing its size, up to 16 -- so record i of
+   an array of them always is), have at least the kernel's args_size bytes
+   behind it, and stay allocated until the launch has completed. */
+bool md_gpu_launch_at(md_gpu_stream_t stream, md_gpu_kernel_t kernel, md_gpu_grid_t grid, md_gpu_addr_t args);
+bool md_gpu_launch_indirect_at(md_gpu_stream_t stream, md_gpu_kernel_t kernel, md_gpu_addr_t grid, md_gpu_addr_t args);
+
 /* Pass an argument struct by value; its size comes from sizeof. */
 #define MD_GPU_LAUNCH(stream, kernel, grid, args) \
     md_gpu_launch((stream), (kernel), (grid), &(args), sizeof(args))
@@ -865,9 +1001,10 @@ bool md_gpu_make_grid(md_gpu_stream_t stream, md_gpu_addr_t out_grid,
 
    Rasterisation on the same terms as compute:
 
-     * A draw works like a launch. It names its pipeline and takes a copied
-       argument struct that both shader stages read through the same root
-       pointer (MD_ARGS). There are no vertex buffers or input layouts: the
+     * A draw works like a launch. It names its pipeline and takes an
+       argument struct, copied or by address (the _at forms), that both
+       shader stages read through the same root pointer (MD_ARGS). There
+       are no vertex buffers or input layouts: the
        vertex shader reads what it needs through pointers in the struct.
        Index and indirect-command buffers are GPU addresses.
 
@@ -918,8 +1055,9 @@ bool md_gpu_make_grid(md_gpu_stream_t stream, md_gpu_addr_t out_grid,
      size (an SV_PointSize output).
 
      Per-frame data -- constants too large for the argument struct, vertices
-     built on the CPU -- belongs in a temp scope on the graphics stream (see
-     Memory): begin it at the start of the frame, end it after present. */
+     built on the CPU -- belongs in a temp scope on the graphics stream,
+     handed over with md_gpu_temp_upload (see Memory): begin the scope at the
+     start of the frame, end it after present. */
 
 #define MD_GPU_MAX_COLOR_TARGETS 8
 
@@ -1017,6 +1155,10 @@ typedef struct md_gpu_pipeline_desc_t {
     uint32_t              color_count;
     md_gpu_format_t       depth_format;  /* MD_GPU_FORMAT_INVALID: no depth
                                             attachment                         */
+    /* Specialization constants, as md_gpu_kernel_desc_t's, given to both
+       stages: they share one block as they share one argument struct. */
+    const void*           constants;
+    uint32_t              constants_size;
     const char*           label;
 } md_gpu_pipeline_desc_t;
 
@@ -1201,6 +1343,26 @@ bool md_gpu_draw_indexed_indirect(md_gpu_stream_t stream, md_gpu_pipeline_t pipe
                                   md_gpu_addr_t indices, md_gpu_index_type_t index_type,
                                   md_gpu_addr_t cmds, uint32_t count,
                                   const void* args, size_t args_size);
+
+/* The argument struct by address, as md_gpu_launch_at: not copied, read when
+   the draw runs, with the same requirements on `args`.
+
+   `args` may also be the base of an array of records, one per draw of an
+   indirect call: a culling kernel writes command i with first_instance = i,
+   and the shaders read record MD_ARGS_AT(base_instance) (md_gpu.slang), with
+   base_instance from SV_StartInstanceLocation. That is a multi-draw whose
+   every draw has root data of its own, built on the GPU, at the cost of one
+   indexed load. */
+bool md_gpu_draw_at(md_gpu_stream_t stream, md_gpu_pipeline_t pipeline,
+                    uint32_t vertex_count, uint32_t instance_count, md_gpu_addr_t args);
+bool md_gpu_draw_indexed_at(md_gpu_stream_t stream, md_gpu_pipeline_t pipeline,
+                            md_gpu_addr_t indices, md_gpu_index_type_t index_type,
+                            uint32_t index_count, uint32_t instance_count, md_gpu_addr_t args);
+bool md_gpu_draw_indirect_at(md_gpu_stream_t stream, md_gpu_pipeline_t pipeline,
+                             md_gpu_addr_t cmds, uint32_t count, md_gpu_addr_t args);
+bool md_gpu_draw_indexed_indirect_at(md_gpu_stream_t stream, md_gpu_pipeline_t pipeline,
+                                     md_gpu_addr_t indices, md_gpu_index_type_t index_type,
+                                     md_gpu_addr_t cmds, uint32_t count, md_gpu_addr_t args);
 
 /* Pass an argument struct by value; its size comes from sizeof. */
 #define MD_GPU_DRAW(stream, pipeline, vertex_count, instance_count, args) \
