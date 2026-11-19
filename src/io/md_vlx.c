@@ -3844,11 +3844,21 @@ done:
 // 'decay length' is <rho|g_j> / (-d/dn <rho|g_j>), from which the amplitudes follow:
 // p_j (-d/dn <rho|g_j>) = P a_j.
 //
-// The file does not say which atom a tessera belongs to. Every tessera of an atom lies exactly on that
+// The datasets were renamed in VeloxChem: gostshyp_gaussian_{centers,normals,areas} became
+// gostshyp_grid_{points,normals,areas}, gostshyp_gaussian_{amplitudes,widths,decay_lengths} became
+// gostshyp_{amplitudes,widths,decay_lengths}, and the atom of each tessera gostshyp_grid_atom_indices (stored
+// as doubles). Both spellings are read, the new first.
+//
+// The newer files also carry what the area of each tessera is made of, a_j = w_j R_i^2 F_j: its Lebedev weight
+// w_j (the solid angle of the point, summing to 4 pi over a sphere: gostshyp_grid_lebedev_weights) and its
+// switching F_j (gostshyp_grid_switching_functions). That the areas are their product is checked, and logged
+// where not.
+//
+// An older file may not say which atom a tessera belongs to. Every tessera of an atom lies exactly on that
 // atom's sphere, whose radius depends on its element only (a scaled van der Waals radius), so the
 // radius of each element is found as the distance from its atoms that the tesserae share most often,
 // and each tessera is given to the atom on whose sphere it lies. A file that carries the atom of each
-// tessera (gostshyp_gaussian_atom_indices) is taken at its word.
+// tessera is taken at its word.
 //
 // Never fails the load: a block of the wrong shape is logged and left out.
 static double vlx_pressure_unit_to_gpa(md_str_t unit) {
@@ -3866,16 +3876,32 @@ static int vlx_cmp_double(const void* a, const void* b) {
 	return (x > y) - (x < y);
 }
 
+// The name a GOSTSHYP dataset has in this file: the current one, or the one it had before; NULL for neither
+static const char* vlx_gostshyp_name(hid_t scf_handle, const char* name, const char* old_name) {
+	if (h5_link_exists(scf_handle, name)) return name;
+	if (old_name && h5_link_exists(scf_handle, old_name)) return old_name;
+	return NULL;
+}
+
 static void vlx_publish_gostshyp(const vlx_t* vlx, hid_t scf_handle) {
-	if (!h5_link_exists(scf_handle, "gostshyp_gaussian_centers")) {
+	const char* name_center    = vlx_gostshyp_name(scf_handle, "gostshyp_grid_points",       "gostshyp_gaussian_centers");
+	const char* name_normal    = vlx_gostshyp_name(scf_handle, "gostshyp_grid_normals",      "gostshyp_gaussian_normals");
+	const char* name_area      = vlx_gostshyp_name(scf_handle, "gostshyp_grid_areas",        "gostshyp_gaussian_areas");
+	const char* name_amplitude = vlx_gostshyp_name(scf_handle, "gostshyp_amplitudes",        "gostshyp_gaussian_amplitudes");
+	const char* name_exponent  = vlx_gostshyp_name(scf_handle, "gostshyp_widths",            "gostshyp_gaussian_widths");
+	const char* name_decay     = vlx_gostshyp_name(scf_handle, "gostshyp_decay_lengths",     "gostshyp_gaussian_decay_lengths");
+	const char* name_atom      = vlx_gostshyp_name(scf_handle, "gostshyp_grid_atom_indices", "gostshyp_gaussian_atom_indices");
+	const char* name_weight    = vlx_gostshyp_name(scf_handle, "gostshyp_grid_lebedev_weights", NULL);
+	const char* name_switching = vlx_gostshyp_name(scf_handle, "gostshyp_grid_switching_functions", NULL);
+	if (!name_center) {
 		return;
 	}
 	md_system_t* sys = vlx->sys;
 	const size_t num_atoms = vlx->number_of_atoms;
 
 	size_t dim[2] = {0};
-	if (h5_read_dataset_dims(dim, 2, scf_handle, "gostshyp_gaussian_centers") != 2 || dim[1] != 3 || dim[0] == 0) {
-		MD_LOG_ERROR("VeloxChem: scf/gostshyp_gaussian_centers is not one 3-vector per tessera; the GOSTSHYP cavity is not read");
+	if (h5_read_dataset_dims(dim, 2, scf_handle, name_center) != 2 || dim[1] != 3 || dim[0] == 0) {
+		MD_LOG_ERROR("VeloxChem: scf/%s is not one 3-vector per tessera; the GOSTSHYP cavity is not read", name_center);
 		return;
 	}
 	const size_t count = dim[0];
@@ -3889,16 +3915,25 @@ static void vlx_publish_gostshyp(const vlx_t* vlx, hid_t scf_handle) {
 	double* decay     = md_temp_alloc_array(temp, double, count);
 	uint32_t* atom    = md_temp_alloc_array(temp, uint32_t, count);
 	double* radius    = md_temp_alloc_array(temp, double, num_atoms);
+	double* weight    = md_temp_alloc_array(temp, double, count);
+	double* switching = md_temp_alloc_array(temp, double, count);
 
-	if (!h5_read_dataset_data(center,    count * 3, scf_handle, H5T_NATIVE_DOUBLE, "gostshyp_gaussian_centers") ||
-	    !h5_read_dataset_data(normal,    count * 3, scf_handle, H5T_NATIVE_DOUBLE, "gostshyp_gaussian_normals") ||
-	    !h5_read_dataset_data(area,      count,     scf_handle, H5T_NATIVE_DOUBLE, "gostshyp_gaussian_areas") ||
-	    !h5_read_dataset_data(amplitude, count,     scf_handle, H5T_NATIVE_DOUBLE, "gostshyp_gaussian_amplitudes") ||
-	    !h5_read_dataset_data(exponent,  count,     scf_handle, H5T_NATIVE_DOUBLE, "gostshyp_gaussian_widths")) {
-		MD_LOG_ERROR("VeloxChem: the GOSTSHYP tesserae are incomplete (centers, normals, areas, amplitudes, widths); the cavity is not read");
+	if (!name_normal || !name_area || !name_amplitude || !name_exponent ||
+	    !h5_read_dataset_data(center,    count * 3, scf_handle, H5T_NATIVE_DOUBLE, name_center) ||
+	    !h5_read_dataset_data(normal,    count * 3, scf_handle, H5T_NATIVE_DOUBLE, name_normal) ||
+	    !h5_read_dataset_data(area,      count,     scf_handle, H5T_NATIVE_DOUBLE, name_area) ||
+	    !h5_read_dataset_data(amplitude, count,     scf_handle, H5T_NATIVE_DOUBLE, name_amplitude) ||
+	    !h5_read_dataset_data(exponent,  count,     scf_handle, H5T_NATIVE_DOUBLE, name_exponent)) {
+		MD_LOG_ERROR("VeloxChem: the GOSTSHYP tesserae are incomplete (points, normals, areas, amplitudes, widths); the cavity is not read");
 		goto done;
 	}
-	const bool has_decay = h5_read_dataset_data(decay, count, scf_handle, H5T_NATIVE_DOUBLE, "gostshyp_gaussian_decay_lengths");
+	const bool has_decay = name_decay && h5_read_dataset_data(decay, count, scf_handle, H5T_NATIVE_DOUBLE, name_decay);
+	// What the areas are made of: both, or neither
+	const bool has_parts = name_weight && name_switching &&
+		h5_read_dataset_data(weight,    count, scf_handle, H5T_NATIVE_DOUBLE, name_weight) &&
+		h5_read_dataset_data(switching, count, scf_handle, H5T_NATIVE_DOUBLE, name_switching);
+	double radius_scale = 0.0;
+	if (!h5_read_dataset_data(&radius_scale, 1, scf_handle, H5T_NATIVE_DOUBLE, "gostshyp_tssf")) radius_scale = 0.0;
 
 	// To the system's units: Angstrom
 	const double b = BOHR_TO_ANGSTROM;
@@ -3911,10 +3946,19 @@ static void vlx_publish_gostshyp(const vlx_t* vlx, hid_t scf_handle) {
 
 	for (size_t i = 0; i < num_atoms; ++i) radius[i] = NAN;
 
-	if (h5_link_exists(scf_handle, "gostshyp_gaussian_atom_indices")) {
-		if (!h5_read_dataset_data(atom, count, scf_handle, H5T_NATIVE_UINT32, "gostshyp_gaussian_atom_indices")) {
-			MD_LOG_ERROR("VeloxChem: scf/gostshyp_gaussian_atom_indices is not one index per tessera; the cavity is not read");
+	if (name_atom) {
+		// Read as doubles, whatever the file stores them as (newer files: doubles), and kept only if whole
+		double* index = md_temp_alloc_array(temp, double, count);
+		if (!h5_read_dataset_data(index, count, scf_handle, H5T_NATIVE_DOUBLE, name_atom)) {
+			MD_LOG_ERROR("VeloxChem: scf/%s is not one index per tessera; the cavity is not read", name_atom);
 			goto done;
+		}
+		for (size_t j = 0; j < count; ++j) {
+			if (!(index[j] >= 0.0) || index[j] != floor(index[j]) || index[j] >= (double)num_atoms) {
+				MD_LOG_ERROR("VeloxChem: scf/%s holds %g, no atom of %zu; the cavity is not read", name_atom, index[j], num_atoms);
+				goto done;
+			}
+			atom[j] = (uint32_t)index[j];
 		}
 	} else {
 		// The radius of each element: the distance from its atoms most tesserae share
@@ -3983,7 +4027,9 @@ static void vlx_publish_gostshyp(const vlx_t* vlx, hid_t scf_handle) {
 			sum[atom[j]] += sqrt(dx*dx + dy*dy + dz*dz);
 			num[atom[j]] += 1;
 		}
-		// An atom without tesserae is buried, its sphere inside the others: the radius of its element, where known
+		// An atom without tesserae is buried, its sphere inside the others: the radius of its element, where known,
+		// else as VeloxChem makes it, the scale times the element's van der Waals radius (VeloxChem's table and
+		// md_element's agree for the main group elements; not for all the transition metals)
 		for (size_t i = 0; i < num_atoms; ++i) {
 			if (num[i]) radius[i] = sum[i] / num[i];
 		}
@@ -3992,6 +4038,22 @@ static void vlx_publish_gostshyp(const vlx_t* vlx, hid_t scf_handle) {
 			for (size_t k = 0; k < num_atoms; ++k) {
 				if (num[k] && vlx->atomic_numbers[k] == vlx->atomic_numbers[i]) { radius[i] = radius[k]; break; }
 			}
+			if (isnan(radius[i]) && radius_scale > 0.0) {
+				radius[i] = radius_scale * md_atomic_number_vdw_radius((md_atomic_number_t)vlx->atomic_numbers[i]);
+			}
+		}
+	}
+
+	// The areas against what they are made of, a_j = w_j R_i^2 F_j (both in Angstrom now)
+	if (has_parts) {
+		double worst = 0.0;
+		for (size_t j = 0; j < count; ++j) {
+			const double R = radius[atom[j]];
+			const double made = weight[j] * R * R * switching[j];
+			if (made > 0.0) worst = MD_MAX(worst, fabs(area[j] / made - 1.0));
+		}
+		if (worst > 1e-6) {
+			MD_LOG_INFO("VeloxChem: the GOSTSHYP areas are not their Lebedev weights times the sphere's radius squared times their switching (off by up to %.2g)", worst);
 		}
 	}
 
@@ -4008,6 +4070,10 @@ static void vlx_publish_gostshyp(const vlx_t* vlx, hid_t scf_handle) {
 		}
 		md_qm_publish_column(sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/atom_index"), MD_STR_LIT("Tessera Atom"), md_unit_none(), MD_ATTRIBUTE_TYPE_U32, atom, sizeof(uint32_t), count);
 		md_qm_publish_series(sys, MD_STR_LIT("vlx/scf/gostshyp/sphere_radius"), MD_STR_LIT("Cavity Sphere Radius"), ang, radius, num_atoms);
+		if (has_parts) {
+			md_qm_publish_series(sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/lebedev_weight"), MD_STR_LIT("Lebedev Weight"), md_unit_none(), weight, count);
+			md_qm_publish_series(sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/switching"), MD_STR_LIT("Switching"), md_unit_none(), switching, count);
+		}
 
 		// How the cavity was made: the Lebedev points per sphere, the scale of the van der Waals radii and the
 		// discretization (VeloxChem's 'swig': switching Gaussians, which keeps points where spheres overlap)
@@ -4015,8 +4081,8 @@ static void vlx_publish_gostshyp(const vlx_t* vlx, hid_t scf_handle) {
 		if (h5_read_dataset_data(&value, 1, scf_handle, H5T_NATIVE_DOUBLE, "gostshyp_num_lebedev_points")) {
 			md_qm_publish_scalar(sys, MD_STR_LIT("vlx/scf/gostshyp/num_lebedev_points"), MD_STR_LIT("Lebedev Points per Sphere"), md_unit_count(), value);
 		}
-		if (h5_read_dataset_data(&value, 1, scf_handle, H5T_NATIVE_DOUBLE, "gostshyp_tssf")) {
-			md_qm_publish_scalar(sys, MD_STR_LIT("vlx/scf/gostshyp/radius_scale"), MD_STR_LIT("Sphere Radius Scale"), md_unit_none(), value);
+		if (radius_scale > 0.0) {
+			md_qm_publish_scalar(sys, MD_STR_LIT("vlx/scf/gostshyp/radius_scale"), MD_STR_LIT("Sphere Radius Scale"), md_unit_none(), radius_scale);
 		}
 		// The switching of 'swig' is evaluated on the spheres grown by r_ext (VeloxChem's outer cavity correction, given
 		// in Ångström), and a point is kept where it is above the threshold
