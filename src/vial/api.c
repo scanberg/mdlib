@@ -384,7 +384,18 @@ static void make_marks(md_vial_program_t* prog) {
 
 uint32_t md_vial__expr_value(const md_vial_program_t* prog, uint32_t expr) {
     if (!prog || !is_expr(prog, expr) || expr - prog->types.base >= md_array_size(prog->types.ssa)) return 0;
-    return prog->types.ssa[expr - prog->types.base];
+    const vial_ir_t* ir = &prog->ir;
+    const uint32_t top = md_array_size(ir->funcs) ? ir->funcs[0].body : 0;
+    // An expression inside a comprehension's body has its value once per element, in the map's own region, which
+    // cannot be read on its own: what hover shows and draws for it is the comprehension, every element
+    for (vial_node_id n = expr; n && n < md_array_size(prog->types.ssa) + prog->types.base; n = prog->check.names.parent[n]) {
+        if (!is_expr(prog, n)) continue;
+        const vial_ssa_t v = prog->types.ssa[n - prog->types.base];
+        if (!v) continue;
+        if (v < md_array_size(ir->values) && ir->values[v].region != top) continue;
+        return v;
+    }
+    return 0;
 }
 
 bool md_vial_expr_info(const md_vial_program_t* prog, uint32_t expr, md_vial_hover_t* out) {

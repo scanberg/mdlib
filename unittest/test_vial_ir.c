@@ -900,6 +900,34 @@ static uint32_t vial_test_count_ca(const md_system_t* sys) {
     return n;
 }
 
+// Every form of angle draws its arcs: three points, the points stacked in one argument, over arrays, and in a
+// comprehension, where hovering the body draws every element
+static uint32_t vial_ir__prims(const char* src, const char* at_text, md_allocator_i* alloc) {
+    const md_system_t* sys = vial_test_system('P');
+    const md_system_state_t* st = vial_test_state('P');
+    md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys}, alloc);
+    if (md_vial_diagnostics(prog, NULL)) { md_vial_program_free(prog); return UINT32_MAX; }
+    md_vial_draw_desc_t desc = {.prog = prog, .sys = sys, .frame = 0, .state = st, .element = -1};
+    const uint32_t at = md_vial_expr_at(prog, (uint32_t)(strstr(src, at_text) - src) + 1);
+    md_vial_drawing_t d = {0};
+    const bool ok = md_vial_draw(&d, &desc, at, alloc);
+    md_vial_program_free(prog);
+    return ok ? d.num_prims : UINT32_MAX;
+}
+
+UTEST(vial_ir, angle_draws_every_form) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
+    EXPECT_EQ(1u, vial_ir__prims("r = residue[2]\na = angle(r[2], r[8], r[9])\n", "angle(", alloc));
+    EXPECT_EQ(1u, vial_ir__prims("r = residue[2]\na = angle(r[[2, 8, 9]])\n", "angle(", alloc));
+    EXPECT_EQ(3u, vial_ir__prims("rs = residue[2:5]\na = angle(rs.particle[[2, 8, 9]])\n", "angle(", alloc));
+    EXPECT_EQ(3u, vial_ir__prims("rs = residue[2:5]\na = angle(rs['N'], rs['CA'], rs['C'])\n", "angle(", alloc));
+    EXPECT_EQ(9u, vial_ir__prims("rs = residue[2:5]\nd = dihedral(rs.particle[[0, 2, 4, 6]])\n", "dihedral(", alloc));     // two disks and an arc each
+    // Inside a comprehension's body: the comprehension, every element
+    EXPECT_EQ(3u, vial_ir__prims("a = [angle(r[2], r[8], r[9]) for r in residue[2:5]]\n", "angle(", alloc));
+    EXPECT_EQ(3u, vial_ir__prims("a = [angle(r[2], r[8], r[9]) for r in residue[2:5]]\n", "r[8]", alloc));
+    md_arena_allocator_destroy(alloc);
+}
+
 // What hover draws: the drawing shown() attached, kept through names and calls; built-ins that draw themselves; and
 // values by their type
 // Of more than 1,000 spheres, 1,000 are drawn: distinct, the same at the same frame, others at another, and every
