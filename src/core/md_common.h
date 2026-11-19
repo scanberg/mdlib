@@ -227,6 +227,7 @@ extern "C" {
 #pragma intrinsic(_BitScanReverse64)
 #pragma intrinsic(_InterlockedExchangeAdd64)
 #pragma intrinsic(_InterlockedCompareExchange64)
+#pragma intrinsic(_InterlockedExchange64)
 #pragma intrinsic(__umulh)
 #pragma intrinsic(__debugbreak)
 #if defined(_M_X64)
@@ -366,6 +367,10 @@ static inline MD_U64 md_atomic_fetch_add64(volatile MD_U64* ptr, MD_U64 value) {
 static inline MD_U64 md_atomic_load64(const volatile MD_U64* ptr) {
     return __atomic_load_n(ptr, __ATOMIC_SEQ_CST);
 }
+
+static inline void md_atomic_store64(volatile MD_U64* ptr, MD_U64 value) {
+    __atomic_store_n(ptr, value, __ATOMIC_SEQ_CST);
+}
 #elif MD_COMPILER_MSVC
 static inline MD_U64 md_atomic_fetch_add64(volatile MD_U64* ptr, MD_U64 value) {
     return (MD_U64)_InterlockedExchangeAdd64((volatile __int64*)ptr, (__int64)value);
@@ -374,6 +379,10 @@ static inline MD_U64 md_atomic_fetch_add64(volatile MD_U64* ptr, MD_U64 value) {
 static inline MD_U64 md_atomic_load64(const volatile MD_U64* ptr) {
     // A compare exchange which never exchanges: a full barrier, and a read of all 64 bits at once
     return (MD_U64)_InterlockedCompareExchange64((volatile __int64*)ptr, 0, 0);
+}
+
+static inline void md_atomic_store64(volatile MD_U64* ptr, MD_U64 value) {
+    _InterlockedExchange64((volatile __int64*)ptr, (__int64)value);
 }
 #endif
 

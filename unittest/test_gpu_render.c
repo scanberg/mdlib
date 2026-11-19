@@ -244,6 +244,43 @@ UTEST(gpu_render, clip_space_is_y_up_and_ccw_is_front) {
     r_close(&f);
 }
 
+/* Vertices handed over with md_gpu_temp_upload, before a pass and inside one
+   (where nothing can be copied, so they are read in place). */
+UTEST(gpu_render, temp_upload_vertices_before_and_inside_a_pass) {
+    rfix_t f;
+    if (!r_open(&f)) UTEST_SKIP(r_skip_reason());
+
+    md_gpu_texture_t c = r_target(&f, MD_GPU_FORMAT_RGBA8_UNORM, W, H, 0);
+    const md_gpu_format_t fmt = MD_GPU_FORMAT_RGBA8_UNORM;
+    md_gpu_pipeline_t p = r_pipeline(&f, md_shader_gpu_render_test_basic_vs_shader(), md_shader_gpu_render_test_color_fs_shader(),
+                                     MD_GPU_TOPOLOGY_TRIANGLES, &fmt, 1, MD_GPU_FORMAT_INVALID);
+    ASSERT_TRUE(c && p);
+
+    static uint32_t px[W * H];
+    for (int inside = 0; inside < 2; ++inside) {
+        md_gpu_temp_t t = md_gpu_temp_begin(f.gfx);
+        md_gpu_float4 tri[3];
+        memcpy(tri, full_tri, sizeof(tri));
+        rargs_t a = {0};
+        a.color = f4(0, 1, 0, 1);
+        if (!inside) a.pos = md_gpu_temp_upload(t, tri, sizeof(tri));
+        ASSERT_TRUE(r_begin(&f, c, MD_GPU_LOAD_CLEAR, 0, 0, 0, 1, NULL, 0));
+        if (inside) a.pos = md_gpu_temp_upload(t, tri, sizeof(tri));
+        ASSERT_TRUE(a.pos != 0);
+        memset(tri, 0, sizeof(tri));             /* consumed already */
+        EXPECT_TRUE(MD_GPU_DRAW(f.gfx, p, 3, 1, a));
+        ASSERT_TRUE(md_gpu_render_end(f.gfx));
+        md_gpu_temp_end(t);
+        ASSERT_TRUE(r_read(&f, c, 0, 0, px, sizeof(px)));
+        int bad = 0;
+        for (int i = 0; i < W * H; ++i) bad += px[i] != rgba8(0, 255, 0, 255);
+        EXPECT_EQ(0, bad);
+    }
+    md_gpu_pipeline_destroy(p);
+    md_gpu_texture_destroy(c);
+    r_close(&f);
+}
+
 /* =========================================================================
    Depth
    ========================================================================= */

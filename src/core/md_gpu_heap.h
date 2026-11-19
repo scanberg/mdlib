@@ -18,9 +18,10 @@ placement heap -- is the backend's. It makes and destroys chunks through
 md_gpu_heap_backend_t, and reaches its own data by putting md_gpu_chunk_t
 first in its chunk struct and casting.
 
-Locking: everything here runs under the backend's device lock, handed over at
-md_gpu_heap_init. Functions named _locked expect it held; the others take it.
-The backend's callbacks are called with it held.
+Locking: the heap has a lock of its own, which every function here takes as
+it needs; none expects it held. The backend's callbacks are called with it
+held, so they must not call back into the heap. A backend may call in while
+holding its own device lock, never the other way around.
 */
 
 #ifndef MD_GPU_HEAP_H
@@ -30,12 +31,12 @@ The backend's callbacks are called with it held.
 #include "md_gpu_tlsf.h"
 
 #include <core/md_array.h>
+#include <core/md_os.h>
 
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
-struct md_mutex_t;
 
 #define MD_GPU_HEAP_ALIGN        256u              /* every md_gpu_malloc / temp allocation */
 #define MD_GPU_HEAP_CHUNK_MIN    (4ull << 20)       /* first heap chunk of a kind            */
@@ -52,11 +53,14 @@ typedef struct md_gpu_chunk_t {
     uint8_t*          host;          /* mapped pointer, or NULL                 */
     uint64_t          size;
     md_gpu_mem_kind_t kind;
+    bool              device_local;  /* the GPU reads it at device-memory speed */
     /* Heap chunks. */
     bool              empty;         /* no live allocation in it                */
     md_tlsf_node_t*   empty_node;    /* its single free node while empty        */
     /* Temp chunks. */
     uint64_t          cursor;
+    uint64_t          high;          /* DEVICE: what recorded work may still use
+                                        lies below this (see the temp arenas) */
     uint32_t          owner_depth;   /* scope depth that acquired it            */
     uint64_t          retire_value;  /* reusable once the stream reaches this   */
     struct md_gpu_heap_range_t* range;  /* registry entry                       */
@@ -71,7 +75,8 @@ MD_ARRAY_RAW_DEFINE_TYPE(md_gpu_heap_pending_free_array_t, struct md_gpu_heap_pe
 typedef struct md_gpu_heap_backend_t {
     void* user;   /* passed back to chunk_create and chunk_destroy */
     /* A chunk of `size` bytes of `kind`: a zeroed struct of the backend's with
-       md_gpu_chunk_t first and its address, host, size and kind filled in.
+       md_gpu_chunk_t first and its address, host, size, kind and device_local
+       filled in.
        NULL on failure, reported (md_gpu_fail). */
     md_gpu_chunk_t* (*chunk_create)(void* user, md_gpu_mem_kind_t kind, uint64_t size);
     void            (*chunk_destroy)(void* user, md_gpu_chunk_t* chunk);
@@ -99,7 +104,7 @@ typedef struct md_gpu_heap_kind_t {
 
 typedef struct md_gpu_heap_t {
     struct md_allocator_i* alloc;
-    struct md_mutex_t*     mutex;
+    md_mutex_t             mutex;
     md_gpu_heap_backend_t  backend;
     md_gpu_heap_kind_t     kinds[MD_GPU_MEM_KIND_COUNT];
     md_gpu_heap_pending_free_array_t pending_frees;
@@ -127,7 +132,7 @@ typedef struct md_gpu_heap_span_t {
 } md_gpu_heap_span_t;
 
 /* `cache_limit` 0 selects MD_GPU_HEAP_CACHE_DEFAULT. */
-void md_gpu_heap_init(md_gpu_heap_t* h, struct md_allocator_i* alloc, struct md_mutex_t* mutex,
+void md_gpu_heap_init(md_gpu_heap_t* h, struct md_allocator_i* alloc,
                       const md_gpu_heap_backend_t* backend, uint64_t cache_limit, bool debug);
 /* Every chunk back to the backend. Every stream is idle and its temps freed. */
 void md_gpu_heap_destroy(md_gpu_heap_t* h);
@@ -140,17 +145,21 @@ void         md_gpu_heap_free(md_gpu_heap_t* h, md_gpu_stream_t s, md_gpu_addr_t
 bool md_gpu_heap_resolve(md_gpu_heap_t* h, md_gpu_addr_t addr, uint64_t size, md_gpu_heap_span_t* out, const char* what);
 
 /* Release the frees the GPU has passed. */
-void md_gpu_heap_poll_locked(md_gpu_heap_t* h);
+void md_gpu_heap_poll(md_gpu_heap_t* h);
 /* `s` is going away, synchronised: release what it freed. */
-void md_gpu_heap_forget_stream_locked(md_gpu_heap_t* h, md_gpu_stream_t s);
+void md_gpu_heap_forget_stream(md_gpu_heap_t* h, md_gpu_stream_t s);
 /* All but bytes_textures, which is the backend's. */
-void md_gpu_heap_stats_locked(const md_gpu_heap_t* h, md_gpu_mem_kind_t kind, md_gpu_memory_stats_t* out);
+void md_gpu_heap_stats(md_gpu_heap_t* h, md_gpu_mem_kind_t kind, md_gpu_memory_stats_t* out);
 
 /* The temp scopes of a stream. `label` names the stream in errors. */
 void          md_gpu_heap_temps_init(const md_gpu_heap_t* h, md_gpu_heap_temps_t* t);
 md_gpu_temp_t md_gpu_heap_temp_begin(md_gpu_heap_temps_t* t, md_gpu_stream_t s);
 md_gpu_mem_t  md_gpu_heap_temp_alloc(md_gpu_heap_t* h, md_gpu_heap_temps_t* t, md_gpu_temp_t scope,
                                      md_gpu_mem_kind_t kind, size_t size, const char* label);
+/* md_gpu_temp_upload. `can_copy`: the stream may record a copy now (not in a
+   render pass, no open upload). */
+md_gpu_addr_t md_gpu_heap_temp_upload(md_gpu_heap_t* h, md_gpu_heap_temps_t* t, md_gpu_temp_t scope,
+                                      const void* src, size_t size, bool can_copy, const char* label);
 void          md_gpu_heap_temp_end(md_gpu_heap_t* h, md_gpu_heap_temps_t* t, md_gpu_temp_t scope);
 /* Every chunk of the stream's temp arenas. The stream is idle. */
 void          md_gpu_heap_temps_free(md_gpu_heap_t* h, md_gpu_heap_temps_t* t);
