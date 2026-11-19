@@ -1171,6 +1171,8 @@ static md_gpu_chunk_t* md_mtl_chunk_create(void* user, md_gpu_mem_kind_t kind, u
     c->base.host = (uint8_t*)host;
     c->base.size = size;
     c->base.kind = kind;
+    /* Shared memory is the GPU's own only where memory is unified. */
+    c->base.device_local = kind == MD_GPU_MEM_DEVICE || [dev->device hasUnifiedMemory];
     md_mtl_make_resident(dev, buf);
     return &c->base;
 }
@@ -1218,6 +1220,13 @@ md_gpu_mem_t md_gpu_temp_alloc(md_gpu_temp_t scope, md_gpu_mem_kind_t kind, size
     md_gpu_stream_t s = scope.stream;
     if (!s) { md_gpu_fail("md_gpu_temp_alloc: null scope"); return none; }
     return md_gpu_heap_temp_alloc(&s->device->heap, &s->temps, scope, kind, size, s->label);
+}
+
+md_gpu_addr_t md_gpu_temp_upload(md_gpu_temp_t scope, const void* src, size_t size) {
+    md_gpu_stream_t s = scope.stream;
+    if (!s) { md_gpu_fail("md_gpu_temp_upload: null scope"); return 0; }
+    const bool can_copy = !s->in_pass && !s->upload_open;
+    return md_gpu_heap_temp_upload(&s->device->heap, &s->temps, scope, src, size, can_copy, s->label);
 }
 
 void md_gpu_temp_end(md_gpu_temp_t scope) {

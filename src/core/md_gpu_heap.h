@@ -53,11 +53,14 @@ typedef struct md_gpu_chunk_t {
     uint8_t*          host;          /* mapped pointer, or NULL                 */
     uint64_t          size;
     md_gpu_mem_kind_t kind;
+    bool              device_local;  /* the GPU reads it at device-memory speed */
     /* Heap chunks. */
     bool              empty;         /* no live allocation in it                */
     md_tlsf_node_t*   empty_node;    /* its single free node while empty        */
     /* Temp chunks. */
     uint64_t          cursor;
+    uint64_t          high;          /* DEVICE: what recorded work may still use
+                                        lies below this (see the temp arenas) */
     uint32_t          owner_depth;   /* scope depth that acquired it            */
     uint64_t          retire_value;  /* reusable once the stream reaches this   */
     struct md_gpu_heap_range_t* range;  /* registry entry                       */
@@ -72,7 +75,8 @@ MD_ARRAY_RAW_DEFINE_TYPE(md_gpu_heap_pending_free_array_t, struct md_gpu_heap_pe
 typedef struct md_gpu_heap_backend_t {
     void* user;   /* passed back to chunk_create and chunk_destroy */
     /* A chunk of `size` bytes of `kind`: a zeroed struct of the backend's with
-       md_gpu_chunk_t first and its address, host, size and kind filled in.
+       md_gpu_chunk_t first and its address, host, size, kind and device_local
+       filled in.
        NULL on failure, reported (md_gpu_fail). */
     md_gpu_chunk_t* (*chunk_create)(void* user, md_gpu_mem_kind_t kind, uint64_t size);
     void            (*chunk_destroy)(void* user, md_gpu_chunk_t* chunk);
@@ -152,6 +156,10 @@ void          md_gpu_heap_temps_init(const md_gpu_heap_t* h, md_gpu_heap_temps_t
 md_gpu_temp_t md_gpu_heap_temp_begin(md_gpu_heap_temps_t* t, md_gpu_stream_t s);
 md_gpu_mem_t  md_gpu_heap_temp_alloc(md_gpu_heap_t* h, md_gpu_heap_temps_t* t, md_gpu_temp_t scope,
                                      md_gpu_mem_kind_t kind, size_t size, const char* label);
+/* md_gpu_temp_upload. `can_copy`: the stream may record a copy now (not in a
+   render pass, no open upload). */
+md_gpu_addr_t md_gpu_heap_temp_upload(md_gpu_heap_t* h, md_gpu_heap_temps_t* t, md_gpu_temp_t scope,
+                                      const void* src, size_t size, bool can_copy, const char* label);
 void          md_gpu_heap_temp_end(md_gpu_heap_t* h, md_gpu_heap_temps_t* t, md_gpu_temp_t scope);
 /* Every chunk of the stream's temp arenas. The stream is idle. */
 void          md_gpu_heap_temps_free(md_gpu_heap_t* h, md_gpu_heap_temps_t* t);

@@ -3415,6 +3415,131 @@ UTEST(gpu, temp_scopes_nest) {
     gpu_close(&f);
 }
 
+/* A scope per iteration with DEVICE scratch costs one iteration's memory, not
+   all of them, even with nothing submitted in between -- as malloc/free on one
+   stream does -- and every iteration still sees its own data: the reuse is
+   ordered after the work that used the memory before, in both ordering modes. */
+static void temp_loop_reuse(gpu_fixture_t* f, md_gpu_ordering_t ordering, int* bad, uint64_t* temp_bytes) {
+    enum { ITERS = 48, N = 64 * 1024 };        /* 256 KiB of scratch per iteration */
+    md_gpu_addr_t dst = gpu_alloc(f, f->compute, (size_t)ITERS * 64 * sizeof(uint32_t));
+    const md_gpu_memory_stats_t before = gpu_stats(f->dev, MD_GPU_MEM_DEVICE);
+    md_gpu_stream_set_ordering(f->compute, ordering);
+    for (int it = 0; it < ITERS; ++it) {
+        md_gpu_temp_t t = md_gpu_temp_begin(f->compute);
+        md_gpu_addr_t a = md_gpu_temp_alloc(t, MD_GPU_MEM_DEVICE, N * sizeof(uint32_t)).gpu;
+        fill_args_t fa = {0};
+        fa.n = N; fa.base = (uint32_t)(it * 1000); fa.dst = a;
+        MD_GPU_LAUNCH(f->compute, f->k_fill, grid1(f->k_fill, N), fa);
+        if (ordering == MD_GPU_ORDER_EXPLICIT) md_gpu_barrier(f->compute, MD_GPU_STAGE_COMPUTE, MD_GPU_STAGE_TRANSFER);
+        /* The last 64 values, which a stale or overwritten scratch would get wrong. */
+        md_gpu_copy(f->compute, dst + (md_gpu_addr_t)it * 64 * sizeof(uint32_t), a + (N - 64) * sizeof(uint32_t), 64 * sizeof(uint32_t));
+        md_gpu_temp_end(t);
+    }
+    md_gpu_stream_set_ordering(f->compute, MD_GPU_ORDER_IMPLICIT);
+    *temp_bytes = gpu_stats(f->dev, MD_GPU_MEM_DEVICE).bytes_temp - before.bytes_temp;
+
+    static uint32_t host[ITERS * 64];
+    *bad = 0;
+    if (!gpu_read(f, f->compute, host, dst, sizeof(host))) { *bad = -1; return; }
+    for (int it = 0; it < ITERS; ++it)
+        for (int i = 0; i < 64; ++i)
+            if (host[it * 64 + i] != (uint32_t)(it * 1000 + N - 64 + i)) ++*bad;
+    md_gpu_free(f->compute, dst);
+}
+
+UTEST(gpu, temp_device_memory_is_reused_within_the_stream) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
+
+    for (int m = 0; m < 2; ++m) {
+        int bad = 0;
+        uint64_t grew = 0;
+        temp_loop_reuse(&f, m ? MD_GPU_ORDER_EXPLICIT : MD_GPU_ORDER_IMPLICIT, &bad, &grew);
+        EXPECT_EQ(0, bad);
+        if (!gpu_debug_memory(f.dev)) {
+            /* One 4 MiB temp chunk at most; 48 iterations of 256 KiB would
+               need three. */
+            EXPECT_LE(grew, (uint64_t)(4u << 20));
+        }
+    }
+    gpu_close(&f);
+}
+
+/* An inner scope's DEVICE memory goes back at its end, also the part it took
+   from the outer scope's chunk, and the outer scope's own allocations stay
+   untouched while later ones reuse it. */
+UTEST(gpu, temp_inner_scope_rewinds_into_the_outer_chunk) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
+    if (gpu_debug_memory(f.dev)) { gpu_close(&f); UTEST_SKIP("debug memory reuses nothing"); }
+
+    enum { N = 1024 };
+    md_gpu_temp_t outer = md_gpu_temp_begin(f.compute);
+    md_gpu_addr_t x = md_gpu_temp_alloc(outer, MD_GPU_MEM_DEVICE, N * sizeof(uint32_t)).gpu;
+    ASSERT_TRUE(x != 0);
+    fill_args_t fa = {0};
+    fa.n = N; fa.base = 7; fa.dst = x;
+    ASSERT_TRUE(MD_GPU_LAUNCH(f.compute, f.k_fill, grid1(f.k_fill, N), fa));
+
+    md_gpu_temp_t inner = md_gpu_temp_begin(f.compute);
+    md_gpu_addr_t y = md_gpu_temp_alloc(inner, MD_GPU_MEM_DEVICE, N * sizeof(uint32_t)).gpu;
+    ASSERT_TRUE(y == x + N * sizeof(uint32_t));      /* carried on in the outer chunk */
+    ASSERT_TRUE(md_gpu_memset(f.compute, y, 0xEE, N * sizeof(uint32_t)));
+    md_gpu_temp_end(inner);
+
+    md_gpu_addr_t z = md_gpu_temp_alloc(outer, MD_GPU_MEM_DEVICE, N * sizeof(uint32_t)).gpu;
+    EXPECT_TRUE(z == y);                             /* rewound */
+    fa.base = 5000; fa.dst = z;
+    ASSERT_TRUE(MD_GPU_LAUNCH(f.compute, f.k_fill, grid1(f.k_fill, N), fa));
+
+    uint32_t hx[N], hz[N];
+    ASSERT_TRUE(gpu_read(&f, f.compute, hx, x, sizeof(hx)));
+    ASSERT_TRUE(gpu_read(&f, f.compute, hz, z, sizeof(hz)));
+    for (int i = 0; i < N; ++i) {
+        ASSERT_EQ((uint32_t)(7 + i), hx[i]);
+        ASSERT_EQ((uint32_t)(5000 + i), hz[i]);
+    }
+    md_gpu_temp_end(outer);
+    gpu_close(&f);
+}
+
+/* md_gpu_temp_upload hands back GPU-readable bytes, valid for the scope, and
+   consumes the source at once. */
+UTEST(gpu, temp_upload) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
+
+    enum { N = 3000 };                               /* not a multiple of the alignment */
+    static uint32_t src[N], got[N];
+    for (int i = 0; i < N; ++i) src[i] = 0x9E3779B9u * (uint32_t)(i + 1);
+
+    md_gpu_temp_t t = md_gpu_temp_begin(f.compute);
+    EXPECT_EQ(0u, (unsigned)md_gpu_temp_upload(t, src, 0));
+    md_gpu_addr_t a = md_gpu_temp_upload(t, src, sizeof(src));
+    ASSERT_TRUE(a != 0);
+    EXPECT_EQ(0u, (unsigned)(a % 256));
+    memset(src, 0, sizeof(src));                     /* already consumed */
+    ASSERT_TRUE(gpu_read(&f, f.compute, got, a, sizeof(got)));
+    for (int i = 0; i < N; ++i) ASSERT_EQ(0x9E3779B9u * (uint32_t)(i + 1), got[i]);
+
+    /* In an EXPLICIT region it is visible to what follows without a barrier. */
+    for (int i = 0; i < N; ++i) src[i] = (uint32_t)i;
+    md_gpu_stream_set_ordering(f.compute, MD_GPU_ORDER_EXPLICIT);
+    md_gpu_addr_t b = md_gpu_temp_upload(t, src, sizeof(src));
+    md_gpu_addr_t d = md_gpu_temp_alloc(t, MD_GPU_MEM_DEVICE, sizeof(src)).gpu;
+    ASSERT_TRUE(b && d);
+    ASSERT_TRUE(md_gpu_copy(f.compute, d, b, sizeof(src)));
+    md_gpu_stream_set_ordering(f.compute, MD_GPU_ORDER_IMPLICIT);
+    ASSERT_TRUE(gpu_read(&f, f.compute, got, d, sizeof(got)));
+    for (int i = 0; i < N; ++i) ASSERT_EQ((uint32_t)i, got[i]);
+
+    md_gpu_temp_t none = {0};
+    EXPECT_EQ(0u, (unsigned)md_gpu_temp_upload(none, src, sizeof(src)));
+    EXPECT_EQ(0u, (unsigned)md_gpu_temp_upload(t, NULL, 16));
+    md_gpu_temp_end(t);
+    gpu_close(&f);
+}
+
 /* =========================================================================
    Edge cases and error reporting
    ========================================================================= */

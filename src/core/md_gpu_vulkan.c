@@ -2631,6 +2631,7 @@ static md_gpu_chunk_t* md_vk_chunk_create(void* user, md_gpu_mem_kind_t kind, ui
     c->base.host     = raw.host;
     c->base.size     = size;
     c->base.kind     = kind;
+    c->base.device_local = (dev->mem_props.memoryTypes[raw.memory_type].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0;
     return &c->base;
 }
 
@@ -2678,6 +2679,13 @@ md_gpu_mem_t md_gpu_temp_alloc(md_gpu_temp_t scope, md_gpu_mem_kind_t kind, size
     md_gpu_stream_t s = scope.stream;
     if (!s) { md_gpu_fail("md_gpu_temp_alloc: null scope"); return none; }
     return md_gpu_heap_temp_alloc(&s->device->heap, &s->temps, scope, kind, size, s->label);
+}
+
+md_gpu_addr_t md_gpu_temp_upload(md_gpu_temp_t scope, const void* src, size_t size) {
+    md_gpu_stream_t s = scope.stream;
+    if (!s) { md_gpu_fail("md_gpu_temp_upload: null scope"); return 0; }
+    const bool can_copy = !s->in_pass && !s->upload_open;
+    return md_gpu_heap_temp_upload(&s->device->heap, &s->temps, scope, src, size, can_copy, s->label);
 }
 
 void md_gpu_temp_end(md_gpu_temp_t scope) {

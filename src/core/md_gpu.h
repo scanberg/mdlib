@@ -602,16 +602,23 @@ void md_gpu_free(md_gpu_stream_t stream, md_gpu_addr_t addr);
 /* ---- Temporary memory -------------------------------------------------------
    The GPU form of a CPU temp arena. Allocation bumps a pointer; there is no
    per-allocation free. The free is md_gpu_temp_end, and like md_gpu_free it
-   is recorded on the stream: everything allocated since the matching begin
-   is reclaimed once the GPU passes that point. The CPU never waits for it.
-   Allocations after the end go into other memory until then, so double or
-   triple buffering falls out without the caller counting frames.
+   is recorded on the stream: work recorded before the end may use the memory
+   whenever it runs, and the CPU never waits for it.
 
        md_gpu_temp_t frame = md_gpu_temp_begin(gfx);
-       md_gpu_mem_t v = md_gpu_temp_alloc(frame, MD_GPU_MEM_HOST_WRITE, bytes);
-       memcpy(v.cpu, verts, bytes);
-       ... work that reads v.gpu ...
+       md_gpu_addr_t v = md_gpu_temp_upload(frame, verts, bytes);
+       ... work that reads v ...
        md_gpu_temp_end(frame);
+
+   What happens to the memory after the end follows md_gpu_free.
+   MD_GPU_MEM_DEVICE memory is rewound: later temp allocations on the same
+   stream take it again at once, because stream order puts their work after
+   the old (md_gpu adds the barrier EXPLICIT mode needs; inside a render pass,
+   where it cannot, the memory waits). So a scope per iteration of a loop costs
+   the memory of one iteration, not of all of them. MD_GPU_MEM_HOST_WRITE
+   memory, which the CPU writes the moment it is handed out, is reused only
+   once the GPU has passed the end -- so double or triple buffering falls out
+   without the caller counting frames.
 
    Scopes nest, and must end in reverse order of beginning, exactly as CPU temp
    arenas do. That lets a library take temp memory inside its caller's scope
@@ -638,11 +645,26 @@ void md_gpu_free(md_gpu_stream_t stream, md_gpu_addr_t addr);
 typedef struct md_gpu_temp_t {
     md_gpu_stream_t stream;
     uint32_t        depth;
+    /* Where the scope began, for rewinding its DEVICE memory. Internal. */
+    uint32_t        mark_chunks;
+    uint64_t        mark_cursor;
 } md_gpu_temp_t;
 
 md_gpu_temp_t md_gpu_temp_begin(md_gpu_stream_t stream);
 md_gpu_mem_t  md_gpu_temp_alloc(md_gpu_temp_t scope, md_gpu_mem_kind_t kind, size_t size);
 void          md_gpu_temp_end(md_gpu_temp_t scope);
+
+/* `size` bytes from `src`, in the scope's temp memory, for the GPU to read:
+   the usual way to hand CPU data to work recorded later in the scope. `src`
+   is consumed before this returns. The data is written into
+   MD_GPU_MEM_HOST_WRITE memory and used from there where that memory is
+   device-local (unified memory, resizable BAR, the small device-local window
+   discrete GPUs have without it); otherwise it is copied on into
+   MD_GPU_MEM_DEVICE memory, a copy recorded on the stream. Inside a render
+   pass, where no copy can be recorded, it is always read in place. Either way
+   it is visible to everything recorded after this call, in either ordering
+   mode. Returns 0 for size 0 and on failure. */
+md_gpu_addr_t md_gpu_temp_upload(md_gpu_temp_t scope, const void* src, size_t size);
 
 /* ---- Statistics -------------------------------------------------------------- */
 
@@ -1049,8 +1071,9 @@ bool md_gpu_make_grid(md_gpu_stream_t stream, md_gpu_addr_t out_grid,
      size (an SV_PointSize output).
 
      Per-frame data -- constants too large for the argument struct, vertices
-     built on the CPU -- belongs in a temp scope on the graphics stream (see
-     Memory): begin it at the start of the frame, end it after present. */
+     built on the CPU -- belongs in a temp scope on the graphics stream,
+     handed over with md_gpu_temp_upload (see Memory): begin the scope at the
+     start of the frame, end it after present. */
 
 #define MD_GPU_MAX_COLOR_TARGETS 8
 
