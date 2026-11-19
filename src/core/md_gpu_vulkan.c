@@ -190,6 +190,12 @@ typedef struct md_vk_wait_t {
     uint64_t        value;
 } md_vk_wait_t;
 
+/* A VkQueue and the lock Vulkan's external synchronisation asks for. */
+typedef struct md_vk_queue_t {
+    VkQueue    queue;
+    md_mutex_t mutex;
+} md_vk_queue_t;
+
 typedef struct md_gpu_stream {
     md_gpu_device_t      device;
     md_gpu_stream_kind_t kind;
@@ -197,6 +203,7 @@ typedef struct md_gpu_stream {
     bool                 can_compute;      /* false on a transfer-only family */
     bool                 can_graphics;     /* GRAPHICS streams                */
     VkQueue              queue;
+    md_vk_queue_t*       q;                /* `queue` with its lock */
     VkSemaphore          timeline;
     uint64_t             next_value;       /* value the next submit signals */
     uint64_t             submitted_value;  /* last value submitted          */
@@ -450,8 +457,12 @@ typedef struct md_gpu_device {
     VkQueue  graphics_queues[MD_VK_MAX_QUEUES_PER_FAMILY];
     uint32_t graphics_queue_count;
     uint32_t next_compute_queue, next_transfer_queue, next_graphics_queue;
-    md_mutex_t queue_mutex;      /* streams may share a VkQueue */
-    md_mutex_t device_mutex;     /* heaps, registry, textures, retire and callback lists */
+    /* Each distinct VkQueue once (families may coincide), with the lock that
+       its submissions and presents take: streams may share a queue. */
+    md_vk_queue_t queues[3 * MD_VK_MAX_QUEUES_PER_FAMILY];
+    uint32_t      queue_count;
+    md_mutex_t device_mutex;     /* object lists, deferred destruction, host callbacks, bindless
+                                    slots and their descriptor writes, the sampler cache */
 
     /* Bindless */
     VkDescriptorSetLayout set_layout;
@@ -518,6 +529,21 @@ static void     md_vk_pipeline_free(md_gpu_device_t dev, md_gpu_pipeline_t p);
 static void     md_vk_swapchain_free(md_gpu_device_t dev, md_vk_swapchain_t* sc);
 static void     md_vk_heap_init(md_gpu_device_t dev, uint64_t cache_limit, bool debug);
 static void     md_vk_abandon_pass(md_gpu_stream_t s);
+
+/* The entry of a VkQueue, or NULL. */
+static md_vk_queue_t* md_vk_queue(md_gpu_device_t dev, VkQueue queue) {
+    for (uint32_t i = 0; i < dev->queue_count; ++i) {
+        if (dev->queues[i].queue == queue) return &dev->queues[i];
+    }
+    return NULL;
+}
+
+/* vkDeviceWaitIdle needs every queue to itself. */
+static void md_vk_device_wait_idle(md_gpu_device_t dev) {
+    for (uint32_t i = 0; i < dev->queue_count; ++i) md_mutex_lock(&dev->queues[i].mutex);
+    vkDeviceWaitIdle(dev->device);
+    for (uint32_t i = dev->queue_count; i-- > 0;) md_mutex_unlock(&dev->queues[i].mutex);
+}
 
 /* =========================================================================
    3. Address lookup
@@ -908,7 +934,7 @@ static void md_vk_retire_locked(md_gpu_device_t dev, md_vk_retire_kind_t kind, v
     if (!((n == 0 || r.waits) && MD_ARRAY_TRY_PUSH(dev->retires, r))) {
         md_gpu_fail("out of memory recording a deferred destruction; waiting for the device");
         if (r.waits) md_free(dev->alloc, r.waits, n * sizeof(md_vk_wait_t));
-        vkDeviceWaitIdle(dev->device);
+        md_vk_device_wait_idle(dev);
         switch (kind) {
         case MD_VK_RETIRE_TEXTURE: md_vk_texture_free(dev, (md_gpu_texture_t)object); break;
         case MD_VK_RETIRE_KERNEL:  md_vk_kernel_free(dev, (md_gpu_kernel_t)object);   break;
@@ -946,7 +972,7 @@ static void md_vk_process_retires_locked(md_gpu_device_t dev, bool force) {
    releases memory it freed -- the free points would otherwise never be
    reached. Caller holds device_mutex. */
 static void md_vk_forget_stream_locked(md_gpu_device_t dev, md_gpu_stream_t s) {
-    md_gpu_heap_forget_stream_locked(&dev->heap, s);
+    md_gpu_heap_forget_stream(&dev->heap, s);
     /* Clearing the sync makes a pending callback unconditionally ready, so it
        still fires on the next md_gpu_device_poll, on the polling thread. */
     for (size_t i = 0; i < dev->hostfns.size; ++i) {
@@ -1615,7 +1641,19 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
         }
     }
 
-    md_mutex_init(&dev->queue_mutex);
+    {
+        const VkQueue* lists[3]  = {dev->compute_queues, dev->transfer_queues, dev->graphics_queues};
+        const uint32_t counts[3] = {dev->compute_queue_count, dev->transfer_queue_count,
+                                    dev->graphics_family != UINT32_MAX ? dev->graphics_queue_count : 0};
+        for (uint32_t l = 0; l < 3; ++l) {
+            for (uint32_t i = 0; i < counts[l]; ++i) {
+                if (md_vk_queue(dev, lists[l][i])) continue;
+                md_vk_queue_t* q = &dev->queues[dev->queue_count++];
+                q->queue = lists[l][i];
+                md_mutex_init(&q->mutex);
+            }
+        }
+    }
     md_mutex_init(&dev->device_mutex);
 
     dev->share_families[0]  = dev->compute_family;
@@ -1901,9 +1939,10 @@ static bool md_vk_immediate(md_gpu_device_t dev, void (*record)(VkCommandBuffer,
     VkFence fence;
     vkCreateFence(dev->device, &fci, NULL, &fence);
 
-    md_mutex_lock(&dev->queue_mutex);
-    VkResult r = vkQueueSubmit2(dev->compute_queues[0], 1, &si, fence);
-    md_mutex_unlock(&dev->queue_mutex);
+    md_vk_queue_t* q = md_vk_queue(dev, dev->compute_queues[0]);
+    md_mutex_lock(&q->mutex);
+    VkResult r = vkQueueSubmit2(q->queue, 1, &si, fence);
+    md_mutex_unlock(&q->mutex);
 
     if (r == VK_SUCCESS) vkWaitForFences(dev->device, 1, &fence, VK_TRUE, UINT64_MAX);
     vkDestroyFence(dev->device, fence, NULL);
@@ -2010,6 +2049,7 @@ static md_gpu_stream_t md_vk_stream_create_internal(md_gpu_device_t dev, md_gpu_
         dev->next_compute_queue++;
     }
     md_mutex_unlock(&dev->device_mutex);
+    s->q = md_vk_queue(dev, s->queue);
 
     MD_ARRAY_INIT(s->cmds, dev->alloc);
     MD_ARRAY_INIT(s->waits, dev->alloc);
@@ -2376,9 +2416,9 @@ static bool md_vk_stream_submit(md_gpu_stream_t s) {
     si.signalSemaphoreInfoCount = 1 + s->bin_signal_count;
     si.pSignalSemaphoreInfos    = signals;
 
-    md_mutex_lock(&dev->queue_mutex);
+    md_mutex_lock(&s->q->mutex);
     VkResult r = vkQueueSubmit2(s->queue, 1, &si, VK_NULL_HANDLE);
-    md_mutex_unlock(&dev->queue_mutex);
+    md_mutex_unlock(&s->q->mutex);
     if (waits != wait_stack) md_free(dev->alloc, waits, wait_count * sizeof(VkSemaphoreSubmitInfo));
     if (!md_vk_check(r, "vkQueueSubmit2")) return false;
 
@@ -2570,7 +2610,7 @@ static void md_vk_heap_init(md_gpu_device_t dev, uint64_t cache_limit, bool debu
         dev, md_vk_chunk_create, md_vk_chunk_destroy,
         md_vk_stream_position, md_vk_stream_completed, md_vk_reuse_early,
     };
-    md_gpu_heap_init(&dev->heap, dev->alloc, &dev->device_mutex, &backend, cache_limit, debug);
+    md_gpu_heap_init(&dev->heap, dev->alloc, &backend, cache_limit, debug);
 }
 
 md_gpu_mem_t md_gpu_malloc(md_gpu_stream_t s, md_gpu_mem_kind_t kind, size_t size) {
@@ -2607,8 +2647,8 @@ void md_gpu_temp_end(md_gpu_temp_t scope) {
 bool md_gpu_memory_stats(md_gpu_device_t dev, md_gpu_mem_kind_t kind, md_gpu_memory_stats_t* out) {
     if (!dev || !out || (unsigned)kind >= (unsigned)MD_GPU_MEM_KIND_COUNT) return md_gpu_fail("md_gpu_memory_stats: invalid argument");
     memset(out, 0, sizeof(*out));
+    md_gpu_heap_stats(&dev->heap, kind, out);
     md_mutex_lock(&dev->device_mutex);
-    md_gpu_heap_stats_locked(&dev->heap, kind, out);
     out->bytes_textures = kind == MD_GPU_MEM_DEVICE ? dev->texture_bytes : 0;
     md_mutex_unlock(&dev->device_mutex);
     return true;
@@ -4542,9 +4582,10 @@ typedef VkResult (VKAPI_PTR *md_vk_create_surface_fn)(VkInstance, const void*, c
    rebuild or surface destruction, never per frame. Caller holds device_mutex. */
 static void md_vk_swapchain_free(md_gpu_device_t dev, md_vk_swapchain_t* sc) {
     if (sc->present_queue) {
-        md_mutex_lock(&dev->queue_mutex);
-        vkQueueWaitIdle(sc->present_queue);
-        md_mutex_unlock(&dev->queue_mutex);
+        md_vk_queue_t* q = md_vk_queue(dev, sc->present_queue);
+        md_mutex_lock(&q->mutex);
+        vkQueueWaitIdle(q->queue);
+        md_mutex_unlock(&q->mutex);
     }
     for (uint32_t i = 0; i < sc->image_count; ++i) {
         if (sc->textures && sc->textures[i]) md_vk_texture_free(dev, sc->textures[i]);
@@ -4909,7 +4950,7 @@ void md_gpu_surface_destroy(md_gpu_surface_t sf) {
     if (!sc || !sems) {
         /* Cannot defer: idle and free now. */
         md_gpu_fail("out of memory destroying surface '%s'; waiting for the device", sf->label);
-        vkDeviceWaitIdle(dev->device);
+        md_vk_device_wait_idle(dev);
         if (sems) md_free(dev->alloc, sems, MD_VK_ACQUIRE_SEMS * sizeof(VkSemaphore));
         if (sc) { sc->present_queue = NULL; md_vk_swapchain_free(dev, sc); }
         for (uint32_t i = 0; i < MD_VK_ACQUIRE_SEMS; ++i) vkDestroySemaphore(dev->device, sf->acquire_sems[i], NULL);
@@ -5009,7 +5050,6 @@ bool md_gpu_surface_present(md_gpu_stream_t s, md_gpu_surface_t sf) {
     if (s->upload_open) return md_gpu_fail("md_gpu_surface_present: stream '%s' has an open upload", s->label);
     if (s->bin_signal_count >= 4) return md_gpu_fail("md_gpu_surface_present: too many presents pending on stream '%s'", s->label);
 
-    md_gpu_device_t dev = s->device;
     md_vk_swapchain_t* sc = sf->sc;
     const uint32_t index = sf->image_index;
     sf->acquired = false;
@@ -5032,9 +5072,9 @@ bool md_gpu_surface_present(md_gpu_stream_t s, md_gpu_surface_t sf) {
     pi.swapchainCount     = 1;
     pi.pSwapchains        = &sc->swapchain;
     pi.pImageIndices      = &index;
-    md_mutex_lock(&dev->queue_mutex);
+    md_mutex_lock(&s->q->mutex);
     VkResult r = vkQueuePresentKHR(s->queue, &pi);
-    md_mutex_unlock(&dev->queue_mutex);
+    md_mutex_unlock(&s->q->mutex);
     sf->present_queue = s->queue;
     sc->present_queue = s->queue;
     if (r == VK_SUBOPTIMAL_KHR || r == VK_ERROR_OUT_OF_DATE_KHR) {
@@ -5123,8 +5163,8 @@ uint32_t md_gpu_device_poll(md_gpu_device_t dev) {
 
     md_mutex_lock(&dev->device_mutex);
     md_vk_process_retires_locked(dev, false);
-    md_gpu_heap_poll_locked(&dev->heap);
     md_mutex_unlock(&dev->device_mutex);
+    md_gpu_heap_poll(&dev->heap);
     return fired;
 }
 
@@ -5143,7 +5183,7 @@ void md_gpu_device_destroy(md_gpu_device_t dev) {
             md_vk_abandon_pass(s);
             md_vk_stream_submit(s);
         }
-        vkDeviceWaitIdle(dev->device);
+        md_vk_device_wait_idle(dev);
         md_gpu_device_poll(dev);
 
         /* Everything the caller did not destroy, the device does. */
@@ -5179,7 +5219,7 @@ void md_gpu_device_destroy(md_gpu_device_t dev) {
         if (dev->desc_pool)       vkDestroyDescriptorPool(dev->device, dev->desc_pool, NULL);
         if (dev->set_layout)      vkDestroyDescriptorSetLayout(dev->device, dev->set_layout, NULL);
         if (dev->tex_free)        md_free(alloc, dev->tex_free, (dev->tex_slot_count - 1) * sizeof(uint32_t));
-        md_mutex_destroy(&dev->queue_mutex);
+        for (uint32_t i = 0; i < dev->queue_count; ++i) md_mutex_destroy(&dev->queues[i].mutex);
         md_mutex_destroy(&dev->device_mutex);
         vkDestroyDevice(dev->device, NULL);
     }

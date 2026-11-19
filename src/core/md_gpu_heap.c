@@ -94,11 +94,11 @@ static void md_gpu_heap_registry_remove_locked(md_gpu_heap_t* h, md_gpu_heap_ran
 /* The registry is mutated by malloc on other threads, so the lookup takes the
    lock; what it found is copied out before the lock is let go. */
 bool md_gpu_heap_resolve(md_gpu_heap_t* h, md_gpu_addr_t addr, uint64_t size, md_gpu_heap_span_t* out, const char* what) {
-    md_mutex_lock(h->mutex);
+    md_mutex_lock(&h->mutex);
     const md_gpu_heap_range_t* r = md_gpu_heap_registry_find_locked(h, addr);
     md_gpu_heap_range_t copy;
     if (r) copy = *r;
-    md_mutex_unlock(h->mutex);
+    md_mutex_unlock(&h->mutex);
     if (!r) return md_gpu_fail("%s: 0x%llx is not a live md_gpu allocation", what, (unsigned long long)addr);
     const uint64_t off = addr - copy.address;
     if (size > copy.size || off > copy.size - size) {
@@ -115,11 +115,11 @@ bool md_gpu_heap_resolve(md_gpu_heap_t* h, md_gpu_addr_t addr, uint64_t size, md
 
 /* ---- Heaps ---------------------------------------------------------------------- */
 
-void md_gpu_heap_init(md_gpu_heap_t* h, struct md_allocator_i* alloc, struct md_mutex_t* mutex,
+void md_gpu_heap_init(md_gpu_heap_t* h, struct md_allocator_i* alloc,
                       const md_gpu_heap_backend_t* backend, uint64_t cache_limit, bool debug) {
     md_memset(h, 0, sizeof(*h));
+    md_mutex_init(&h->mutex);
     h->alloc       = alloc;
-    h->mutex       = mutex;
     h->backend     = *backend;
     h->cache_limit = cache_limit ? cache_limit : MD_GPU_HEAP_CACHE_DEFAULT;
     h->debug       = debug;
@@ -132,7 +132,7 @@ void md_gpu_heap_init(md_gpu_heap_t* h, struct md_allocator_i* alloc, struct md_
 }
 
 void md_gpu_heap_destroy(md_gpu_heap_t* h) {
-    md_mutex_lock(h->mutex);
+    md_mutex_lock(&h->mutex);
     for (size_t i = 0; i < h->registry.size; ++i) md_free(h->alloc, h->registry.data[i], sizeof(md_gpu_heap_range_t));
     for (uint32_t k = 0; k < MD_GPU_MEM_KIND_COUNT; ++k) {
         md_gpu_heap_kind_t* hk = &h->kinds[k];
@@ -142,7 +142,8 @@ void md_gpu_heap_destroy(md_gpu_heap_t* h) {
     }
     (void)MD_ARRAY_TRY_FREE(h->registry);
     (void)MD_ARRAY_TRY_FREE(h->pending_frees);
-    md_mutex_unlock(h->mutex);
+    md_mutex_unlock(&h->mutex);
+    md_mutex_destroy(&h->mutex);
 }
 
 static uint64_t md_gpu_heap_chunk_size(const md_gpu_heap_kind_t* hk, uint64_t need) {
@@ -183,7 +184,7 @@ static void md_gpu_heap_release_free_locked(md_gpu_heap_t* h, const md_gpu_heap_
     else         md_gpu_heap_release_node_locked(h, pf->kind, pf->node);
 }
 
-void md_gpu_heap_poll_locked(md_gpu_heap_t* h) {
+static void md_gpu_heap_poll_locked(md_gpu_heap_t* h) {
     for (size_t i = 0; i < h->pending_frees.size;) {
         const md_gpu_heap_pending_free_t pf = h->pending_frees.data[i];
         if (h->backend.stream_completed(pf.stream) >= pf.value) {
@@ -195,7 +196,14 @@ void md_gpu_heap_poll_locked(md_gpu_heap_t* h) {
     }
 }
 
-void md_gpu_heap_forget_stream_locked(md_gpu_heap_t* h, md_gpu_stream_t s) {
+void md_gpu_heap_poll(md_gpu_heap_t* h) {
+    md_mutex_lock(&h->mutex);
+    md_gpu_heap_poll_locked(h);
+    md_mutex_unlock(&h->mutex);
+}
+
+void md_gpu_heap_forget_stream(md_gpu_heap_t* h, md_gpu_stream_t s) {
+    md_mutex_lock(&h->mutex);
     for (size_t i = 0; i < h->pending_frees.size;) {
         const md_gpu_heap_pending_free_t pf = h->pending_frees.data[i];
         if (pf.stream == s) {
@@ -205,6 +213,7 @@ void md_gpu_heap_forget_stream_locked(md_gpu_heap_t* h, md_gpu_stream_t s) {
             ++i;
         }
     }
+    md_mutex_unlock(&h->mutex);
 }
 
 /* A node for `need` bytes: the stream's own pending frees first (DEVICE only,
@@ -261,7 +270,7 @@ md_gpu_mem_t md_gpu_heap_malloc(md_gpu_heap_t* h, md_gpu_stream_t s, md_gpu_mem_
     md_gpu_heap_range_t* r = (md_gpu_heap_range_t*)md_alloc(h->alloc, sizeof(md_gpu_heap_range_t));
     if (!r) { md_gpu_fail("out of memory"); return out; }
 
-    md_mutex_lock(h->mutex);
+    md_mutex_lock(&h->mutex);
     md_gpu_heap_poll_locked(h);
     md_gpu_heap_kind_t* hk = &h->kinds[kind];
     md_tlsf_node_t* node = NULL;
@@ -276,7 +285,7 @@ md_gpu_mem_t md_gpu_heap_malloc(md_gpu_heap_t* h, md_gpu_stream_t s, md_gpu_mem_
         c = node ? (md_gpu_chunk_t*)node->region : NULL;
     }
     if (!c) {
-        md_mutex_unlock(h->mutex);
+        md_mutex_unlock(&h->mutex);
         md_free(h->alloc, r, sizeof(*r));
         return out;
     }
@@ -291,7 +300,7 @@ md_gpu_mem_t md_gpu_heap_malloc(md_gpu_heap_t* h, md_gpu_stream_t s, md_gpu_mem_
     if (!md_gpu_heap_registry_insert_locked(h, r)) {
         if (node) md_gpu_heap_release_node_locked(h, kind, node);
         else      md_gpu_heap_own_release_locked(h, kind, c);
-        md_mutex_unlock(h->mutex);
+        md_mutex_unlock(&h->mutex);
         md_free(h->alloc, r, sizeof(*r));
         md_gpu_fail("out of memory");
         return out;
@@ -299,7 +308,7 @@ md_gpu_mem_t md_gpu_heap_malloc(md_gpu_heap_t* h, md_gpu_stream_t s, md_gpu_mem_
     hk->in_use += node ? node->size : size;
     if (hk->in_use > hk->peak_in_use) hk->peak_in_use = hk->in_use;
     hk->allocations++;
-    md_mutex_unlock(h->mutex);
+    md_mutex_unlock(&h->mutex);
 
     out.gpu = r->address;
     out.cpu = c->host ? c->host + offset : NULL;
@@ -310,10 +319,10 @@ void md_gpu_heap_free(md_gpu_heap_t* h, md_gpu_stream_t s, md_gpu_addr_t addr) {
     if (!addr) return;
     if (!s) { md_gpu_fail("md_gpu_free: a stream is required"); return; }
 
-    md_mutex_lock(h->mutex);
+    md_mutex_lock(&h->mutex);
     md_gpu_heap_range_t* r = md_gpu_heap_registry_find_locked(h, addr);
     if (!r || !(r->node || r->own) || r->address != addr) {
-        md_mutex_unlock(h->mutex);
+        md_mutex_unlock(&h->mutex);
         md_gpu_fail("md_gpu_free: 0x%llx is not the start of a live md_gpu_malloc allocation", (unsigned long long)addr);
         return;
     }
@@ -333,11 +342,12 @@ void md_gpu_heap_free(md_gpu_heap_t* h, md_gpu_stream_t s, md_gpu_addr_t addr) {
         queued = true;
     }
     if (!queued) md_gpu_heap_release_free_locked(h, &free_);
-    md_mutex_unlock(h->mutex);
+    md_mutex_unlock(&h->mutex);
     md_free(h->alloc, r, sizeof(*r));
 }
 
-void md_gpu_heap_stats_locked(const md_gpu_heap_t* h, md_gpu_mem_kind_t kind, md_gpu_memory_stats_t* out) {
+void md_gpu_heap_stats(md_gpu_heap_t* h, md_gpu_mem_kind_t kind, md_gpu_memory_stats_t* out) {
+    md_mutex_lock(&h->mutex);
     const md_gpu_heap_kind_t* hk = &h->kinds[kind];
     out->bytes_in_use      = hk->in_use;
     out->bytes_peak_in_use = hk->peak_in_use;
@@ -345,6 +355,7 @@ void md_gpu_heap_stats_locked(const md_gpu_heap_t* h, md_gpu_mem_kind_t kind, md
     out->bytes_temp        = hk->temp_bytes;
     out->allocations       = hk->allocations;
     out->chunks            = (uint32_t)hk->chunks.size;
+    md_mutex_unlock(&h->mutex);
 }
 
 /* ---- Temp arenas -----------------------------------------------------------------
@@ -388,13 +399,13 @@ static md_gpu_chunk_t* md_gpu_heap_temp_acquire(md_gpu_heap_t* h, md_gpu_heap_te
        retired ones the GPU is done with go back to the backend. */
     md_gpu_chunk_t* c = NULL;
     if (h->debug) {
-        md_mutex_lock(h->mutex);
+        md_mutex_lock(&h->mutex);
         for (size_t i = 0; i < spare->size;) {
             md_gpu_chunk_t* sp = spare->data[i];
             if (sp->retire_value <= done) { MD_ARRAY_REMOVE(*spare, i); md_gpu_heap_temp_chunk_destroy_locked(h, sp); }
             else ++i;
         }
-        md_mutex_unlock(h->mutex);
+        md_mutex_unlock(&h->mutex);
     } else {
         for (size_t i = 0; i < spare->size && !c; ++i) {
             md_gpu_chunk_t* sp = spare->data[i];
@@ -418,7 +429,7 @@ static md_gpu_chunk_t* md_gpu_heap_temp_acquire(md_gpu_heap_t* h, md_gpu_heap_te
                                                                 : MD_GPU_HEAP_TEMP_CHUNK_MIN;
         md_gpu_heap_range_t* r = (md_gpu_heap_range_t*)md_alloc(h->alloc, sizeof(md_gpu_heap_range_t));
         if (!r) { md_gpu_fail("out of memory"); return NULL; }
-        md_mutex_lock(h->mutex);
+        md_mutex_lock(&h->mutex);
         c = h->backend.chunk_create(h->backend.user, kind, size);
         bool ok = c != NULL;
         if (ok) {
@@ -431,13 +442,13 @@ static md_gpu_chunk_t* md_gpu_heap_temp_acquire(md_gpu_heap_t* h, md_gpu_heap_te
             if (ok) { c->range = r; h->kinds[kind].temp_bytes += c->size; }
             else    { h->backend.chunk_destroy(h->backend.user, c); md_gpu_fail("out of memory"); }
         }
-        md_mutex_unlock(h->mutex);
+        md_mutex_unlock(&h->mutex);
         if (!ok) { md_free(h->alloc, r, sizeof(*r)); return NULL; }
     }
     if (!MD_ARRAY_TRY_PUSH(*active, c)) {
-        md_mutex_lock(h->mutex);
+        md_mutex_lock(&h->mutex);
         md_gpu_heap_temp_chunk_destroy_locked(h, c);
-        md_mutex_unlock(h->mutex);
+        md_mutex_unlock(&h->mutex);
         md_gpu_fail("out of memory");
         return NULL;
     }
@@ -511,7 +522,7 @@ void md_gpu_heap_temp_end(md_gpu_heap_t* h, md_gpu_heap_temps_t* t, md_gpu_temp_
 }
 
 void md_gpu_heap_temps_free(md_gpu_heap_t* h, md_gpu_heap_temps_t* t) {
-    md_mutex_lock(h->mutex);
+    md_mutex_lock(&h->mutex);
     for (uint32_t k = 0; k < MD_GPU_HEAP_TEMP_KINDS; ++k) {
         md_gpu_chunk_array_t* active = &t->arena[k].active;
         md_gpu_chunk_array_t* spare  = &t->arena[k].spare;
@@ -520,6 +531,6 @@ void md_gpu_heap_temps_free(md_gpu_heap_t* h, md_gpu_heap_temps_t* t) {
         (void)MD_ARRAY_TRY_FREE(*active);
         (void)MD_ARRAY_TRY_FREE(*spare);
     }
-    md_mutex_unlock(h->mutex);
+    md_mutex_unlock(&h->mutex);
     t->depth = 0;
 }

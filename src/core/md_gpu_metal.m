@@ -38,10 +38,13 @@ Structural differences from Vulkan:
 
 NOTE ON RESIDENCY: with no per-dispatch resource declarations there is nothing
 to derive residency from, so every live allocation goes into a device-wide
-MTLResidencySet attached to every queue (macOS 15 / iOS 18 and later). On
-older systems the backend falls back to useResources: with the full live set
-on each compute encoder, repeated before a dispatch whenever something became
-resident since -- correct, but O(live allocations) each time.
+MTLResidencySet attached to every queue -- which is why the backend needs
+macOS 15 / iOS 18. Additions are staged as allocations are made and committed
+once, when the next command buffer is submitted; nothing can use an allocation
+before that. Removals happen only once the GPU is done with an allocation and
+are committed at once, so that the set never names an object we released. The
+set has a lock of its own (residency_mutex), taken after the heap's or the
+device's, never before.
 
 NOTE ON BLIT ALIGNMENT: on macOS, buffer-to-buffer blits and fillBuffer want
 offsets and sizes in multiples of 4. md_gpu promises byte granularity, so
@@ -91,14 +94,10 @@ destruction.
 #import <Foundation/Foundation.h>
 #include <objc/message.h>
 
-/* This file targets macOS 13+ at runtime but has, historically, only compiled
-   against the macOS 15 SDK. Everything genuinely macOS-15-only is reached
-   dynamically (NSClassFromString / respondsToSelector: / objc_msgSend), so
-   the only thing an older SDK actually lacks is this spelling of the enum --
-   renamed from MTLPipelineOptionArgumentInfo in Xcode 16, same value, 1 << 0.
-   Guard on the SDK version (MAX_ALLOWED), never on the deployment target. */
-#if !defined(__MAC_OS_X_VERSION_MAX_ALLOWED) || __MAC_OS_X_VERSION_MAX_ALLOWED < 150000
-#define MTLPipelineOptionBindingInfo MTLPipelineOptionArgumentInfo
+/* macOS 15 / iOS 18 at run time (residency sets; checked at device creation),
+   and their SDK to build. */
+#if defined(__MAC_OS_X_VERSION_MAX_ALLOWED) && __MAC_OS_X_VERSION_MAX_ALLOWED < 150000
+#error "md_gpu's Metal backend needs the macOS 15 SDK (Xcode 16) or later"
 #endif
 
 #include <stdarg.h>
@@ -222,7 +221,6 @@ typedef struct md_gpu_stream {
     /* Orders work across an encoder boundary. See md_mtl_close_encoder. */
     __unsafe_unretained id<MTLFence>                 fence;
     bool                                             fence_valid;
-    uint64_t                                         res_gen;       /* residency generation declared to compute_enc */
 
     uint64_t          next_value;
     uint64_t          submitted_value;
@@ -277,7 +275,7 @@ typedef struct md_gpu_texture {
     uint64_t              bytes;
     md_mtl_fmt_t          fi;
     md_gpu_texture_desc_t desc;              /* normalised */
-    bool                  resident;          /* in the residency set / live_res */
+    bool                  resident;          /* in the residency set itself (placed textures are, through their heap) */
     bool                  external;          /* a drawable's texture; not the caller's */
     bool                  placed;            /* in a DEVICE chunk's heap, the caller's memory */
     char                  label[64];
@@ -346,11 +344,11 @@ typedef struct md_mtl_retire_t {
 typedef struct md_gpu_device {
     struct md_allocator_i* alloc;
     __unsafe_unretained id<MTLDevice> device;
-    __unsafe_unretained id            residency_set;   /* id<MTLResidencySet> */
-    bool     has_residency_set;
+    __unsafe_unretained id<MTLResidencySet> residency_set;   /* attached to every stream's queue */
+    md_mutex_t residency_mutex;  /* the set and residency_dirty; taken last */
+    bool       residency_dirty;  /* additions staged, not yet committed */
 
-    md_mutex_t queue_mutex;
-    md_mutex_t device_mutex;
+    md_mutex_t device_mutex;     /* object lists, deferred destruction, host callbacks, the sampler cache */
 
     md_gpu_heap_t heap;      /* md_gpu_malloc, md_gpu_free, temp scopes, address lookup */
     MD_ARRAY_RAW_TYPE(md_gpu_texture_t) textures; /* live */
@@ -361,8 +359,6 @@ typedef struct md_gpu_device {
     MD_ARRAY_RAW_TYPE(md_gpu_stream_t) streams;
     MD_ARRAY_RAW_TYPE(md_mtl_hostfn_t) hostfns;
     MD_ARRAY_RAW_TYPE(md_mtl_retire_t) retires;
-    MD_ARRAY_RAW_TYPE(void*) live_res;   /* id<MTLResource>, bridged and unretained: the no-residency-set path */
-    uint64_t     res_gen;    /* bumped whenever live_res gains a resource */
 
     md_gpu_stream_t default_compute;
     md_gpu_stream_t default_transfer;
@@ -412,36 +408,40 @@ static bool md_mtl_resolve(md_gpu_device_t dev, md_gpu_addr_t addr, uint64_t siz
    4. Residency, buffers and transient arenas
    ========================================================================= */
 
-/* MTLResidencySet is reached through typed objc_msgSend casts rather than
-   performSelector: -- the latter is wrong for void returns and, under ARC,
-   for a 'new' method's +1 result. */
-typedef void (*md_mtl_msg_v_t)(id, SEL);
+/* A message with one object argument and no result, to an object whose
+   class is not known here (an NSView). A typed objc_msgSend cast rather than
+   performSelector:, which is wrong for void returns. */
 typedef void (*md_mtl_msg_vo_t)(id, SEL, id);
-
-static void md_mtl_msg0(id obj, SEL sel)        { ((md_mtl_msg_v_t)objc_msgSend)(obj, sel); }
 static void md_mtl_msg1(id obj, SEL sel, id arg) { ((md_mtl_msg_vo_t)objc_msgSend)(obj, sel, arg); }
 
-/* Caller holds device_mutex (it guards live_res). */
-static void md_mtl_make_resident_locked(md_gpu_device_t dev, id<MTLResource> res) {
-    if (dev->has_residency_set) {
-        md_mtl_msg1(dev->residency_set, @selector(addAllocation:), res);
-        md_mtl_msg0(dev->residency_set, @selector(commit));
-    } else {
-        void* r = (__bridge void*)res;
-        (void)MD_ARRAY_TRY_PUSH(dev->live_res, r);
-        dev->res_gen++;
-    }
+/* Residency (see the note at the top): staged now, committed by the next
+   submission. */
+static void md_mtl_make_resident(md_gpu_device_t dev, id<MTLResource> res) {
+    md_mutex_lock(&dev->residency_mutex);
+    [dev->residency_set addAllocation:res];
+    dev->residency_dirty = true;
+    md_mutex_unlock(&dev->residency_mutex);
 }
 
-/* Caller holds device_mutex. */
-static void md_mtl_end_residency_locked(md_gpu_device_t dev, id<MTLResource> res) {
-    if (dev->has_residency_set) {
-        md_mtl_msg1(dev->residency_set, @selector(removeAllocation:), res);
-        md_mtl_msg0(dev->residency_set, @selector(commit));
-    } else {
-        void* r = (__bridge void*)res;
-        MD_ARRAY_REMOVE_ITEM(dev->live_res, r);
+/* The GPU is done with `res`, and the caller releases it next: committed now. */
+static void md_mtl_end_residency(md_gpu_device_t dev, id<MTLResource> res) {
+    md_mutex_lock(&dev->residency_mutex);
+    [dev->residency_set removeAllocation:res];
+    [dev->residency_set commit];
+    dev->residency_dirty = false;
+    md_mutex_unlock(&dev->residency_mutex);
+}
+
+/* Right before a command buffer is committed: whatever it may use was made
+   resident before it was encoded, so committing the staged additions now is
+   enough. */
+static void md_mtl_commit_residency(md_gpu_device_t dev) {
+    md_mutex_lock(&dev->residency_mutex);
+    if (dev->residency_dirty) {
+        [dev->residency_set commit];
+        dev->residency_dirty = false;
     }
+    md_mutex_unlock(&dev->residency_mutex);
 }
 
 /* Host visible memory is a plain shared buffer. DEVICE memory is a private
@@ -477,10 +477,10 @@ static bool md_mtl_create_raw_buffer(md_gpu_device_t dev, uint64_t size, md_gpu_
 }
 
 /* Residency is the caller's: made resident by whoever creates the buffer,
-   ended here. Caller holds device_mutex. */
-static void md_mtl_destroy_raw_buffer_locked(md_gpu_device_t dev, id<MTLBuffer> buf) {
+   ended here. */
+static void md_mtl_destroy_raw_buffer(md_gpu_device_t dev, id<MTLBuffer> buf) {
     if (!buf) return;
-    md_mtl_end_residency_locked(dev, buf);
+    md_mtl_end_residency(dev, buf);
     MD_MTL_RELEASE(buf);
 }
 
@@ -499,16 +499,12 @@ static md_mtl_page_t* md_mtl_page_create(md_gpu_device_t dev, uint64_t size) {
     p->buffer   = buf;
     p->host     = (uint8_t*)host;
     p->capacity = size;
-    md_mutex_lock(&dev->device_mutex);
-    md_mtl_make_resident_locked(dev, buf);
-    md_mutex_unlock(&dev->device_mutex);
+    md_mtl_make_resident(dev, buf);
     return p;
 }
 
 static void md_mtl_page_destroy(md_gpu_device_t dev, md_mtl_page_t* p) {
-    md_mutex_lock(&dev->device_mutex);
-    md_mtl_destroy_raw_buffer_locked(dev, p->buffer);
-    md_mutex_unlock(&dev->device_mutex);
+    md_mtl_destroy_raw_buffer(dev, p->buffer);
     md_free(dev->alloc, p, sizeof(md_mtl_page_t));
 }
 
@@ -659,7 +655,7 @@ static void md_mtl_process_retires_locked(md_gpu_device_t dev, bool force) {
 /* A stream is going away after being synchronised: drop every reference to
    it. Caller holds device_mutex. */
 static void md_mtl_forget_stream_locked(md_gpu_device_t dev, md_gpu_stream_t s) {
-    md_gpu_heap_forget_stream_locked(&dev->heap, s);
+    md_gpu_heap_forget_stream(&dev->heap, s);
     for (size_t i = 0; i < dev->hostfns.size; ++i) {
         md_mtl_hostfn_t* h = &dev->hostfns.data[i];
         if (h->sync.stream == s) h->sync = md_gpu_sync_none();
@@ -781,29 +777,8 @@ static id<MTLComputeCommandEncoder> md_mtl_compute_encoder(md_gpu_stream_t s) {
         if (s->fence_valid) [enc waitForFence:s->fence];
         s->compute_enc        = enc;
         s->compute_concurrent = concurrent;
-        s->res_gen            = 0;
     }
     return s->compute_enc;
-}
-
-/* Fallback residency (no MTLResidencySet): the open compute encoder must have
-   declared every live resource before a dispatch that may touch it. Declared
-   in full when the encoder opens and again whenever something became resident
-   since -- a buffer malloc'd, a texture created, an arena page added between
-   two launches into the same encoder. Call right before each dispatch. */
-static void md_mtl_declare_residency(md_gpu_stream_t s, id<MTLComputeCommandEncoder> enc) {
-    md_gpu_device_t dev = s->device;
-    if (dev->has_residency_set) return;
-    md_mutex_lock(&dev->device_mutex);
-    if (s->res_gen != dev->res_gen + 1) {
-        if (dev->live_res.size > 0) {
-            [enc useResources:(__unsafe_unretained id<MTLResource>*)(void*)dev->live_res.data
-                        count:dev->live_res.size
-                        usage:MTLResourceUsageRead | MTLResourceUsageWrite];
-        }
-        s->res_gen = dev->res_gen + 1;   /* +1 so that 0 always means "not yet declared" */
-    }
-    md_mutex_unlock(&dev->device_mutex);
 }
 
 static id<MTLBlitCommandEncoder> md_mtl_blit_encoder(md_gpu_stream_t s) {
@@ -855,15 +830,10 @@ static uint64_t md_mtl_stream_completed(md_gpu_stream_t s) {
     return (uint64_t)s->timeline.signaledValue;
 }
 
-/* Block until `ev` reaches `value`. MTLSharedEvent has a real blocking wait
-   (macOS 12+); spinning is only the fallback for a runtime without it. */
+/* Block until `ev` reaches `value`. */
 static void md_mtl_event_wait(id<MTLSharedEvent> ev, uint64_t value) {
     if ((uint64_t)ev.signaledValue >= value) return;
-    if ([ev respondsToSelector:@selector(waitUntilSignaledValue:timeoutMS:)]) {
-        while (![ev waitUntilSignaledValue:value timeoutMS:1000]) {}
-    } else {
-        while ((uint64_t)ev.signaledValue < value) md_thread_sleep(0);
-    }
+    while (![ev waitUntilSignaledValue:value timeoutMS:1000]) {}
 }
 
 static md_gpu_stream_t md_mtl_stream_create_internal(md_gpu_device_t dev, md_gpu_stream_kind_t kind, const char* label, bool is_default) {
@@ -893,9 +863,7 @@ static md_gpu_stream_t md_mtl_stream_create_internal(md_gpu_device_t dev, md_gpu
         MD_MTL_OWN(q);
         q.label = [NSString stringWithUTF8String:s->label];
         s->queue = q;
-        if (dev->has_residency_set) {
-            md_mtl_msg1(q, @selector(addResidencySet:), dev->residency_set);
-        }
+        [q addResidencySet:dev->residency_set];
 
         id<MTLSharedEvent> ev = [dev->device newSharedEvent];
         if (!ev) {
@@ -981,9 +949,8 @@ static bool md_mtl_stream_submit(md_gpu_stream_t s) {
         }];
     }
 
-    md_mutex_lock(&s->device->queue_mutex);
+    md_mtl_commit_residency(s->device);
     [s->cmd commit];
-    md_mutex_unlock(&s->device->queue_mutex);
 
     MD_MTL_RELEASE(s->cmd);
     s->cmd = nil;
@@ -1132,14 +1099,14 @@ static md_gpu_chunk_t* md_mtl_chunk_create(void* user, md_gpu_mem_kind_t kind, u
     c->base.host = (uint8_t*)host;
     c->base.size = size;
     c->base.kind = kind;
-    md_mtl_make_resident_locked(dev, buf);
+    md_mtl_make_resident(dev, buf);
     return &c->base;
 }
 
 static void md_mtl_chunk_destroy(void* user, md_gpu_chunk_t* chunk) {
     md_gpu_device_t dev = (md_gpu_device_t)user;
     md_mtl_chunk_t* c = (md_mtl_chunk_t*)chunk;
-    md_mtl_destroy_raw_buffer_locked(dev, c->buffer);
+    md_mtl_destroy_raw_buffer(dev, c->buffer);
     md_free(dev->alloc, c, sizeof(*c));
 }
 
@@ -1153,7 +1120,7 @@ static void md_mtl_heap_init(md_gpu_device_t dev, uint64_t cache_limit, bool deb
         dev, md_mtl_chunk_create, md_mtl_chunk_destroy,
         md_mtl_stream_position, md_mtl_stream_completed, md_mtl_reuse_early,
     };
-    md_gpu_heap_init(&dev->heap, dev->alloc, &dev->device_mutex, &backend, cache_limit, debug);
+    md_gpu_heap_init(&dev->heap, dev->alloc, &backend, cache_limit, debug);
 }
 
 md_gpu_mem_t md_gpu_malloc(md_gpu_stream_t s, md_gpu_mem_kind_t kind, size_t size) {
@@ -1190,8 +1157,8 @@ void md_gpu_temp_end(md_gpu_temp_t scope) {
 bool md_gpu_memory_stats(md_gpu_device_t dev, md_gpu_mem_kind_t kind, md_gpu_memory_stats_t* out) {
     if (!dev || !out || (unsigned)kind >= (unsigned)MD_GPU_MEM_KIND_COUNT) return md_gpu_fail("md_gpu_memory_stats: invalid argument");
     memset(out, 0, sizeof(*out));
+    md_gpu_heap_stats(&dev->heap, kind, out);
     md_mutex_lock(&dev->device_mutex);
-    md_gpu_heap_stats_locked(&dev->heap, kind, out);
     out->bytes_textures = kind == MD_GPU_MEM_DEVICE ? dev->texture_bytes : 0;
     md_mutex_unlock(&dev->device_mutex);
     return true;
@@ -1367,7 +1334,7 @@ static void md_mtl_texture_free(md_gpu_device_t dev, md_gpu_texture_t t) {
     }
     if (t->storage_handles) md_free(dev->alloc, t->storage_handles, mips * sizeof(uint64_t));
     if (t->texture) {
-        if (t->resident) md_mtl_end_residency_locked(dev, t->texture);
+        if (t->resident) md_mtl_end_residency(dev, t->texture);
         MD_MTL_RELEASE(t->texture);
     }
     md_free(dev->alloc, t, sizeof(*t));
@@ -1526,11 +1493,11 @@ static md_gpu_texture_t md_mtl_texture_create(md_gpu_stream_t s, const md_gpu_te
     if (ok) {
         if (!MD_ARRAY_TRY_PUSH(dev->textures, t)) ok = md_gpu_fail("out of memory");
         else {
-            /* A residency set holds the chunk's buffer, which keeps its whole
-               heap resident, placed textures included. useResources: does
-               not reach from a buffer to its heap, so there they are listed. */
-            if (!t->placed || !dev->has_residency_set) {
-                md_mtl_make_resident_locked(dev, t->texture);
+            /* A placed texture is resident already: the set holds its
+               chunk's buffer, and a heap resource in a residency set makes
+               the whole heap resident. */
+            if (!t->placed) {
+                md_mtl_make_resident(dev, t->texture);
                 t->resident = true;
             }
             dev->texture_bytes += t->bytes;
@@ -1829,19 +1796,8 @@ static id<MTLLibrary> md_mtl_library_from_source(md_gpu_device_t dev, const void
     if (precise_math) {
         /* IEEE semantics, as -fno-fast-math on the offline path (compile_gpu_shaders PRECISE_MATH) */
         opts = [[MTLCompileOptions alloc] init];
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-#if defined(__MAC_15_0)
-        if (@available(macOS 15.0, *)) {
-            opts.mathMode = MTLMathModeSafe;
-            opts.mathFloatingPointFunctions = MTLMathFloatingPointFunctionsPrecise;
-        } else {
-            opts.fastMathEnabled = NO;
-        }
-#else
-        opts.fastMathEnabled = NO;
-#endif
-#pragma clang diagnostic pop
+        opts.mathMode = MTLMathModeSafe;
+        opts.mathFloatingPointFunctions = MTLMathFloatingPointFunctionsPrecise;
     }
     id<MTLLibrary> lib = [dev->device newLibraryWithSource:src options:opts error:&err];
 #if !__has_feature(objc_arc)
@@ -1937,12 +1893,10 @@ static id<MTLFunction> md_mtl_new_function(id<MTLLibrary> lib, const char* entry
    reflection reports is the one wanted. */
 static uint32_t md_mtl_reflect_arg_buffer_index(MTLComputePipelineReflection* refl, const char* label) {
     if (refl) {
-        if (@available(macOS 13.0, iOS 16.0, *)) {
-            for (id<MTLBinding> b in refl.bindings) {
-                if (b.type == MTLBindingTypeBuffer) return (uint32_t)b.index;
-            }
-            return MD_MTL_ARG_BUFFER_INDEX;
+        for (id<MTLBinding> b in refl.bindings) {
+            if (b.type == MTLBindingTypeBuffer) return (uint32_t)b.index;
         }
+        return MD_MTL_ARG_BUFFER_INDEX;
     }
     MD_LOG_DEBUG("md_gpu: no binding reflection for kernel '%s', assuming buffer(%d)",
                  label ? label : "kernel", MD_MTL_ARG_BUFFER_INDEX);
@@ -2133,7 +2087,6 @@ static bool md_mtl_dispatch(md_gpu_stream_t s, md_gpu_kernel_t k, uint64_t args_
 
     id<MTLComputeCommandEncoder> enc = md_mtl_compute_encoder(s);
     if (!enc) return false;
-    md_mtl_declare_residency(s, enc);
     [enc setComputePipelineState:k->pso];
     if (root_buf) [enc setBuffer:root_buf offset:root_off atIndex:k->arg_buffer_index];
     MTLSize tg = MTLSizeMake(k->group_size[0], k->group_size[1], k->group_size[2]);
@@ -2423,10 +2376,8 @@ md_gpu_pipeline_t md_gpu_pipeline_create(md_gpu_device_t dev, const md_gpu_pipel
                     MD_MTL_OWN(pso);
                     p->pso = pso;
                     if (refl) {
-                        if (@available(macOS 13.0, iOS 16.0, *)) {
-                            p->vs_root = md_mtl_reflect_root(refl.vertexBindings);
-                            p->fs_root = md_mtl_reflect_root(refl.fragmentBindings);
-                        }
+                        p->vs_root = md_mtl_reflect_root(refl.vertexBindings);
+                        p->fs_root = md_mtl_reflect_root(refl.fragmentBindings);
                     }
                     /* Without reflection, assume what Slang emits for a file
                        with one MD_SHADER_ARGS root. */
@@ -2585,24 +2536,6 @@ static void md_mtl_apply_scissor(md_gpu_stream_t s, const md_gpu_rect_t* r) {
     [s->render_enc setScissorRect:sc];
 }
 
-/* Fallback residency for a render encoder, as md_mtl_declare_residency does
-   for compute. */
-static void md_mtl_declare_residency_render(md_gpu_stream_t s, id<MTLRenderCommandEncoder> enc) {
-    md_gpu_device_t dev = s->device;
-    if (dev->has_residency_set) return;
-    md_mutex_lock(&dev->device_mutex);
-    if (s->res_gen != dev->res_gen + 1) {
-        if (dev->live_res.size > 0) {
-            [enc useResources:(__unsafe_unretained id<MTLResource>*)(void*)dev->live_res.data
-                        count:dev->live_res.size
-                        usage:MTLResourceUsageRead | MTLResourceUsageWrite
-                       stages:MTLRenderStageVertex | MTLRenderStageFragment];
-        }
-        s->res_gen = dev->res_gen + 1;
-    }
-    md_mutex_unlock(&dev->device_mutex);
-}
-
 bool md_gpu_render_begin(md_gpu_stream_t s, const md_gpu_render_desc_t* desc) {
     if (!s || !desc) return md_gpu_fail("md_gpu_render_begin: null argument");
     if (s->kind != MD_GPU_STREAM_GRAPHICS) return md_gpu_fail("md_gpu_render_begin: stream '%s' is not a GRAPHICS stream", s->label);
@@ -2655,7 +2588,6 @@ bool md_gpu_render_begin(md_gpu_stream_t s, const md_gpu_render_desc_t* desc) {
         if (desc->label) enc.label = [NSString stringWithUTF8String:desc->label];
         if (s->fence_valid) [enc waitForFence:s->fence beforeStages:MTLRenderStageVertex | MTLRenderStageFragment];
         s->render_enc = enc;
-        s->res_gen    = 0;
     }
 
     s->in_pass          = true;
@@ -2794,7 +2726,6 @@ static bool md_mtl_resolve_indices(md_gpu_stream_t s, md_gpu_addr_t indices, md_
    pipeline. See md_mtl_root_cell for why the root is a cell of its own. */
 static bool md_mtl_draw_bind(md_gpu_stream_t s, md_gpu_pipeline_t p, uint64_t args_addr) {
     id<MTLRenderCommandEncoder> enc = s->render_enc;
-    md_mtl_declare_residency_render(s, enc);
     if (s->bound_pipeline != p) {
         [enc setRenderPipelineState:p->pso];
         s->bound_pipeline = p;
@@ -3138,7 +3069,7 @@ md_gpu_texture_t md_gpu_surface_acquire(md_gpu_stream_t s, md_gpu_surface_t sf) 
         md_mutex_lock(&dev->device_mutex);
         if (sf->desc.usage & (MD_GPU_TEX_SAMPLED | MD_GPU_TEX_STORAGE)) {
             /* Reached by resource id from shaders, so it must be resident. */
-            md_mtl_make_resident_locked(dev, tex);
+            md_mtl_make_resident(dev, tex);
             t->resident = true;
         }
         sf->drawable        = drawable;
@@ -3235,8 +3166,8 @@ uint32_t md_gpu_device_poll(md_gpu_device_t dev) {
 
     md_mutex_lock(&dev->device_mutex);
     md_mtl_process_retires_locked(dev, false);
-    md_gpu_heap_poll_locked(&dev->heap);
     md_mutex_unlock(&dev->device_mutex);
+    md_gpu_heap_poll(&dev->heap);
     return fired;
 }
 
@@ -3328,8 +3259,17 @@ uint32_t md_gpu_enumerate_adapters(md_gpu_adapter_info_t* out, uint32_t max) {
     return n;
 }
 
+static bool md_mtl_os_supported(void) {
+    if (@available(macOS 15.0, iOS 18.0, *)) return true;
+    return false;
+}
+
 md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
     md_gpu_clear_error();
+    if (!md_mtl_os_supported()) {
+        md_gpu_fail("md_gpu_device_create: the Metal backend needs macOS 15 / iOS 18 or later (residency sets)");
+        return NULL;
+    }
     struct md_allocator_i* alloc = (desc && desc->alloc) ? desc->alloc : md_get_heap_allocator();
 
     /* Metal API validation cannot be switched on from here: Metal reads
@@ -3360,8 +3300,7 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
     MD_ARRAY_INIT(dev->streams, alloc);
     MD_ARRAY_INIT(dev->hostfns, alloc);
     MD_ARRAY_INIT(dev->retires, alloc);
-    MD_ARRAY_INIT(dev->live_res, alloc);
-    md_mutex_init(&dev->queue_mutex);
+    md_mutex_init(&dev->residency_mutex);
     md_mutex_init(&dev->device_mutex);
 
     @autoreleasepool {
@@ -3404,28 +3343,21 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
             dev->device      = mtl;
             dev->is_discrete = ![mtl hasUnifiedMemory];
 
-            /* Device-wide residency, where available. Reached dynamically so
-               the file still builds against SDKs that predate it. */
-            Class rsd = NSClassFromString(@"MTLResidencySetDescriptor");
-            if (rsd && [mtl respondsToSelector:@selector(newResidencySetWithDescriptor:error:)]) {
-                id descriptor = [[rsd alloc] init];
-                /* Returned as a raw +1 pointer so ARC never sees it: ownership
-                   is held manually and dropped with MD_MTL_RELEASE on destroy. */
-                typedef void* (*md_mtl_new_rs_t)(id, SEL, id, void*);
-                void* set = ((md_mtl_new_rs_t)objc_msgSend)(mtl, @selector(newResidencySetWithDescriptor:error:),
-                                                            descriptor, NULL);
-                MD_MTL_DROP_NEW(descriptor);
-                if (set) {
-                    dev->residency_set     = (__bridge id)set;
-                    dev->has_residency_set = true;
-                }
-            }
-            if (!dev->has_residency_set) {
-                MD_LOG_DEBUG("md_gpu: MTLResidencySet unavailable, falling back to per-encoder useResources");
+            /* Device-wide residency: every stream's queue gets this set. */
+            MTLResidencySetDescriptor* rsd = [[MTLResidencySetDescriptor alloc] init];
+            rsd.label = @"md_gpu";
+            NSError* err = nil;
+            id<MTLResidencySet> set = [mtl newResidencySetWithDescriptor:rsd error:&err];
+            MD_MTL_DROP_NEW(rsd);
+            if (set) {
+                MD_MTL_OWN(set);
+                dev->residency_set = set;
+            } else {
+                md_gpu_fail("newResidencySetWithDescriptor failed: %s", err ? [[err localizedDescription] UTF8String] : "?");
             }
         }
     }
-    if (!dev->device) goto fail;
+    if (!dev->device || !dev->residency_set) goto fail;
 
     dev->default_compute  = md_mtl_stream_create_internal(dev, MD_GPU_STREAM_COMPUTE,  "default compute",  true);
     dev->default_transfer = md_mtl_stream_create_internal(dev, MD_GPU_STREAM_TRANSFER, "default transfer", true);
@@ -3470,9 +3402,7 @@ bool md_gpu_device_info(md_gpu_device_t dev, md_gpu_device_info_t* info) {
     info->float16              = true;
     info->float64              = false;                      /* no double on Metal GPUs */
     info->int64                = true;
-    /* Apple9 (MTLGPUFamilyApple9, by value: older SDKs lack the name); Apple8
-       has 64-bit min/max only. */
-    info->atomic_int64         = [d supportsFamily:(MTLGPUFamily)1009];
+    info->atomic_int64         = [d supportsFamily:MTLGPUFamilyApple9];   /* Apple8: 64-bit min/max only */
     info->atomic_float_add     = apple7;
     info->atomic_float_min_max = false;                      /* add and exchange only */
     info->timestamps           = true;                       /* command buffer GPU times */
@@ -3523,9 +3453,8 @@ void md_gpu_device_destroy(md_gpu_device_t dev) {
     for (uint32_t i = 0; i < dev->sampler_count; ++i) MD_MTL_RELEASE(dev->samplers[i].sampler);
     MD_ARRAY_FREE(dev->hostfns);
     MD_ARRAY_FREE(dev->retires);
-    MD_ARRAY_FREE(dev->live_res);
     if (dev->residency_set) MD_MTL_RELEASE(dev->residency_set);
-    md_mutex_destroy(&dev->queue_mutex);
+    md_mutex_destroy(&dev->residency_mutex);
     md_mutex_destroy(&dev->device_mutex);
     if (dev->device) MD_MTL_RELEASE(dev->device);
     md_free(alloc, dev, sizeof(*dev));
