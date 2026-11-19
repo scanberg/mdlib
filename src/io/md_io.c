@@ -26,6 +26,7 @@
 #include <md_amber_energy.h>
 #include <md_psf.h>
 #include <md_namdbin.h>
+#include <md_cube.h>
 
 #if MD_HDF5
 #include <md_vlx.h>
@@ -133,6 +134,9 @@ static const md_io_format_info_t formats[MD_IO_FORMAT_COUNT] = {
         .atom_count = md_psf_file_atom_count },
     [MD_IO_FORMAT_NAMD_COOR] = { S("NAMD Binary Coordinates (coor)"), S("coor"), MD_IO_FLAG_COORDINATES | MD_IO_FLAG_MM,
         .state_init = md_namdbin_state_init_from_file, .atom_count = md_namdbin_file_atom_count },
+    // A system of its atoms, or a grid for the atoms of one loaded (md_cube_system_is_file_supplemental)
+    [MD_IO_FORMAT_CUBE] = { S("Gaussian Cube (cube)"), S("cube"), MD_IO_FLAG_SYSTEM | MD_IO_FLAG_QM,
+        .system_init = md_cube_system_init_from_file, .supplement = md_cube_system_supplement_from_file },
 };
 
 #undef S
@@ -157,6 +161,7 @@ md_io_format_t md_io_format_from_ext(md_str_t ext) {
         { "ncrst", MD_IO_FORMAT_AMBER_RESTART },
         { "ncdf", MD_IO_FORMAT_AMBER_NETCDF }, { "netcdf", MD_IO_FORMAT_AMBER_NETCDF },
         { "mden", MD_IO_FORMAT_AMBER_ENERGY },
+        { "cub", MD_IO_FORMAT_CUBE },
     };
     for (size_t i = 0; i < MD_COUNTOF(aliases); ++i) {
         if (md_str_eq_cstr_ignore_case(ext, aliases[i].ext)) return aliases[i].format;

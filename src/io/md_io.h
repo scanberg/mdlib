@@ -74,6 +74,7 @@ typedef enum md_io_format_t {
     MD_IO_FORMAT_AMBER_ENERGY,      // mdout or mden
     MD_IO_FORMAT_PSF,
     MD_IO_FORMAT_NAMD_COOR,
+    MD_IO_FORMAT_CUBE,              // Gaussian cube: atoms and values on a grid
     MD_IO_FORMAT_COUNT
 } md_io_format_t;
 
