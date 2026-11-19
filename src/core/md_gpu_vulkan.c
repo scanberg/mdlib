@@ -204,6 +204,9 @@ typedef struct md_gpu_stream {
     VkSemaphore          timeline;
     uint64_t             next_value;       /* value the next submit signals */
     uint64_t             submitted_value;  /* last value submitted          */
+    /* md_vk_stream_position, published for other threads (deferred
+       destruction reads every stream's); md_atomic_*64. */
+    volatile uint64_t    position;
 
     VkCommandPool        cmd_pool;
     MD_ARRAY_RAW_TYPE(md_vk_cmd_t) cmds;
@@ -224,7 +227,11 @@ typedef struct md_gpu_stream {
     bool                 compute_set_bound;
     bool                 graphics_set_bound;
 
-    MD_ARRAY_RAW_TYPE(md_vk_wait_t) waits; /* pending for the next submit */
+    /* Pending for the next submit. The owner adds and consumes them, and
+       destroying another stream removes the waits on it, so they have a lock:
+       wait_mutex, taken after device_mutex and before a queue's. */
+    MD_ARRAY_RAW_TYPE(md_vk_wait_t) waits;
+    md_mutex_t           wait_mutex;
 
     md_vk_arena_t        arena;
 
@@ -383,13 +390,15 @@ typedef enum md_vk_retire_kind_t {
     MD_VK_RETIRE_KERNEL,
     MD_VK_RETIRE_PIPELINE,
     MD_VK_RETIRE_SWAPCHAIN,
+    MD_VK_RETIRE_SEMAPHORE,     /* a destroyed stream's timeline: other streams' submissions may still wait on it */
 } md_vk_retire_kind_t;
 
 /* An object whose destruction waits for every stream to pass the point at
    which it was destroyed. Owns `waits`. */
 typedef struct md_vk_retire_t {
     md_vk_retire_kind_t kind;
-    void*               object;     /* md_gpu_texture_t / md_gpu_kernel_t */
+    void*               object;     /* md_gpu_texture_t / md_gpu_kernel_t / ... */
+    VkSemaphore         semaphore;  /* MD_VK_RETIRE_SEMAPHORE */
     md_vk_wait_t*       waits;
     uint32_t            wait_count;
     uint32_t            wait_capacity;   /* what md_free must be told */
@@ -901,15 +910,30 @@ static uint64_t md_vk_stream_position(md_gpu_stream_t s) {
     return s->has_work ? s->next_value : s->submitted_value;
 }
 
-/* Queue `object` for destruction once every stream has passed its current
-   position. Caller holds device_mutex. If the wait list cannot be allocated,
-   falls back to idling the device -- the one case in which this blocks,
-   because freeing under the GPU is not an option. */
-static void md_vk_retire_locked(md_gpu_device_t dev, md_vk_retire_kind_t kind, void* object) {
-    md_vk_retire_t r = {0};
-    r.kind   = kind;
-    r.object = object;
+/* Something was recorded: the stream's position moves to its next value. */
+static void md_vk_mark_work(md_gpu_stream_t s) {
+    if (s->has_work) return;
+    s->has_work = true;
+    md_atomic_store64(&s->position, s->next_value);
+}
 
+static void md_vk_retire_release(md_gpu_device_t dev, const md_vk_retire_t* e) {
+    switch (e->kind) {
+    case MD_VK_RETIRE_TEXTURE:   md_vk_texture_free(dev, (md_gpu_texture_t)e->object);    break;
+    case MD_VK_RETIRE_KERNEL:    md_vk_kernel_free(dev, (md_gpu_kernel_t)e->object);      break;
+    case MD_VK_RETIRE_PIPELINE:  md_vk_pipeline_free(dev, (md_gpu_pipeline_t)e->object);  break;
+    case MD_VK_RETIRE_SWAPCHAIN: md_vk_swapchain_free(dev, (md_vk_swapchain_t*)e->object); break;
+    case MD_VK_RETIRE_SEMAPHORE: vkDestroySemaphore(dev->device, e->semaphore, NULL);      break;
+    }
+}
+
+/* Queue `r` for destruction once every stream has passed its current
+   position. Caller holds device_mutex. Other streams' positions are read as
+   they last published them: work that uses `r` was recorded before this call,
+   so its position was published before too. If the wait list cannot be
+   allocated, falls back to idling the device -- the one case in which this
+   blocks, because freeing under the GPU is not an option. */
+static void md_vk_retire_entry_locked(md_gpu_device_t dev, md_vk_retire_t r) {
     uint32_t n = (uint32_t)dev->streams.size;
     if (n > 0) {
         r.waits = (md_vk_wait_t*)md_alloc(dev->alloc, n * sizeof(md_vk_wait_t));
@@ -917,7 +941,7 @@ static void md_vk_retire_locked(md_gpu_device_t dev, md_vk_retire_kind_t kind, v
     if (n > 0 && r.waits) {
         md_gpu_stream_t* arr = (md_gpu_stream_t*)dev->streams.data;
         for (uint32_t i = 0; i < n; ++i) {
-            uint64_t v = md_vk_stream_position(arr[i]);
+            const uint64_t v = md_atomic_load64(&arr[i]->position);
             if (v > 0 && md_vk_stream_completed(arr[i]) < v) {
                 r.waits[r.wait_count].stream = arr[i];
                 r.waits[r.wait_count].value  = v;
@@ -932,14 +956,15 @@ static void md_vk_retire_locked(md_gpu_device_t dev, md_vk_retire_kind_t kind, v
         md_gpu_fail("out of memory recording a deferred destruction; waiting for the device");
         if (r.waits) md_free(dev->alloc, r.waits, n * sizeof(md_vk_wait_t));
         md_vk_device_wait_idle(dev);
-        switch (kind) {
-        case MD_VK_RETIRE_TEXTURE: md_vk_texture_free(dev, (md_gpu_texture_t)object); break;
-        case MD_VK_RETIRE_KERNEL:  md_vk_kernel_free(dev, (md_gpu_kernel_t)object);   break;
-        case MD_VK_RETIRE_PIPELINE:  md_vk_pipeline_free(dev, (md_gpu_pipeline_t)object); break;
-        case MD_VK_RETIRE_SWAPCHAIN: md_vk_swapchain_free(dev, (md_vk_swapchain_t*)object); break;
-        }
-        return;
+        md_vk_retire_release(dev, &r);
     }
+}
+
+static void md_vk_retire_locked(md_gpu_device_t dev, md_vk_retire_kind_t kind, void* object) {
+    md_vk_retire_t r = {0};
+    r.kind   = kind;
+    r.object = object;
+    md_vk_retire_entry_locked(dev, r);
 }
 
 /* Release every retire entry whose waits have all completed (all of them when
@@ -954,12 +979,7 @@ static void md_vk_process_retires_locked(md_gpu_device_t dev, bool force) {
         if (!done) { ++i; continue; }
         md_vk_retire_t e = *r;
         MD_ARRAY_REMOVE(dev->retires, i);
-        switch (e.kind) {
-        case MD_VK_RETIRE_TEXTURE: md_vk_texture_free(dev, (md_gpu_texture_t)e.object); break;
-        case MD_VK_RETIRE_KERNEL:  md_vk_kernel_free(dev, (md_gpu_kernel_t)e.object);   break;
-        case MD_VK_RETIRE_PIPELINE:  md_vk_pipeline_free(dev, (md_gpu_pipeline_t)e.object); break;
-        case MD_VK_RETIRE_SWAPCHAIN: md_vk_swapchain_free(dev, (md_vk_swapchain_t*)e.object); break;
-        }
+        md_vk_retire_release(dev, &e);
         if (e.waits) md_free(dev->alloc, e.waits, e.wait_capacity * sizeof(md_vk_wait_t));
     }
 }
@@ -992,10 +1012,12 @@ static void md_vk_forget_stream_locked(md_gpu_device_t dev, md_gpu_stream_t s) {
     }
     for (size_t i = 0; i < dev->streams.size; ++i) {
         md_gpu_stream_t o = dev->streams.data[i];
+        md_mutex_lock(&o->wait_mutex);
         for (size_t w = 0; w < o->waits.size;) {
             if (o->waits.data[w].stream == s) MD_ARRAY_REMOVE(o->waits, w);
             else ++w;
         }
+        md_mutex_unlock(&o->wait_mutex);
     }
 }
 
@@ -1984,7 +2006,7 @@ static bool md_vk_record_image_barrier(md_gpu_stream_t s, VkImage image, VkImage
                                        VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access) {
     if (!md_vk_stream_ensure_cmd(s)) return false;
     md_vk_cmd_image_barrier(s->open, image, aspect, from, to, src_stage, src_access, dst_stage, dst_access);
-    s->has_work = true;
+    md_vk_mark_work(s);
     return true;
 }
 
@@ -2093,10 +2115,13 @@ static md_gpu_stream_t md_vk_stream_create_internal(md_gpu_device_t dev, md_gpu_
         }
     }
 
+    md_mutex_init(&s->wait_mutex);
     md_mutex_lock(&dev->device_mutex);
     const bool listed = MD_ARRAY_TRY_PUSH(dev->streams, s);
     md_mutex_unlock(&dev->device_mutex);
     if (!listed) {
+        md_mutex_destroy(&s->wait_mutex);
+        if (s->ts_pool) vkDestroyQueryPool(dev->device, s->ts_pool, NULL);
         vkDestroyCommandPool(dev->device, s->cmd_pool, NULL);
         vkDestroySemaphore(dev->device, s->timeline, NULL);
         md_free(dev->alloc, s, sizeof(*s));
@@ -2274,7 +2299,7 @@ static VkCommandBuffer md_vk_begin_op(md_gpu_stream_t s, md_gpu_stage_flags_t co
 /* Mark that an operation was recorded, writing in `producers`. */
 static void md_vk_end_op(md_gpu_stream_t s, md_gpu_stage_flags_t producers) {
     s->written |= producers;
-    s->has_work = true;
+    md_vk_mark_work(s);
 }
 
 /* Both edges of an EXPLICIT region are ordered: its first operation after
@@ -2375,13 +2400,18 @@ static bool md_vk_stream_submit(md_gpu_stream_t s) {
     VkCommandBufferSubmitInfo cbsi = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
     cbsi.commandBuffer = s->open;
 
+    /* Held across the submission: the waits name other streams' timelines,
+       and destroying one of those streams removes its waits under this lock.
+       (Its timeline outlives the submission: it is retired behind this
+       stream's position, which has been signal_value since work was recorded.) */
+    md_mutex_lock(&s->wait_mutex);
     VkSemaphoreSubmitInfo  wait_stack[8];
     VkSemaphoreSubmitInfo* waits = wait_stack;
     const uint32_t tl_wait_count = (uint32_t)s->waits.size;
     const uint32_t wait_count    = tl_wait_count + s->bin_wait_count;
     if (wait_count > 8) {
         waits = (VkSemaphoreSubmitInfo*)md_alloc(dev->alloc, wait_count * sizeof(VkSemaphoreSubmitInfo));
-        if (!waits) return md_gpu_fail("out of memory");
+        if (!waits) { md_mutex_unlock(&s->wait_mutex); return md_gpu_fail("out of memory"); }
     }
     for (uint32_t i = 0; i < tl_wait_count; ++i) {
         md_vk_wait_t w = s->waits.data[i];
@@ -2420,6 +2450,8 @@ static bool md_vk_stream_submit(md_gpu_stream_t s) {
     VkResult r = vkQueueSubmit2(s->queue, 1, &si, VK_NULL_HANDLE);
     md_mutex_unlock(&s->q->mutex);
     if (waits != wait_stack) md_free(dev->alloc, waits, wait_count * sizeof(VkSemaphoreSubmitInfo));
+    if (r == VK_SUCCESS) s->waits.size = 0;
+    md_mutex_unlock(&s->wait_mutex);
     if (!md_vk_check(r, "vkQueueSubmit2")) return false;
 
     /* Tag the command buffer and arena pages with the value that frees them. */
@@ -2429,9 +2461,8 @@ static bool md_vk_stream_submit(md_gpu_stream_t s) {
     }
     md_vk_arena_retire(s, signal_value);
 
-    s->submitted_value = signal_value;
+    s->submitted_value = signal_value;      /* `position` already says so */
     s->next_value      = signal_value + 1;
-    s->waits.size     = 0;
     s->bin_wait_count  = 0;
     s->bin_signal_count = 0;
     s->open            = VK_NULL_HANDLE;
@@ -2462,15 +2493,19 @@ void md_gpu_stream_wait(md_gpu_stream_t s, md_gpu_sync_t sync) {
     if (s->has_work) md_vk_stream_submit(s);
 
     /* Collapse duplicate waits on the same timeline, keeping the larger value. */
-    for (size_t i = 0; i < s->waits.size; ++i) {
+    md_mutex_lock(&s->wait_mutex);
+    bool merged = false;
+    for (size_t i = 0; i < s->waits.size && !merged; ++i) {
         md_vk_wait_t* w = &s->waits.data[i];
         if (w->stream == sync.stream) {
             if (sync.value > w->value) w->value = sync.value;
-            return;
+            merged = true;
         }
     }
     const md_vk_wait_t w = {sync.stream, sync.value};
-    if (!MD_ARRAY_TRY_PUSH(s->waits, w)) md_gpu_fail("out of memory queueing a stream wait");
+    const bool ok = merged || MD_ARRAY_TRY_PUSH(s->waits, w);
+    md_mutex_unlock(&s->wait_mutex);
+    if (!ok) md_gpu_fail("out of memory queueing a stream wait");
 }
 
 void md_gpu_stream_flush(md_gpu_stream_t s) {
@@ -2538,7 +2573,8 @@ static void md_vk_stream_free(md_gpu_stream_t s) {
     md_gpu_heap_temps_free(&dev->heap, &s->temps);
     if (s->ts_pool) vkDestroyQueryPool(dev->device, s->ts_pool, NULL);
     vkDestroyCommandPool(dev->device, s->cmd_pool, NULL);
-    vkDestroySemaphore(dev->device, s->timeline, NULL);
+    if (s->timeline) vkDestroySemaphore(dev->device, s->timeline, NULL);
+    md_mutex_destroy(&s->wait_mutex);
     md_free(dev->alloc, s, sizeof(*s));
 }
 
@@ -2555,6 +2591,12 @@ void md_gpu_stream_destroy(md_gpu_stream_t s) {
     md_mutex_lock(&dev->device_mutex);
     MD_ARRAY_REMOVE_ITEM(dev->streams, s);
     md_vk_forget_stream_locked(dev, s);
+    /* Other streams' submissions may still wait on the timeline. */
+    md_vk_retire_t r = {0};
+    r.kind      = MD_VK_RETIRE_SEMAPHORE;
+    r.semaphore = s->timeline;
+    s->timeline = VK_NULL_HANDLE;
+    md_vk_retire_entry_locked(dev, r);
     md_mutex_unlock(&dev->device_mutex);
 
     md_vk_stream_free(s);
@@ -2680,11 +2722,14 @@ bool md_gpu_copy(md_gpu_stream_t s, md_gpu_addr_t dst, md_gpu_addr_t src, size_t
    queued by md_gpu_stream_wait already satisfied. */
 static bool md_vk_stream_idle(md_gpu_stream_t s) {
     if (s->has_work || md_vk_stream_completed(s) < s->submitted_value) return false;
-    for (size_t i = 0; i < s->waits.size; ++i) {
+    bool idle = true;
+    md_mutex_lock(&s->wait_mutex);
+    for (size_t i = 0; i < s->waits.size && idle; ++i) {
         md_vk_wait_t w = s->waits.data[i];
-        if (md_vk_stream_completed(w.stream) < w.value) return false;
+        if (md_vk_stream_completed(w.stream) < w.value) idle = false;
     }
-    return true;
+    md_mutex_unlock(&s->wait_mutex);
+    return idle;
 }
 
 bool md_gpu_upload(md_gpu_stream_t s, md_gpu_addr_t dst, const void* src, size_t size) {
@@ -4299,7 +4344,7 @@ bool md_gpu_render_begin(md_gpu_stream_t s, const md_gpu_render_desc_t* desc) {
     }
 
     s->in_pass          = true;
-    s->has_work         = true;
+    md_vk_mark_work(s);
     s->pass_width       = w;
     s->pass_height      = h;
     s->pass_color_count = desc->color_count;

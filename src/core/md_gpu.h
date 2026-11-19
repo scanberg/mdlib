@@ -77,7 +77,12 @@ never repeats [numthreads] by hand.
 Threading
 ---------
   * A stream is used by one thread at a time. Different streams may be used
-    concurrently from different threads.
+    -- created, recorded, submitted, destroyed -- concurrently from different
+    threads.
+  * A surface is used by one thread at a time, together with every stream
+    that acquires from it: acquire may submit the stream that last acquired
+    the same swapchain slot, and destroying a stream updates the surfaces it
+    acquired from.
   * Allocation (md_gpu_malloc / md_gpu_free), texture, sampler and kernel
     creation/destruction are thread-safe. Temp scopes belong to their stream
     and follow the stream's one-thread rule.
