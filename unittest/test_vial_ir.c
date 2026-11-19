@@ -979,6 +979,22 @@ UTEST(vial_ir, literal_draws_its_context) {
     EXPECT_EQ(g0, g); EXPECT_EQ(n0, n); EXPECT_EQ(s0, s);
     ASSERT_TRUE(vial_ir__atoms(src, "90", alloc, &g, &n, &s));
     EXPECT_EQ(0u, g);
+    // One of a list argument: the selection with that item alone, so 'CB' in particle(['N', 'CB']) is the CB atoms, as
+    // rs['CB'] has them (in one set, as particle() gives), by position or by keyword; the list itself is both
+    const char* lsrc = "rs = residue('ALA')\ncb = rs['CB']\nps = particle(['N', 'CB'])\nqs = particle(name=['N', 'CB'])\n";
+    ASSERT_TRUE(vial_ir__atoms(lsrc, "cb = rs", alloc, &g0, &n0, &s0));
+    EXPECT_EQ(15u, g0);
+    ASSERT_TRUE(vial_ir__atoms(lsrc, "'CB'])\nqs", alloc, &g, &n, &s));
+    EXPECT_EQ(1u, g); EXPECT_EQ(n0, n); EXPECT_EQ(s0, s);
+    ASSERT_TRUE(vial_ir__atoms(lsrc, "'CB'])\n\0", alloc, &g, &n, &s));
+    EXPECT_EQ(1u, g); EXPECT_EQ(n0, n); EXPECT_EQ(s0, s);
+    ASSERT_TRUE(vial_ir__atoms(lsrc, "'N', 'CB'])\nqs", alloc, &g, &n, &s));
+    EXPECT_EQ(1u, g); EXPECT_EQ(n0, n); EXPECT_NE(s0, s);
+    ASSERT_TRUE(vial_ir__atoms(lsrc, "particle([", alloc, &g, &n, &s));
+    EXPECT_EQ(1u, g); EXPECT_EQ(2 * n0, n);
+    // Through what the script bound before it: the view call on rs, one CB per residue
+    ASSERT_TRUE(vial_ir__atoms("rs = residue('ALA')\nvs = rs.particle(['N', 'CB'])\n", "'CB'", alloc, &g, &n, &s));
+    EXPECT_EQ(g0, g); EXPECT_EQ(n0, n); EXPECT_EQ(s0, s);
     md_arena_allocator_destroy(alloc);
 }
 
