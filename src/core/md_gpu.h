@@ -219,19 +219,9 @@ static inline bool md_gpu_sync_is_valid(md_gpu_sync_t s) {
    (The alignment specifier sits on the first member only -- applying it to a
    multi-declarator line would align every declarator and inflate the struct.) */
 
-#if defined(__cplusplus)
-#  define MD_GPU_ALIGNAS(n) alignas(n)
-#elif defined(_MSC_VER)
-   /* _Alignas needs /std:c11 or later in MSVC's C mode; __declspec(align)
-      works regardless of the language level. */
-#  define MD_GPU_ALIGNAS(n) __declspec(align(n))
-#else
-#  define MD_GPU_ALIGNAS(n) _Alignas(n)
-#endif
-
-#define MD_GPU_DEFINE_VEC(name, T)                                             \
-    typedef struct { MD_GPU_ALIGNAS(8)  T x; T y; }       name##2;             \
-    typedef struct { MD_GPU_ALIGNAS(16) T x; T y, z, w; } name##4
+#define MD_GPU_DEFINE_VEC(name, T)                                         \
+    typedef struct { MD_ALIGNAS(8)  T x; T y; }       name##2;             \
+    typedef struct { MD_ALIGNAS(16) T x; T y, z, w; } name##4
 
 MD_GPU_DEFINE_VEC(md_gpu_uint,  uint32_t);
 MD_GPU_DEFINE_VEC(md_gpu_int,   int32_t);
@@ -240,11 +230,10 @@ MD_GPU_DEFINE_VEC(md_gpu_float, float);
 /* Slang lowers a float4x4 to four 16-byte columns: 64 bytes on both targets.
    Same rule as a 4-vector -- store column-major, matching Slang. */
 typedef struct {
-    MD_GPU_ALIGNAS(16) float m[16];
+    MD_ALIGNAS(16) float m[16];
 } md_gpu_float4x4;
 
 #undef MD_GPU_DEFINE_VEC
-#undef MD_GPU_ALIGNAS
 
 /* A toolchain that quietly drops the alignment specifier would reintroduce
    exactly the bug these types exist to prevent, so say so at compile time.
