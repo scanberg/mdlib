@@ -96,19 +96,15 @@ Threading
 #include <stddef.h>
 #include <stdbool.h>
 
+#include <core/md_common.h>
+
 struct md_allocator_i;
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#if defined(__cplusplus)
-#  define MD_GPU_STATIC_ASSERT(c, m) static_assert(c, m)
-#else
-#  define MD_GPU_STATIC_ASSERT(c, m) _Static_assert(c, m)
-#endif
-
-MD_GPU_STATIC_ASSERT(sizeof(void*) == 8, "md_gpu requires a 64-bit target");
+MD_STATIC_ASSERT(sizeof(void*) == 8, "md_gpu requires a 64-bit target");
 
 /* =========================================================================
    Handles and value types
@@ -248,22 +244,22 @@ struct md_gpu_align_probe2_ { char c; md_gpu_uint2    v; };
 struct md_gpu_align_probe4_ { char c; md_gpu_uint4    v; };
 struct md_gpu_align_probem_ { char c; md_gpu_float4x4 v; };
 
-MD_GPU_STATIC_ASSERT(sizeof(md_gpu_uint2)    ==  8, "md_gpu_*2 must be 8 bytes");
-MD_GPU_STATIC_ASSERT(sizeof(md_gpu_uint4)    == 16, "md_gpu_*4 must be 16 bytes");
-MD_GPU_STATIC_ASSERT(sizeof(md_gpu_float4x4) == 64, "md_gpu_float4x4 must be 64 bytes");
-MD_GPU_STATIC_ASSERT(offsetof(struct md_gpu_align_probe2_, v) ==  8,
+MD_STATIC_ASSERT(sizeof(md_gpu_uint2)    ==  8, "md_gpu_*2 must be 8 bytes");
+MD_STATIC_ASSERT(sizeof(md_gpu_uint4)    == 16, "md_gpu_*4 must be 16 bytes");
+MD_STATIC_ASSERT(sizeof(md_gpu_float4x4) == 64, "md_gpu_float4x4 must be 64 bytes");
+MD_STATIC_ASSERT(offsetof(struct md_gpu_align_probe2_, v) ==  8,
                      "md_gpu_*2 must be 8-byte aligned");
-MD_GPU_STATIC_ASSERT(offsetof(struct md_gpu_align_probe4_, v) == 16,
+MD_STATIC_ASSERT(offsetof(struct md_gpu_align_probe4_, v) == 16,
                      "md_gpu_*4 must be 16-byte aligned");
-MD_GPU_STATIC_ASSERT(offsetof(struct md_gpu_align_probem_, v) == 16,
+MD_STATIC_ASSERT(offsetof(struct md_gpu_align_probem_, v) == 16,
                      "md_gpu_float4x4 must be 16-byte aligned");
 
 
 /* Handles are plain 8-byte values in argument structs. */
-MD_GPU_STATIC_ASSERT(sizeof(md_gpu_storage_tex_t) == 8, "handle must be 8 bytes");
-MD_GPU_STATIC_ASSERT(sizeof(md_gpu_sampled_tex_t) == 8, "handle must be 8 bytes");
-MD_GPU_STATIC_ASSERT(sizeof(md_gpu_sampler_t)     == 8, "handle must be 8 bytes");
-#undef MD_GPU_STATIC_ASSERT
+MD_STATIC_ASSERT(sizeof(md_gpu_storage_tex_t) == 8, "handle must be 8 bytes");
+MD_STATIC_ASSERT(sizeof(md_gpu_sampled_tex_t) == 8, "handle must be 8 bytes");
+MD_STATIC_ASSERT(sizeof(md_gpu_sampler_t)     == 8, "handle must be 8 bytes");
+#undef MD_STATIC_ASSERT
 
 /* Launch geometry, in thread groups. */
 typedef struct md_gpu_grid_t {
