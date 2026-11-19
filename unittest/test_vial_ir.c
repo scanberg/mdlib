@@ -93,6 +93,7 @@ UTEST(vial_ir, lowers_and_verifies) {
 #include <md_infer.h>
 #include <core/md_geom.h>
 #include <core/md_vec_math.h>
+#include <core/md_linalg.h>
 
 typedef struct vial_ir__run_t {
     md_allocator_i*     alloc;
@@ -2843,6 +2844,89 @@ UTEST(vial_ir, rdf) {
         EXPECT_TRUE(found);
         md_vial_program_free(p);
     }
+    md_vial_program_free(prog);
+    md_arena_allocator_destroy(alloc);
+}
+
+// shape_weights(p): v1's weights, (l2 - l1, 2 (l1 - l0), 3 l0) / sum(l) of the mass-weighted gyration tensor, taken
+// about the mean of the placed points. Checked against the same in double on P's coordinates, which are whole: the
+// peptide in the frames where it is less than half the cell across, and every residue in every frame. (v1's own,
+// md_geom_shape_weights, is in float and off by up to 5e-4 for the elongated peptide.)
+static void vial_ir__shape_weights(const md_system_t* sys, const float* xyz, size_t beg, size_t end, double out[3]) {
+    double c[3] = {0}, wsum = 0, M[9] = {0}, l[3];
+    for (size_t i = beg; i < end; ++i) {
+        const double m = md_atom_mass(&sys->atom, i);
+        for (int q = 0; q < 3; ++q) c[q] += m * xyz[3 * i + q];
+        wsum += m;
+    }
+    for (int q = 0; q < 3; ++q) c[q] /= wsum;
+    for (size_t i = beg; i < end; ++i) {
+        const double m = md_atom_mass(&sys->atom, i);
+        for (int a = 0; a < 3; ++a) for (int b = 0; b < 3; ++b) M[3 * a + b] += m * (xyz[3 * i + a] - c[a]) * (xyz[3 * i + b] - c[b]) / wsum;
+    }
+    md_linalg_sym_eigen(M, l, 3);     // ascending
+    const double t = l[0] + l[1] + l[2];
+    out[0] = (l[2] - l[1]) / t;
+    out[1] = 2.0 * (l[1] - l[0]) / t;
+    out[2] = 3.0 * l[0] / t;
+}
+
+UTEST(vial_ir, shape_weights) {
+    const md_system_t* sys = vial_test_system('P');
+    ASSERT_TRUE(sys != NULL);
+    const int64_t nf = vial_test_run('P');
+    ASSERT_GT(nf, 3);
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
+    const char* src = "w = shape_weights(particle)\nwr = shape_weights(residue)\nlin, plan, iso = shape_weights(particle)\n";
+    md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = MD_STR_LIT("run")}, alloc);
+    ASSERT_TRUE(prog != NULL);
+    const md_vial_diagnostic_t* dg;
+    ASSERT_EQ(0u, (unsigned)md_vial_diagnostics(prog, &dg));
+    md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = MD_STR_LIT("run"), .executor = test_executor_of_threads(2)}, alloc);
+    ASSERT_TRUE(e != NULL);
+    ASSERT_TRUE(md_vial_eval_run(e));
+    const md_attributes_t* at = md_vial_eval_attributes(e);
+    const md_attribute_t* aw = md_attributes_find(at, MD_STR_LIT("script/w"));
+    const md_attribute_t* ar = md_attributes_find(at, MD_STR_LIT("script/wr"));
+    const md_attribute_t* al = md_attributes_find(at, MD_STR_LIT("script/lin"));
+    ASSERT_TRUE(aw && ar && al);
+    const size_t nr = sys->residue.count;
+    const md_str_t paths[] = {MD_STR_LIT("atom/position"), MD_STR_LIT("unitcell")};
+    md_system_extract_t* ex = md_system_extract_begin(sys, MD_STR_LIT("run"), paths, 2, alloc);
+    ASSERT_TRUE(ex != NULL);
+    md_system_state_t st = {.alloc = alloc};
+    md_system_state_init(&st, sys->atom.count);
+    int whole = 0;
+    double worst = 0, rworst = 0;
+    for (int64_t f = 0; f < nf; ++f) {
+        ASSERT_TRUE(md_system_extract_frame(ex, f, &st));
+        const float* xyz = (const float*)st.xyz;
+        const float* w = (const float*)aw->data + 3 * f;
+        EXPECT_NEAR(1.0, (double)w[0] + w[1] + w[2], 1e-5);
+        EXPECT_EQ(w[0], ((const float*)al->data)[f]);
+        // Less than half the cell across: the minimum image places it whole
+        float lo[3] = {INFINITY, INFINITY, INFINITY}, hi[3] = {-INFINITY, -INFINITY, -INFINITY};
+        for (size_t i = 0; i < sys->atom.count; ++i) for (int q = 0; q < 3; ++q) { lo[q] = MD_MIN(lo[q], xyz[3 * i + q]); hi[q] = MD_MAX(hi[q], xyz[3 * i + q]); }
+        const double L[3] = {st.unitcell.x, st.unitcell.y, st.unitcell.z};
+        if (hi[0] - lo[0] < L[0] / 2 && hi[1] - lo[1] < L[1] / 2 && hi[2] - lo[2] < L[2] / 2) {
+            double ref[3];
+            vial_ir__shape_weights(sys, xyz, 0, sys->atom.count, ref);
+            for (int q = 0; q < 3; ++q) worst = MD_MAX(worst, fabs((double)w[q] - ref[q]));
+            whole += 1;
+        }
+        for (size_t r = 0; r < nr; ++r) {
+            const md_urange_t rg = md_system_residue_atom_range(sys, r);
+            double ref[3];
+            vial_ir__shape_weights(sys, xyz, (size_t)rg.beg, (size_t)rg.end, ref);
+            const float* wr = (const float*)ar->data + (size_t)f * nr * 3 + 3 * r;
+            for (int q = 0; q < 3; ++q) rworst = MD_MAX(rworst, fabs((double)wr[q] - ref[q]));
+        }
+    }
+    md_system_extract_end(ex);
+    EXPECT_GT(whole, 0);
+    EXPECT_LT(worst, 1e-4);
+    EXPECT_LT(rworst, 1e-4);
+    md_vial_eval_free(e);
     md_vial_program_free(prog);
     md_arena_allocator_destroy(alloc);
 }

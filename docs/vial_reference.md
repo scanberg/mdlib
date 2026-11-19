@@ -613,6 +613,18 @@ def normal(p: points):
     n = v[:, 0]                                  # the direction of least spread
     return shown(n, arrow(c, direction=n, length=5.0))
 
+def shape_weights(p: points, weights='mass'):
+    w = weight(p, weights)
+    c = com(p, weights)
+    d = displacement(c, p)                       # placed by the minimum image from a periodic-aware centre
+    m = (d.T @ w) / sum(w)                       # the mean of the placed points, which that centre is not
+    d = d - m
+    l, v = eigh((d.T * w) @ d / sum(w))          # the gyration tensor: eigenvalues ascending, Å²
+    s = [l[2] - l[1], 2 * (l[1] - l[0]), 3 * l[0]] / sum(l)   # linear, planar, isotropic; they sum to 1
+    r = sqrt(max(l, 0.0))                        # the spread along each principal axis
+    o = c + m
+    return shown(s, arrow(o, direction=v[:, 2], length=r[2]) + arrow(o, direction=v[:, 1], length=r[1]) + arrow(o, direction=v[:, 0], length=r[0]))
+
 def rmsd(p: points, ref: points, on=None, weights=None, superpose=True):
     q = fit(p, ref, on=on, weights=weights) if superpose else p
     w = weight(q, weights)
@@ -641,7 +653,7 @@ def ema(x, alpha):
     return fold(step, x, init=x)
 ```
 
-The prelude uses nothing a script cannot, drawing included: `shown` attaches what hover draws, as any def may (see Drawing). `_between` is VIAL; only the search for the closest or farthest pair, `closest_pair` and `farthest_pair`, is built in, since a search that skips pairs is not an equation over arrays. `_between`, `gyration`, `normal` and `rmsd` annotate their parameters with kinds, so they map over arrays of sets: `_between` only ever sees one body per argument. `_between` calls `norm(displacement())` rather than `distance`, since a cycle of calls is recursion (E0802). `gyration` and `normal` measure from a periodic-aware centre under the minimum image, so they are right for any group smaller than half the box, whether or not the trajectory was made whole; positions themselves are as the trajectory gives them. A fold's step is a nested `def`, which may read the names of the function around it, as `cumulative`'s reads `op` and `ema`'s reads `alpha`; there is no `lambda`. `atom()` and `bead()` are built-in shorthands for `particle(kind=...)`, since forwarding keywords would need `**kwargs`.
+The prelude uses nothing a script cannot, drawing included: `shown` attaches what hover draws, as any def may (see Drawing). `_between` is VIAL; only the search for the closest or farthest pair, `closest_pair` and `farthest_pair`, is built in, since a search that skips pairs is not an equation over arrays. `_between`, `gyration`, `normal`, `shape_weights` and `rmsd` annotate their parameters with kinds, so they map over arrays of sets: `_between` only ever sees one body per argument. `_between` calls `norm(displacement())` rather than `distance`, since a cycle of calls is recursion (E0802). `gyration`, `normal` and `shape_weights` measure from a periodic-aware centre under the minimum image, so they are right for any group smaller than half the box, whether or not the trajectory was made whole; positions themselves are as the trajectory gives them. That centre is not the mean of the positions it places, so `shape_weights` takes its tensor about their mean, as v1 does. A fold's step is a nested `def`, which may read the names of the function around it, as `cumulative`'s reads `op` and `ema`'s reads `alpha`; there is no `lambda`. `atom()` and `bead()` are built-in shorthands for `particle(kind=...)`, since forwarding keywords would need `**kwargs`.
 
 ## Built-in functions: geometry and structure
 
@@ -678,6 +690,7 @@ Keywords mean the same wherever they appear. `weights=` takes `'mass'`, `None` o
 | `dihedral(a, b, c, d: point)` | `float` °, in (−180, 180\] | also takes one `float[4][3]`, or four one-particle sets; the one-argument form maps over leading dimensions, such as `set[k][4]` from `smiles_atoms` or `residue[['N', 'CA', 'CB', 'CG']]`, chi1 of every residue that has a CG |
 | `gyration(p: points, weights='mass')` | `float` Å | prelude: `sqrt(sum(w * norm(displacement(com(p, weights), p))**2) / sum(w))`, with `w = weight(p, weights)`. Drawn as a sphere of that radius at the centre |
 | `normal(p: points)` | `float[3]` | prelude: the direction of least spread, `v[:, 0]` of `eigh(d.T @ d)` with `d = displacement(com(p, weights=None), p)`. Drawn as an arrow from the centre |
+| `shape_weights(p: points, weights='mass')` | `float[3]` | prelude: how linear, planar and isotropic the points are, `(l2 - l1, 2 (l1 - l0), 3 l0) / (l0 + l1 + l2)` with l the eigenvalues of the gyration tensor, ascending; they sum to 1, as v1's. Unpack them as `lin, plan, iso = shape_weights(s)`. Drawn as three arrows from the centre along the principal axes, each as long as the spread along it |
 | `within(r, of: points)` | `set`, frame | the scope's particles within r of any particle or point of `of`: d <= r, with d the bits `distance()` gives for the pair, under the minimum image; `of=` is always written, so `within(5.0, of=protein)` reads as it means and the radius cannot be mistaken for the set. `within(5.0, protein)` is E0203, with the fix `of=protein` |
 
 A matrix of distances needs no special function; broadcasting gives it: `distance(c[:, None], c[None, :])`.
@@ -802,6 +815,9 @@ raw  = rmsd(ca, ref0, superpose=False)                 # -> float Å, frame
 _f   = fit(particle.xyz, at(particle.xyz, frame=0), on=ca)   # -> float[153][3] Å, frame
 half = rmsd(ca[0:7], ca[8:15])                         # -> float Å, frame: slices of one set pair in order without W0605
 odd  = rmsd(ca[0:7], ca[7:15])                         # error E0301: [7][3] and [8][3] do not broadcast
+sw   = shape_weights(particle)                         # -> float[3], frame: linear, planar and isotropic, summing to 1
+lin, plan, iso = shape_weights(particle)               # -> float and float and float
+swr  = shape_weights(residue)                          # -> float[15][3], frame: points maps over the residues
 ```
 
 Not ported from v1 yet: contact maps, hydrogen bonds, secondary structure and ring pucker. The volumes, `sdf` and `density`, are under Volumes, and `rdf` under Frames.

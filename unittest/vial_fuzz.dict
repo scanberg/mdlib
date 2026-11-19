@@ -126,6 +126,7 @@
 "angle("
 "dihedral("
 "gyration("
+"shape_weights("
 "rmsd("
 "fit("
 "smiles("
