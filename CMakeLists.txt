@@ -363,10 +363,6 @@ set(TOPO_GTO_SLANG_FILE src/shaders/topo/topo_gto_cube.slang)
 # One kernel per pass for both block shapes (8x8x8, and 32x16x1 for a grid of one layer: the shape an argument,
 # gto_gemm_args.slang), but the shell kernel's, which keeps one per shape
 set(GTO_SLANG_FILES
-  # the references (the GPU tests' oracles, and MD_GTO_GPU_*_ALGO=reference)
-  src/shaders/gto/eval_gto_density.slang
-  src/shaders/gto/eval_gto_localization.slang
-  src/shaders/gto/eval_gto_mo.slang
   # the orbitals' shell kernel, 1 or 8 a pass, per block shape
   src/shaders/gto/eval_gto_mo_shell_v4_m1.slang
   src/shaders/gto/eval_gto_mo_shell_v4_m8.slang
@@ -702,7 +698,7 @@ endif()
 set(SHADER_FILES ${GL_SHADER_FILES} ${TOPO_SLANG_FILES} ${TOPO_GTO_SLANG_FILE} ${GTO_SLANG_FILES} ${GTO_LOC_CORE_SLANG_FILES}
     src/shaders/gto/gto_gemm_core.slang src/shaders/gto/eval_gto_density_core.slang src/shaders/gto/eval_gto_localization_core.slang
     src/shaders/gto/gto_common.slang src/shaders/gto/gto_gemm_args.slang
-    src/shaders/gto/gto_dmat_common.slang src/shaders/gto/gto_dmat.slang src/shaders/gto/gto_screen.slang
+    src/shaders/gto/gto_dmat_common.slang src/shaders/gto/gto_dmat.slang
     src/shaders/gto/eval_gto_density_gemm.slang
     src/shaders/gto/eval_gto_mo_shell.slang src/shaders/gto/eval_gto_mo_gemm.slang
     src/shaders/gto/eval_gto_int_potential.slang src/shaders/gto/gto_int_hermite.slang
@@ -770,11 +766,9 @@ if (MD_ENABLE_GPU)
   set(GTO_SLANG_INCLUDES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_common.slang
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_dmat_common.slang
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_screen.slang
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_gemm_args.slang
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_mo_shell.slang
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_mo_gemm.slang
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_localization.slang
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_density_gemm.slang
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_gemm_core.slang
     ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_density_core.slang

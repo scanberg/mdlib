@@ -54,8 +54,9 @@ target_link_libraries(md_topo_gto_bench PRIVATE mdlib)
 add_dependencies(md_topo_gto_bench md_bench_rev)
 target_include_directories(md_topo_gto_bench PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 
-# The shared GEMM core against what it replaces, on the GPU: the density (reference, gemm2, core) and ELF and LOL
-# (reference, GEMM), as viamd evaluates them (see bench_gto_gemm.c). Its own executable, which takes options.
+# The GPU evaluations on the shared GEMM core (the density, ELF and LOL, the orbitals with their shell kernel, the dmat
+# build), as viamd evaluates them, each checked against the CPU at sampled voxels (see bench_gto_gemm.c). Its own
+# executable, which takes options.
 if (MD_ENABLE_HDF5 AND MD_ENABLE_GPU)
     add_executable(md_gto_gemm_bench bench_gto_gemm.c)
     target_compile_definitions(md_gto_gemm_bench PRIVATE MD_BENCHMARK_DATA_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/../test_data\" ${MD_DEFINES})

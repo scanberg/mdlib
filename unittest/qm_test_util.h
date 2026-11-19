@@ -219,3 +219,48 @@ static inline double qm_test_orbital_at(const md_gto_basis_t* basis, const float
     }
     return psi;
 }
+
+// Every Cartesian AO at a point (bohr), as qm_test_orbital_at sums them, in double with no cutoff: values into
+// ao[num_ao] (md_gto_basis_num_ao, the basis's order) and, where aog is not NULL, their gradients into aog[3 * num_ao]
+// (x, y, z per AO). The CPU reference the GPU evaluations are checked against: rho = ao^T D ao, psi = c . ao.
+static inline void qm_test_ao_at(double* ao, double* aog, const md_gto_basis_t* basis, const float* atom_xyz, const double p[3]) {
+    size_t n = 0;
+    for (uint32_t s = 0; s < basis->num_shells; ++s) {
+        const md_gto_shell_t* sh = &basis->shells[s];
+        const float* a = atom_xyz + 3 * (size_t)sh->atom_idx;
+        const double d[3] = { p[0] - a[0], p[1] - a[1], p[2] - a[2] };
+        const double r2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+        double radial = 0.0, dradial = 0.0;   // sum c e^(-a r^2), and sum -2 a c e^(-a r^2)
+        for (uint32_t k = 0; k < sh->num_primitives; ++k) {
+            const double al = basis->alpha[sh->primitive_offset + k];
+            const double e = basis->coeff[sh->primitive_offset + k] * exp(-al * r2);
+            radial += e;
+            dradial += -2.0 * al * e;
+        }
+        for (uint32_t c = 0; c < md_gto_num_cart_ao(sh->l); ++c, ++n) {
+            int e3[3] = {0, 0, 0};
+            md_gto_cart_ijk(&e3[0], &e3[1], &e3[2], sh->l, c);
+            const double f = md_gto_cart_norm_factor(e3[0], e3[1], e3[2]);
+            const double m = pow(d[0], e3[0]) * pow(d[1], e3[1]) * pow(d[2], e3[2]);
+            ao[n] = f * m * radial;
+            if (!aog) continue;
+            for (int q = 0; q < 3; ++q) {
+                double o = 1.0;
+                for (int w = 0; w < 3; ++w) if (w != q) o *= pow(d[w], e3[w]);
+                const double dm = (e3[q] > 0 ? e3[q] * pow(d[q], e3[q] - 1) : 0.0) * o;
+                aog[3 * n + q] = f * (dm * radial + m * dradial * d[q]);
+            }
+        }
+    }
+}
+
+// rho = ao^T D ao (D: n x n, row major, symmetric) from qm_test_ao_at's values
+static inline double qm_test_density_from_ao(const double* D, const double* ao, size_t n) {
+    double r = 0.0;
+    for (size_t i = 0; i < n; ++i) {
+        double u = 0.0;
+        for (size_t j = 0; j < n; ++j) u += D[i * n + j] * ao[j];
+        r += ao[i] * u;
+    }
+    return r;
+}

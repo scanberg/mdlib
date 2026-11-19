@@ -23,12 +23,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-typedef struct {
-    float coeff;
-    float alpha;
-    uint32_t ijkl;
-} PGTO;
-
 static inline void world_to_model_matrix(float out_mat[4][4], const md_grid_t* grid) {
     // There is no scaling applied in this transformation, only rotation and translation
     out_mat[0][0] = grid->orientation.elem[0][0];
@@ -708,20 +702,11 @@ bool md_gto_density_from_orbitals(double* D, const double* C, size_t mo_stride, 
     return ok;
 }
 
-// Count the number of CGTOs and PGTOs that will result from expanding a basis.
-// One CGTO per Cartesian AO, one PGTO per (Cartesian AO, primitive) pair.
-static void gto_basis_count(uint32_t* out_num_cgtos, uint32_t* out_num_pgtos,
-    const md_gto_basis_t* basis)
-{
-    uint32_t nc = 0, np = 0;
-    for (uint32_t si = 0; si < basis->num_shells; si++) {
-        uint32_t ncart  = md_gto_num_cart_ao(basis->shells[si].l);
-        uint32_t nprims = basis->shells[si].num_primitives;
-        nc += ncart;
-        np += ncart * nprims;
-    }
-    *out_num_cgtos = nc;
-    *out_num_pgtos = np;
+// The Cartesian AOs (CGTOs) of a basis
+static uint32_t gto_basis_num_cgtos(const md_gto_basis_t* basis) {
+    uint32_t nc = 0;
+    for (uint32_t si = 0; si < basis->num_shells; si++) nc += md_gto_num_cart_ao(basis->shells[si].l);
+    return nc;
 }
 
 size_t md_gto_basis_num_atoms(const md_gto_basis_t* basis) {
@@ -735,56 +720,6 @@ size_t md_gto_basis_num_atoms(const md_gto_basis_t* basis) {
 
 static uint32_t gto_basis_num_atoms(const md_gto_basis_t* basis) {
     return (uint32_t)md_gto_basis_num_atoms(basis);
-}
-
-// Expand basis metadata into CGTO/PGTO arrays that do not depend on atom coordinates.
-// out_cgto_atom_idx: [num_cgtos], one parent atom index per CGTO.
-// out_cgto_r:        [num_cgtos], max primitive radius for screening.
-// out_cgto_off_len:  [num_cgtos * 2], offset/length into out_pgto.
-// out_pgto:          [num_pgtos], radial+angular primitive data.
-static void gto_expand_basis_gpu_meta(
-    uint32_t* out_cgto_atom_idx, float* out_cgto_r, uint32_t* out_cgto_off_len, PGTO* out_pgto,
-    const md_gto_basis_t* basis, double cutoff)
-{
-    uint32_t ci = 0, pi = 0;
-    for (uint32_t si = 0; si < basis->num_shells; si++) {
-        const md_gto_shell_t* shell = &basis->shells[si];
-        int l      = (int)shell->l;
-        int ncart  = (int)md_gto_num_cart_ao(shell->l);
-        int nprims = (int)shell->num_primitives;
-        uint32_t   prim_base = shell->primitive_offset;
-        const gto_lmn_t* lmn = gto_cart_lmn(l);
-
-        for (int ic = 0; ic < ncart; ic++) {
-            const int    lx = lmn[ic][0];
-            const int    ly = lmn[ic][1];
-            const int    lz = lmn[ic][2];
-            const double nrm = gto_cart_norm(l, ic);
-
-            uint32_t pi_beg = pi;
-            double max_r = 0.0;
-            for (int ip = 0; ip < nprims; ip++) {
-                float alpha = basis->alpha[prim_base + ip];
-                float coef1 = basis->coeff[prim_base + ip];
-                float coeff_val = (float)(coef1 * nrm);
-                double radius = md_gto_compute_radius_of_influence(lx, ly, lz, (double)coeff_val, (double)alpha, cutoff);
-                max_r = MD_MAX(max_r, radius);
-
-                PGTO pgto = {
-                    .coeff = coeff_val,
-                    .alpha = alpha,
-                    .ijkl = md_gto_pack_ijkl(lx, ly, lz, l),
-                };
-                out_pgto[pi++] = pgto;
-            }
-
-            out_cgto_atom_idx[ci] = shell->atom_idx;
-            out_cgto_r[ci] = (float)max_r;
-            out_cgto_off_len[2 * ci + 0] = pi_beg;
-            out_cgto_off_len[2 * ci + 1] = pi - pi_beg;
-            ci++;
-        }
-    }
 }
 
 static uint32_t gto_basis_num_shell_prims(const md_gto_basis_t* basis) {
@@ -1034,15 +969,15 @@ size_t md_gto_orbital_gradients(double* out, size_t* out_num_ao, const double* c
 // gto_kernel_eval, results/), and pruned by measurements of each variant against what would replace it on an M4 Pro,
 // a GTX 1060 and an HD 530 (gemm-bench r6, isosurface r42-r43; a variant stayed where one of them was more than 5%
 // ahead with it): density through the two-pass GEMM with 128 voxels per group and 32- or 64-wide AO tiles; orbitals
-// through the shell kernel with 4 voxels per thread (up to 8 orbitals) or the GEMM path (more). The references
-// (MD_GTO_GPU_*_ALGO_REFERENCE) are the GPU tests' oracles.
+// through the shell kernel with 4 voxels per thread (up to 8 orbitals) or the GEMM path (more). The reference is the
+// CPU's, in double (the GPU tests check against it): the GPU reference kernels (a loop over the screened AOs per
+// voxel) were the paths' first versions, and are gone.
 static md_gpu_device_t gto_gpu_device = NULL;
 static uint32_t        gto_gpu_vendor = 0;
 // The block of voxels a group (or a GEMM block) takes: [GTO_SHAPE_3D] 8x8x8, [GTO_SHAPE_2D] 32x16x1 for a grid of
 // one layer (the image of a plane, where 8x8x8 would leave 7/8 of every group off the grid). As many voxels either
 // way, as near together, so the groups' shared memory and loads are as they were. The GEMM path's kernels take the
-// shape as an argument (gto_block_shape_arg), one kernel for both; the shell kernel has one per shape; the references
-// take 8x8x8 for every grid.
+// shape as an argument (gto_block_shape_arg), one kernel for both; the shell kernel has one per shape.
 enum { GTO_SHAPE_3D = 0, GTO_SHAPE_2D = 1, GTO_SHAPE_COUNT = 2 };
 static const uint32_t gto_block_shape[GTO_SHAPE_COUNT][3] = { {8, 8, 8}, {32, 16, 1} };
 // MD_GTO_GPU_NO_2D (set): the 3D shape for every grid, to measure what the 2D one saves
@@ -1057,9 +992,6 @@ static inline md_gpu_uint4 gto_block_shape_arg(int sh) {
     return (md_gpu_uint4){ b[0], b[1], b[2], lx | (ly << 8) };
 }
 
-static md_gpu_kernel_t gto_k_density      = NULL;  // the references
-static md_gpu_kernel_t gto_k_mo           = NULL;
-static md_gpu_kernel_t gto_k_localization = NULL;  // md_gto_gpu_localization_launch
 // The two-pass (GEMM) path: the counts, Phi (with gradients for ELF and LOL) and the D_b gather
 static md_gpu_kernel_t gto_k_density_gemm_count    = NULL;
 static md_gpu_kernel_t gto_k_density_gemm_phi      = NULL;
@@ -1100,9 +1032,6 @@ void md_gto_gpu_initialize(md_gpu_device_t device) {
 }
 
 void md_gto_gpu_shutdown(void) {
-    destroy_kernel(&gto_k_density);
-    destroy_kernel(&gto_k_mo);
-    destroy_kernel(&gto_k_localization);
     destroy_kernel(&gto_k_density_gemm_count);
     destroy_kernel(&gto_k_density_gemm_phi);
     destroy_kernel(&gto_k_density_gemm_phi_grad);
@@ -1118,13 +1047,6 @@ void md_gto_gpu_shutdown(void) {
     destroy_kernel(&gto_k_mo_gemm);
     destroy_kernel(&gto_k_dmat_tiles_core);
     gto_gpu_device = NULL;
-}
-
-// A reference kernel, made on first use: NULL (logged) when it cannot be
-static md_gpu_kernel_t gto_reference_kernel(md_gpu_kernel_t* slot, md_gpu_kernel_desc_t desc) {
-    if (!gto_gpu_device) return NULL;
-    ensure_kernel(gto_gpu_device, slot, desc);
-    return *slot;
 }
 
 // The counting, Phi and D_b passes
@@ -1162,62 +1084,9 @@ static bool gto_loc_core_aux_kernels(void) {
     return gto_k_loc_core_finish && gto_k_density_gemm_phi_grad;
 }
 
-/* Argument structs, mirroring the kernels in src/shaders/gto/. Both lead with two
+/* Argument structs, mirroring the kernels in src/shaders/gto/. Each leads with two
    float4x4 at offset 0, where SPIR-V and MSL agree.
    tools/check_gpu_arg_layout.py verifies these against the compiled shaders. */
-typedef struct {
-    md_gpu_float4x4 world_to_model;
-    md_gpu_float4x4 index_to_world;
-    md_gpu_float4   step;
-    md_gpu_uint4    grid_dim;
-    uint32_t        num_cgtos;
-    uint32_t        operation;
-    uint32_t        dm_tiled;
-    uint32_t        dm_nt;
-    md_gpu_addr_t   cgto_atom_idx;
-    md_gpu_addr_t   cgto_r;
-    md_gpu_addr_t   cgto_off_len;
-    md_gpu_addr_t   pgto;
-    md_gpu_addr_t   atom_xyz;
-    md_gpu_addr_t   D_matrix;
-    md_gpu_addr_t   dm_tao;
-    md_gpu_addr_t   dm_map;
-    md_gpu_storage_tex_t out_tex;
-} gto_density_args_t;
-
-/* Mirrors RootArgs in eval_gto_localization.slang */
-typedef struct {
-    md_gpu_float4x4 world_to_model;
-    md_gpu_float4x4 index_to_world;
-    md_gpu_float4   step;
-    md_gpu_uint4    grid_dim;
-    md_gpu_uint4    group_dim;
-    uint32_t        group_first;
-    uint32_t        group_count;
-    uint32_t        count_only;
-    uint32_t        _pad1;
-    uint32_t        num_cgtos;
-    uint32_t        num_spins;
-    uint32_t        lol;
-    float           rho_min;
-    uint32_t        dm_tiled;
-    uint32_t        dm_nt;
-    float           d_min;
-    float           _pad0;
-    md_gpu_addr_t   cgto_atom_idx;
-    md_gpu_addr_t   cgto_r;
-    md_gpu_addr_t   cgto_off_len;
-    md_gpu_addr_t   pgto;
-    md_gpu_addr_t   atom_xyz;
-    md_gpu_addr_t   D_a;
-    md_gpu_addr_t   D_b;
-    md_gpu_addr_t   dm_tao_a;
-    md_gpu_addr_t   dm_map_a;
-    md_gpu_addr_t   dm_tao_b;
-    md_gpu_addr_t   dm_map_b;
-    md_gpu_addr_t   group_aos;
-    md_gpu_storage_tex_t out_tex;
-} gto_localization_args_t;
 
 /* Mirrors RootArgs in eval_gto_density_gemm.slang (shared by its three entry points). */
 typedef struct {
@@ -1277,34 +1146,11 @@ typedef struct {
 } gto_dmat_args_t;
 
 typedef struct {
-    md_gpu_float4x4 world_to_model;
-    md_gpu_float4x4 index_to_world;
-    md_gpu_float4   step;
-    md_gpu_uint4    grid_dim;
-    uint32_t        num_cgtos;
-    uint32_t        num_rows;
-    uint32_t        mode;
-    uint32_t        operation;
-    md_gpu_addr_t   cgto_atom_idx;
-    md_gpu_addr_t   cgto_r;
-    md_gpu_addr_t   cgto_off_len;
-    md_gpu_addr_t   pgto;
-    md_gpu_addr_t   atom_xyz;
-    md_gpu_addr_t   coeffs;
-    md_gpu_storage_tex_t out_tex;
-} gto_mo_args_t;
-
-typedef struct {
     uint32_t num_cgtos;
-    uint32_t num_pgtos;
     uint32_t num_atoms;
     uint32_t num_shells;
     uint32_t num_shell_prims;
-    uint32_t off_cgto_atom_idx; // uint  × num_cgtos
-    uint32_t off_cgto_r;        // float × num_cgtos
-    uint32_t off_cgto_off_len;  // uint2 × num_cgtos
-    uint32_t off_pgto;          // PGTO  × num_pgtos
-    // Shell-level data, used by the shell and GEMM kernels.
+    // Shell-level data, what every kernel reads (the per-AO arrays went with the reference kernels).
     uint32_t off_shell_atom_idx; // uint  × num_shells
     uint32_t off_shell_r;        // float × num_shells
     uint32_t off_shell_info;     // uint4 × num_shells: (prim_offset, num_prims, l, ao_offset)
@@ -1312,28 +1158,14 @@ typedef struct {
     uint64_t total_size;
 } md_gto_basis_layout_t;
 
-static md_gto_basis_layout_t gto_basis_layout_compute(uint32_t num_cgtos, uint32_t num_pgtos, uint32_t num_atoms,
-                                                      uint32_t num_shells, uint32_t num_shell_prims) {
+static md_gto_basis_layout_t gto_basis_layout_compute(uint32_t num_cgtos, uint32_t num_atoms, uint32_t num_shells, uint32_t num_shell_prims) {
     md_gto_basis_layout_t L = {0};
     L.num_cgtos = num_cgtos;
-    L.num_pgtos = num_pgtos;
     L.num_atoms = num_atoms;
     L.num_shells = num_shells;
     L.num_shell_prims = num_shell_prims;
 
-    L.off_cgto_atom_idx = 0;
-    uint32_t end_cgto_atom_idx = L.off_cgto_atom_idx + (uint32_t)(sizeof(uint32_t) * num_cgtos);
-
-    L.off_cgto_r       = (uint32_t)MD_ALIGN_TO(end_cgto_atom_idx, 256);
-    uint32_t end_cgto_r       = L.off_cgto_r       + (uint32_t)(sizeof(float)    * 1 * num_cgtos);
-
-    L.off_cgto_off_len = (uint32_t)MD_ALIGN_TO(end_cgto_r,       256);
-    uint32_t end_cgto_off_len = L.off_cgto_off_len + (uint32_t)(sizeof(uint32_t) * 2 * num_cgtos);
-
-    L.off_pgto         = (uint32_t)MD_ALIGN_TO(end_cgto_off_len, 256);
-    uint32_t end_pgto  = L.off_pgto + (uint32_t)(sizeof(PGTO) * num_pgtos);
-
-    L.off_shell_atom_idx = (uint32_t)MD_ALIGN_TO(end_pgto, 256);
+    L.off_shell_atom_idx = 0;
     uint32_t end_shell_atom_idx = L.off_shell_atom_idx + (uint32_t)(sizeof(uint32_t) * num_shells);
 
     L.off_shell_r      = (uint32_t)MD_ALIGN_TO(end_shell_atom_idx, 256);
@@ -1350,10 +1182,6 @@ static md_gto_basis_layout_t gto_basis_layout_compute(uint32_t num_cgtos, uint32
 }
 
 // ---------------------------------------------------------------------------
-// md_gto_gpu_basis_t  —  device-local basis buffer (atom_idx, r, off_len, pgto)
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 // md_gto_gpu_basis_t  -  device-local basis allocation
 // ---------------------------------------------------------------------------
 
@@ -1367,11 +1195,8 @@ md_gto_gpu_basis_t md_gto_gpu_basis_create(md_gpu_stream_t stream, const md_gto_
     MD_ASSERT(desc && desc->basis);
     const md_gto_basis_t* basis = desc->basis;
 
-    uint32_t num_cgtos = 0, num_pgtos = 0;
-    gto_basis_count(&num_cgtos, &num_pgtos, basis);
-    uint32_t num_atoms = gto_basis_num_atoms(basis);
-
-    md_gto_basis_layout_t layout = gto_basis_layout_compute(num_cgtos, num_pgtos, num_atoms, basis->num_shells, gto_basis_num_shell_prims(basis));
+    md_gto_basis_layout_t layout = gto_basis_layout_compute(gto_basis_num_cgtos(basis), gto_basis_num_atoms(basis), basis->num_shells,
+                                                            gto_basis_num_shell_prims(basis));
 
     md_gpu_addr_t buf = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, (size_t)layout.total_size).gpu;
     if (!buf) {
@@ -1388,33 +1213,17 @@ md_gto_gpu_basis_t md_gto_gpu_basis_create(md_gpu_stream_t stream, const md_gto_
     const md_gto_basis_layout_t* L = &gb->layout;
     md_temp_scope_t temp = md_temp_begin();
 
-    uint32_t* cgto_atom_idx = (uint32_t*)md_temp_alloc(temp, sizeof(uint32_t) * 1 * L->num_cgtos);
-    float*    cgto_r        = (float*)   md_temp_alloc(temp, sizeof(float)    * 1 * L->num_cgtos);
-    uint32_t* cgto_off_len  = (uint32_t*)md_temp_alloc(temp, sizeof(uint32_t) * 2 * L->num_cgtos);
-    PGTO*     pgto          = (PGTO*)    md_temp_alloc(temp, sizeof(PGTO)         * L->num_pgtos);
-
-    gto_expand_basis_gpu_meta(cgto_atom_idx, cgto_r, cgto_off_len, pgto, basis, desc->cutoff);
-
     uint32_t* shell_atom_idx = (uint32_t*)md_temp_alloc(temp, sizeof(uint32_t) * MD_MAX(1, L->num_shells));
     float*    shell_r        = (float*)   md_temp_alloc(temp, sizeof(float)    * MD_MAX(1, L->num_shells));
     uint32_t* shell_info     = (uint32_t*)md_temp_alloc(temp, sizeof(uint32_t) * 4 * MD_MAX(1, L->num_shells));
     float*    shell_prim     = (float*)   md_temp_alloc(temp, sizeof(float)    * 2 * MD_MAX(1, L->num_shell_prims));
     gto_expand_basis_gpu_shells(shell_atom_idx, shell_r, shell_info, shell_prim, basis, desc->cutoff);
 
-    const size_t sz_atom_idx = sizeof(uint32_t) * 1 * L->num_cgtos;
-    const size_t sz_r        = sizeof(float)    * 1 * L->num_cgtos;
-    const size_t sz_off_len  = sizeof(uint32_t) * 2 * L->num_cgtos;
-    const size_t sz_pgto     = sizeof(PGTO)         * L->num_pgtos;
-
     /* One path for both UMA and discrete: md_gpu hands back either the
        destination itself or staging, whichever is safe. */
     uint8_t* dst = (uint8_t*)md_gpu_upload_begin(stream, buf, (size_t)L->total_size);
     bool success = false;
     if (dst) {
-        md_memcpy(dst + L->off_cgto_atom_idx, cgto_atom_idx, sz_atom_idx);
-        md_memcpy(dst + L->off_cgto_r,        cgto_r,        sz_r);
-        md_memcpy(dst + L->off_cgto_off_len,  cgto_off_len,  sz_off_len);
-        md_memcpy(dst + L->off_pgto,          pgto,          sz_pgto);
         md_memcpy(dst + L->off_shell_atom_idx, shell_atom_idx, sizeof(uint32_t) * 1 * L->num_shells);
         md_memcpy(dst + L->off_shell_r,        shell_r,        sizeof(float)    * 1 * L->num_shells);
         md_memcpy(dst + L->off_shell_info,     shell_info,     sizeof(uint32_t) * 4 * L->num_shells);
@@ -1448,11 +1257,6 @@ md_gpu_addr_t md_gto_gpu_basis_buffer(md_gto_gpu_basis_t gb) {
 size_t md_gto_gpu_basis_num_cgtos(md_gto_gpu_basis_t gb) {
     if (!gb) return 0;
     return gb->layout.num_cgtos;
-}
-
-size_t md_gto_gpu_basis_num_pgtos(md_gto_gpu_basis_t gb) {
-    if (!gb) return 0;
-    return gb->layout.num_pgtos;
 }
 
 size_t md_gto_gpu_basis_num_atoms(md_gto_gpu_basis_t gb) {
@@ -1866,266 +1670,19 @@ static void gto_fill_common_args(md_gpu_float4x4* w2m, md_gpu_float4x4* i2w, md_
     grid_dim->w = 0;
 }
 
-static void gto_density_launch_reference(md_gpu_stream_t stream, const md_gto_gpu_density_desc_t* desc, md_gpu_storage_tex_t out) {
-    if (!gto_reference_kernel(&gto_k_density, md_shader_eval_gto_density_main_kernel())) {
-        MD_LOG_ERROR("md_gto_gpu_density_launch: kernel not available (md_gto_gpu_initialize not called?)");
-        return;
-    }
-    const md_gto_basis_layout_t* L = &desc->basis->layout;
-    const md_gpu_addr_t base = desc->basis->buffer;
+static bool gto_loc_launch_gemm(md_gpu_stream_t stream, const md_gto_gpu_localization_desc_t* desc);
 
-    gto_density_args_t a = {0};
-    gto_fill_common_args(&a.world_to_model, &a.index_to_world, &a.step, &a.grid_dim, desc->grid, desc->sample_offset);
-    a.num_cgtos = L->num_cgtos;
-    a.operation = (uint32_t)desc->op;
-
-    /* Device memory is a pointer, so the basis sub-ranges are plain
-       arithmetic rather than (buffer, offset, usage) triples. */
-    a.cgto_atom_idx = base + L->off_cgto_atom_idx;
-    a.cgto_r        = base + L->off_cgto_r;
-    a.cgto_off_len  = base + L->off_cgto_off_len;
-    a.pgto          = base + L->off_pgto;
-    a.atom_xyz      = desc->atom_xyz;
-    a.D_matrix      = desc->dmat ? desc->dmat->tiles : desc->coeff;
-    if (desc->dmat) {
-        a.dm_tiled = 1;
-        a.dm_nt    = desc->dmat->nt;
-        a.dm_tao   = desc->dmat->tao;
-        a.dm_map   = desc->dmat->map;
-    }
-    a.out_tex       = out;
-
-    const md_gpu_grid_t g = md_gpu_grid_for(gto_k_density, a.grid_dim.x, a.grid_dim.y, a.grid_dim.z);
-    md_gpu_launch(stream, gto_k_density, g, &a, sizeof(a));
-}
-
-/* ELF and LOL in PIECES, as the density's GEMM (see gto_gemm_plan_t): one launch over a large system's grid is
-   minutes of GPU work at the cutoff ELF takes (1e-8), a certain loss of the device to the watchdog (TDR). A group's
-   cost is the pairs of the AOs that reach its box, which varies by orders of magnitude over a grid, so the groups
-   are counted first (the kernel with count_only: the screening alone, a small part of the evaluation), and the
-   pieces planned from the counts: runs of consecutive groups of about GTO_LOC_PIECE_WORK, each its own submission. */
-
-/* A piece's work in voxel x AO pair x spin: each about 12 multiply-adds (rho, its gradient, tau). 2^30: some ms on an
-   RTX 3080, a few tens on a GTX 1060. */
-#define GTO_LOC_PIECE_WORK  ((uint64_t)1 << 30)
-#define GTO_LOC_MAX_SCREENED 2048u      /* MAX_SCREENED_CGTOS in eval_gto_localization.slang */
-static const uint32_t gto_loc_group_shape[3] = { 8, 8, 8 };   /* WG_X, _Y, _Z in eval_gto_localization.slang: every grid */
-
-typedef struct gto_loc_plan_t {
-    md_gpu_stream_t         stream;
-    md_gpu_kernel_t         kernel;
-    gto_localization_args_t a;
-    uint32_t                num_groups;
-    uint32_t                group_voxels;
-    uint64_t                piece_work;
-    /* the counts */
-    md_gpu_addr_t           counts;
-    md_gpu_mem_t            counts_rb;
-    md_gpu_sync_t           sync;
-    md_tick_t               t_count0;
-    double                  t_count;        /* ms of the calling thread on the counts and the plan */
-    /* the pieces: piece k the groups [first[k], first[k + 1]) */
-    uint32_t*               first;
-    uint64_t*               work;
-    uint32_t                num_pieces;
-    uint32_t                next;
-    uint64_t                work_total, work_issued;
-    uint32_t                max_aos, over; /* the most AOs at a group; groups over GTO_LOC_MAX_SCREENED */
-} gto_loc_plan_t;
-
-static void gto_loc_plan_free(gto_loc_plan_t* P) {
-    if (!P) return;
-    md_gpu_free(P->stream, P->counts);       /* stream-ordered: after what reads them */
-    md_gpu_free(P->stream, P->counts_rb.gpu);
-    free(P->first);
-    free(P->work);
-    free(P);
-}
-
-static void gto_loc_launch_groups(gto_loc_plan_t* P, uint32_t first, uint32_t count, uint32_t count_only) {
-    P->a.group_first = first;
-    P->a.group_count = count;
-    P->a.count_only  = count_only;
-    md_gpu_launch(P->stream, P->kernel, md_gpu_grid(MD_MIN(count, 65535u), MD_DIV_UP(count, 65535u), 1), &P->a, sizeof(P->a));
-}
-
-/* The plan of an evaluation with its counting pass issued; NULL (logged) for invalid input */
-static gto_loc_plan_t* gto_loc_begin(md_gpu_stream_t stream, const md_gto_gpu_localization_desc_t* desc) {
-    if (!stream || !desc || !desc->basis || !desc->atom_xyz || !desc->grid || !desc->out_tex ||
-        (desc->num_spins != 1 && desc->num_spins != 2)) {
-        MD_LOG_ERROR("md_gto_gpu_localization: invalid arguments");
-        return NULL;
-    }
-    const bool tiled = desc->dmat[0] != NULL;
-    for (uint32_t s = 0; s < desc->num_spins; ++s) {
-        if (tiled ? (!desc->dmat[s] || desc->coeff[s]) : (!desc->coeff[s] || desc->dmat[s])) {
-            MD_LOG_ERROR("md_gto_gpu_localization: every spin's matrix packed (coeff) or in tiles (dmat), not both");
-            return NULL;
-        }
-    }
-    if (tiled && desc->num_spins == 2 && desc->dmat[0]->nt != desc->dmat[1]->nt) {
-        MD_LOG_ERROR("md_gto_gpu_localization: the spins' dmats are of different bases");
-        return NULL;
-    }
-    md_gpu_kernel_t k = gto_reference_kernel(&gto_k_localization, md_shader_eval_gto_localization_main_kernel());
-    if (!k) return NULL;
-
-    gto_loc_plan_t* P = (gto_loc_plan_t*)calloc(1, sizeof(gto_loc_plan_t));
-    if (!P) return NULL;
-    P->stream = stream;
-    P->kernel = k;
-    P->piece_work = desc->piece_work ? desc->piece_work : GTO_LOC_PIECE_WORK;
-    gto_localization_args_t* a = &P->a;
-    const md_gto_basis_layout_t* L = &desc->basis->layout;
-    const md_gpu_addr_t base = desc->basis->buffer;
-    gto_fill_common_args(&a->world_to_model, &a->index_to_world, &a->step, &a->grid_dim, desc->grid, desc->sample_offset);
-    const uint32_t* gs = gto_loc_group_shape;
-    a->group_dim.x = MD_DIV_UP(a->grid_dim.x, gs[0]);
-    a->group_dim.y = MD_DIV_UP(a->grid_dim.y, gs[1]);
-    a->group_dim.z = MD_DIV_UP(a->grid_dim.z, gs[2]);
-    P->num_groups   = a->group_dim.x * a->group_dim.y * a->group_dim.z;
-    P->group_voxels = gs[0] * gs[1] * gs[2];
-    a->num_cgtos = L->num_cgtos;
-    a->num_spins = desc->num_spins;
-    a->lol       = desc->kind == MD_GTO_GPU_LOL ? 1u : 0u;
-    a->rho_min   = (float)desc->rho_min;
-    a->d_min     = desc->d_min > 0.0 ? (float)desc->d_min : 0.0f;
-    a->cgto_atom_idx = base + L->off_cgto_atom_idx;
-    a->cgto_r        = base + L->off_cgto_r;
-    a->cgto_off_len  = base + L->off_cgto_off_len;
-    a->pgto          = base + L->off_pgto;
-    a->atom_xyz      = desc->atom_xyz;
-    if (tiled) {
-        a->dm_tiled = 1;
-        a->dm_nt    = desc->dmat[0]->nt;
-        a->D_a = desc->dmat[0]->tiles; a->dm_tao_a = desc->dmat[0]->tao; a->dm_map_a = desc->dmat[0]->map;
-        const md_gto_gpu_dmat_t b = desc->num_spins == 2 ? desc->dmat[1] : desc->dmat[0];
-        a->D_b = b->tiles; a->dm_tao_b = b->tao; a->dm_map_b = b->map;
-    } else {
-        a->D_a = desc->coeff[0];
-        a->D_b = desc->num_spins == 2 ? desc->coeff[1] : desc->coeff[0];
-    }
-    a->out_tex = md_gpu_texture_storage(desc->out_tex, 0);
-    if (!a->out_tex.handle) {
-        MD_LOG_ERROR("md_gto_gpu_localization: out_tex needs MD_GPU_TEX_STORAGE usage");
-        free(P);
-        return NULL;
-    }
-    if (P->num_groups == 0) return P;   /* nothing to evaluate: a plan of no pieces */
-
-    const size_t bytes = sizeof(uint32_t) * P->num_groups;
-    P->counts    = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, bytes).gpu;
-    P->counts_rb = md_gpu_malloc(stream, MD_GPU_MEM_HOST_READ, bytes);
-    if (!P->counts || !P->counts_rb.cpu) {
-        MD_LOG_ERROR("md_gto_gpu_localization: failed to allocate the groups' counts");
-        gto_loc_plan_free(P);
-        return NULL;
-    }
-    P->t_count0 = md_tick_now();
-    a->group_aos = P->counts;
-    gto_loc_launch_groups(P, 0, P->num_groups, 1);
-    md_gpu_copy(stream, P->counts_rb.gpu, P->counts, bytes);
-    P->sync = md_gpu_stream_record(stream);
-    return P;
-}
-
-/* The pieces, from the counts (on the host: P->sync complete). False (logged) when they could not be planned. */
-static bool gto_loc_plan(gto_loc_plan_t* P, double waited_ms) {
-    const md_tick_t t0 = md_tick_now();
-    if (P->num_groups == 0) return true;
-    const uint32_t* cnt = (const uint32_t*)P->counts_rb.cpu;
-    const uint64_t spins = P->a.num_spins;
-    /* at most a piece per group, and one past */
-    P->first = (uint32_t*)malloc(sizeof(uint32_t) * ((size_t)P->num_groups + 1));
-    P->work  = (uint64_t*)malloc(sizeof(uint64_t) * ((size_t)P->num_groups + 1));
-    if (!P->first || !P->work) {
-        MD_LOG_ERROR("md_gto_gpu_localization: out of memory for the plan of %u groups", P->num_groups);
+// The algorithm asked for: the GEMM path (the only one; 0 takes it), or false (logged)
+static bool gto_loc_algo_ok(const md_gto_gpu_localization_desc_t* desc) {
+    if (desc && desc->algorithm != MD_GTO_GPU_LOCALIZATION_ALGO_DEFAULT && desc->algorithm != MD_GTO_GPU_LOCALIZATION_ALGO_GEMM) {
+        MD_LOG_ERROR("md_gto_gpu_localization: unknown algorithm %d", (int)desc->algorithm);
         return false;
     }
-    uint64_t w = 0;
-    P->first[0] = 0;
-    for (uint32_t g = 0; g < P->num_groups; ++g) {
-        const uint32_t n = cnt[g];
-        P->max_aos = MD_MAX(P->max_aos, n);
-        P->over += n > GTO_LOC_MAX_SCREENED ? 1 : 0;
-        const uint64_t m = MD_MIN(n, GTO_LOC_MAX_SCREENED);
-        /* the pairs of each spin, and the AOs' values and gradients (about 8 pairs' worth each); 1: the group's own */
-        w += P->group_voxels * (m * (m + 1) / 2 * spins + 8 * m) + 1;
-        if (w >= P->piece_work || g + 1 == P->num_groups) {
-            P->work[P->num_pieces] = w;
-            P->work_total += w;
-            P->first[++P->num_pieces] = g + 1;
-            w = 0;
-        }
-    }
-    md_gpu_free(P->stream, P->counts_rb.gpu);
-    P->counts_rb = (md_gpu_mem_t){0};
-    P->a.group_aos = 0;
-    md_gpu_free(P->stream, P->counts);  /* stream-ordered: after the count read it */
-    P->counts = 0;
-    if (P->over) {
-        MD_LOG_ERROR("md_gto_gpu_localization: %u of %u groups are reached by more than %u AOs (at most %u): their values leave out the rest",
-                     P->over, P->num_groups, GTO_LOC_MAX_SCREENED, P->max_aos);
-    }
-    P->t_count = waited_ms + md_tick_to_milliseconds(md_tick_now() - t0);
     return true;
 }
 
-static inline bool gto_loc_plan_issued(const gto_loc_plan_t* P) {
-    return P->next >= P->num_pieces;
-}
-
-/* One piece, not yet submitted */
-static void gto_loc_issue_piece(gto_loc_plan_t* P) {
-    const uint32_t k = P->next++;
-    gto_loc_launch_groups(P, P->first[k], P->first[k + 1] - P->first[k], 0);
-    P->work_issued += P->work[k];
-}
-
-static void gto_loc_plan_log(const gto_loc_plan_t* P) {
-    MD_LOG_DEBUG("GTO %s (" MD_GTO_GPU_LOCALIZATION_REVISION "): %u groups of %u voxels in %u pieces (%.2f G voxel-pairs), at most %u AOs at a group; "
-                 "the calling thread spent %.1f ms on the counts (waiting for them, and what the stream held before them, unless a job) and the plan",
-                 P->a.lol ? "LOL" : "ELF", P->num_groups, P->group_voxels, P->num_pieces, (double)P->work_total * 1.0e-9, P->max_aos, P->t_count);
-}
-
-static md_gto_gpu_localization_algo_t gto_loc_algo(const md_gto_gpu_localization_desc_t* desc) {
-    md_gto_gpu_localization_algo_t algo = desc ? desc->algorithm : MD_GTO_GPU_LOCALIZATION_ALGO_DEFAULT;
-    if (algo == MD_GTO_GPU_LOCALIZATION_ALGO_DEFAULT) {
-        algo = MD_GTO_GPU_LOCALIZATION_ALGO_GEMM;   // 5.7x the reference's speed on a protein (RTX 3080), closer to the exact values
-        const char* env = getenv("MD_GTO_GPU_LOCALIZATION_ALGO");
-        if (env) {
-            if      (strcmp(env, "reference") == 0) algo = MD_GTO_GPU_LOCALIZATION_ALGO_REFERENCE;
-            else if (strcmp(env, "gemm") == 0)      algo = MD_GTO_GPU_LOCALIZATION_ALGO_GEMM;
-            else MD_LOG_ERROR("MD_GTO_GPU_LOCALIZATION_ALGO: '%s' is neither reference nor gemm; the default is taken", env);
-        }
-    }
-    return algo;
-}
-
-static bool gto_loc_launch_gemm(md_gpu_stream_t stream, const md_gto_gpu_localization_desc_t* desc);
-
 bool md_gto_gpu_localization_launch(md_gpu_stream_t stream, const md_gto_gpu_localization_desc_t* desc) {
-    if (gto_loc_algo(desc) == MD_GTO_GPU_LOCALIZATION_ALGO_GEMM) {
-        return gto_loc_launch_gemm(stream, desc);
-    }
-    gto_loc_plan_t* P = gto_loc_begin(stream, desc);
-    if (!P) return false;
-    double waited = 0.0;
-    if (P->num_groups) {
-        /* the one place this blocks the calling thread: the counts */
-        md_gpu_sync_wait(P->sync);
-        waited = md_tick_to_milliseconds(md_tick_now() - P->t_count0);
-    }
-    const bool ok = gto_loc_plan(P, waited);
-    if (ok) {
-        while (!gto_loc_plan_issued(P)) {
-            gto_loc_issue_piece(P);
-            md_gpu_stream_flush(stream);    /* a submission of its own */
-        }
-        gto_loc_plan_log(P);
-    }
-    gto_loc_plan_free(P);
-    return ok;
+    return gto_loc_algo_ok(desc) && gto_loc_launch_gemm(stream, desc);
 }
 
 #define GTO_GEMM_BLOCK_VOXELS 512u
@@ -2793,8 +2350,8 @@ static void gto_density_launch_gemm(md_gpu_stream_t stream, const md_gto_gpu_den
     gto_gemm_execute(stream, &a, desc->scratch_bytes, true, &cfg, desc->piece_work);
 }
 
-/* The storage the evaluation writes and its algorithm, or false (logged) */
-static bool gto_density_check(md_gpu_storage_tex_t* out, md_gto_gpu_density_algo_t* algo, md_gpu_stream_t stream, const md_gto_gpu_density_desc_t* desc) {
+/* The storage the evaluation writes, or false (logged) */
+static bool gto_density_check(md_gpu_storage_tex_t* out, md_gpu_stream_t stream, const md_gto_gpu_density_desc_t* desc) {
     if (!stream || !desc || !desc->basis || !desc->atom_xyz || !(desc->coeff || desc->dmat) || !desc->out_tex || !desc->grid) {
         MD_LOG_ERROR("md_gto_gpu_density_launch: invalid input");
         return false;
@@ -2808,19 +2365,8 @@ static bool gto_density_check(md_gpu_storage_tex_t* out, md_gto_gpu_density_algo
         MD_LOG_ERROR("md_gto_gpu_density_launch: out_tex needs MD_GPU_TEX_STORAGE usage");
         return false;
     }
-    *algo = desc->algorithm;
-    if (*algo == MD_GTO_GPU_DENSITY_ALGO_DEFAULT) {
-        *algo = MD_GTO_GPU_DENSITY_ALGO_GEMM;   // 1.8-2.6x faster than the reference on large systems
-        /* to measure one against another without rebuilding the caller */
-        const char* env = getenv("MD_GTO_GPU_DENSITY_ALGO");
-        if (env) {
-            if      (strcmp(env, "reference") == 0) *algo = MD_GTO_GPU_DENSITY_ALGO_REFERENCE;
-            else if (strcmp(env, "gemm") == 0)      *algo = MD_GTO_GPU_DENSITY_ALGO_GEMM;
-            else MD_LOG_ERROR("MD_GTO_GPU_DENSITY_ALGO: '%s' is neither reference nor gemm; the default is taken", env);
-        }
-    }
-    if (*algo != MD_GTO_GPU_DENSITY_ALGO_REFERENCE && *algo != MD_GTO_GPU_DENSITY_ALGO_GEMM) {
-        MD_LOG_ERROR("md_gto_gpu_density_launch: unknown algorithm %d", (int)*algo);
+    if (desc->algorithm != MD_GTO_GPU_DENSITY_ALGO_DEFAULT && desc->algorithm != MD_GTO_GPU_DENSITY_ALGO_GEMM) {
+        MD_LOG_ERROR("md_gto_gpu_density_launch: unknown algorithm %d", (int)desc->algorithm);
         return false;
     }
     return true;
@@ -2828,13 +2374,8 @@ static bool gto_density_check(md_gpu_storage_tex_t* out, md_gto_gpu_density_algo
 
 void md_gto_gpu_density_launch(md_gpu_stream_t stream, const md_gto_gpu_density_desc_t* desc) {
     md_gpu_storage_tex_t out;
-    md_gto_gpu_density_algo_t algo;
-    if (!gto_density_check(&out, &algo, stream, desc)) return;
-    if (algo == MD_GTO_GPU_DENSITY_ALGO_REFERENCE) {
-        gto_density_launch_reference(stream, desc, out);
-    } else {
-        gto_density_launch_gemm(stream, desc, out);
-    }
+    if (!gto_density_check(&out, stream, desc)) return;
+    gto_density_launch_gemm(stream, desc, out);
 }
 
 /* A job's pieces in flight: enough that the GPU does not run dry between polls, which no fixed count does across
@@ -2848,9 +2389,8 @@ MD_STATIC_ASSERT(GTO_GEMM_JOB_MARKS >= GTO_GEMM_JOB_IN_FLIGHT_MAX, "a mark per p
 struct md_gto_gpu_job_t {
     md_gpu_stream_t    stream;
     gto_gemm_pending_t p;
-    bool               counting;   /* the counting pass (p's, or loc's) not yet planned */
+    bool               counting;   /* the counting pass not yet planned */
     gto_gemm_plan_t*   plan;       /* the pieces, while some are not issued */
-    gto_loc_plan_t*    loc;        /* ELF or LOL (md_gto_gpu_localization_job_begin): its counts, then its pieces */
     bool               issued;     /* all of it on the stream */
     uint32_t           in_flight;
     md_gpu_sync_t      marks[GTO_GEMM_JOB_MARKS];
@@ -2883,19 +2423,11 @@ static void gto_gemm_job_take_marks(md_gto_gpu_job_t* j) {
 
 md_gto_gpu_job_t* md_gto_gpu_density_job_begin(md_gpu_stream_t stream, const md_gto_gpu_density_desc_t* desc) {
     md_gpu_storage_tex_t out;
-    md_gto_gpu_density_algo_t algo;
-    if (!gto_density_check(&out, &algo, stream, desc)) return NULL;
+    if (!gto_density_check(&out, stream, desc)) return NULL;
     md_gto_gpu_job_t* job = (md_gto_gpu_job_t*)calloc(1, sizeof(md_gto_gpu_job_t));
     if (!job) return NULL;
     job->stream = stream;
     job->in_flight = GTO_GEMM_JOB_IN_FLIGHT_0;
-    if (algo == MD_GTO_GPU_DENSITY_ALGO_REFERENCE) {
-        gto_density_launch_reference(stream, desc, out);
-        job->issued = true;
-        job->work_total = 1;
-        gto_gemm_job_mark(job, 1);
-        return job;
-    }
     gto_gemm_cfg_t cfg;
     gto_density_gemm_args_t a;
     // nothing to evaluate, or what could not be issued (logged): done, as the launch would be
@@ -2907,50 +2439,19 @@ md_gto_gpu_job_t* md_gto_gpu_density_job_begin(md_gpu_stream_t stream, const md_
 }
 
 md_gto_gpu_job_t* md_gto_gpu_localization_job_begin(md_gpu_stream_t stream, const md_gto_gpu_localization_desc_t* desc) {
-    if (gto_loc_algo(desc) == MD_GTO_GPU_LOCALIZATION_ALGO_GEMM) {
-        md_gto_gpu_job_t* job = (md_gto_gpu_job_t*)calloc(1, sizeof(md_gto_gpu_job_t));
-        if (!job) return NULL;
-        job->stream = stream;
-        job->in_flight = GTO_GEMM_JOB_IN_FLIGHT_0;
-        const int r = gto_loc_gemm_count(&job->p, stream, desc);
-        if (r < 0) {
-            free(job);
-            return NULL;
-        }
-        job->counting = r > 0;
-        job->issued = !job->counting;
-        return job;
-    }
-    gto_loc_plan_t* P = gto_loc_begin(stream, desc);
-    if (!P) return NULL;
+    if (!gto_loc_algo_ok(desc)) return NULL;
     md_gto_gpu_job_t* job = (md_gto_gpu_job_t*)calloc(1, sizeof(md_gto_gpu_job_t));
-    if (!job) {
-        gto_loc_plan_free(P);
-        return NULL;
-    }
+    if (!job) return NULL;
     job->stream = stream;
     job->in_flight = GTO_GEMM_JOB_IN_FLIGHT_0;
-    job->loc = P;
-    job->counting = true;
-    return job;
-}
-
-// The job's plan, of either kind: all of it issued, the next piece, how many so far
-static inline bool gto_job_plan_issued(const md_gto_gpu_job_t* job) {
-    return job->loc ? gto_loc_plan_issued(job->loc) : gto_gemm_plan_issued(job->plan);
-}
-
-static inline uint64_t gto_job_issue_piece(md_gto_gpu_job_t* job) {
-    if (job->loc) {
-        gto_loc_issue_piece(job->loc);
-        return job->loc->work_issued;
+    const int r = gto_loc_gemm_count(&job->p, stream, desc);
+    if (r < 0) {
+        free(job);
+        return NULL;
     }
-    gto_gemm_issue_piece(job->plan);
-    return job->plan->work_issued;
-}
-
-static inline uint32_t gto_job_pieces_issued(const md_gto_gpu_job_t* job) {
-    return job->loc ? job->loc->next : job->plan->pieces;
+    job->counting = r > 0;
+    job->issued = !job->counting;
+    return job;
 }
 
 bool md_gto_gpu_job_poll(md_gto_gpu_job_t* job, bool wait) {
@@ -2958,54 +2459,37 @@ bool md_gto_gpu_job_poll(md_gto_gpu_job_t* job, bool wait) {
     gto_gemm_job_take_marks(job);
     if (job->issued) return true;
     if (job->counting) {
-        md_gpu_sync_t sync = job->loc ? job->loc->sync : job->p.sync;
         double waited = 0.0;
-        if (!(job->loc && job->loc->num_groups == 0) && !md_gpu_sync_is_complete(sync)) {
+        if (!md_gpu_sync_is_complete(job->p.sync)) {
             if (!wait) return false;
             const md_tick_t t0 = md_tick_now();
-            md_gpu_sync_wait(sync);
+            md_gpu_sync_wait(job->p.sync);
             waited = md_tick_to_milliseconds(md_tick_now() - t0);
         }
         job->counting = false;
-        if (job->loc) {
-            if (!gto_loc_plan(job->loc, waited)) {
-                gto_loc_plan_free(job->loc);
-                job->loc = NULL;
-                job->issued = true;     // logged: nothing is written
-                return true;
-            }
-            job->work_total = job->loc->work_total;
-        } else {
-            job->p.waited_ms = waited;
-            job->plan = gto_gemm_plan(&job->p);
-            if (!job->plan) {
-                job->issued = true;     // logged: nothing is written
-                return true;
-            }
-            job->work_total = job->plan->work_total;
+        job->p.waited_ms = waited;
+        job->plan = gto_gemm_plan(&job->p);
+        if (!job->plan) {
+            job->issued = true;     // logged: nothing is written
+            return true;
         }
-    } else if (!wait && gto_job_pieces_issued(job) > 0 && job->mark_head == job->mark_tail && job->in_flight < GTO_GEMM_JOB_IN_FLIGHT_MAX) {
+        job->work_total = job->plan->work_total;
+    } else if (!wait && job->plan->pieces > 0 && job->mark_head == job->mark_tail && job->in_flight < GTO_GEMM_JOB_IN_FLIGHT_MAX) {
         // every piece issued has passed and there is more: the GPU ran dry between the polls
         job->in_flight = MD_MIN(job->in_flight * 2, GTO_GEMM_JOB_IN_FLIGHT_MAX);
     }
     const md_gpu_ordering_t prev_ordering = md_gpu_stream_ordering(job->stream);
     md_gpu_stream_set_ordering(job->stream, MD_GPU_ORDER_IMPLICIT);
-    while (!gto_job_plan_issued(job) && (wait || job->mark_tail - job->mark_head < job->in_flight)) {
-        const uint64_t issued = gto_job_issue_piece(job);
-        gto_gemm_job_mark(job, issued);     // a submission of its own
+    while (!gto_gemm_plan_issued(job->plan) && (wait || job->mark_tail - job->mark_head < job->in_flight)) {
+        gto_gemm_issue_piece(job->plan);
+        gto_gemm_job_mark(job, job->plan->work_issued);     // a submission of its own
     }
     md_gpu_stream_set_ordering(job->stream, prev_ordering);
-    if (gto_job_plan_issued(job)) {
+    if (gto_gemm_plan_issued(job->plan)) {
         // stream-ordered: freed after the pieces
-        if (job->loc) {
-            gto_loc_plan_log(job->loc);
-            gto_loc_plan_free(job->loc);
-            job->loc = NULL;
-        } else {
-            gto_gemm_plan_log(job->plan);
-            gto_gemm_plan_free(job->plan);
-            job->plan = NULL;
-        }
+        gto_gemm_plan_log(job->plan);
+        gto_gemm_plan_free(job->plan);
+        job->plan = NULL;
         job->issued = true;
     }
     return job->issued;
@@ -3021,8 +2505,7 @@ float md_gto_gpu_job_progress(md_gto_gpu_job_t* job) {
 
 void md_gto_gpu_job_end(md_gto_gpu_job_t* job) {
     if (!job) return;
-    if (job->counting && !job->loc) gto_gemm_drop(&job->p);
-    gto_loc_plan_free(job->loc);    // its counts too, if they were not yet planned
+    if (job->counting) gto_gemm_drop(&job->p);
     // the pieces in flight complete, nothing more is issued: out_tex is left part written
     gto_gemm_plan_free(job->plan);
     free(job);
@@ -3076,37 +2559,6 @@ static md_gpu_kernel_t gto_mo_gemm_kernel(void) {
     if (!gto_gpu_device) return NULL;
     ensure_kernel(gto_gpu_device, &gto_k_mo_gemm, md_shader_eval_gto_mo_gemm_128x32_main_kernel());
     return gto_k_mo_gemm;
-}
-
-static void gto_orbital_launch_reference(md_gpu_stream_t stream, const md_gto_gpu_orbital_desc_t* desc, md_gpu_storage_tex_t out) {
-    if (!gto_reference_kernel(&gto_k_mo, md_shader_eval_gto_mo_main_kernel())) {
-        MD_LOG_ERROR("md_gto_gpu_orbital_launch: kernel not available (md_gto_gpu_initialize not called?)");
-        return;
-    }
-    if (desc->weights) {
-        MD_LOG_ERROR("md_gto_gpu_orbital_launch: the reference kernel does not support weights");
-        return;
-    }
-    const md_gto_basis_layout_t* L = &desc->basis->layout;
-    const md_gpu_addr_t base = desc->basis->buffer;
-
-    gto_mo_args_t a = {0};
-    gto_fill_common_args(&a.world_to_model, &a.index_to_world, &a.step, &a.grid_dim, desc->grid, desc->sample_offset);
-    a.num_cgtos = L->num_cgtos;
-    a.num_rows  = (uint32_t)desc->num_orbitals;
-    a.mode      = (uint32_t)desc->eval_mode;
-    a.operation = (uint32_t)desc->op;
-
-    a.cgto_atom_idx = base + L->off_cgto_atom_idx;
-    a.cgto_r        = base + L->off_cgto_r;
-    a.cgto_off_len  = base + L->off_cgto_off_len;
-    a.pgto          = base + L->off_pgto;
-    a.atom_xyz      = desc->atom_xyz;
-    a.coeffs        = desc->coeff;
-    a.out_tex       = out;
-
-    const md_gpu_grid_t g = md_gpu_grid_for(gto_k_mo, a.grid_dim.x, a.grid_dim.y, a.grid_dim.z);
-    md_gpu_launch(stream, gto_k_mo, g, &a, sizeof(a));
 }
 
 static void gto_orbital_launch_shell(md_gpu_stream_t stream, const md_gto_gpu_orbital_desc_t* desc, md_gpu_storage_tex_t out) {
@@ -3192,9 +2644,8 @@ void md_gto_gpu_orbital_launch(md_gpu_stream_t stream, const md_gto_gpu_orbital_
         algo = desc->num_orbitals <= GTO_MO_SHELL_MB ? MD_GTO_GPU_ORBITAL_ALGO_SHELL : MD_GTO_GPU_ORBITAL_ALGO_GEMM;
     }
     switch (algo) {
-    case MD_GTO_GPU_ORBITAL_ALGO_REFERENCE: gto_orbital_launch_reference(stream, desc, out); break;
-    case MD_GTO_GPU_ORBITAL_ALGO_SHELL:     gto_orbital_launch_shell(stream, desc, out);     break;
-    case MD_GTO_GPU_ORBITAL_ALGO_GEMM:      gto_orbital_launch_gemm(stream, desc, out);      break;
+    case MD_GTO_GPU_ORBITAL_ALGO_SHELL: gto_orbital_launch_shell(stream, desc, out); break;
+    case MD_GTO_GPU_ORBITAL_ALGO_GEMM:  gto_orbital_launch_gemm(stream, desc, out);  break;
     default:
         MD_LOG_ERROR("md_gto_gpu_orbital_launch: unknown algorithm %d", (int)algo);
         break;

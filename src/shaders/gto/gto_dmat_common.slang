@@ -1,6 +1,5 @@
 // gto_dmat_common.slang
-// Reading a density matrix in tiles (md_gto_gpu_dmat, md_gto.c). Included by gto_common.slang and
-// eval_gto_density.slang.
+// Reading a density matrix in tiles (md_gto_gpu_dmat, md_gto.c). Included by gto_common.slang.
 
 #ifndef GTO_DMAT_COMMON_SLANG
 #define GTO_DMAT_COMMON_SLANG

@@ -9,7 +9,7 @@
 // with w_m = 1 unless a weight buffer is given (weights may be negative, e.g. for
 // differences of orbital densities; they are applied after squaring).
 //
-// Compared with eval_gto_mo.slang (the per-AO reference kernel):
+// Compared with the per-AO reference kernel it replaced (eval_gto_mo.slang, gone):
 //   * Shell based: screening per contracted shell, the radial part evaluated once per
 //     shell and shared by its Cartesian components.
 //   * No per-tile barriers. Shells are screened in chunks of one workgroup; the

@@ -715,29 +715,31 @@ UTEST(gto, density_gpu_algorithms_agree) {
 
     float* ref = (float*)md_temp_alloc_array(temp, float, num_vox);
     float* nan_buf = (float*)md_temp_alloc_array(temp, float, num_vox);
+    // the CPU's, in double at the voxels' centres (rounded to float)
     double ref_max = 0.0;
-    for (int algo = MD_GTO_GPU_DENSITY_ALGO_REFERENCE; algo < MD_GTO_GPU_DENSITY_ALGO_COUNT; ++algo) {
+    {
+        double* ao = (double*)md_temp_alloc_array(temp, double, num_ao);
+        for (int z = 0; z < gd[2]; ++z) for (int y = 0; y < gd[1]; ++y) for (int x = 0; x < gd[0]; ++x) {
+            const double p[3] = { grid.origin.x + (x + 0.5) * h, grid.origin.y + (y + 0.5) * h, grid.origin.z + (z + 0.5) * h };
+            qm_test_ao_at(ao, NULL, &basis, atom_xyz, p);
+            const size_t v = ((size_t)z * gd[1] + y) * gd[0] + x;
+            ref[v] = (float)qm_test_density_from_ao(D, ao, num_ao);
+            ref_max = MD_MAX(ref_max, fabs(ref[v]));
+        }
+        EXPECT_GT(ref_max, 1.0);
+    }
+    {
         md_gto_gpu_density_desc_t desc = {
             .basis = gb, .atom_xyz = atoms, .coeff = coeff, .out_tex = tex, .grid = &grid,
-            .sample_offset = {0.5f, 0.5f, 0.5f}, .op = MD_GTO_OP_SET, .algorithm = (md_gto_gpu_density_algo_t)algo,
+            .sample_offset = {0.5f, 0.5f, 0.5f}, .op = MD_GTO_OP_SET,
             .scratch_bytes = 256 * 1024,   // force several GEMM batches
         };
         gto_test_poison(stream, tex, nan_buf, num_vox);
         md_gto_gpu_density_launch(stream, &desc);
         md_gpu_copy_from_texture(stream, rb.gpu, tex, NULL);
         md_gpu_stream_sync(stream);
-        const float* g = (const float*)rb.cpu;
-        if (algo == MD_GTO_GPU_DENSITY_ALGO_REFERENCE) {
-            md_memcpy(ref, g, sizeof(float) * num_vox);
-            for (size_t v = 0; v < num_vox; ++v) {
-                ASSERT_TRUE(gto_test_is_finite(ref[v]));
-                ref_max = MD_MAX(ref_max, fabs(ref[v]));
-            }
-            EXPECT_GT(ref_max, 1.0);
-            continue;
-        }
-        const double rel = gto_test_rel_diff(g, ref, num_vox, ref_max);
-        printf("density algorithm %d: max |diff| / max |rho| = %.3e\n", algo, rel);
+        const double rel = gto_test_rel_diff((const float*)rb.cpu, ref, num_vox, ref_max);
+        printf("density (GEMM) against the cpu: max |diff| / max |rho| = %.3e\n", rel);
         EXPECT_LT(rel, 1.0e-5);
     }
 
@@ -773,9 +775,8 @@ UTEST(gto, density_gpu_algorithms_agree) {
     md_gpu_device_destroy(device);
 }
 
-// Every orbital algorithm against the reference kernel on the water orbitals: one
-// orbital (psi), a few (psi^2, one pass), many (psi^2, several passes / GEMM), and
-// signed weights against a weighted sum of single-orbital reference evaluations.
+// Every orbital algorithm against the CPU (double, at the voxels' centres) on the water orbitals: one orbital (psi), a
+// few (psi^2, one pass), many (psi^2, several passes / GEMM), and signed weights after squaring.
 UTEST(gto, orbital_gpu_algorithms_agree) {
     md_gpu_device_t device = md_gpu_device_create(NULL);
     if (!device) {
@@ -870,9 +871,28 @@ UTEST(gto, orbital_gpu_algorithms_agree) {
         { 0, 12, MD_GTO_EVAL_MODE_PSI_SQUARED, "12 orbitals, psi^2" },
         { 0, num_mo, MD_GTO_EVAL_MODE_PSI,    "all orbitals, psi" },
     };
+    // every orbital at every voxel's centre, on the CPU in double: psi[v * num_mo + m]
+    double* psi = (double*)md_temp_alloc_array(temp, double, num_vox * num_mo);
+    {
+        double* ao = (double*)md_temp_alloc_array(temp, double, num_ao);
+        for (int z = 0; z < gd[2]; ++z) for (int y = 0; y < gd[1]; ++y) for (int x = 0; x < gd[0]; ++x) {
+            const double p[3] = { grid.origin.x + (x + 0.5) * grid.spacing.x, grid.origin.y + (y + 0.5) * grid.spacing.y, grid.origin.z + (z + 0.5) * grid.spacing.z };
+            qm_test_ao_at(ao, NULL, &basis, atom_xyz, p);
+            const size_t v = ((size_t)z * gd[1] + y) * gd[0] + x;
+            for (size_t m = 0; m < num_mo; ++m) {
+                double u = 0.0;
+                for (size_t i = 0; i < num_ao; ++i) u += mo[m][i] * ao[i];
+                psi[v * num_mo + m] = u;
+            }
+        }
+    }
     for (size_t si = 0; si < MD_COUNTOF(sets); ++si) {
         const set_t* S = &sets[si];
-        RUN_ORBITALS(ref, S->first, S->count, S->mode, MD_GTO_GPU_ORBITAL_ALGO_REFERENCE, false, 0);
+        for (size_t v = 0; v < num_vox; ++v) {
+            double r = 0.0;
+            for (size_t m = S->first; m < S->first + S->count; ++m) r += S->mode == MD_GTO_EVAL_MODE_PSI ? psi[v * num_mo + m] : psi[v * num_mo + m] * psi[v * num_mo + m];
+            ref[v] = (float)r;
+        }
         double ref_max = 0.0;
         for (size_t v = 0; v < num_vox; ++v) {
             ASSERT_TRUE(gto_test_is_finite(ref[v]));
@@ -887,14 +907,13 @@ UTEST(gto, orbital_gpu_algorithms_agree) {
         }
     }
 
-    // Signed weights after squaring: sum_m w_m psi_m^2 against single-orbital reference runs.
+    // Signed weights after squaring: sum_m w_m psi_m^2.
     {
         const size_t count = 10;
-        float* one = (float*)md_temp_alloc_array(temp, float, num_vox);
-        md_memset(ref, 0, sizeof(float) * num_vox);
-        for (size_t m = 0; m < count; ++m) {
-            RUN_ORBITALS(one, m, 1, MD_GTO_EVAL_MODE_PSI_SQUARED, MD_GTO_GPU_ORBITAL_ALGO_REFERENCE, false, 0);
-            for (size_t v = 0; v < num_vox; ++v) ref[v] += w[m] * one[v];
+        for (size_t v = 0; v < num_vox; ++v) {
+            double r = 0.0;
+            for (size_t m = 0; m < count; ++m) r += w[m] * psi[v * num_mo + m] * psi[v * num_mo + m];
+            ref[v] = (float)r;
         }
         double ref_max = 0.0;
         for (size_t v = 0; v < num_vox; ++v) ref_max = MD_MAX(ref_max, fabs(ref[v]));

@@ -16,7 +16,7 @@
 //
 // 4 n^2 / 2 multiply-adds a voxel per spin: four times the density's, the least a gradient of tau's kind takes. The
 // three terms of each voxel and spin go to the batch's terms (args.terms), and finish_main makes ELF or LOL of them
-// (md_qm_elf, md_qm_lol: the Kohout-Savin spin form, as eval_gto_localization.slang).
+// (md_qm_elf, md_qm_lol: the Kohout-Savin spin form).
 //
 // The rows of a group: GP of them, four channels of GP / 4 voxels, channel-major (row r: channel r / (GP / 4), voxel
 // r % (GP / 4)), so that the loads of A read runs of GP / 4 voxels of one row of Phi. A thread's RP rows are of one
