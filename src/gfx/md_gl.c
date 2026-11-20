@@ -3217,17 +3217,21 @@ void md_gl_rep_set_weak_bonds(md_gl_rep_t handle, uint32_t count, const uint32_t
         rep->weak_bond_capacity = capacity;
     }
 
-    // Bonds with an atom outside of the molecule are left out (the shaders fetch the atoms without bounds checks)
-    uint32_t written = 0;
+    // Every bond keeps its index, which is what it picks as. One with an atom outside of the molecule (the shaders fetch
+    // the atoms without bounds checks) is kept in its place as the first atom twice, of weight 0: never drawn.
+    if (mol->atom_count == 0) {
+        MD_LOG_ERROR("The molecule has no atoms for the weak bonds");
+        return;
+    }
+    uint32_t outside = 0;
     glBindBuffer(GL_ARRAY_BUFFER, rep->weak_bond_atoms.id);
     uint32_t* atoms = (uint32_t*)glMapBufferRange(GL_ARRAY_BUFFER, 0, count * sizeof(uint32_t) * 2, GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
     if (atoms) {
         for (uint32_t i = 0; i < count; ++i) {
-            if (atom_a[i] < mol->atom_count && atom_b[i] < mol->atom_count) {
-                atoms[written * 2 + 0] = atom_a[i];
-                atoms[written * 2 + 1] = atom_b[i];
-                ++written;
-            }
+            const bool within = atom_a[i] < mol->atom_count && atom_b[i] < mol->atom_count;
+            atoms[i * 2 + 0] = within ? atom_a[i] : 0;
+            atoms[i * 2 + 1] = within ? atom_b[i] : 0;
+            outside += within ? 0 : 1;
         }
         glUnmapBuffer(GL_ARRAY_BUFFER);
     }
@@ -3235,11 +3239,9 @@ void md_gl_rep_set_weak_bonds(md_gl_rep_t handle, uint32_t count, const uint32_t
     glBindBuffer(GL_ARRAY_BUFFER, rep->weak_bond_weight.id);
     float* w = (float*)glMapBufferRange(GL_ARRAY_BUFFER, 0, count * sizeof(float), GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
     if (w) {
-        uint32_t j = 0;
         for (uint32_t i = 0; i < count; ++i) {
-            if (atom_a[i] < mol->atom_count && atom_b[i] < mol->atom_count) {
-                w[j++] = weight ? weight[i] : 1.0f;
-            }
+            const bool within = atom_a[i] < mol->atom_count && atom_b[i] < mol->atom_count;
+            w[i] = !within ? 0.0f : weight ? weight[i] : 1.0f;
         }
         glUnmapBuffer(GL_ARRAY_BUFFER);
     }
@@ -3247,11 +3249,8 @@ void md_gl_rep_set_weak_bonds(md_gl_rep_t handle, uint32_t count, const uint32_t
     glBindBuffer(GL_ARRAY_BUFFER, rep->weak_bond_kind.id);
     uint32_t* kind = (uint32_t*)glMapBufferRange(GL_ARRAY_BUFFER, 0, count * sizeof(uint32_t), GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
     if (kind) {
-        uint32_t j = 0;
         for (uint32_t i = 0; i < count; ++i) {
-            if (atom_a[i] < mol->atom_count && atom_b[i] < mol->atom_count) {
-                kind[j++] = flags ? bond_kind_of((uint32_t)flags[i]) : BOND_KIND_HYDROGEN;
-            }
+            kind[i] = flags ? bond_kind_of((uint32_t)flags[i]) : BOND_KIND_HYDROGEN;
         }
         glUnmapBuffer(GL_ARRAY_BUFFER);
     }
@@ -3261,20 +3260,19 @@ void md_gl_rep_set_weak_bonds(md_gl_rep_t handle, uint32_t count, const uint32_t
         MD_LOG_ERROR("Failed to map the buffers of the weak bonds");
         return;
     }
-    if (written < count) {
-        MD_LOG_ERROR("%u weak bonds had atom indices outside of the molecule (%u atoms) and were left out", count - written, mol->atom_count);
+    if (outside > 0) {
+        MD_LOG_ERROR("%u weak bonds had atom indices outside of the molecule (%u atoms) and are not drawn", outside, mol->atom_count);
     }
-    rep->weak_bond_count = written;
+    rep->weak_bond_count = count;
 
-    // The reach of the bonds beyond their atoms, for the culling of copies, and their blocks (MARKS)
-    blocks_init(&rep->weak_bond_blocks, written, 2, true);
-    uint32_t j = 0;
+    // The reach of the bonds beyond their atoms, for the culling of copies, and their blocks (MARKS): those not drawn
+    // hold no atoms
+    blocks_init(&rep->weak_bond_blocks, count, 2, true);
     for (uint32_t i = 0; i < count; ++i) {
         if (atom_a[i] < mol->atom_count && atom_b[i] < mol->atom_count) {
             rep->weak_bond_max_weight = MD_MAX(rep->weak_bond_max_weight, weight ? weight[i] : 1.0f);
-            blocks_add(&rep->weak_bond_blocks, j, atom_a[i]);
-            blocks_add(&rep->weak_bond_blocks, j, atom_b[i]);
-            ++j;
+            blocks_add(&rep->weak_bond_blocks, i, atom_a[i]);
+            blocks_add(&rep->weak_bond_blocks, i, atom_b[i]);
         }
     }
 }
@@ -3699,7 +3697,8 @@ typedef struct {
     uint32_t elastic_bonds; // Show the elastic bonds (BOND_KIND_ELASTIC), which are left out otherwise
     float    end_radius;    // Bonds drawn dashed (BOND DASHES): the dashes run between spheres at the atoms of this
     float    end_radius_scale; // radius, or of the radius of the atom times this, whichever is larger
-    float    pad_[2];
+    uint32_t weak_index_base;   // The weak bonds: their picking base (md_gl_draw_op_t weak_bonds picking_base), UINT32_MAX for none
+    float    pad_;
     float    dash_style[DASH_STYLE_COUNT][4]; // Per DASH_STYLE_*: radius, dash and gap relative to radius (0 dash: solid), -
 } bond_params_t;
 
@@ -4626,6 +4625,7 @@ void md_gl_draw(const md_gl_draw_args_t* args) {
                 .bond_kinds = 1,
                 .end_radius = MD_MAX(draw_op->args.weak_bonds.end_radius, 0.0f),
                 .end_radius_scale = MD_MAX(draw_op->args.weak_bonds.end_radius_scale, 0.0f),
+                .weak_index_base = draw_op->args.weak_bonds.picking_base,
             };
             bond_params_set_dashes(&params, draw_op->args.weak_bonds.dashes, false);
             const bond_set_t bonds = {rep->weak_bond_atoms, rep->weak_bond_weight, rep->weak_bond_kind, {0}, {0}, rep->weak_bond_count};

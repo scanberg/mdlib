@@ -82,6 +82,7 @@
 #define SUBPIXEL_MARGIN (1.0 / 32.0)
 
 #define REF_NONE        0xFFFFFFFFu
+#define PICKING_NONE    0xFFFFFFFFu  // No picking index of its own (u_weak_index_base)
 
 // Kinds of bonds (md_gl.c, bond.frag). An elastic bond is drawn as a plain one, where it is drawn at all.
 #define KIND_PLAIN      0u
@@ -135,8 +136,8 @@ layout (std140) uniform ubo {
     uint  u_elastic_bonds;  // Draw the elastic bonds (KIND_ELASTIC), which are left out otherwise
     float u_end_radius;     // DASHED LINES of bonds: they run between spheres of this radius at the atoms, or of the
     float u_end_radius_scale; // radius of the atom times this, whichever is larger
+    uint  u_weak_index_base; // WEAK_BONDS: the picking base of the weak bonds, PICKING_NONE for none
     float u_pad0;
-    float u_pad1;
     vec4  u_dash_style[4];  // Per DASH_STYLE_*: radius, dash and gap relative to u_radius (dash 0: solid)
 };
 
@@ -454,6 +455,9 @@ void main() {
     out_frag.atom_picking_idx[1] = u_atom_base_index + atom.y;
 #if CHAIN_GAPS
     out_frag.bond_picking_idx    = u_gap_index_base + texelFetch(u_buf_gap_comp, int(prim)).x;
+#elif WEAK_BONDS
+    // A bond of the representation, not of the molecule: in a range of its own, when it has one
+    out_frag.bond_picking_idx    = u_weak_index_base != PICKING_NONE ? u_weak_index_base + bond : PICKING_NONE;
 #else
     out_frag.bond_picking_idx    = u_bond_base_index + bond;
 #endif

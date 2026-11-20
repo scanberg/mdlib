@@ -8,7 +8,8 @@
 //                   hit counts. A coordinate bond is a thinner dashed cylinder between the spheres at its ends.
 //   WEAK_BONDS:     weak bonds, a dashed cylinder: the number of dashes bond.vert gives it (DASHED LINES), with flat
 //                   ends, the first starting at the sphere of the atom at pa and the last ending at that at pb, each
-//                   dash the fraction of the period of the pattern bond.vert gives it (dash.y), or a solid one.
+//                   dash the fraction of the period of the pattern bond.vert gives it (dash.y), or a solid one. Picked
+//                   as a bond of the representation (u_weak_index_base).
 //   BOND_PARTNERS:  the dashed partner of a delocalized bond (or of an aromatic bond in no circle, ring.vert), a dashed
 //                   cylinder as the weak bonds, which colors and picks as the part of its bond it spans.
 //   CHAIN_GAPS:     the gap of a chain over a break, a dashed cylinder as the weak bonds, which picks as the gap.
@@ -28,6 +29,9 @@
 #ifndef CHAIN_GAPS
 #define CHAIN_GAPS 0
 #endif
+
+// No picking index of its own (u_weak_index_base)
+#define PICKING_NONE 0xFFFFFFFFu
 
 #define MODE_NEAREST 0
 #define MODE_SMOOTH  1
@@ -75,8 +79,8 @@ layout (std140) uniform ubo {
     uint  u_elastic_bonds;  // Draw the elastic bonds (KIND_ELASTIC), which are left out otherwise
     float u_end_radius;
     float u_end_radius_scale;
+    uint  u_weak_index_base; // WEAK_BONDS: the picking base of the weak bonds, PICKING_NONE for none
     float u_pad0;
-    float u_pad1;
     vec4  u_dash_style[4];
 };
 
@@ -367,14 +371,15 @@ void main() {
 
     vec3 view_velocity = mix(in_frag.view_vel[0], in_frag.view_vel[1], seg_t);
 
-#if WEAK_BONDS
-    // A weak bond is not a bond of the molecule: it picks as the atom it is closest to
-    uint picking_index = in_frag.atom_picking_idx[side];
-#elif CHAIN_GAPS
-    // Nor is a gap: it picks as itself, the component before its break
+#if CHAIN_GAPS
+    // A gap is not a bond: all of it picks as the gap, the component before its break
     uint picking_index = in_frag.bond_picking_idx;
 #else
-    uint picking_index = abs(0.5 - seg_t) > 0.25 ? in_frag.atom_picking_idx[side] : in_frag.bond_picking_idx;
+    // The middle half of a bond picks as the bond, the quarters at its ends (and the spheres there) as their atoms,
+    // whatever it is drawn as: a stick, the sticks of its order, dashes. So does a weak bond, as one of the
+    // representation; without an index of its own (PICKING_NONE) all of it picks as its atoms.
+    bool middle = abs(0.5 - seg_t) <= 0.25 && in_frag.bond_picking_idx != PICKING_NONE;
+    uint picking_index = middle ? in_frag.bond_picking_idx : in_frag.atom_picking_idx[side];
 #endif
 
     write_fragment(view_coord, view_velocity, view_normal, color, picking_index, in_frag.flags[side]);

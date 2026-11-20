@@ -302,7 +302,8 @@ void        md_gl_rep_set_atom_colors(md_gl_rep_t rep, uint32_t offset, uint32_t
 // Weak bonds (e.g. hydrogen bonds) of the representation, drawn by MD_GL_REP_WEAK_BONDS as dashed cylinders between the
 // atoms. Unlike the covalent bonds of the molecule they belong to the representation, and are typically set every frame.
 // Replaces the previous set; count 0 clears it. The arrays match md_hbond_set_t (hydrogen, acceptor, strength).
-//  atom_a, atom_b: [count] atom indices of the bonds. Bonds with an atom outside of the molecule are left out.
+//  atom_a, atom_b: [count] atom indices of the bonds. A bond with an atom outside of the molecule is not drawn, and keeps
+//                  its place: bond i is the i:th given, which is what it picks as (md_gl_draw_op_t weak_bonds picking_base).
 //  weight:         [count] (optional, NULL for 1) scales the radius of each bond, so a bond can fade out continuously. A
 //                  weight of 0 or less hides it.
 //  flags:          [count] (optional, NULL for hydrogen bonds) of each bond: its kind gives its dashes (BOND DASHES).
@@ -446,6 +447,10 @@ typedef struct md_gl_draw_op_t {
         // dashes as come closest to the lengths, at least two, the first starting at the sphere of its first atom and
         // the last ending at that of the second, the dashes and gaps stretched or shrunk alike to fit. No dash is cut
         // off at an end, and the pattern looks the same on a bond of any length.
+        // They pick as the sticks of a licorice do (md_gl_picking_offset_t): the middle half of weak bond i as the bond,
+        // picking_base + i, the quarters at its ends as its atoms. A weak bond is a bond of the representation, not of
+        // the molecule, so it is not in the range of those (bond_base): the caller reserves one of its own for the weak
+        // bonds of each representation, an index per bond. UINT32_MAX for none: all of a weak bond picks as its atoms.
         struct {
             float radius;           // Ångström, of the sticks the dashes are relative to, scaled by the weight of each bond
             md_gl_dashes_t dashes;  // Which are dashed
@@ -455,6 +460,7 @@ typedef struct md_gl_draw_op_t {
             md_gl_bond_mode_t color_mode;
             float sharpness;
             uint32_t uniform_color; // Used if color_mode is MD_GL_BOND_MODE_UNIFORM
+            uint32_t picking_base;  // What the middle of weak bond i picks as: picking_base + i. UINT32_MAX for none
         } weak_bonds;
 
         struct {
@@ -475,11 +481,14 @@ typedef struct md_gl_draw_op_t {
 } md_gl_draw_op_t;
 
 // Picking offsets: each renderable element writes base + its own index to the picking target, so the caller
-// reserves one disjoint range per kind. Atoms (spacefill, licorice ends) write their atom index, bonds (licorice
-// middle) their bond index, and the backbone representations (cartoon, ribbons) their protein backbone segment
-// index (md_system_t::protein_backbone.segment). A cartoon is not made of atoms: it writes the segment it stems
-// from, never an atom of it. A tube writes the index of its control point among those of all tubes (md_gl_mol_set_tubes)
-// as a backbone, a slab its index (md_gl_mol_set_slabs) as a ring. A weak bond is not a bond of the molecule: it writes the atom index of its closer end.
+// reserves one disjoint range per kind. Atoms (spacefill, the ends of bonds) write their atom index, bonds their bond
+// index: the middle half of a bond picks as the bond, the quarters at its ends (and the spheres there) as their atoms,
+// however it is drawn (a stick, the sticks of its order, dashes). The backbone representations (cartoon, ribbons)
+// write their protein backbone segment index (md_system_t::protein_backbone.segment). A cartoon is not made of atoms:
+// it writes the segment it stems from, never an atom of it. A tube writes the index of its control point among those
+// of all tubes (md_gl_mol_set_tubes) as a backbone, a slab its index (md_gl_mol_set_slabs) as a ring. A weak bond is
+// not a bond of the molecule: its middle writes the index of its own (md_gl_draw_op_t weak_bonds picking_base), its
+// ends their atoms.
 // The circle of an aromatic ring writes the index of the ring in md_system_t::ring (all of its rings, so the range
 // is md_ring_data_count(&sys->ring) long, of which only the aromatic ones are drawn). The gap of a chain
 // (md_gl_mol_set_chain_gaps) writes the index of the residue before its break (a range of the system's residue
