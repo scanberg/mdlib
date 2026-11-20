@@ -1816,6 +1816,35 @@ UTEST(vial_ir, taken_over_whole) {
         for (size_t f = 0; f < nf; ++f) EXPECT_EQ(1, held[f]);
     }
     EXPECT_TRUE(md_attributes_find(md_vial_eval_attributes(eb), MD_STR_LIT("script/d2")) != NULL);
+    // With a published selection as well, the same script compiled again: a selection is the program's, nothing for
+    // the evaluation to compute, so it is done as it is made all the same
+    {
+        const char* s = "ca = particle(name='CA')\nd = distance(ca[0], ca[1])\n";
+        md_vial_program_t* ps1 = md_vial_compile(md_str_from_cstr(s), &cd, alloc);
+        md_vial_program_t* ps2 = md_vial_compile(md_str_from_cstr(s), &cd, alloc);
+        md_vial_eval_t* es1 = md_vial_eval_create(ps1, &ed, alloc);
+        ASSERT_TRUE(es1 && ps2);
+        ASSERT_TRUE(md_vial_eval_run(es1));
+        md_vial_eval_t* es2 = md_vial_eval_create_from(es1, ps2, &ed, alloc);
+        ASSERT_TRUE(es2 != NULL);
+        const size_t ns = md_vial_outputs(ps2, &o);
+        ASSERT_TRUE(md_vial_eval_plan(plan, 8, es2, ps2, nf));
+        for (size_t i = 0; i < ns; ++i) {
+            if (o[i].selection) continue;
+            EXPECT_EQ(MD_VIAL_PLAN_HELD, plan[i].status);
+            EXPECT_EQ(0u, plan[i].num_pending);
+        }
+        // And taken over again from it, as an edit after an edit is
+        md_vial_eval_t* es3 = md_vial_eval_create_from(es2, ps2, &ed, alloc);
+        ASSERT_TRUE(es3 != NULL);
+        ASSERT_TRUE(md_vial_eval_plan(plan, 8, es3, ps2, nf));
+        for (size_t i = 0; i < ns; ++i) if (!o[i].selection) EXPECT_EQ(MD_VIAL_PLAN_HELD, plan[i].status);
+        md_vial_eval_free(es3);
+        md_vial_eval_free(es2);
+        md_vial_eval_free(es1);
+        md_vial_program_free(ps2);
+        md_vial_program_free(ps1);
+    }
     // And partly: what is new is computed by a run, and the plan says how much
     const char* c = "_ca = particle(name='CA')\nd = distance(_ca[0], _ca[1])\nnew = distance(_ca[0], _ca[2])\n";
     md_vial_program_t* pc = md_vial_compile(md_str_from_cstr(c), &cd, alloc);

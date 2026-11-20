@@ -225,10 +225,13 @@ md_vial_eval_t* md_vial_eval_create_from(const md_vial_eval_t* prev, const md_vi
                 continue;
             }
         }
-        // What is live: every output but the hidden ones and those taken over
+        // What is live: every output but the hidden ones, the selections and those taken over. A selection is not
+        // the evaluation's: it publishes none (attr_type), and a filter reads it from the program. Left live, a
+        // script with a selection was never done when everything else was taken over, and had no frames to run to
+        // become so
         for (size_t k = 0; md_array_size(e->held) && k < md_array_size(ir->outputs); ++k) {
             const md_str_t nm = ir->outputs[k].name;
-            if (ir->outputs[k].hidden) continue;
+            if (ir->outputs[k].hidden || ir->values[ir->outputs[k].value].type.dtype == VIAL_DT_SET) continue;
             bool held = false;
             for (size_t h = 0; h < md_array_size(e->held) && !held; ++h) held = md_str_eq(e->held[h].desc.label, nm);
             if (!held) md_array_push(roots, ir->outputs[k].value, arena);
