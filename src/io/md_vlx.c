@@ -3862,7 +3862,8 @@ static double vlx_pressure_unit_to_gpa(md_str_t unit) {
 }
 
 // What the wall is per tessera and in all, from the pressure P and the tesserae (all in Angstrom), published beside them:
-//   wall_energy_per_area   P lambda_j: the wall's energy over a tessera's area (Ha/bohr^2)
+//   wall_energy_per_area   P lambda_j: the wall's energy over a tessera's area (Ha/bohr^2); the tesserae's principal
+//                          quantity (MD_ATTRIBUTE_FLAG_PRINCIPAL), what the cavity is read by
 //   wall_energy            P a_j lambda_j (kJ/mol), summing to the wall's energy E = <rho|V1>
 //   wall_density           <rho|g_j> = P a_j lambda_j / p_j: the density the tessera's Gaussian sees (e/bohr^3)
 //   amplitude_per_area     p_j / a_j (Ha bohr)
@@ -3905,7 +3906,7 @@ static void vlx_publish_gostshyp_wall(md_system_t* sys, double pressure_gpa, siz
 	const md_unit_t ang   = md_unit_angstrom();
 	const md_unit_t bohr  = md_unit_bohr_radius();
 	const md_unit_t kjmol = md_unit_div(md_unit_scl(md_unit_joule(), 1e3), md_unit_mole());
-	md_qm_publish_series(sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/wall_energy_per_area"), MD_STR_LIT("Wall Energy per Area"), md_unit_div(md_unit_hartree(), md_unit_pow(bohr, 2)), e_area, count);
+	md_qm_publish_principal_series(sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/wall_energy_per_area"), MD_STR_LIT("Wall Energy per Area"), md_unit_div(md_unit_hartree(), md_unit_pow(bohr, 2)), e_area, count);
 	md_qm_publish_series(sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/wall_energy"), MD_STR_LIT("Wall Energy"), kjmol, e, count);
 	md_qm_publish_series(sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/wall_density"), MD_STR_LIT("Wall Density"), md_unit_div(md_unit_elementary_charge(), md_unit_pow(bohr, 3)), dens, count);
 	md_qm_publish_series(sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/amplitude_per_area"), MD_STR_LIT("Amplitude per Area"), md_unit_mul(md_unit_hartree(), bohr), p_area, count);
