@@ -275,6 +275,18 @@ UTEST_F(vial_check, particle_names) {
     // Per frame
     EXPECT_TYPE_ON(P, "near = residue(within(5.0, of=residue[0]))\n_a = angle(near['N'], near['CA'], near['C'])\n", 2, u8"float[?] °, frame");
     // A glob is no point
+    // Several positions on one set: the list they were meant as, offered where every item could be a position
+    EXPECT_DIAGS_ON(P, "a = angle(particle[1, 0, 2])\n",
+        "E0319 1: a set takes one position, a slice or a list of positions; particles in an order are a list, particle[[1, 0, 2]] | particle[[1, 0, 2]]\n");
+    EXPECT_DIAGS_ON(P, "i = 4\ns = residue[2][i, 0]\n",
+        "E0319 2: a set takes one position, a slice or a list of positions; particles in an order are a list, residue[2][[i, 0]] | residue[2][[i, 0]]\n");
+    EXPECT_DIAGS_ON(P, "s = particle[0, :]\n", "E0319 1: a set takes one position, a slice or a list of positions\n");
+    // One set to angle or dihedral: it has no order to say which is the vertex. distance needs none
+    EXPECT_DIAGS_ON(P, "a = angle(residue[2])\n",
+        "E0313 1: `angle` takes its points in order, and a set has none; list its particles with the vertex second, residue[2][[i, j, k]]\n");
+    EXPECT_DIAGS_ON(P, "d = dihedral(particle[0:4])\n",
+        "E0313 1: `dihedral` takes its points in order, and a set has none; list its particles with the axis second and third, particle[0:4][[i, j, k, l]]\n");
+    EXPECT_TYPE_ON(P, "d = distance(particle[0:2])\n", 1, u8"float Å, frame");
     EXPECT_DIAGS_ON(P, "rs = residue[1:6]\na = angle(rs['H*'], rs['N'], rs['CA'])\n",
         "E0302 2: `angle` needs a point for a; `rs['H*']` holds sets that may hold several particles, so write .com for its centre or between='closest' | rs['H*'].com\n");
     // Sets without the name, or with it twice: missing entries, counted

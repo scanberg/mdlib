@@ -423,7 +423,7 @@ Positions count from 0 and are written as subscripts; ids are the file's numbers
 | `s.xyz` | a set's positions; coordinates themselves on coordinates | `float[n][3]` Å |
 | `c.x`, `c.y`, `c.z` | `c.xyz[..., 0]`, `[..., 1]`, `[..., 2]`, on a set or on coordinates |  |
 | `s[i]`, `s[i:j]` on a set | its particles by position | a set |
-| `s[[1, 0, 2]]` on a set | its particles at those positions, one each, in the order listed, as NumPy gives a list's elements: `angle(particle(chain='A', resid=5)[[1, 0, 2]])` is v1's `angle(2,1,3) in residue(5)` | `set[3]` of one particle each |
+| `s[[1, 0, 2]]` on a set | its particles at those positions, one each, in the order listed, as NumPy gives a list's elements: `angle(particle(chain='A', resid=5)[[1, 0, 2]])` is v1's `angle(2,1,3) in residue(5)`. One set has no order, its particles are in the system's, so `angle` and `dihedral` take the list, not one set; `s[1, 0, 2]` is E0319 with the fix `s[[1, 0, 2]]` | `set[3]` of one particle each |
 | `s['CA']` on a set or an array of sets | within each set, its particle of that name: one per set, so a point wherever a point is taken. `angle(rs['N'], rs['CA'], rs['C'])` is the angle in each residue of `rs`, as v1's `angle(...) in residue(...)` by position. `s['CA']` is `s.particle['CA']` written short, as `s[[1, 0, 2]]` is `s.particle[[1, 0, 2]]` | the same shape, a set of one particle per set |
 | `s['H*']`, a name with `*` or `?` | within each set, its particles that match | the same shape, a set per set |
 | `s[['N', 'CA', 'C']]` | within each set, the particle of each name, stacked along a new last dimension: `angle(rs[['N', 'CA', 'C']])` | the shape and `[3]`, one particle each |
@@ -507,6 +507,8 @@ _nn    = angle(_close['N'], _close['CA'], _close['C'])  # -> float[?] °, frame:
 p1     = rs.particle[1]                              # -> set[5]: the second particle of each residue
 v1ang  = angle(rs.particle[[1, 0, 2]])               # -> float[5] °, frame: v1's angle(2,1,3) in residue(2:6)
 one    = angle(particle(resid=3)[[1, 0, 2]])         # -> float °, frame: v1's angle(2,1,3) in residue(3)
+one2   = angle(particle[1, 0, 2])                    # error E0319: particles in an order are a list, particle[[1, 0, 2]]
+one3   = angle(residue[2])                           # error E0313: a set has no order to say which particle is the vertex
 nca2   = angle(rs[['N', 'CA', 'C']])                   # -> float[5] °, frame: nca, stacked
 nh     = distance(rs[['N', 'H']])                      # -> float[5] Å, frame
 bb     = rs[['N', 'CA', 'C']]                          # -> set[5][3]

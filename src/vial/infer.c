@@ -1088,7 +1088,21 @@ static T infer_subscript(infer_t* x, vial_node_id id) {
         // Positions of a set's particles: a set
         if (!in || kind_of(x, in) == VIAL_N_TUPLE) {
             if (in) infer(x, in);
-            diag(x, "E0319", id, "a set takes one position, a slice or a list of positions");
+            // s[0, 1, 2] for s[[0, 1, 2]], which is how one would guess to write it: offered when every item could
+            // be a position, not s[0, :], where the commas would mean dimensions
+            bool list = in != 0;
+            for (uint32_t i = 0; list && i < num_children(x, in); ++i) {
+                const vial_node_kind_t k = kind_of(x, child(x, in, i));
+                list = k != VIAL_N_SLICE && k != VIAL_N_ELLIPSIS && k != VIAL_N_CONST;
+            }
+            if (list) {
+                const md_str_t o = text(x, on), i = text(x, in);
+                char fix[256];
+                snprintf(fix, sizeof(fix), "%.*s[[%.*s]]", (int)o.len, o.ptr, (int)i.len, i.ptr);
+                diag_fix(x, "E0319", id, fix, "a set takes one position, a slice or a list of positions; particles in an order are a list, %s", fix);
+            } else {
+                diag(x, "E0319", id, "a set takes one position, a slice or a list of positions");
+            }
             return err();
         }
         if (kind_of(x, in) != VIAL_N_SLICE) {

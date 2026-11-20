@@ -528,6 +528,13 @@ static T call_angle(infer_t* x, vial_node_id call, bool dihedral) {
         loop = vial_type_scalar(VIAL_DT_INT);
         const bool rows = is_float(&a) && a.ndim >= 2 && last_is(&a, 3) && a.dims[a.ndim - 2].kind == VIAL_EXT_STATIC && a.dims[a.ndim - 2].n == n;
         const bool sets = a.dtype == VIAL_DT_SET && (a.flags & VIAL_TYPE_ONE_PARTICLE) && last_is(&a, n);
+        if (!rows && !sets && a.dtype == VIAL_DT_SET && a.ndim == 0) {
+            // One set of the particles: it has no order, they are in the system's, which says nothing of the vertex
+            const md_str_t s = vx_text(x, arg);
+            vx_diag_fix(x, "E0313", arg, NULL, "`%s` takes its points in order, and a set has none; list its particles %s, %.*s[[%s]]", fname,
+                dihedral ? "with the axis second and third" : "with the vertex second", (int)s.len, s.ptr, dihedral ? "i, j, k, l" : "i, j, k");
+            return err();
+        }
         if (!rows && !sets) {
             vx_diag_fix(x, "E0313", arg, NULL, "`%s` takes %u points, or one array of them, float[%u][3] or set[%u] of single particles; this is %s",
                 fname, n, n, n, vx_tstr(&a));
