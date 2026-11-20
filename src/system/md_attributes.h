@@ -82,8 +82,8 @@ typedef enum md_attribute_flags_t {
     // triangular innermost extent.
     MD_ATTRIBUTE_FLAG_PACKED_SYMMETRIC = 2,
 
-    // The PRINCIPAL quantity of its group: what the group is chiefly about, as its publisher knows it - the wall's energy
-    // per area among a GOSTSHYP cavity's tesserae, the surface charge among a continuum's. A statement about the data,
+    // The PRINCIPAL quantity of its group: what the group is chiefly about, as its publisher knows it - the decay length
+    // among a GOSTSHYP cavity's tesserae, the surface charge among a continuum's. A statement about the data,
     // not about how to show it; what shows the group takes it as its first choice (md_attributes_principal). At most
     // one per group: verified on create and replace (a numeric attribute, and no other of its group flagged). Not
     // inherited by an alias, which is in another group, or a second name in the same one.
