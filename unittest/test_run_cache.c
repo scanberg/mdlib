@@ -13,6 +13,7 @@
 #include <core/md_file.h>
 
 #include <stdio.h>
+#include <math.h>
 #include <stddef.h>
 
 #include "run_check.h"
@@ -230,4 +231,68 @@ UTEST(run_cache, xyz) {
 }
 UTEST(run_cache, lammps) {
     check_format(utest_result, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/cubic_standardASCII.lammpstrj"), MD_STR_LIT("md_unittest_run_cache.lammpstrj"), publish_lammps, 10);
+}
+
+// ### THE RUN'S TIME ###
+
+// The run's time is its frame axis, and an axis never decreases: what relates a frame to a time
+// searches it. Runs concatenated end to end, each starting over, have a time that goes back, and
+// their frames are numbered instead, as those of a file without time are.
+
+static size_t provider_no_positions(void* dst, size_t cap, const md_attributes_t* table, const md_attribute_t* attr,
+                                    const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+    (void)dst; (void)cap; (void)table; (void)attr; (void)slice; (void)user_data; (void)io;
+    return 0;
+}
+
+static const md_attribute_t* publish_times(md_system_t* sys, md_str_t run, const double* times, size_t num_frames) {
+    static const int64_t zeros[8] = {0};
+    md_attribute_virtual_t position = {.provider = provider_no_positions};
+    const md_run_desc_t desc = {
+        .num_frames    = num_frames,
+        .num_atoms     = 2,
+        .time          = times,
+        .time_unit     = md_unit_picosecond(),
+        .source_path   = MD_STR_LIT("concatenated.xtc"),
+        .source_offset = zeros,
+        .source_size   = zeros,
+        .position_virt = &position,
+    };
+    if (num_frames > 8 || !md_run_publish(sys, run, &desc)) return NULL;
+    return md_attributes_find_in(&sys->attributes, run, MD_STR_LIT("time"));
+}
+
+UTEST(run, time_that_goes_back_is_numbered) {
+    md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
+    md_system_t sys = {.alloc = arena};
+    sys.attributes.alloc = arena;
+
+    // Equal neighbours do not go back: the file's time stays
+    const double flat[6] = {0, 10, 10, 20, 30, 40};
+    const md_attribute_t* axis = publish_times(&sys, MD_STR_LIT("run/flat"), flat, 6);
+    ASSERT_TRUE(axis != NULL);
+    EXPECT_TRUE(md_unit_equal(axis->unit, md_unit_picosecond()));
+    const double* t = (const double*)md_attribute_view(axis, MD_ATTRIBUTE_TYPE_F64, 1, 1);
+    ASSERT_TRUE(t != NULL);
+    for (int f = 0; f < 6; ++f) EXPECT_EQ(t[f], flat[f]);
+
+    // Two runs of 0..20 ps, one after the other
+    const double back[6] = {0, 10, 20, 0, 10, 20};
+    axis = publish_times(&sys, MD_STR_LIT("run/back"), back, 6);
+    ASSERT_TRUE(axis != NULL);
+    EXPECT_TRUE(md_unit_is_none(axis->unit));
+    t = (const double*)md_attribute_view(axis, MD_ATTRIBUTE_TYPE_F64, 1, 1);
+    ASSERT_TRUE(t != NULL);
+    for (int f = 0; f < 6; ++f) EXPECT_EQ(t[f], (double)f);
+
+    // A time that is not a number has no place on the axis either
+    const double nan_t[6] = {0, 10, NAN, 30, 40, 50};
+    axis = publish_times(&sys, MD_STR_LIT("run/nan"), nan_t, 6);
+    ASSERT_TRUE(axis != NULL);
+    EXPECT_TRUE(md_unit_is_none(axis->unit));
+    t = (const double*)md_attribute_view(axis, MD_ATTRIBUTE_TYPE_F64, 1, 1);
+    ASSERT_TRUE(t != NULL);
+    for (int f = 0; f < 6; ++f) EXPECT_EQ(t[f], (double)f);
+
+    md_vm_arena_destroy(arena);
 }

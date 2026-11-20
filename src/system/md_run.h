@@ -59,7 +59,8 @@ void                 md_system_extract_end(md_system_extract_t* ex);
 //
 // What a trajectory format publishes is the same shape whatever the format (see RUNS):
 //
-//     <run>/time            F64 {F}        the frame axis; without a unit it holds frame ordinals
+//     <run>/time            F64 {F}        the frame axis, never decreasing; without a unit it holds no
+//                                          time: frame ordinals, or the file's steps (H5MD)
 //     <run>/step            I64 {F}        the simulation step of each frame, when the file says
 //     <run>/unitcell        F32 {F,3,3}    Angstrom, row i box vector i, zero where a frame has none
 //     <run>/atom/position   F32 {F,N} c3   Angstrom, VIRTUAL: read from the file per frame
@@ -109,7 +110,8 @@ typedef struct md_run_desc_t {
     size_t          num_frames;
     size_t          num_atoms;
 
-    const double*   time;               // num_frames values, required
+    const double*   time;               // num_frames values, required. If they ever decrease, ordinals are
+                                        // published in their place, without a unit
     md_unit_t       time_unit;          // none when the file does not know time: time is then ordinals
     const int64_t*  step;               // num_frames values, or NULL when the file has none
 

@@ -1176,11 +1176,32 @@ bool md_run_publish(md_system_t* sys, md_str_t run, const md_run_desc_t* d) {
     const md_attribute_format_t cell_format = { .type = MD_ATTRIBUTE_TYPE_F32, .components = 1, .rank = 3, .shape = { (uint32_t)F, 3, 3 } };
     char buf[512];
 
+    // The axis never decreases: what relates a frame to a time searches it (md_attribute_axis_map, a
+    // cursor on a timeline). A file whose time goes back - runs concatenated end to end, each starting
+    // over - has no such axis, so its frames are numbered instead, as those of a file without time are.
+    // NaN fails the comparison as well.
+    md_temp_scope_t temp = md_temp_begin_avoid(attributes->alloc);
+    const double* time = d->time;
+    md_unit_t time_unit = d->time_unit;
+    for (size_t i = 1; i < F; ++i) {
+        if (!(d->time[i] >= d->time[i - 1])) {
+            MD_LOG_INFO("The time of '" MD_STR_FMT "' goes from %g to %g at frame %zu: its frames are numbered instead",
+                MD_STR_ARG(d->source_path), d->time[i - 1], d->time[i], i);
+            double* ordinals = md_temp_alloc_array(temp, double, F);
+            for (size_t f = 0; f < F; ++f) {
+                ordinals[f] = (double)f;
+            }
+            time = ordinals;
+            time_unit = md_unit_none();
+            break;
+        }
+    }
+
     // The axis first: everything temporal below is checked against it.
     bool ok = md_attributes_replace(attributes, &(md_attribute_desc_t){
         .path = md_run_path(buf, sizeof(buf), run, MD_STR_LIT("time")), .format = series_f64, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
-        .unit = d->time_unit, .label = MD_STR_INIT("Time"),
-        .data = d->time, .byte_size = F * sizeof(double)});
+        .unit = time_unit, .label = MD_STR_INIT("Time"),
+        .data = time, .byte_size = F * sizeof(double)});
 
     if (ok && d->step) {
         ok = md_attributes_replace(attributes, &(md_attribute_desc_t){
@@ -1221,6 +1242,7 @@ bool md_run_publish(md_system_t* sys, md_str_t run, const md_run_desc_t* d) {
         MD_LOG_ERROR("Failed to publish the run '" MD_STR_FMT "' from '" MD_STR_FMT "'", MD_STR_ARG(run), MD_STR_ARG(d->source_path));
         md_attributes_remove_prefix(attributes, run);
     }
+    md_temp_end(temp);
     return ok;
 }
 
