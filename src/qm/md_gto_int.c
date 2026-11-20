@@ -1383,6 +1383,304 @@ void md_gto_int_potential_grid(float* out_values, const md_grid_t* grid, const f
 }
 
 // ---------------------------------------------------------------------------
+// Bounds over a box
+// ---------------------------------------------------------------------------
+// Intervals, without directed rounding: the results are widened by a relative margin instead (see
+// md_gto_int.h).
+typedef struct { double lo, hi; } gto_int_iv_t;
+
+static inline gto_int_iv_t gto_int_iv(double lo, double hi) { gto_int_iv_t r = { lo, hi }; return r; }
+static inline gto_int_iv_t gto_int_iv_add(gto_int_iv_t a, gto_int_iv_t b) { return gto_int_iv(a.lo + b.lo, a.hi + b.hi); }
+static inline gto_int_iv_t gto_int_iv_scale(gto_int_iv_t a, double s) { return s >= 0 ? gto_int_iv(a.lo * s, a.hi * s) : gto_int_iv(a.hi * s, a.lo * s); }
+static inline gto_int_iv_t gto_int_iv_mul(gto_int_iv_t a, gto_int_iv_t b) {
+    const double p0 = a.lo * b.lo, p1 = a.lo * b.hi, p2 = a.hi * b.lo, p3 = a.hi * b.hi;
+    return gto_int_iv(MD_MIN(MD_MIN(p0, p1), MD_MIN(p2, p3)), MD_MAX(MD_MAX(p0, p1), MD_MAX(p2, p3)));
+}
+static inline gto_int_iv_t gto_int_iv_sqr(gto_int_iv_t a) {
+    const double l2 = a.lo * a.lo, h2 = a.hi * a.hi;
+    if (a.lo <= 0.0 && a.hi >= 0.0) return gto_int_iv(0.0, MD_MAX(l2, h2));
+    return gto_int_iv(MD_MIN(l2, h2), MD_MAX(l2, h2));
+}
+static inline double gto_int_iv_mag(gto_int_iv_t a) { return MD_MAX(fabs(a.lo), fabs(a.hi)); }
+
+#define GTO_INT_BOX_ORDER (MD_GTO_INT_MAX_ORDER + 3)
+#define GTO_INT_BOX_R     (((GTO_INT_BOX_ORDER + 1) * (GTO_INT_BOX_ORDER + 2) * (GTO_INT_BOX_ORDER + 3)) / 6)
+
+// gto_int_hermite_recurse over intervals: R_tuv for every X in the box x, y, z
+static void gto_int_hermite_recurse_iv(gto_int_iv_t* R, int L, const gto_int_iv_t* base, gto_int_iv_t x, gto_int_iv_t y, gto_int_iv_t z) {
+    gto_int_iv_t buf[2][GTO_INT_BOX_R];
+    gto_int_iv_t* cur = buf[0];
+    gto_int_iv_t* nxt = buf[1];
+    nxt[0] = base[L];
+    for (int lvl = L - 1; lvl >= 0; --lvl) {
+        cur[0] = base[lvl];
+        const int top = L - lvl;
+        uint32_t i = 1;
+        for (int deg = 1; deg <= top; ++deg) {
+            for (int t = deg; t >= 0; --t) {
+                for (int u = deg - t; u >= 0; --u, ++i) {
+                    const int v = deg - t - u;
+                    gto_int_iv_t r;
+                    if (t > 0) {
+                        r = gto_int_iv_mul(x, nxt[herm_idx(t - 1, u, v)]);
+                        if (t > 1) r = gto_int_iv_add(r, gto_int_iv_scale(nxt[herm_idx(t - 2, u, v)], t - 1));
+                    } else if (u > 0) {
+                        r = gto_int_iv_mul(y, nxt[herm_idx(t, u - 1, v)]);
+                        if (u > 1) r = gto_int_iv_add(r, gto_int_iv_scale(nxt[herm_idx(t, u - 2, v)], u - 1));
+                    } else {
+                        r = gto_int_iv_mul(z, nxt[herm_idx(t, u, v - 1)]);
+                        if (v > 1) r = gto_int_iv_add(r, gto_int_iv_scale(nxt[herm_idx(t, u, v - 2)], v - 1));
+                    }
+                    cur[i] = r;
+                }
+            }
+        }
+        gto_int_iv_t* tmp = cur; cur = nxt; nxt = tmp;
+    }
+    md_memcpy(R, nxt, sizeof(gto_int_iv_t) * md_gto_int_num_hermite((uint32_t)L));
+}
+
+// |X|^2 over the box X = P - C, C in [lo, hi]
+static inline gto_int_iv_t gto_int_box_dist2(const double P[3], const double lo[3], const double hi[3], gto_int_iv_t X[3]) {
+    gto_int_iv_t d2 = gto_int_iv(0.0, 0.0);
+    for (int a = 0; a < 3; ++a) {
+        X[a] = gto_int_iv(P[a] - hi[a], P[a] - lo[a]);
+        d2 = gto_int_iv_add(d2, gto_int_iv_sqr(X[a]));
+    }
+    return d2;
+}
+
+// The derivatives of order k (2 or 3) of the potential with respect to C, every C in the box: out[i]
+// for the i-th of gto_int_deriv_e[k] (xx xy xz yy yz zz; xxx xxy xxz xyy xyz xzz yyy yyz yzz zzz).
+// A box of no extent (lo == hi) gives them at a point, exactly but for rounding. False where the box
+// holds a point charge, or the points carry dipoles or quadrupoles.
+static const int gto_int_deriv_n[4] = { 0, 0, 6, 10 };
+static const int gto_int_deriv_e[4][10][3] = {
+    {{0}}, {{0}},
+    { {2,0,0}, {1,1,0}, {1,0,1}, {0,2,0}, {0,1,1}, {0,0,2} },
+    { {3,0,0}, {2,1,0}, {2,0,1}, {1,2,0}, {1,1,1}, {1,0,2}, {0,3,0}, {0,2,1}, {0,1,2}, {0,0,3} },
+};
+
+static bool gto_int_derivs_box(gto_int_iv_t* out, int k, const double lo[3], const double hi[3], const md_gto_int_charges_t* q) {
+    const int nd = gto_int_deriv_n[k];
+    double mag[10] = {0};    // of the terms, for the rounding margin
+    for (int m = 0; m < nd; ++m) out[m] = gto_int_iv(0.0, 0.0);
+
+    // Points: the derivatives of c / |d|, d = C - A
+    if (q->num_points && (q->point_dipole || q->point_quadrupole)) return false;
+    for (uint32_t pi = 0; pi < q->num_points; ++pi) {
+        const double* A = q->point_xyz + 3 * pi;
+        gto_int_iv_t d[3], d2[3];
+        gto_int_iv_t r2 = gto_int_iv(0.0, 0.0);
+        for (int a = 0; a < 3; ++a) {
+            d[a] = gto_int_iv(lo[a] - A[a], hi[a] - A[a]);
+            d2[a] = gto_int_iv_sqr(d[a]);
+            r2 = gto_int_iv_add(r2, d2[a]);
+        }
+        if (r2.lo <= 1.0e-20) return false;     // the box holds the charge
+        const double c = q->point_charge[pi];
+        if (k == 2) {
+            // (3 d_a d_b - r^2 delta_ab) / r^5, the diagonal as 2 d_a^2 - d_b^2 - d_c^2: no interval twice
+            const gto_int_iv_t inv_r5 = gto_int_iv(pow(r2.hi, -2.5), pow(r2.lo, -2.5));
+            for (int m = 0; m < nd; ++m) {
+                const int* e = gto_int_deriv_e[2][m];
+                gto_int_iv_t num;
+                int a = -1, b = -1;
+                for (int x = 0; x < 3; ++x) for (int y = 0; y < e[x]; ++y) { if (a < 0) a = x; else b = x; }
+                if (a == b) {
+                    const int b1 = (a + 1) % 3, b2 = (a + 2) % 3;
+                    num = gto_int_iv_add(gto_int_iv_scale(d2[a], 2.0), gto_int_iv_scale(gto_int_iv_add(d2[b1], d2[b2]), -1.0));
+                } else {
+                    num = gto_int_iv_scale(gto_int_iv_mul(d[a], d[b]), 3.0);
+                }
+                const gto_int_iv_t t = gto_int_iv_scale(gto_int_iv_mul(num, inv_r5), c);
+                out[m] = gto_int_iv_add(out[m], t);
+                mag[m] += gto_int_iv_mag(t);
+            }
+        } else {
+            // -15 d_a d_b d_c / r^7 + 3 (delta_ab d_c + delta_ac d_b + delta_bc d_a) / r^5
+            const gto_int_iv_t inv_r5 = gto_int_iv(pow(r2.hi, -2.5), pow(r2.lo, -2.5));
+            const gto_int_iv_t inv_r7 = gto_int_iv(pow(r2.hi, -3.5), pow(r2.lo, -3.5));
+            for (int m = 0; m < nd; ++m) {
+                const int* e = gto_int_deriv_e[3][m];
+                int ix[3], n = 0;
+                for (int x = 0; x < 3; ++x) for (int y = 0; y < e[x]; ++y) ix[n++] = x;
+                gto_int_iv_t prod;
+                if (e[0] == 3 || e[1] == 3 || e[2] == 3) {
+                    prod = gto_int_iv_mul(d2[ix[0]], d[ix[0]]);
+                } else if (e[ix[0]] == 2 || e[ix[2]] == 2) {
+                    const int sq = e[ix[0]] == 2 ? ix[0] : ix[2];
+                    const int o  = e[ix[0]] == 2 ? ix[2] : ix[0];
+                    prod = gto_int_iv_mul(d2[sq], d[o]);
+                } else {
+                    prod = gto_int_iv_mul(gto_int_iv_mul(d[0], d[1]), d[2]);
+                }
+                gto_int_iv_t t = gto_int_iv_scale(gto_int_iv_mul(prod, inv_r7), -15.0);
+                // the deltas: each pair of equal indices contributes 3 d_other / r^5
+                gto_int_iv_t dl = gto_int_iv(0.0, 0.0);
+                if (ix[0] == ix[1]) dl = gto_int_iv_add(dl, d[ix[2]]);
+                if (ix[0] == ix[2]) dl = gto_int_iv_add(dl, d[ix[1]]);
+                if (ix[1] == ix[2]) dl = gto_int_iv_add(dl, d[ix[0]]);
+                t = gto_int_iv_add(t, gto_int_iv_scale(gto_int_iv_mul(dl, inv_r5), 3.0));
+                t = gto_int_iv_scale(t, c);
+                out[m] = gto_int_iv_add(out[m], t);
+                mag[m] += gto_int_iv_mag(t);
+            }
+        }
+    }
+
+    // Gaussians: d^k/dC^k R_tuv(P - C) = (-1)^k R_{tuv + e}, R enclosed by the recursion over the box from
+    // F_n(T) in [F_n(T_max), F_n(T_min)] (F_n decreases with T), and by its maximum over all space
+    // (gto_int_rmax) where that is tighter, as it is near the centre
+    const double sign = (k & 1) ? -1.0 : 1.0;
+    uint32_t L = 0;
+    for (uint32_t g = 0; g < q->num_gaussians; ++g) {
+        gto_int_order_of(q, g, &L);
+        const int Lh = (int)L + k;
+        const double* P = q->center + 3 * g;
+        const double  p = q->exponent[g];
+        const double* h = q->coeff + q->coeff_offset[g];
+        gto_int_iv_t X[3];
+        const gto_int_iv_t d2 = gto_int_box_dist2(P, lo, hi, X);
+        double Flo[GTO_INT_BOX_ORDER + 1], Fhi[GTO_INT_BOX_ORDER + 1];
+        // the table reaches GTO_INT_MAX_R_ORDER (to 1e-15 relative, inside the margin)
+        const double* tab = Lh <= GTO_INT_MAX_R_ORDER ? q->boys_table : NULL;
+        gto_int_boys_eval(Flo, Lh, p * d2.hi, tab);
+        if (d2.lo == d2.hi) md_memcpy(Fhi, Flo, sizeof(double) * (Lh + 1));
+        else gto_int_boys_eval(Fhi, Lh, p * d2.lo, tab);
+        gto_int_iv_t base[GTO_INT_BOX_ORDER + 1];
+        double s = 1.0;
+        for (int n = 0; n <= Lh; ++n) {
+            base[n] = gto_int_iv_scale(gto_int_iv(Flo[n], Fhi[n]), s);
+            s *= -2.0 * p;
+        }
+        gto_int_iv_t R[GTO_INT_BOX_R];
+        gto_int_hermite_recurse_iv(R, Lh, base, X[0], X[1], X[2]);
+
+        uint32_t i = 0;
+        double sp = pow(p, 0.5 * k);   // p^((deg + k) / 2)
+        for (int deg = 0; deg <= (int)L; ++deg, sp *= sqrt(p)) {
+            for (int t = deg; t >= 0; --t) {
+                for (int u = deg - t; u >= 0; --u, ++i) {
+                    const int v = deg - t - u;
+                    if (h[i] == 0.0) continue;
+                    for (int m = 0; m < nd; ++m) {
+                        const int* e = gto_int_deriv_e[k][m];
+                        const uint32_t j = herm_idx(t + e[0], u + e[1], v + e[2]);
+                        gto_int_iv_t r = R[j];
+                        if (j < GTO_INT_MAX_H) {
+                            const double rm = sp * gto_int_rmax[j];
+                            r = gto_int_iv(MD_MAX(r.lo, -rm), MD_MIN(r.hi, rm));
+                        }
+                        const gto_int_iv_t term = gto_int_iv_scale(r, sign * h[i]);
+                        out[m] = gto_int_iv_add(out[m], term);
+                        mag[m] += gto_int_iv_mag(term);
+                    }
+                }
+            }
+        }
+    }
+    for (int m = 0; m < nd; ++m) {
+        const double eps = 1.0e-12 * mag[m] + 1.0e-300;
+        out[m] = gto_int_iv(out[m].lo - eps, out[m].hi + eps);
+    }
+    return true;
+}
+
+bool md_gto_int_hessian_box(double out_lo[6], double out_hi[6], const double lo[3], const double hi[3], const md_gto_int_charges_t* q) {
+    MD_ASSERT(out_lo && out_hi && lo && hi && q);
+    gto_int_iv_t H[6];
+    if (!gto_int_derivs_box(H, 2, lo, hi, q)) return false;
+    for (int m = 0; m < 6; ++m) { out_lo[m] = H[m].lo; out_hi[m] = H[m].hi; }
+    return true;
+}
+
+// Third order: V(c), grad V(c) and the Hessian at c exact, the third derivatives enclosed over the box
+bool md_gto_int_potential_box3(double* out_lo, double* out_hi, const double lo[3], const double hi[3], const md_gto_int_charges_t* q) {
+    MD_ASSERT(out_lo && out_hi && lo && hi && q);
+    const double c[3] = { 0.5 * (lo[0] + hi[0]), 0.5 * (lo[1] + hi[1]), 0.5 * (lo[2] + hi[2]) };
+    gto_int_iv_t T[10], Hc[6];
+    if (!gto_int_derivs_box(T, 3, lo, hi, q)) return false;
+    if (!gto_int_derivs_box(Hc, 2, c, c, q)) return false;
+    double E[3];
+    const double V = gto_int_eval_point(E, c, q);
+    gto_int_iv_t d[3], d2[3];
+    gto_int_iv_t r = gto_int_iv(V, V);
+    for (int a = 0; a < 3; ++a) {
+        d[a] = gto_int_iv(lo[a] - c[a], hi[a] - c[a]);
+        d2[a] = gto_int_iv_sqr(d[a]);
+        r = gto_int_iv_add(r, gto_int_iv_scale(d[a], -E[a]));
+    }
+    // 1/2 d^T H(c) d, its multiplicities 1 (aa) and 2 (ab) over the 1/2
+    for (int m = 0; m < 6; ++m) {
+        const int* e = gto_int_deriv_e[2][m];
+        gto_int_iv_t prod = gto_int_iv(1.0, 1.0);
+        double mult = 0.5;
+        for (int a = 0; a < 3; ++a) {
+            if (e[a] == 2) prod = gto_int_iv_mul(prod, d2[a]);
+            else if (e[a] == 1) { prod = gto_int_iv_mul(prod, d[a]); mult = 1.0; }
+        }
+        r = gto_int_iv_add(r, gto_int_iv_scale(gto_int_iv_mul(gto_int_iv(0.5 * (Hc[m].lo + Hc[m].hi), 0.5 * (Hc[m].lo + Hc[m].hi)), prod), mult));
+        // the centre's Hessian is a point: its rounding margin
+        r = gto_int_iv_add(r, gto_int_iv_scale(gto_int_iv_mul(gto_int_iv(-0.5 * (Hc[m].hi - Hc[m].lo), 0.5 * (Hc[m].hi - Hc[m].lo)), prod), mult));
+    }
+    // 1/6 sum T_abc d_a d_b d_c: multiplicities 1 (aaa), 3 (aab), 6 (abc)
+    for (int m = 0; m < 10; ++m) {
+        const int* e = gto_int_deriv_e[3][m];
+        gto_int_iv_t prod = gto_int_iv(1.0, 1.0);
+        int distinct = 0;
+        for (int a = 0; a < 3; ++a) {
+            if (e[a] == 3) prod = gto_int_iv_mul(prod, gto_int_iv_mul(d2[a], d[a]));
+            else if (e[a] == 2) prod = gto_int_iv_mul(prod, d2[a]);
+            else if (e[a] == 1) prod = gto_int_iv_mul(prod, d[a]);
+            distinct += e[a] > 0;
+        }
+        const double mult = distinct == 1 ? 1.0 / 6.0 : distinct == 2 ? 0.5 : 1.0;
+        r = gto_int_iv_add(r, gto_int_iv_scale(gto_int_iv_mul(T[m], prod), mult));
+    }
+    const double eps = 1.0e-12 * (fabs(V) + 1.0) + 1.0e-12 * (fabs(E[0]) + fabs(E[1]) + fabs(E[2]));
+    *out_lo = r.lo - eps;
+    *out_hi = r.hi + eps;
+    return true;
+}
+
+bool md_gto_int_potential_box(double* out_lo, double* out_hi, const double lo[3], const double hi[3], const double* hessian_lo, const double* hessian_hi,
+                              const md_gto_int_charges_t* q) {
+    MD_ASSERT(out_lo && out_hi && lo && hi && q);
+    double Hlo[6], Hhi[6];
+    if (hessian_lo && hessian_hi) {
+        md_memcpy(Hlo, hessian_lo, sizeof(Hlo));
+        md_memcpy(Hhi, hessian_hi, sizeof(Hhi));
+    } else if (!md_gto_int_hessian_box(Hlo, Hhi, lo, hi, q)) {
+        return false;
+    }
+    const double c[3] = { 0.5 * (lo[0] + hi[0]), 0.5 * (lo[1] + hi[1]), 0.5 * (lo[2] + hi[2]) };
+    double E[3];
+    const double V = gto_int_eval_point(E, c, q);
+    gto_int_iv_t d[3], d2[3];
+    gto_int_iv_t r = gto_int_iv(V, V);
+    for (int a = 0; a < 3; ++a) {
+        d[a] = gto_int_iv(lo[a] - c[a], hi[a] - c[a]);
+        d2[a] = gto_int_iv_sqr(d[a]);
+        // grad V = -E: the linear term's range over the box, exact
+        r = gto_int_iv_add(r, gto_int_iv_scale(d[a], -E[a]));
+    }
+    // 1/2 d^T H d = 1/2 sum_a H_aa d_a^2 + sum_{a<b} H_ab d_a d_b
+    static const int ab[6][2] = { {0, 0}, {0, 1}, {0, 2}, {1, 1}, {1, 2}, {2, 2} };
+    for (int m = 0; m < 6; ++m) {
+        const int a = ab[m][0], b = ab[m][1];
+        const gto_int_iv_t Hm = gto_int_iv(Hlo[m], Hhi[m]);
+        if (a == b) r = gto_int_iv_add(r, gto_int_iv_scale(gto_int_iv_mul(Hm, d2[a]), 0.5));
+        else        r = gto_int_iv_add(r, gto_int_iv_mul(Hm, gto_int_iv_mul(d[a], d[b])));
+    }
+    // the centre's value is as exact as the point evaluator: a relative 1e-12 of the field's scale
+    const double eps = 1.0e-12 * (fabs(V) + 1.0) + 1.0e-12 * (fabs(E[0]) + fabs(E[1]) + fabs(E[2]));
+    *out_lo = r.lo - eps;
+    *out_hi = r.hi + eps;
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // GPU
 // ---------------------------------------------------------------------------
 #if MD_ENABLE_GPU

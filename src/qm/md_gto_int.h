@@ -259,6 +259,40 @@ void md_gto_int_potential_grid_sub(float* out_values, const struct md_grid_t* gr
                                    const int idx_off[3], const int idx_len[3], const md_gto_int_charges_t* charges);
 
 // ---------------------------------------------------------------------------
+// BOUNDS OVER A BOX
+// ---------------------------------------------------------------------------
+// Enclosures over an axis aligned box [lo, hi] (bohr), for culling: an isosurface V = iso cannot
+// pass through a box whose enclosure leaves out iso.
+//
+// The potential is a sum of large terms of both signs (nuclei and electrons) that nearly cancel
+// away from the nuclei, so enclosing the terms one by one over a box gives an interval as wide as
+// the spread of each over it, summed: far wider than the potential's own. Instead it is expanded
+// about the box's centre c,
+//     V(x) = V(c) + grad V(c) . d + 1/2 d^T H(xi) d,     d = x - c, xi in the box,
+// with V(c) and grad V(c) from the point evaluator - the cancellation done exactly - and only the
+// Hessian enclosed over the box. The linear term's range over the box is exact; what the enclosure
+// adds to the true range is the remainder, which shrinks with the square of the box's size.
+//
+// md_gto_int_hessian_box encloses the Hessian, xx xy xz yy yz zz, by the Hermite recursion in
+// interval arithmetic: F_n(T) decreases with T, so over the box it lies between its values at the
+// gaussian's farthest and nearest points. False where the box holds a point charge (unbounded
+// there) or the points carry dipoles or quadrupoles (not handled yet).
+// md_gto_int_potential_box encloses V by the expansion above. The Hessian's enclosure may be given
+// (hessian_lo, hessian_hi): one over any box that holds this one, such as a parent's in an octree,
+// which is looser than the box's own but costs nothing more; the box's own is computed when they
+// are NULL, and then false where md_gto_int_hessian_box is. With one given, a test costs one
+// evaluation of the potential and its field at the centre.
+//
+// Every gaussian and point is summed for every box: the far field is not used. No directed
+// rounding: the enclosures are widened by a relative 1e-12 of the terms' magnitudes instead.
+bool md_gto_int_hessian_box(double out_lo[6], double out_hi[6], const double lo[3], const double hi[3], const md_gto_int_charges_t* charges);
+bool md_gto_int_potential_box(double* out_lo, double* out_hi, const double lo[3], const double hi[3], const double* hessian_lo, const double* hessian_hi,
+                              const md_gto_int_charges_t* charges);
+// One order up: V, its gradient and its Hessian at the centre exact, the third derivatives enclosed
+// over the box. The Hessian cancels as the potential does; this leaves only a remainder of size^3.
+bool md_gto_int_potential_box3(double* out_lo, double* out_hi, const double lo[3], const double hi[3], const md_gto_int_charges_t* charges);
+
+// ---------------------------------------------------------------------------
 // GPU EVALUATION
 // ---------------------------------------------------------------------------
 #if MD_ENABLE_GPU
