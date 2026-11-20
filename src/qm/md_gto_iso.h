@@ -88,7 +88,8 @@ md_gto_iso_field_t* md_gto_iso_field_create_density(const md_gto_basis_t* basis,
 // The LOCALIZED ORBITAL LOCATOR (md_qm_lol, md_qm.h) as a field of its own, made of each spin's density and
 // kinetic energy density as density fields (md_gto_iso_field_create_products: the density's orbitals over the
 // basis, md_qm_kinetic_orbitals' over the derivative basis); rho_b and tau_b NULL for a closed shell, whose rho_a
-// and tau_a are then the totals. It holds them, does not own them: they must outlive it.
+// and tau_a are then the totals. It takes them: md_gto_iso_field_destroy of it destroys them (on failure, NULL
+// returned, they are still the caller's).
 // LOL is non-decreasing in the densities and decreasing in the kinetic energy densities, so it is bounded over a
 // box by their bounds alone, with the same guarantee as theirs. It is 0 where the density is below rho_min, which
 // must be positive: the surface lies inside the box where the density reaches it. LOL falls to 0 in a gaussian

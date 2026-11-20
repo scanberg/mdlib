@@ -2498,7 +2498,7 @@ typedef struct iso_lol_src_t {
     iso_dens_src_t      s;
     md_gto_basis_t      dbasis;
     md_gto_iso_field_t* rho;
-    md_gto_iso_field_t* tau;
+    md_gto_iso_field_t* tau;            // the LOL's (borrowed)
     md_gto_iso_field_t* lol;
     md_gto_iso_field_t* elf;
 } iso_lol_src_t;
@@ -2512,10 +2512,16 @@ static bool iso_lol_src_load(iso_lol_src_t* l, const char* file, double rho_min)
     size_t rna = 0, kna = 0;
     const size_t rn = md_qm_density_orbitals(&rr, &rw, &rna, &l->s.t.sys, path, heap);
     const size_t kn = md_qm_kinetic_orbitals(&kr, &kw, &kna, &l->dbasis, &l->s.t.sys, path, heap);
-    if (rn) l->rho = md_gto_iso_field_create_products(&l->s.basis, l->s.xyz, 0, rr, NULL, rw, rn, heap);
-    if (kn) l->tau = md_gto_iso_field_create_products(&l->dbasis, l->s.xyz, 0, kr, NULL, kw, kn, heap);
-    if (l->rho && l->tau) l->lol = md_gto_iso_field_create_lol(l->rho, l->tau, NULL, NULL, rho_min, heap);
-    if (l->rho && l->tau) l->elf = md_gto_iso_field_create_elf(l->rho, l->tau, NULL, NULL, rho_min, MD_QM_ELF_D_MIN, heap);
+    // each composite takes its own pair; rho and tau are the LOL's, for evaluating them alone
+    md_gto_iso_field_t* f[4] = {0};
+    for (int k = 0; k < 2 && rn && kn; ++k) {
+        f[2 * k]     = md_gto_iso_field_create_products(&l->s.basis, l->s.xyz, 0, rr, NULL, rw, rn, heap);
+        f[2 * k + 1] = md_gto_iso_field_create_products(&l->dbasis, l->s.xyz, 0, kr, NULL, kw, kn, heap);
+    }
+    if (f[0] && f[1]) l->lol = md_gto_iso_field_create_lol(f[0], f[1], NULL, NULL, rho_min, heap);
+    if (f[2] && f[3]) l->elf = md_gto_iso_field_create_elf(f[2], f[3], NULL, NULL, rho_min, MD_QM_ELF_D_MIN, heap);
+    l->rho = f[0];
+    l->tau = f[1];
     md_free(heap, rr, sizeof(double) * rn * rna);
     md_free(heap, rw, sizeof(double) * rn);
     md_free(heap, kr, sizeof(double) * kn * kna);
@@ -2524,10 +2530,8 @@ static bool iso_lol_src_load(iso_lol_src_t* l, const char* file, double rho_min)
 }
 
 static void iso_lol_src_free(iso_lol_src_t* l) {
-    md_gto_iso_field_destroy(l->elf);
+    md_gto_iso_field_destroy(l->elf);   // and the fields each took
     md_gto_iso_field_destroy(l->lol);
-    md_gto_iso_field_destroy(l->tau);
-    md_gto_iso_field_destroy(l->rho);
     md_gto_basis_free(&l->dbasis, md_get_heap_allocator());
     iso_dens_src_free(&l->s);
 }

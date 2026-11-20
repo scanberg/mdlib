@@ -206,7 +206,7 @@ typedef struct iso_field_t {
     double       atom_min[3], atom_max[3];
     char         name[64];
     struct iso_density_t* dens;   // NULL for an orbital; owned
-    struct iso_composite_t* comp; // a function of other fields (see "Composite fields"); owned, its fields not
+    struct iso_composite_t* comp; // a function of other fields (see "Composite fields"); owned, and its fields
 } iso_field_t;
 
 #define ISO_EVAL_EPS 1.0e-12
@@ -1691,6 +1691,7 @@ typedef struct iso_composite_t {
     const iso_field_t* tau[2];
     double rho_min;
     double d_min;                 // ELF
+    md_gto_iso_field_t* owned[4]; // the fields, destroyed with it
 } iso_composite_t;
 
 #define ISO_CF_SPIN 4.557799872345596   // 3/10 (6 pi^2)^(2/3), md_qm.c's QM_ELF_CF_SPIN
@@ -2752,6 +2753,10 @@ md_gto_iso_field_t* md_gto_iso_field_create_lol(const md_gto_iso_field_t* rho_a,
     c->rho[1] = rho_b ? &rho_b->f : NULL;
     c->tau[1] = tau_b ? &tau_b->f : NULL;
     c->rho_min = rho_min;
+    c->owned[0] = (md_gto_iso_field_t*)rho_a;
+    c->owned[1] = (md_gto_iso_field_t*)tau_a;
+    c->owned[2] = (md_gto_iso_field_t*)rho_b;
+    c->owned[3] = (md_gto_iso_field_t*)tau_b;
     md_gto_iso_field_t* field = (md_gto_iso_field_t*)md_alloc(alloc, sizeof(md_gto_iso_field_t));
     memset(field, 0, sizeof(*field));
     field->alloc = alloc;
@@ -2797,6 +2802,9 @@ md_gto_iso_field_t* md_gto_iso_field_create_elf(const md_gto_iso_field_t* rho_a,
 
 void md_gto_iso_field_destroy(md_gto_iso_field_t* field) {
     if (!field) return;
+    if (field->f.comp) {
+        for (int k = 0; k < 4; ++k) md_gto_iso_field_destroy(field->f.comp->owned[k]);
+    }
     if (field->coeff) md_free(field->alloc, field->coeff, sizeof(double) * (field->num_coeff + 1));
     if (field->dmat) md_free(field->alloc, field->dmat, sizeof(float) * (field->dmat_dim * field->dmat_dim + 1));
     iso_field_free(&field->f);
