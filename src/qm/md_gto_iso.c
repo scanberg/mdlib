@@ -789,14 +789,11 @@ static void iso_density_free(iso_density_t* d) {
     free(d);
 }
 
-static void iso_density_eval(const iso_density_t* d, const double p[3], int order, double* val, double grad[3]) {
+// The density's functions at a point: their values a[nf], and with order >= 1 their gradients ga[3][nf]
+static void iso_density_functions(const iso_density_t* d, const double p[3], int order, double* a, double* ga) {
     const int nf = d->num_fn;
-    double stack[4 * ISO_DENSITY_STACK_FN];
-    double* buf = nf <= ISO_DENSITY_STACK_FN ? stack : (double*)malloc(sizeof(double) * 4 * nf);
-    double* a  = buf;               // function values
-    double* ga = buf + nf;          // gradients, [3][nf]
-    const int nc = order >= 1 ? 4 : 1;
-    memset(buf, 0, sizeof(double) * nc * nf);
+    memset(a, 0, sizeof(double) * nf);
+    if (order >= 1) memset(ga, 0, sizeof(double) * 3 * nf);
 
     for (int si = 0; si < d->num_ao_shells; ++si) {
         const iso_ao_shell_t* s = &d->ao_shells[si];
@@ -832,6 +829,15 @@ static void iso_density_eval(const iso_density_t* d, const double p[3], int orde
             }
         }
     }
+}
+
+static void iso_density_eval(const iso_density_t* d, const double p[3], int order, double* val, double grad[3]) {
+    const int nf = d->num_fn;
+    double stack[4 * ISO_DENSITY_STACK_FN];
+    double* buf = nf <= ISO_DENSITY_STACK_FN ? stack : (double*)malloc(sizeof(double) * 4 * nf);
+    double* a  = buf;               // function values
+    double* ga = buf + nf;          // gradients, [3][nf]
+    iso_density_functions(d, p, order, a, ga);
 
     double v = 0.0, g[3] = {0, 0, 0};
     for (int t = 0; t < d->num_terms; ++t) {
@@ -1667,7 +1673,16 @@ static int iso_root(const iso_field_t* f, double iso, double leaf_edge, double o
 // the ends of their enclosures, which their own bounds make rigorous: nothing of LOL's own is bounded. It is 0
 // where the density is below rho_min - still non-decreasing in it - which keeps the surface inside the box where
 // the density reaches rho_min (the root). Its value and gradient come from theirs by the chain rule.
-enum { ISO_COMP_LOL = 1 };
+//
+// The electron localization function (md_qm_elf),
+//     ELF = 1 / (1 + chi^2),   chi = (sum_s D_s + d_min) / D0,   D_s = max(0, tau_s - |grad rho_s|^2 / (8 rho_s)),
+// needs |grad rho_s|^2 besides. Its components d_a rho = 2 sum_k w_k phi_k d_a phi_k are products of the density's
+// functions (the orbitals) and the kinetic energy density's (their derivatives, three per orbital), whose intervals
+// over the box both bounds compute anyway: so they are enclosed from those, and ELF by interval arithmetic over the
+// formula, rho counted independently where it appears twice (looser, still rigorous). Its gradient needs the
+// density's Hessian and tau's gradient: d_b d_a phi_k are the gradients of tau's functions, so it is closed form
+// from the two fields' functions at the point.
+enum { ISO_COMP_LOL = 1, ISO_COMP_ELF = 2 };
 
 typedef struct iso_composite_t {
     int kind;
@@ -1675,6 +1690,7 @@ typedef struct iso_composite_t {
     const iso_field_t* rho[2];
     const iso_field_t* tau[2];
     double rho_min;
+    double d_min;                 // ELF
 } iso_composite_t;
 
 #define ISO_CF_SPIN 4.557799872345596   // 3/10 (6 pi^2)^(2/3), md_qm.c's QM_ELF_CF_SPIN
@@ -1711,7 +1727,83 @@ static double iso_lol(const iso_composite_t* c, const double* rho, const double*
     return t / (1.0 + t);
 }
 
+// ELF at a point, and its gradient with order >= 1. Each spin's (a closed shell's two halves of the totals):
+// rho, grad rho, its Hessian, tau, grad tau, from the functions of the two fields: phi_k and grad phi_k of the
+// density's, d_a phi_k = G_ka and grad G_ka = the Hessian of phi_k of tau's (functions 3k + a).
+static void iso_elf_eval(const iso_composite_t* c, const double p[3], int order, double* val, double grad[3]) {
+    double rho[2] = {0}, g2[2] = {0}, tau[2] = {0}, gr[2][3] = {{0}}, hr[2][3][3] = {{{0}}}, gt[2][3] = {{0}};
+    for (int s = 0; s < c->num_spins; ++s) {
+        const iso_density_t* dr = c->rho[s]->dens;
+        const iso_density_t* dt = c->tau[s]->dens;
+        const int nf = dr->num_fn;
+        double* buf = (double*)malloc(sizeof(double) * (4 * nf + 4 * dt->num_fn));
+        double* a  = buf;
+        double* ga = buf + nf;
+        double* G  = buf + 4 * nf;
+        double* gG = G + dt->num_fn;
+        iso_density_functions(dr, p, 1, a, ga);
+        iso_density_functions(dt, p, order >= 1 ? 1 : 0, G, gG);
+        for (int k = 0; k < nf; ++k) {
+            const double w = dr->terms[k].w;
+            const double phi = a[k];
+            const double dphi[3] = { ga[k], ga[nf + k], ga[2 * nf + k] };
+            rho[s] += w * phi * phi;
+            for (int x = 0; x < 3; ++x) {
+                const double Gx = G[3 * k + x];
+                gr[s][x] += 2.0 * w * phi * dphi[x];
+                tau[s] += 0.5 * w * Gx * Gx;
+                if (order >= 1) {
+                    for (int y = 0; y < 3; ++y) {
+                        const double H = gG[y * dt->num_fn + 3 * k + x];   // d_y d_x phi_k
+                        hr[s][x][y] += 2.0 * w * (dphi[x] * dphi[y] + phi * H);
+                        gt[s][y] += w * Gx * H;
+                    }
+                }
+            }
+        }
+        free(buf);
+    }
+    // a closed shell's totals: two spins of half of each
+    int ns = c->num_spins;
+    if (ns == 1) {
+        rho[0] *= 0.5; tau[0] *= 0.5;
+        for (int x = 0; x < 3; ++x) { gr[0][x] *= 0.5; gt[0][x] *= 0.5; for (int y = 0; y < 3; ++y) hr[0][x][y] *= 0.5; }
+        rho[1] = rho[0]; tau[1] = tau[0];
+        memcpy(gr[1], gr[0], sizeof(gr[0])); memcpy(gt[1], gt[0], sizeof(gt[0])); memcpy(hr[1], hr[0], sizeof(hr[0]));
+        ns = 2;
+    }
+    if (grad) grad[0] = grad[1] = grad[2] = 0.0;
+    *val = 0.0;
+    double rho_sum = 0.0, D = c->d_min > 0.0 ? c->d_min : 0.0, D0 = 0.0, gD[3] = {0, 0, 0}, gD0[3] = {0, 0, 0};
+    for (int s = 0; s < ns; ++s) {
+        g2[s] = gr[s][0] * gr[s][0] + gr[s][1] * gr[s][1] + gr[s][2] * gr[s][2];
+        rho_sum += rho[s];
+        if (!(rho[s] > 0.0)) continue;
+        D0 += ISO_CF_SPIN * pow(rho[s], 5.0 / 3.0);
+        for (int x = 0; x < 3; ++x) gD0[x] += 5.0 / 3.0 * ISO_CF_SPIN * pow(rho[s], 2.0 / 3.0) * gr[s][x];
+        const double Ds = tau[s] - g2[s] / (8.0 * rho[s]);
+        if (Ds <= 0.0) continue;
+        D += Ds;
+        for (int x = 0; x < 3; ++x) {
+            double dg2 = 0.0;   // d_x |grad rho|^2 = 2 grad rho . H e_x
+            for (int y = 0; y < 3; ++y) dg2 += 2.0 * gr[s][y] * hr[s][y][x];
+            gD[x] += gt[s][x] - dg2 / (8.0 * rho[s]) + g2[s] * gr[s][x] / (8.0 * rho[s] * rho[s]);
+        }
+    }
+    if (!(rho_sum > 0.0) || rho_sum < c->rho_min || !(D0 > 0.0)) return;
+    const double chi = D / D0;
+    *val = 1.0 / (1.0 + chi * chi);
+    if (order >= 1 && grad) {
+        const double f = -2.0 * chi / ((1.0 + chi * chi) * (1.0 + chi * chi));
+        for (int x = 0; x < 3; ++x) grad[x] = f * (gD[x] - chi * gD0[x]) / D0;
+    }
+}
+
 static void iso_composite_eval(const iso_composite_t* c, const double p[3], int order, double* val, double grad[3]) {
+    if (c->kind == ISO_COMP_ELF) {
+        iso_elf_eval(c, p, order, val, grad);
+        return;
+    }
     double rho[2], tau[2], gr[2][3], gt[2][3];
     for (int s = 0; s < c->num_spins; ++s) {
         iso_eval(c->rho[s], NULL, 0, p, order > 0 ? 1 : 0, &rho[s], gr[s], NULL);
@@ -1782,18 +1874,73 @@ static void iso_octree_visit_composite(iso_octree_t* o, int level, int ix, int i
     o->visited[level]++;
 
     double rlo[2], rhi[2], tlo[2], thi[2];
+    iv_t g2[2];
     for (int s = 0; s < c->num_spins; ++s) {
-        const iv_t r = iso_comp_sub_bound(&o->comp_sub[2 * s], &b);
-        const iv_t t = iso_comp_sub_bound(&o->comp_sub[2 * s + 1], &b);
+        iso_comp_sub_t* sr = &o->comp_sub[2 * s];
+        iso_comp_sub_t* st = &o->comp_sub[2 * s + 1];
+        const iv_t r = iso_comp_sub_bound(sr, &b);
+        const iv_t t = iso_comp_sub_bound(st, &b);
         rlo[s] = r.lo; rhi[s] = r.hi;
         tlo[s] = t.lo; thi[s] = t.hi;
-        o->group_work += o->comp_sub[2 * s].f->dens->num_ao_shells + o->comp_sub[2 * s + 1].f->dens->num_ao_shells;
+        o->group_work += sr->f->dens->num_ao_shells + st->f->dens->num_ao_shells;
+        if (c->kind == ISO_COMP_ELF) {
+            // d_a rho = 2 sum_k w_k phi_k d_a phi_k from the functions' intervals the two bounds left in A
+            const iso_density_t* dr = sr->f->dens;
+            g2[s] = iv_pt(0.0);
+            for (int x = 0; x < 3; ++x) {
+                iv_t d = iv_pt(0.0);
+                double mag = 0.0;
+                for (int k = 0; k < dr->num_fn; ++k) {
+                    const iv_t q = iv_scale(iv_mul(sr->A[k], st->A[3 * k + x]), 2.0 * dr->terms[k].w);
+                    d = iv_add(d, q);
+                    mag += iv_mag(q);
+                }
+                d = iv_widen(d, 1.0e-12 * mag);
+                g2[s] = iv_add(g2[s], iv_pow(d, 2));
+            }
+        }
     }
-    // monotone: the least at the least densities and the most kinetic energy, the most the other way round
-    const double lol_lo = iso_lol(c, rlo, thi, NULL, NULL);
-    const double lol_hi = iso_lol(c, rhi, tlo, NULL, NULL);
-    // LOL >= 0: the positive sheet only
-    const uint8_t sheets = (lol_lo <= o->iso_hi && lol_hi >= o->iso_lo) ? 1 : 0;
+    double f_lo, f_hi;
+    if (c->kind == ISO_COMP_ELF) {
+        // each spin's (a closed shell's two halves), rho counted independently in D and D0
+        int ns = c->num_spins;
+        double r_lo[2], r_hi[2], t_lo[2], t_hi[2];
+        iv_t gg[2];
+        for (int s = 0; s < ns; ++s) { r_lo[s] = rlo[s]; r_hi[s] = rhi[s]; t_lo[s] = tlo[s]; t_hi[s] = thi[s]; gg[s] = g2[s]; }
+        if (ns == 1) {
+            r_lo[0] *= 0.5; r_hi[0] *= 0.5; t_lo[0] *= 0.5; t_hi[0] *= 0.5; gg[0] = iv_scale(gg[0], 0.25);
+            r_lo[1] = r_lo[0]; r_hi[1] = r_hi[0]; t_lo[1] = t_lo[0]; t_hi[1] = t_hi[0]; gg[1] = gg[0];
+            ns = 2;
+        }
+        const double dmin = c->d_min > 0.0 ? c->d_min : 0.0;
+        double D_lo = dmin, D_hi = dmin, D0_lo = 0.0, D0_hi = 0.0, rs_lo = 0.0, rs_hi = 0.0;
+        for (int s = 0; s < ns; ++s) {
+            rs_lo += fmax(r_lo[s], 0.0);
+            rs_hi += r_hi[s];
+            if (r_lo[s] > 0.0) {
+                D_lo += fmax(0.0, t_lo[s] - fmax(gg[s].hi, 0.0) / (8.0 * r_lo[s]));
+                D0_lo += ISO_CF_SPIN * pow(r_lo[s], 5.0 / 3.0);
+            }
+            if (r_hi[s] > 0.0) {
+                D_hi += fmax(0.0, t_hi[s] - fmax(gg[s].lo, 0.0) / (8.0 * r_hi[s]));
+                D0_hi += ISO_CF_SPIN * pow(r_hi[s], 5.0 / 3.0);
+            }
+        }
+        if (!(rs_hi >= c->rho_min) || !(D0_hi > 0.0)) {
+            f_lo = f_hi = 0.0;
+        } else {
+            const double chi_lo = D_lo / D0_hi;
+            const double chi_hi = D0_lo > 0.0 ? D_hi / D0_lo : INFINITY;
+            f_hi = 1.0 / (1.0 + chi_lo * chi_lo);
+            f_lo = (rs_lo < c->rho_min || !isfinite(chi_hi)) ? 0.0 : 1.0 / (1.0 + chi_hi * chi_hi);
+        }
+    } else {
+        // monotone: the least at the least densities and the most kinetic energy, the most the other way round
+        f_lo = iso_lol(c, rlo, thi, NULL, NULL);
+        f_hi = iso_lol(c, rhi, tlo, NULL, NULL);
+    }
+    // LOL, ELF >= 0: the positive sheet only
+    const uint8_t sheets = (f_lo <= o->iso_hi && f_hi >= o->iso_lo) ? 1 : 0;
     if (!sheets) return;
     o->kept[level]++;
     if (level == o->L) {
@@ -2396,6 +2543,16 @@ static void iso_density_brick(const iso_density_t* d, const double o[3], double 
 
 // A composite's corners from its fields' (each by its own brick evaluation)
 static void iso_composite_brick(const iso_composite_t* c, const double o[3], double h, const bool* need, double* out) {
+    if (c->kind == ISO_COMP_ELF) {
+        // point by point (the functions of both fields at each)
+        for (int k = 0; k < 125; ++k) {
+            out[k] = 0.0;
+            if (!need[k]) continue;
+            const double p[3] = { o[0] + (k % 5) * h, o[1] + ((k / 5) % 5) * h, o[2] + (k / 25) * h };
+            iso_elf_eval(c, p, 0, &out[k], NULL);
+        }
+        return;
+    }
     double v[4][125];
     for (int s = 0; s < c->num_spins; ++s) {
         iso_density_brick(c->rho[s]->dens, o, h, need, v[2 * s]);
@@ -2604,6 +2761,37 @@ md_gto_iso_field_t* md_gto_iso_field_create_lol(const md_gto_iso_field_t* rho_a,
         field->f.atom_min[a] = fmin(rho_a->f.atom_min[a], rho_b ? rho_b->f.atom_min[a] : DBL_MAX);
         field->f.atom_max[a] = fmax(rho_a->f.atom_max[a], rho_b ? rho_b->f.atom_max[a] : -DBL_MAX);
     }
+    return field;
+}
+
+md_gto_iso_field_t* md_gto_iso_field_create_elf(const md_gto_iso_field_t* rho_a, const md_gto_iso_field_t* tau_a,
+                                                const md_gto_iso_field_t* rho_b, const md_gto_iso_field_t* tau_b,
+                                                double rho_min, double d_min, struct md_allocator_i* alloc) {
+    // tau's functions must be the density's derivatives, three per function in order, at half its weights
+    const md_gto_iso_field_t* r[2] = { rho_a, rho_b };
+    const md_gto_iso_field_t* t[2] = { tau_a, tau_b };
+    for (int s = 0; s < 2; ++s) {
+        if (!r[s] || !t[s] || !r[s]->f.dens || !t[s]->f.dens) continue;
+        const iso_density_t* dr = r[s]->f.dens;
+        const iso_density_t* dt = t[s]->f.dens;
+        bool ok = dt->num_fn == 3 * dr->num_fn && dr->num_terms == dr->num_fn && dt->num_terms == dt->num_fn;
+        for (int k = 0; ok && k < dr->num_fn; ++k) {
+            ok = dr->terms[k].a == k && dr->terms[k].b == k;
+            for (int x = 0; ok && x < 3; ++x) {
+                const iso_term_t* tm = &dt->terms[3 * k + x];
+                ok = tm->a == 3 * k + x && tm->b == 3 * k + x && tm->w == 0.5 * dr->terms[k].w;
+            }
+        }
+        if (!ok) {
+            MD_LOG_ERROR("md_gto_iso_field_create_elf: the kinetic energy density's functions must be the density's derivatives (md_qm_density_orbitals and md_qm_kinetic_orbitals of the same density)");
+            return NULL;
+        }
+    }
+    md_gto_iso_field_t* field = md_gto_iso_field_create_lol(rho_a, tau_a, rho_b, tau_b, rho_min, alloc);
+    if (!field) return NULL;
+    field->f.comp->kind = ISO_COMP_ELF;
+    field->f.comp->d_min = d_min;
+    snprintf(field->f.name, sizeof(field->f.name), "elf");
     return field;
 }
 

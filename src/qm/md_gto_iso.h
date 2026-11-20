@@ -94,6 +94,16 @@ md_gto_iso_field_t* md_gto_iso_field_create_density(const md_gto_basis_t* basis,
 // must be positive: the surface lies inside the box where the density reaches it. LOL falls to 0 in a gaussian
 // basis' tails by itself, so a small rho_min (1e-6) changes nothing an isovalue of interest shows.
 // CPU only for now: md_gto_iso_gpu_set_create refuses it.
+//
+// The ELECTRON LOCALIZATION FUNCTION (md_qm_elf) the same way, from the same fields, which must be of the same
+// density: tau's functions are then the derivatives of rho's (md_qm_kinetic_orbitals: three per orbital), and the
+// components of grad rho, which ELF needs besides, are products of the two fields' functions, enclosed over a box
+// from what their bounds compute anyway. ELF is bounded by interval arithmetic over its formula; its gradient,
+// for the vertices, is closed form from the two fields' functions (the density's Hessian from tau's gradients).
+// d_min as md_qm_elf (MD_QM_ELF_D_MIN: ELF falls to 0 in the tails, so the surface is bounded).
+md_gto_iso_field_t* md_gto_iso_field_create_elf(const md_gto_iso_field_t* rho_a, const md_gto_iso_field_t* tau_a,
+                                                const md_gto_iso_field_t* rho_b, const md_gto_iso_field_t* tau_b,
+                                                double rho_min, double d_min, struct md_allocator_i* alloc);
 md_gto_iso_field_t* md_gto_iso_field_create_lol(const md_gto_iso_field_t* rho_a, const md_gto_iso_field_t* tau_a,
                                                 const md_gto_iso_field_t* rho_b, const md_gto_iso_field_t* tau_b,
                                                 double rho_min, struct md_allocator_i* alloc);
@@ -110,7 +120,7 @@ void md_gto_iso_field_set_maxima_at_atoms(md_gto_iso_field_t* field, bool maxima
 enum {
     MD_GTO_ISO_FIELD_ORBITAL = 0,
     MD_GTO_ISO_FIELD_DENSITY = 1,
-    MD_GTO_ISO_FIELD_COMPOSITE = 2,   // a function of other fields (md_gto_iso_field_create_lol)
+    MD_GTO_ISO_FIELD_COMPOSITE = 2,   // a function of other fields (md_gto_iso_field_create_lol, _elf)
 };
 
 enum {
