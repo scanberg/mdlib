@@ -52,6 +52,33 @@ struct md_executor_t;
 //                                                            - published whether or not the
 //                                                            environment could be added
 //
+//   vlx/scf/gostshyp/tessera/{coordinate,normal}             {T} x 3: the GOSTSHYP cavity of a run under pressure,
+//                                                            one point (tessera) per row, Å and unit normals. On the
+//                                                            scaled van der Waals sphere of one QM atom each. Those
+//                                                            whose amplitude came out negative VeloxChem drops
+//   vlx/scf/gostshyp/tessera/area                            {T} Å^2, as the switching left it (smaller where the
+//                                                            spheres overlap, down to nothing)
+//   vlx/scf/gostshyp/tessera/{amplitude,exponent}            {T}: the normalized 3D Gaussian on each tessera,
+//                                                            (zeta/pi)^(3/2) exp(-zeta r^2) with its amplitude p
+//                                                            (Eh bohr^3) - zeta is what the file calls its 'width',
+//                                                            Å^-2 here, and zeta a is constant
+//   vlx/scf/gostshyp/tessera/decay_length                    {T} Å, <rho|g> / (-d/dn <rho|g>). The amplitudes hold the
+//                                                            pressure: p (-d/dn <rho|g>) = P a
+//   vlx/scf/gostshyp/tessera/atom_index                      {T} u32, the QM atom whose sphere it lies on
+//   vlx/scf/gostshyp/tessera/{lebedev_weight,switching}      {T}: what the area is made of,
+//                                                            a = w R^2 F - the Lebedev weight w (the point's solid
+//                                                            angle, 4 pi over a sphere) and the switching F
+//   vlx/scf/gostshyp/sphere_radius                           {A} Å, of each QM atom's sphere: from its tesserae; an
+//                                                            atom without any (buried) takes its element's, or the
+//                                                            radius scale times its van der Waals radius
+//   vlx/scf/gostshyp/pressure                                rank 0, GPa
+//   vlx/scf/gostshyp/{num_lebedev_points,radius_scale}       rank 0: how the cavity was made - the Lebedev
+//   vlx/scf/gostshyp/discretization                          points per sphere, the scale of the van der Waals
+//                                                            radii (the file's 'tssf') and the discretization
+//                                                            ('swig': switching Gaussians), {1} string
+//   vlx/scf/gostshyp/{r_ext,switching_threshold}             rank 0: the switching of 'swig' is evaluated on
+//                                                            the spheres grown by r_ext (Å), and a point is
+//                                                            kept where it is above the threshold
 //   vlx/molecular_charge, vlx/nuclear_repulsion_energy,      rank 0, single values
 //   vlx/spin_multiplicity, vlx/electron_count/{alpha,beta}
 //   vlx/basis_set, vlx/dft_functional, vlx/potfile           rank 1 {1} strings
