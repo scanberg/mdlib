@@ -237,6 +237,9 @@ static inline iv_t iso_g_naive(const iso_shell_t* s, int n, int m, double u, dou
 static void iso_crit_search(iso_field_t* f, const iso_shell_t* s, int n, int m, int first, double u, double v, int depth) {
     const iv_t d = iso_g_naive(s, n, m + 1, u, v);
     if (d.lo > 0.0 || d.hi < 0.0) return;   // g_{m+1} has no zero, g_m is monotone here
+    // every term underflowed to 0 at both ends (a steep primitive, alpha rho past ~745): g_m is 0 here as computed, and
+    // splitting would never find a sign. Without this a single primitive of a large exponent recurses over 2^70 halves.
+    if (d.lo == 0.0 && d.hi == 0.0) return;
     if (depth >= 70 || (v - u) <= 1.0e-13 * (1.0 + v)) {
         iso_crit_t c = {u, v, iso_g_naive(s, n, m, u, v)};
         if ((int)md_array_size(f->crit) > first && md_array_last(f->crit)->hi >= u) {

@@ -427,6 +427,28 @@ UTEST(gto_iso, radial_ranges_contain_samples) {
 #define ISO_NUM_SIZES 8
 static const double iso_sizes[ISO_NUM_SIZES] = {4.0, 2.0, 1.0, 0.5, 0.25, 0.125, 0.0625, 0.03125};
 
+// A primitive steep enough that exp(-alpha rho) underflows to 0 well inside the range its critical intervals are
+// searched over (a tessera of a GOSTSHYP cavity of almost no area: alpha ~ 1e8 bohr^-2): the field is made at once,
+// and is the gaussian where it is not 0
+UTEST(gto_iso, steep_primitive_is_made) {
+    md_gto_shell_t sh[2] = {{0, 0, 1, 0}, {1, 1, 1, 1}};
+    float alpha[2] = {1.278e8f, 6.4e7f}, coeff[2] = {1.0f, 1.0f};
+    const md_gto_basis_t basis = {2, 2, sh, alpha, coeff};
+    const float xyz[6] = {0, 0, 0, 1, 0, 0};
+    const double ao[4] = {14828.7, 3.0, -2.0, 0.5};
+    const md_tick_t t0 = md_tick_now();
+    md_gto_iso_field_t* f = md_gto_iso_field_create(&basis, xyz, 0, ao, md_get_heap_allocator());
+    const double ms = md_tick_to_milliseconds(md_tick_now() - t0);
+    ASSERT_TRUE(f != NULL);
+    EXPECT_LT(ms, 1000.0);
+    const float p[6] = {0, 0, 1.0e-5f, 1, 1.0e-4f, 0};
+    double v[2];
+    md_gto_iso_field_evaluate(f, p, 2, 0, v, NULL);
+    EXPECT_NEAR(v[0], 14828.7 * exp(-1.278e8 * 1.0e-10), 1e-6 * 14828.7);
+    EXPECT_NEAR(v[1], -2.0 * 1.0e-4 * exp(-6.4e7 * 1.0e-8), 1e-9);
+    md_gto_iso_field_destroy(f);
+}
+
 UTEST(gto_iso, bounds_contain_samples) {
     const int boxes_per_size = iso_full() ? 2000 : 300;
     const int pts_per_box    = iso_full() ? 256 : 48;
