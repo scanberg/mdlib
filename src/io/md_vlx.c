@@ -3861,9 +3861,9 @@ static double vlx_pressure_unit_to_gpa(md_str_t unit) {
 	return 0.0;
 }
 
-// What the wall is per tessera and in all, from the pressure P and the tesserae (all in Angstrom), published beside them:
-//   wall_energy_per_area   P lambda_j: the wall's energy over a tessera's area (Ha/bohr^2); the tesserae's principal
-//                          quantity (MD_ATTRIBUTE_FLAG_PRINCIPAL), what the cavity is read by
+// What the wall is per tessera and in all, from the pressure P and the tesserae (all in Angstrom), published beside them
+// where it says more than they do (the wall's energy over a tessera's area, P lambda_j, is the decay length times one
+// number, so the decay length is published as the principal quantity and the energy per area is not):
 //   wall_energy            P a_j lambda_j (kJ/mol), summing to the wall's energy E = <rho|V1>
 //   wall_density           <rho|g_j> = P a_j lambda_j / p_j: the density the tessera's Gaussian sees (e/bohr^3)
 //   amplitude_per_area     p_j / a_j (Ha bohr)
@@ -3879,7 +3879,6 @@ static void vlx_publish_gostshyp_wall(md_system_t* sys, double pressure_gpa, siz
 	const double au_pressure_gpa = 29421.02648438959;   // Eh / bohr^3 in GPa
 	const double gpa_a3_kjmol = 0.602214076;            // 1 GPa Angstrom^3 in kJ/mol
 	const double P_au = pressure_gpa / au_pressure_gpa;
-	double* e_area  = md_temp_alloc_array(temp, double, count);
 	double* e       = md_temp_alloc_array(temp, double, count);
 	double* dens    = md_temp_alloc_array(temp, double, count);
 	double* p_area  = md_temp_alloc_array(temp, double, count);
@@ -3887,7 +3886,6 @@ static void vlx_publish_gostshyp_wall(md_system_t* sys, double pressure_gpa, siz
 	double A = 0.0, E = 0.0, V = 0.0, A_buried = 0.0;
 	for (size_t j = 0; j < count; ++j) {
 		const double a_bohr2 = area[j] / (b * b), lambda_bohr = decay[j] / b;
-		e_area[j] = P_au * lambda_bohr;
 		e[j]      = gpa_a3_kjmol * pressure_gpa * area[j] * decay[j];
 		dens[j]   = amplitude[j] > 0.0 ? P_au * a_bohr2 * lambda_bohr / amplitude[j] : 0.0;
 		p_area[j] = a_bohr2 > 0.0 ? amplitude[j] / a_bohr2 : 0.0;
@@ -3906,7 +3904,6 @@ static void vlx_publish_gostshyp_wall(md_system_t* sys, double pressure_gpa, siz
 	const md_unit_t ang   = md_unit_angstrom();
 	const md_unit_t bohr  = md_unit_bohr_radius();
 	const md_unit_t kjmol = md_unit_div(md_unit_scl(md_unit_joule(), 1e3), md_unit_mole());
-	md_qm_publish_principal_series(sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/wall_energy_per_area"), MD_STR_LIT("Wall Energy per Area"), md_unit_div(md_unit_hartree(), md_unit_pow(bohr, 2)), e_area, count);
 	md_qm_publish_series(sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/wall_energy"), MD_STR_LIT("Wall Energy"), kjmol, e, count);
 	md_qm_publish_series(sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/wall_density"), MD_STR_LIT("Wall Density"), md_unit_div(md_unit_elementary_charge(), md_unit_pow(bohr, 3)), dens, count);
 	md_qm_publish_series(sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/amplitude_per_area"), MD_STR_LIT("Amplitude per Area"), md_unit_mul(md_unit_hartree(), bohr), p_area, count);
@@ -4050,7 +4047,9 @@ static void vlx_publish_gostshyp(const vlx_t* vlx, hid_t scf_handle) {
 		md_qm_publish_series(sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/area"), MD_STR_LIT("Tessera Area"), md_unit_pow(ang, 2), area, count);
 		md_qm_publish_series(sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/amplitude"), MD_STR_LIT("Gaussian Amplitude"), au_p, amplitude, count);
 		md_qm_publish_series(sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/exponent"), MD_STR_LIT("Gaussian Exponent"), md_unit_inv(md_unit_pow(ang, 2)), exponent, count);
-		md_qm_publish_series(sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/decay_length"), MD_STR_LIT("Decay Length"), ang, decay, count);
+		// the principal quantity of the tesserae (MD_ATTRIBUTE_FLAG_PRINCIPAL): how far the density reaches past the wall,
+		// and the wall's energy per area in another unit (P times it)
+		md_qm_publish_principal_series(sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/decay_length"), MD_STR_LIT("Decay Length"), ang, decay, count);
 		md_qm_publish_column(sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/atom_index"), MD_STR_LIT("Tessera Atom"), md_unit_none(), MD_ATTRIBUTE_TYPE_U32, atom, sizeof(uint32_t), count);
 		md_qm_publish_series(sys, MD_STR_LIT("vlx/scf/gostshyp/sphere_radius"), MD_STR_LIT("Cavity Sphere Radius"), ang, radius, num_atoms);
 		md_qm_publish_series(sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/lebedev_weight"), MD_STR_LIT("Lebedev Weight"), md_unit_none(), weight, count);
