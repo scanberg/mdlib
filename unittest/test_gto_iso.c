@@ -2490,6 +2490,159 @@ UTEST(qm_elf, limits_and_reference) {
 }
 
 
+// ---------------------------------------------------------------------------------------------
+// LOL as a field of its own (md_gto_iso_field_create_lol): bounded through the density and the kinetic
+// energy density, meshed as any other field
+// ---------------------------------------------------------------------------------------------
+typedef struct iso_lol_src_t {
+    iso_dens_src_t      s;
+    md_gto_basis_t      dbasis;
+    md_gto_iso_field_t* rho;
+    md_gto_iso_field_t* tau;
+    md_gto_iso_field_t* lol;
+} iso_lol_src_t;
+
+static bool iso_lol_src_load(iso_lol_src_t* l, const char* file, double rho_min) {
+    memset(l, 0, sizeof(*l));
+    if (!iso_dens_src_load_ex(&l->s, file, false)) return false;
+    md_allocator_i* heap = md_get_heap_allocator();
+    const md_str_t path = MD_STR_LIT("orbital/total/density");   // closed shells: the totals, as viamd takes them
+    double *rr = NULL, *rw = NULL, *kr = NULL, *kw = NULL;
+    size_t rna = 0, kna = 0;
+    const size_t rn = md_qm_density_orbitals(&rr, &rw, &rna, &l->s.t.sys, path, heap);
+    const size_t kn = md_qm_kinetic_orbitals(&kr, &kw, &kna, &l->dbasis, &l->s.t.sys, path, heap);
+    if (rn) l->rho = md_gto_iso_field_create_products(&l->s.basis, l->s.xyz, 0, rr, NULL, rw, rn, heap);
+    if (kn) l->tau = md_gto_iso_field_create_products(&l->dbasis, l->s.xyz, 0, kr, NULL, kw, kn, heap);
+    if (l->rho && l->tau) l->lol = md_gto_iso_field_create_lol(l->rho, l->tau, NULL, NULL, rho_min, heap);
+    md_free(heap, rr, sizeof(double) * rn * rna);
+    md_free(heap, rw, sizeof(double) * rn);
+    md_free(heap, kr, sizeof(double) * kn * kna);
+    md_free(heap, kw, sizeof(double) * kn);
+    return l->lol != NULL;
+}
+
+static void iso_lol_src_free(iso_lol_src_t* l) {
+    md_gto_iso_field_destroy(l->lol);
+    md_gto_iso_field_destroy(l->tau);
+    md_gto_iso_field_destroy(l->rho);
+    md_gto_basis_free(&l->dbasis, md_get_heap_allocator());
+    iso_dens_src_free(&l->s);
+}
+
+// Its value is md_qm_lol of the two fields, its gradient the value's
+UTEST(gto_iso_lol, value_and_gradient) {
+    static const char* files[] = {"h2o.h5", "amide.h5"};
+    for (int fi = 0; fi < 2; ++fi) {
+        iso_lol_src_t l;
+        ASSERT_TRUE(iso_lol_src_load(&l, files[fi], 1e-6));
+        md_gto_iso_field_info_t info;
+        md_gto_iso_field_info(&info, l.lol);
+        EXPECT_EQ(info.kind, (uint32_t)MD_GTO_ISO_FIELD_COMPOSITE);
+        enum { N = 1000 };
+        iso_rng_t rng = {17};
+        double* pd = (double*)malloc(sizeof(double) * 3 * N);
+        iso_dens_points(pd, N, &l.s, &rng);
+        double worst_v = 0.0, worst_g = 0.0;
+        for (int i = 0; i < N; ++i) {
+            const float p[3] = {(float)pd[3 * i], (float)pd[3 * i + 1], (float)pd[3 * i + 2]};
+            double v, g[3], r, t;
+            md_gto_iso_field_evaluate(l.lol, p, 1, 0, &v, g);
+            md_gto_iso_field_evaluate(l.rho, p, 1, 0, &r, NULL);
+            md_gto_iso_field_evaluate(l.tau, p, 1, 0, &t, NULL);
+            worst_v = fmax(worst_v, fabs(v - md_qm_lol_closed_shell(r, t, 1e-6)));
+            if (r < 1e-4) continue;   // the gradient where the value is well above rho_min's cut
+            const float hh = 1.0f / 512.0f;
+            for (int a = 0; a < 3; ++a) {
+                float pp[3] = {p[0], p[1], p[2]}, pm[3] = {p[0], p[1], p[2]};
+                pp[a] += hh; pm[a] -= hh;
+                double vp, vm;
+                md_gto_iso_field_evaluate(l.lol, pp, 1, 0, &vp, NULL);
+                md_gto_iso_field_evaluate(l.lol, pm, 1, 0, &vm, NULL);
+                float pp2[3] = {p[0], p[1], p[2]}, pm2[3] = {p[0], p[1], p[2]};
+                pp2[a] += 2 * hh; pm2[a] -= 2 * hh;
+                double vp2, vm2;
+                md_gto_iso_field_evaluate(l.lol, pp2, 1, 0, &vp2, NULL);
+                md_gto_iso_field_evaluate(l.lol, pm2, 1, 0, &vm2, NULL);
+                // fourth order central difference
+                const double fd = (vm2 - 8.0 * vm + 8.0 * vp - vp2) / (12.0 * (double)hh);
+                worst_g = fmax(worst_g, fabs(fd - g[a]) / fmax(1.0, fabs(g[a])));
+            }
+        }
+        printf("  %-9s LOL against md_qm_lol: %.1e; gradient against central differences: %.1e\n", files[fi], worst_v, worst_g);
+        EXPECT_LT(worst_v, 1e-12);
+        EXPECT_LT(worst_g, 1e-4);
+        free(pd);
+        iso_lol_src_free(&l);
+    }
+}
+
+// Bounded through its fields, the cache misses no crossing cell: its meshes are dense Surface Nets'
+// over the whole lattice; and the display mesh is closed. How close it lies to the surface is held at the
+// finer cell sizes (GTO_ISO_REPORT=1, ~2.5 min for the dense lattices): LOL's surfaces at 0.6 and 0.7 are
+// small pieces about its maxima, a few cells across at 0.2 - 0.3 bohr.
+UTEST(gto_iso_lol, cache_is_dense_surface_nets_and_meshes_close) {
+    typedef struct { const char* file; double h, iso_min, iso_max; bool fine; } lcase_t;
+    static const lcase_t cases[] = {
+        {"h2o.h5",   0.2,  0.5, 0.7, false},
+        {"amide.h5", 0.3,  0.5, 0.7, false},
+        {"h2o.h5",   0.1,  0.5, 0.7, true},
+        {"amide.h5", 0.15, 0.5, 0.7, true},
+    };
+    for (int ci = 0; ci < 4; ++ci) {
+        const lcase_t* c = &cases[ci];
+        if (c->fine && !iso_report()) continue;
+        iso_lol_src_t l;
+        ASSERT_TRUE(iso_lol_src_load(&l, c->file, 1e-6));
+        md_tick_t t0 = md_tick_now();
+        md_gto_iso_cache_t* cache = md_gto_iso_cache_create(l.lol, &(md_gto_iso_cache_desc_t){.cell_size = c->h, .iso_min = c->iso_min, .iso_max = c->iso_max}, md_get_heap_allocator());
+        const double t_cache = iso_seconds_since(t0);
+        ASSERT_TRUE(cache != NULL);
+        md_gto_iso_cache_info_t info;
+        md_gto_iso_cache_info(&info, cache);
+        const double lattice = pow((double)info.cells_per_axis + 1.0, 3.0);
+        printf("  %-9s LOL [%.2f, %.2f] h %.2f: %u bricks of %u^3 cells (%.2f%% of the lattice's points), octree %.3fs, corners %.3fs, cache %.3fs\n",
+               c->file, c->iso_min, c->iso_max, c->h, info.num_bricks, info.cells_per_axis, 100.0 * 125.0 * info.num_bricks / lattice,
+               info.seconds_octree, info.seconds_corners, t_cache);
+        const double isos[3] = {c->iso_min, 0.5 * (c->iso_min + c->iso_max), c->iso_max};
+        for (int k = 0; k < 3; ++k) {
+            md_gto_iso_mesh_t raw, q;
+            ASSERT_TRUE(md_gto_iso_mesh_extract(&raw, cache, &(md_gto_iso_mesh_desc_t){.iso = isos[k]}, md_get_heap_allocator()));
+            t0 = md_tick_now();
+            int dnv[2], dnq[2];
+            iso_dense_counts(l.lol, &info, isos[k], dnv, dnq);
+            const double t_dense = iso_seconds_since(t0);
+            ASSERT_TRUE(md_gto_iso_mesh_extract(&q, cache, &(md_gto_iso_mesh_desc_t){.iso = isos[k], .project_iterations = 8, .relax_iterations = 3}, md_get_heap_allocator()));
+            printf("     iso %.2f: %u vertices (dense lattice %d, %.1fs), %u triangles (dense %d); sheet - %u\n", isos[k],
+                   raw.sheet_vertex_count[0], dnv[0], t_dense, raw.sheet_index_count[0] / 3, 2 * dnq[0], raw.sheet_vertex_count[1]);
+            EXPECT_EQ((int)raw.sheet_vertex_count[0], dnv[0]);
+            EXPECT_EQ((int)raw.sheet_index_count[0], 6 * dnq[0]);
+            EXPECT_EQ(raw.sheet_vertex_count[1], 0u);
+            EXPECT_GT(raw.sheet_vertex_count[0], 0u);
+            iso_mesh_t mr, mq;
+            iso_api_sheet(&mr, &raw, 0, isos[k], c->h);
+            iso_api_sheet(&mq, &q, 0, isos[k], c->h);
+            iso_metrics_t er, eq;
+            iso_mesh_metrics(&er, &mr, &l.lol->f);
+            iso_mesh_metrics(&eq, &mq, &l.lol->f);
+            printf("       raw      "); iso_print_metrics("", &er);
+            printf("       display  "); iso_print_metrics("", &eq);
+            printf("       worst at (%.2f %.2f %.2f), |grad| %.3g\n", eq.dev_where[0], eq.dev_where[1], eq.dev_where[2], eq.dev_grad);
+            EXPECT_EQ(eq.boundary_edges, 0);
+            EXPECT_EQ(eq.euler, er.euler);
+            if (c->fine) {
+                EXPECT_GT(eq.orient_ok, 0.99);
+                EXPECT_LT(eq.dev_rms, 0.07);
+            }
+            iso_mesh_free(&mr);
+            iso_mesh_free(&mq);
+            md_gto_iso_mesh_free(&raw);
+            md_gto_iso_mesh_free(&q);
+        }
+        md_gto_iso_cache_destroy(cache);
+        iso_lol_src_free(&l);
+    }
+}
+
 #if MD_ENABLE_GPU
 #include <core/md_gpu.h>
 #include "gto_iso_shaders.inl"

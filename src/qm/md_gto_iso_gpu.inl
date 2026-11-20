@@ -815,6 +815,7 @@ md_gto_iso_gpu_set_t* md_gto_iso_gpu_set_create(md_gpu_stream_t stream, const md
     }
     for (uint32_t k = 0; k < num_fields; ++k) {
         if (!fields[k]) { MD_LOG_ERROR("md_gto_iso_gpu_set_create: field %u is NULL", k); return NULL; }
+        if (fields[k]->f.comp) { MD_LOG_ERROR("md_gto_iso_gpu_set_create: field %u is a composite (md_gto_iso_field_create_lol), which has no GPU path yet", k); return NULL; }
     }
     // The kernels with the set, on its thread: the first extraction then costs its own thread nothing for them
     // (seconds on a CPU device, a fraction of one on most GPUs)
