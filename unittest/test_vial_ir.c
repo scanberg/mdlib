@@ -3394,3 +3394,49 @@ UTEST(vial_ir, attr_draws_groups) {
     md_arena_allocator_destroy(alloc);
 }
 
+
+// What hover shows of a set or an array of sets: described, its shape and what each set is, not "set of n" set by set
+UTEST(vial_ir, sets_described) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
+    const md_system_t* sys = vial_test_system('T');
+    ASSERT_TRUE(sys != NULL);
+    const char* cases[][2] = {
+        {"particle",                             "6927 particles"},
+        {"particle[0]",                          "particle N, MET 1"},
+        {"residue[2]",                           "residue GLU 3, 9 particles"},
+        {"chain[0]",                             "chain A, 3441 particles"},
+        {"residue",                              "880 residues, 1 to 59 particles each"},
+        {"residue('ALA')",                       "60 residues ALA, 5 particles each"},
+        {"chain",                                "3 chains, 59 to 3441 particles each"},
+        {"molecule",                             "17 molecules, 1 to 3393 particles each"},
+        {"residue('PHE').ring[0]",               "42 rings, 6 particles each"},
+        {"residue('ALA')['CA']",                 "60 × CA"},
+        {"residue('ALA')[['N', 'CA', 'C']]",     "60 × (N, CA, C)"},
+        {"residue('ALA').particle[[1, 0, 2]]",   "60 × (CA, N, C)"},
+        {"particle[[0, 1, 2]]",                  "(N, CA, C)"},
+        {"bond(residue[2])",                     "8 × 2: (N, CA), (CA, C), (CA, CB), …"},
+        {"residue('GLY')['CB']",                 "63 empty sets"},
+        {"particle[particle.z < 0.0]",           "empty set"},
+        {"particle(residue('ALA')[['N', 'CA']])", "120 particles"},
+    };
+    for (size_t i = 0; i < MD_COUNTOF(cases); ++i) {
+        char src[256];
+        snprintf(src, sizeof(src), "x = %s\n", cases[i][0]);
+        md_vial_program_t* p = md_vial_compile(md_str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys}, alloc);
+        char text[256] = "";
+        const md_vial_draw_desc_t dd = {.prog = p, .sys = sys, .state = vial_test_state('T'), .element = -1};
+        md_vial_value_text(text, sizeof(text), &dd, md_vial_expr_at(p, 0));
+        EXPECT_STREQ(cases[i][1], text);
+        md_vial_program_free(p);
+    }
+    // Other values are printed as they were
+    {
+        md_vial_program_t* p = md_vial_compile(MD_STR_LIT("x = count(residue('ALA'))\n"), &(md_vial_compile_desc_t){.sys = sys}, alloc);
+        char text[64] = "";
+        const md_vial_draw_desc_t dd = {.prog = p, .sys = sys, .state = vial_test_state('T'), .element = -1};
+        md_vial_value_text(text, sizeof(text), &dd, md_vial_expr_at(p, 0));
+        EXPECT_STREQ("[5, 5, 5, 5, 5, 5, …]", text);
+        md_vial_program_free(p);
+    }
+    md_arena_allocator_destroy(alloc);
+}

@@ -810,6 +810,276 @@ static const vial_val_t* point_eval(point_t* pt, const md_vial_program_t* prog, 
 }
 
 // A value over the trajectory, from a finished evaluation, at frame when it is a series kept whole: into one
+// ### SETS AS HOVER SHOWS THEM ###
+// A set, or an array of them, described rather than printed set by set: its shape, then what each set is when they are
+// alike, one particle by its name or one whole residue, ring, chain or molecule, and otherwise their sizes.
+// "60 × (N, CA, C)", "60 residues ALA, 5 particles each", "880 sets of 4 to 24 particles"
+
+typedef enum set_kind_t { SET_EMPTY = 0, SET_PARTICLE, SET_RESIDUE, SET_RING, SET_CHAIN, SET_MOLECULE, SET_OTHER } set_kind_t;
+
+static const char* set_kind_noun(set_kind_t k, bool plural) {
+    switch (k) {
+    case SET_PARTICLE: return plural ? "particles" : "particle";
+    case SET_RESIDUE:  return plural ? "residues" : "residue";
+    case SET_RING:     return plural ? "rings" : "ring";
+    case SET_CHAIN:    return plural ? "chains" : "chain";
+    case SET_MOLECULE: return plural ? "molecules" : "molecule";
+    default:           return plural ? "sets" : "set";
+    }
+}
+
+typedef struct text_t {
+    char*  buf;
+    size_t cap;
+    size_t len;
+} text_t;
+
+static void text_put(text_t* t, const char* fmt, ...) {
+    if (t->len + 1 >= t->cap) return;
+    va_list args;
+    va_start(args, fmt);
+    const int n = vsnprintf(t->buf + t->len, t->cap - t->len, fmt, args);
+    va_end(args);
+    if (n > 0) t->len = MD_MIN(t->len + (size_t)n, t->cap - 1);
+}
+
+// Whether the particles a[0, n), ascending, are exactly one ring of the bonds. Rings are looked through when there
+// are few enough of them for every set; past that a set of a ring's size is just a set.
+static bool set_is_ring(const md_system_t* sys, const uint32_t* a, uint32_t n) {
+    if (n < 3 || n > 7) return false;
+    const size_t nr = md_ring_data_count(&sys->ring);
+    for (size_t r = 0; r < nr; ++r) {
+        if (md_ring_size(&sys->ring, r) != n) continue;
+        const int32_t* ra = md_ring_atoms(&sys->ring, r);
+        bool all = true;
+        for (uint32_t k = 0; k < n && all; ++k) {
+            bool in = false;
+            for (uint32_t q = 0; q < n && !in; ++q) in = a[q] == (uint32_t)ra[k];
+            all = in;
+        }
+        if (all) return true;
+    }
+    return false;
+}
+
+// What one set may be called, a bit per set_kind_t: one particle, or the whole of a residue, ring, chain or molecule.
+// One set can be several (an ion is a particle and a residue, a ligand a residue and a chain)
+static uint32_t set_kinds_of(const md_system_t* sys, const uint32_t* a, uint32_t n, bool rings) {
+    if (n == 0) return 1u << SET_EMPTY;
+    uint32_t k = n == 1 ? 1u << SET_PARTICLE : 0;
+    const md_residue_idx_t r = md_system_residue_find_by_atom_idx(sys, a[0]);
+    if (r >= 0) {
+        const md_urange_t ra = md_system_residue_atom_range(sys, (size_t)r);
+        if (a[0] == ra.beg && n == ra.end - ra.beg && a[n - 1] + 1 == ra.end) k |= 1u << SET_RESIDUE;
+    }
+    if (rings && set_is_ring(sys, a, n)) k |= 1u << SET_RING;
+    const md_chain_idx_t c = md_system_chain_find_by_atom_idx(sys, a[0]);
+    bool whole = c >= 0 && n == md_system_chain_atom_count(sys, (size_t)c);
+    for (uint32_t q = 1; q < n && whole; ++q) whole = md_system_chain_find_by_atom_idx(sys, a[q]) == c;
+    if (whole) k |= 1u << SET_CHAIN;
+    const md_molecule_idx_t m = md_system_molecule_find_by_atom_idx(sys, a[0]);
+    whole = m >= 0 && n == md_system_molecule_atom_count(sys, (size_t)m);
+    for (uint32_t q = 1; q < n && whole; ++q) whole = md_system_molecule_find_by_atom_idx(sys, a[q]) == m;
+    if (whole) k |= 1u << SET_MOLECULE;
+    return k;
+}
+
+// What sets that may all be called kinds are called: what their dimension runs over, when they may, else the first of
+// particle, residue, ring, chain, molecule
+static set_kind_t set_kind_pick(uint32_t kinds, uint8_t level) {
+    const set_kind_t by_level = level == VIAL_LEVEL_PARTICLE ? SET_PARTICLE : level == VIAL_LEVEL_RESIDUE ? SET_RESIDUE :
+                                level == VIAL_LEVEL_RING ? SET_RING : level == VIAL_LEVEL_CHAIN ? SET_CHAIN :
+                                level == VIAL_LEVEL_MOLECULE ? SET_MOLECULE : SET_OTHER;
+    if (by_level != SET_OTHER && (kinds & (1u << by_level))) return by_level;
+    for (int k = SET_PARTICLE; k < SET_OTHER; ++k) if (kinds & (1u << k)) return (set_kind_t)k;
+    return SET_OTHER;
+}
+
+// "ALA 439", as the tooltips name a residue; "residue 440" for one without a name
+static void put_residue(text_t* t, const md_system_t* sys, uint32_t atom) {
+    const md_residue_idx_t r = md_system_residue_find_by_atom_idx(sys, atom);
+    if (r < 0) { text_put(t, "?"); return; }
+    const md_str_t name = md_system_residue_name(sys, (size_t)r);
+    if (name.len) text_put(t, "%.*s %d", (int)name.len, name.ptr, (int)md_system_residue_seq_id(sys, (size_t)r));
+    else text_put(t, "residue %d", (int)r + 1);
+}
+
+static void put_name(text_t* t, const md_system_t* sys, const vial_val_t* v, size_t i) {
+    const uint32_t n = vial_val_is_missing(v, i) ? 0 : vial_sets_size(v->sets, (uint32_t)i);
+    if (n != 1) { text_put(t, "–"); return; }
+    const md_str_t name = md_atom_name(&sys->atom, vial_sets_items(v->sets, (uint32_t)i)[0]);
+    if (name.len) text_put(t, "%.*s", (int)name.len, name.ptr);
+    else text_put(t, "%u", vial_sets_items(v->sets, (uint32_t)i)[0]);
+}
+
+// The one particle of set i, or none for a missing set, an empty one or one of several
+static bool one_particle(const vial_val_t* v, size_t i, uint32_t* atom) {
+    if (vial_val_is_missing(v, i) || vial_sets_size(v->sets, (uint32_t)i) != 1) return false;
+    *atom = vial_sets_items(v->sets, (uint32_t)i)[0];
+    return true;
+}
+
+// Whether the single particles of sets beg, beg + step, ... (count of them) share one name, which is put in name
+static bool one_name(const vial_val_t* v, const md_system_t* sys, size_t beg, size_t step, size_t count, md_str_t* name) {
+    *name = (md_str_t){0};
+    for (size_t k = 0; k < count; ++k) {
+        uint32_t a;
+        if (!one_particle(v, beg + k * step, &a)) continue;
+        const md_str_t nm = md_atom_name(&sys->atom, a);
+        if (!name->ptr) *name = nm;
+        else if (!md_str_eq(*name, nm)) return false;
+    }
+    return true;
+}
+
+// Rows of w sets, up to three: each as its residues, or as its particles' names, skipping a row named as one shown
+// (85 matches of a ring are mostly alike)
+static void put_rows(text_t* t, const vial_val_t* v, const md_system_t* sys, size_t rows, uint32_t w, bool residues) {
+    size_t shown[3], num_shown = 0;
+    for (size_t r = 0; r < rows && num_shown < 3; ++r) {
+        bool seen = false;
+        for (size_t q = 0; q < num_shown && !seen && !residues; ++q) {
+            seen = true;
+            for (uint32_t c = 0; c < w && seen; ++c) {
+                uint32_t a, b;
+                const bool oa = one_particle(v, r * w + c, &a), ob = one_particle(v, shown[q] * w + c, &b);
+                seen = oa == ob && (!oa || md_str_eq(md_atom_name(&sys->atom, a), md_atom_name(&sys->atom, b)));
+            }
+        }
+        if (seen) continue;
+        text_put(t, num_shown ? ", (" : "(");
+        for (uint32_t c = 0; c < w; ++c) {
+            const size_t i = r * w + c;
+            if (c) text_put(t, ", ");
+            if (vial_val_is_missing(v, i) || !vial_sets_size(v->sets, (uint32_t)i)) text_put(t, "–");
+            else if (residues) put_residue(t, sys, vial_sets_items(v->sets, (uint32_t)i)[0]);
+            else put_name(t, sys, v, i);
+        }
+        text_put(t, ")");
+        shown[num_shown++] = r;
+    }
+    if (rows > num_shown) text_put(t, ", …");
+}
+
+// The text, or 0 when v is no set (the value is printed as it is). level: what the first dimension runs over, as the
+// checker knows it, VIAL_LEVEL_NONE when it does not.
+static size_t sets_text(char* buf, size_t cap, const vial_val_t* v, const md_system_t* sys, uint8_t level) {
+    if (!buf || !cap || !v || v->dtype != VIAL_DT_SET || !v->sets || !sys) return 0;
+    text_t t = {.buf = buf, .cap = cap};
+    buf[0] = 0;
+    size_t n = 1;
+    for (uint8_t d = 0; d < v->ndim; ++d) n *= v->dims[d];
+    const bool rings = n * md_ring_data_count(&sys->ring) <= 4000000;
+
+    // What every set may be called, and their sizes
+    uint32_t kinds = ~0u;
+    size_t num_empty = 0;
+    uint32_t lo = UINT32_MAX, hi = 0;
+    for (size_t i = 0; i < n; ++i) {
+        const uint32_t sz = vial_val_is_missing(v, i) ? 0 : vial_sets_size(v->sets, (uint32_t)i);
+        if (!sz) { ++num_empty; continue; }
+        kinds &= set_kinds_of(sys, vial_sets_items(v->sets, (uint32_t)i), sz, rings);
+        lo = MD_MIN(lo, sz);
+        hi = MD_MAX(hi, sz);
+    }
+    const set_kind_t kind = num_empty == n ? SET_EMPTY : set_kind_pick(kinds, level);
+
+    // One set
+    if (v->ndim == 0) {
+        const uint32_t* a = num_empty ? NULL : vial_sets_items(v->sets, 0);
+        switch (kind) {
+        case SET_EMPTY:    text_put(&t, "empty set"); break;
+        case SET_PARTICLE: text_put(&t, "particle "); put_name(&t, sys, v, 0); text_put(&t, ", "); put_residue(&t, sys, a[0]); break;
+        case SET_RESIDUE:  text_put(&t, "residue "); put_residue(&t, sys, a[0]); text_put(&t, ", %u particles", lo); break;
+        case SET_CHAIN: {
+            const md_str_t id = md_system_chain_id(sys, (size_t)md_system_chain_find_by_atom_idx(sys, a[0]));
+            text_put(&t, "chain %.*s, %u particles", (int)id.len, id.ptr, lo);
+            break;
+        }
+        case SET_RING:     text_put(&t, "ring of %u particles", lo); break;
+        case SET_MOLECULE: text_put(&t, "molecule of %u particles", lo); break;
+        default:           text_put(&t, "%u particles", lo); break;
+        }
+        return t.len;
+    }
+
+    // The shape: every dimension but the last, then the last, which is what a row holds
+    const uint32_t w = v->dims[v->ndim - 1];
+    const size_t rows = n / (w ? w : 1);
+    char shape[64] = "";
+    {
+        text_t sh = {.buf = shape, .cap = sizeof(shape)};
+        for (uint8_t d = 0; d + 1 < v->ndim; ++d) text_put(&sh, "%u × ", v->dims[d]);
+    }
+    md_str_t name;
+    if (kind == SET_EMPTY) {
+        text_put(&t, "%s%u empty sets", shape, w);
+    } else if (kind == SET_PARTICLE && v->ndim == 1) {
+        // One name for all, "60 × CA"; a few, "(N, H1, H2)"; many, the first few
+        if (n > 1 && one_name(v, sys, 0, 1, n, &name)) {
+            text_put(&t, "%zu × %.*s", n, (int)name.len, name.ptr);
+        } else {
+            text_put(&t, n <= 6 ? "(" : "%zu particles: ", n);
+            for (size_t i = 0; i < n && i < 6; ++i) { if (i) text_put(&t, ", "); put_name(&t, sys, v, i); }
+            text_put(&t, n <= 6 ? ")" : ", …");
+        }
+    } else if (kind == SET_PARTICLE) {
+        // A column of one name in every row is shown once, "60 × (N, CA, C)"; else rows of names
+        bool columns = true;
+        for (uint32_t c = 0; c < w && columns; ++c) columns = one_name(v, sys, c, w, rows, &name);
+        if (columns) {
+            text_put(&t, w == 1 ? "%s" : "%s(", shape);
+            for (uint32_t c = 0; c < w; ++c) {
+                one_name(v, sys, c, w, rows, &name);
+                if (c) text_put(&t, ", ");
+                if (name.ptr) text_put(&t, "%.*s", (int)name.len, name.ptr);
+                else text_put(&t, "–");
+            }
+            if (w != 1) text_put(&t, ")");
+        } else {
+            text_put(&t, "%s%u: ", shape, w);
+            put_rows(&t, v, sys, rows, w, false);
+        }
+    } else if (kind == SET_RESIDUE && v->ndim >= 2) {
+        text_put(&t, "%s%u residues: ", shape, w);
+        put_rows(&t, v, sys, rows, w, true);
+    } else {
+        // Units, or sets, and their sizes; residues of one name with it, "60 residues ALA"
+        const size_t count = v->ndim >= 2 ? w : n - num_empty;
+        text_put(&t, "%s%zu %s", v->ndim >= 2 ? shape : "", count, set_kind_noun(kind, count != 1));
+        if (kind == SET_RESIDUE) {
+            md_str_t first = {0};
+            bool same = true;
+            for (size_t i = 0; i < n && same; ++i) {
+                if (vial_val_is_missing(v, i) || !vial_sets_size(v->sets, (uint32_t)i)) continue;
+                const md_residue_idx_t r = md_system_residue_find_by_atom_idx(sys, vial_sets_items(v->sets, (uint32_t)i)[0]);
+                const md_str_t nm = r >= 0 ? md_system_residue_name(sys, (size_t)r) : (md_str_t){0};
+                if (!first.ptr) first = nm;
+                else same = md_str_eq(first, nm);
+            }
+            if (same && first.len) text_put(&t, " %.*s", (int)first.len, first.ptr);
+        }
+        if (kind == SET_OTHER) text_put(&t, lo == hi ? " of %u particles" : " of %u to %u particles", lo, hi);
+        else if (lo == hi) text_put(&t, lo == 1 ? ", 1 particle each" : ", %u particles each", lo);
+        else text_put(&t, ", %u to %u particles each", lo, hi);
+    }
+    if (num_empty && kind != SET_EMPTY) text_put(&t, "; %zu empty", num_empty);
+    return t.len;
+}
+
+// The level the first dimension of IR value v runs over, as the checker knows it
+static uint8_t value_level(const vial_ir_t* ir, vial_ssa_t v) {
+    const vial_type_t* t = &ir->values[v].type;
+    const uint32_t d = t->ndim ? t->dims[0].desc : 0;
+    return d && ir->descs ? ir->descs[d].level : VIAL_LEVEL_NONE;
+}
+
+// A value as hover shows it: sets described, anything else printed as the reference prints values
+static size_t hover_print(char* buf, size_t cap, const vial_val_t* val, const md_system_t* sys, uint8_t level, double scale) {
+    const size_t len = sets_text(buf, cap, val, sys, level);
+    return len ? len : vial_val_print_scaled(buf, cap, val, 6, scale);
+}
+
 static bool trajectory_value(const md_vial_eval_t* e, vial_ssa_t v, int64_t frame, vial_val_t* one) {
     if (!e || !md_atomic_load64(&e->done)) return false;
     const vial_ssa_t rv = md_vial__run_value(e->prog, v);
@@ -838,12 +1108,12 @@ bool md_vial_eval_hover(const md_vial_eval_t* e, uint32_t offset, int64_t frame,
     if (ir->values[v].type.stage == VIAL_STAGE_TRAJECTORY) {
         vial_val_t one;
         if (!trajectory_value(e, v, frame, &one)) return false;
-        vial_val_print(buf, cap, &one, 6);
+        hover_print(buf, cap, &one, e->sys, value_level(ir, v), 1.0);
         return true;
     }
     point_t pt;
     const vial_val_t* val = point_eval(&pt, e->prog, e->sys, e->run, e->times, e->num_frames, frame, NULL, v, false);
-    if (val) vial_val_print(buf, cap, val, 6);
+    if (val) hover_print(buf, cap, val, e->sys, value_level(ir, v), 1.0);
     point_free(&pt);
     return val != NULL;
 }
@@ -1220,7 +1490,7 @@ size_t md_vial_value_text(char* buf, size_t cap, const md_vial_draw_desc_t* desc
     if (ir->values[v].type.stage == VIAL_STAGE_TRAJECTORY) {
         vial_val_t one;
         if (!trajectory_value(desc->eval, v, desc->frame, &one)) return 0;
-        return vial_val_print_scaled(buf, cap, &one, 6, scale);
+        return hover_print(buf, cap, &one, desc->sys, value_level(ir, v), scale);
     }
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     int64_t num_frames = 0;
@@ -1228,7 +1498,7 @@ size_t md_vial_value_text(char* buf, size_t cap, const md_vial_draw_desc_t* desc
     if (desc->eval) num_frames = desc->eval->num_frames;
     point_t pt;
     const vial_val_t* val = point_eval(&pt, desc->prog, desc->sys, desc->run, times, num_frames, desc->frame, desc->state, v, false);
-    const size_t len = val ? vial_val_print_scaled(buf, cap, val, 6, scale) : 0;
+    const size_t len = val ? hover_print(buf, cap, val, desc->sys, value_level(ir, v), scale) : 0;
     point_free(&pt);
     md_arena_allocator_destroy(arena);
     return len;
