@@ -1519,7 +1519,22 @@ UTEST(vial_ir, filters) {
         EXPECT_EQ(r0.offsets[1], f.offsets[1]);
         ASSERT_TRUE(md_vial_filter(&f, MD_STR_LIT("protein"), &sd, alloc));
         EXPECT_EQ(r0.offsets[1], f.offsets[1]);
+        // Nothing written: the scope, whole
+        ASSERT_TRUE(md_vial_filter(&f, MD_STR_LIT(""), &sd, alloc));
+        EXPECT_EQ(0, f.ndim);
+        ASSERT_EQ(1u, f.num_sets);
+        ASSERT_EQ(r0.offsets[1], f.offsets[1]);
+        for (uint32_t i = 0; i < f.offsets[1]; ++i) EXPECT_EQ(r0.atoms[i], f.atoms[i]);
     }
+    // Nothing written picks every particle, as an empty md_filter does: a representation's empty filter
+    ASSERT_TRUE(md_vial_filter(&f, MD_STR_LIT(""), &d, alloc));
+    EXPECT_FALSE(f.dynamic);
+    EXPECT_EQ(0, f.ndim);
+    ASSERT_EQ(1u, f.num_sets);
+    ASSERT_EQ((uint32_t)sys->atom.count, f.offsets[1]);
+    for (uint32_t i = 0; i < f.offsets[1]; ++i) EXPECT_EQ(i, f.atoms[i]);
+    ASSERT_TRUE(md_vial_filter(&f, MD_STR_LIT("  \n "), &d, alloc));
+    EXPECT_EQ((uint32_t)sys->atom.count, f.offsets[1]);
     // Errors, with spans in the expression
     EXPECT_FALSE(md_vial_filter(&f, MD_STR_LIT("1 + 2"), &d, alloc));
     EXPECT_STREQ("E0313", f.error.code);
@@ -1529,7 +1544,6 @@ UTEST(vial_ir, filters) {
     EXPECT_GE(f.error.span.beg, 0u);
     EXPECT_LE(f.error.span.end, 19u);
     EXPECT_GT(f.error.message.len, 0u);
-    EXPECT_FALSE(md_vial_filter(&f, MD_STR_LIT("   "), &d, alloc));
     EXPECT_FALSE(md_vial_filter(&f, MD_STR_LIT("protein)"), &d, alloc));
 
     // Completion, in the expression's own offsets

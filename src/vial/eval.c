@@ -1612,13 +1612,37 @@ static bool filter_fail(md_vial_filter_t* out, md_allocator_i* alloc, md_str_t e
     return false;
 }
 
+// What nothing written picks: every particle, as md_filter takes an empty filter for 'all'. One set, cut to the scope.
+static bool filter_all(md_vial_filter_t* out, const md_vial_filter_desc_t* desc, md_allocator_i* alloc) {
+    const uint32_t na = (uint32_t)desc->sys->atom.count;
+    uint8_t* in_scope = NULL;
+    if (desc->scope) {
+        in_scope = md_alloc(alloc, na ? na : 1);
+        md_memset(in_scope, 0, na);
+        for (size_t i = 0; i < desc->num_scope; ++i) if (desc->scope[i] < na) in_scope[desc->scope[i]] = 1;
+    }
+    uint32_t* offsets = NULL;
+    uint32_t* atoms = NULL;
+    md_array_push(offsets, 0, alloc);
+    for (uint32_t i = 0; i < na; ++i) {
+        if (!in_scope || in_scope[i]) md_array_push(atoms, i, alloc);
+    }
+    md_array_push(offsets, (uint32_t)md_array_size(atoms), alloc);
+    if (in_scope) md_free(alloc, in_scope, na ? na : 1);
+    out->num_sets = 1;
+    out->offsets = offsets;
+    out->atoms = atoms ? atoms : md_alloc(alloc, sizeof(uint32_t));
+    out->ok = true;
+    return true;
+}
+
 bool md_vial_filter(md_vial_filter_t* out, md_str_t expr, const md_vial_filter_desc_t* desc, md_allocator_i* alloc) {
     if (!out) return false;
     memset(out, 0, sizeof(*out));
     const uint32_t base = (uint32_t)(sizeof(FILTER_HEAD) - 1);
     const md_vial_span_t whole = {0, 0};
     if (!desc || !desc->sys || !alloc) return filter_fail(out, alloc ? alloc : md_get_heap_allocator(), expr, "E0101", whole, base, "no system");
-    if (md_str_empty(md_str_trim(expr))) return filter_fail(out, alloc, expr, "E0101", whole, base, "the filter is empty");
+    if (md_str_empty(md_str_trim(expr))) return filter_all(out, desc, alloc);
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     bool reads_recipe = false;
     md_vial_program_t* fp = filter_compile(expr, desc, arena, &reads_recipe);
