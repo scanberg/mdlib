@@ -34,6 +34,8 @@
 //   iso_bucket_*    vertices and triangles regrouped per field and sheet
 //   iso_grid        indirect grids from device-side counts
 //   iso_scan        exclusive prefix sums (the ordered lists)
+// A composite set (LOL, ELF; "Composite fields" below): field 0 a function of the others, bounded in octree_finish
+// from their ranges, its corners (iso_comp_corners) and vertex values (iso_comp_vertices) from theirs.
 // Outside the extraction, the vertex evaluators serve the caller's points (md_gto_iso_gpu_evaluate_launch):
 //   iso_points_load the points as vertices of one field; iso_points_store their values from vval
 
@@ -144,6 +146,16 @@ struct IsoArgs {
     uint      pts_field;      // iso_points_load: the field the points are evaluated for
     uint      _pad3;
     uint      _pad4;
+    // A composite set (comp_kind != 0, see "Composite fields"): field 0 a function of fields 1 .. num_fields - 1
+    float4*   vsub;           // the vertex values of field f >= 1 at vsub[(f - 1) * comp_stride + v] (gradient xyz, value w)
+    uint      comp_kind;      // 0 none, 1 LOL, 2 ELF
+    uint      comp_spins;     // 1: a closed shell's totals; 2: alpha and beta
+    float     comp_rho_min;
+    float     comp_d_min;
+    uint      comp_stride;
+    uint      vfield;         // the vertex evaluators: 0 each vertex's own field (vinfo.z), else field vfield - 1 for all
+    uint      _pad5;
+    uint      _pad6;
 };
 MD_SHADER_ARGS(IsoArgs);
 
@@ -164,6 +176,8 @@ static const float EXP_REL = 4.0e-6;        // relative error allowed for exp() 
 uint  node_index(uint3 gid) { IsoArgs a = MD_ARGS; return gid.y * 65535u + gid.x + a.group_base; }
 uint  field_bits(uint mask) { return (mask | (mask >> 1)) & 0x55555555u; }     // bit 2f: field f active
 uint  field_slot(uint mask, uint f) { return countbits(field_bits(mask) & ((1u << (2u * f)) - 1u)); }
+// The field the vertex evaluators evaluate at vertex v: its own, or every vertex's (vfield, a composite's parts)
+uint  vertex_field(uint v) { IsoArgs a = MD_ARGS; return a.vfield != 0u ? a.vfield - 1u : min(a.vinfo[v].z, 15u); }
 
 // ------------------------------------------------------------------------------------------
 // Intervals
@@ -394,14 +408,141 @@ float2 octree_range(float sm[5], uint col) {
     return A;
 }
 
+// ------------------------------------------------------------------------------------------
+// Composite fields (comp_kind != 0, md_gto_iso_field_create_lol, _elf): field 0 is a function of the others,
+// which are density fields like any: per spin s (comp_spins; 1 a closed shell's totals, taken as two equal
+// spins of half of them) fields 1 + s K: rho, tau (K = 2), and for ELF the components of grad rho (K = 5;
+// products of the density's functions and tau's, the derivatives). The octree bounds field 0 from the others'
+// ranges (octree_finish), its corners and vertex values come from theirs (iso_comp_corners, iso_comp_vertices).
+//     LOL = t / (1 + t),  t = D0 / tau,   D0 = c_F sum_s rho_s^(5/3)
+//     ELF = 1 / (1 + chi^2),  chi = (d_min + sum_s D_s) / D0,  D_s = max(0, tau_s - |grad rho_s|^2 / (8 rho_s))
+// both 0 where the density is below rho_min (md_gto_iso.c's iso_lol, iso_elf_eval, in float).
+// ------------------------------------------------------------------------------------------
+
+#define COMP_MAX 10                                  // parts: two spins of ELF's five
+static const float COMP_CF = 4.557799872345596;     // 3/10 (6 pi^2)^(2/3)
+static const float COMP_MARGIN = 1.0e-5;            // the float evaluation's error in a bound of LOL or ELF (in [0, 1])
+
+uint comp_parts(IsoArgs a) { return a.comp_kind == 2u ? 5u : 2u; }
+
+groupshared float2 o_frng[16];                       // the octree: the parts' ranges over the node
+
+// Field 0's range over the node from its parts' (o_frng): LOL non-decreasing in every rho_s and decreasing in
+// every tau_s; ELF by intervals over its formula (rho counted independently where it appears twice)
+float2 comp_range(IsoArgs a) {
+    uint K = comp_parts(a);
+    float rlo[2], rhi[2], tlo[2], thi[2], glo[2], ghi[2];
+    [ForceUnroll] for (int s = 0; s < 2; ++s) { rlo[s] = 0.0; rhi[s] = 0.0; tlo[s] = 0.0; thi[s] = 0.0; glo[s] = 0.0; ghi[s] = 0.0; }
+    uint ns = min(a.comp_spins, 2u);
+    for (uint s = 0u; s < ns; ++s) {
+        float2 r = o_frng[1u + s * K], t = o_frng[2u + s * K];
+        rlo[s] = max(r.x, 0.0); rhi[s] = max(r.y, 0.0);
+        tlo[s] = max(t.x, 0.0); thi[s] = max(t.y, 0.0);
+        if (K == 5u) {
+            float2 g = float2(0.0, 0.0);
+            for (uint x = 0u; x < 3u; ++x) g += iv_sq(o_frng[3u + s * K + x]);
+            glo[s] = g.x; ghi[s] = g.y;
+        }
+    }
+    if (ns == 1u) {
+        rlo[0] *= 0.5; rhi[0] *= 0.5; tlo[0] *= 0.5; thi[0] *= 0.5; glo[0] *= 0.25; ghi[0] *= 0.25;
+        rlo[1] = rlo[0]; rhi[1] = rhi[0]; tlo[1] = tlo[0]; thi[1] = thi[0]; glo[1] = glo[0]; ghi[1] = ghi[0];
+    }
+    float rs_lo = rlo[0] + rlo[1], rs_hi = rhi[0] + rhi[1];
+    float D0_lo = COMP_CF * (pow(rlo[0], 5.0 / 3.0) + pow(rlo[1], 5.0 / 3.0));
+    float D0_hi = COMP_CF * (pow(rhi[0], 5.0 / 3.0) + pow(rhi[1], 5.0 / 3.0));
+    if (!(rs_hi >= a.comp_rho_min) || !(D0_hi > 0.0)) return float2(0.0, COMP_MARGIN);
+    float f_lo, f_hi;
+    if (K == 5u) {
+        float dmin = max(a.comp_d_min, 0.0);
+        float D_lo = dmin, D_hi = dmin;
+        [ForceUnroll] for (int s = 0; s < 2; ++s) {
+            if (rlo[s] > 0.0) D_lo += max(0.0, tlo[s] - ghi[s] / (8.0 * rlo[s]));
+            if (rhi[s] > 0.0) D_hi += max(0.0, thi[s] - glo[s] / (8.0 * rhi[s]));
+        }
+        float chi_lo = D_lo / D0_hi;
+        f_hi = 1.0 / (1.0 + chi_lo * chi_lo);
+        f_lo = 0.0;
+        if (rs_lo >= a.comp_rho_min && D0_lo > 0.0) { float chi_hi = D_hi / D0_lo; f_lo = 1.0 / (1.0 + chi_hi * chi_hi); }
+    } else {
+        float ts_lo = tlo[0] + tlo[1], ts_hi = thi[0] + thi[1];
+        f_hi = ts_lo > 0.0 ? D0_hi / (ts_lo + D0_hi) : 1.0;            // t / (1 + t) = D0 / (tau + D0)
+        f_lo = 0.0;
+        if (rs_lo >= a.comp_rho_min) f_lo = ts_hi > 0.0 ? D0_lo / (ts_hi + D0_lo) : 1.0;
+    }
+    return float2(f_lo - COMP_MARGIN, f_hi + COMP_MARGIN);
+}
+
+// Field 0's value and gradient (xyz, w the value) at a point from its parts' (p[i]: field 1 + i, gradient xyz
+// and value w; the gradients of ELF's grad rho components are the rows of the density's Hessian)
+float4 comp_eval(IsoArgs a, float4 p[COMP_MAX]) {
+    uint K = comp_parts(a);
+    uint ns = min(a.comp_spins, 2u);
+    float rho[2], tau[2];
+    float3 gr[2], gt[2], h0[2], h1[2], h2[2];       // ELF: grad rho, grad tau, the Hessian's rows
+    [ForceUnroll] for (int s = 0; s < 2; ++s) {
+        uint b = uint(s) * K;
+        bool on = uint(s) < ns;
+        rho[s] = on ? p[b].w : 0.0;      gr[s] = on ? p[b].xyz : float3(0.0);
+        tau[s] = on ? p[b + 1u].w : 0.0; gt[s] = on ? p[b + 1u].xyz : float3(0.0);
+        if (K == 5u) {
+            gr[s] = on ? float3(p[b + 2u].w, p[b + 3u].w, p[b + 4u].w) : float3(0.0);
+            h0[s] = on ? p[b + 2u].xyz : float3(0.0);
+            h1[s] = on ? p[b + 3u].xyz : float3(0.0);
+            h2[s] = on ? p[b + 4u].xyz : float3(0.0);
+        } else {
+            h0[s] = float3(0.0); h1[s] = float3(0.0); h2[s] = float3(0.0);
+        }
+    }
+    if (ns == 1u) {
+        rho[0] *= 0.5; tau[0] *= 0.5; gr[0] *= 0.5; gt[0] *= 0.5; h0[0] *= 0.5; h1[0] *= 0.5; h2[0] *= 0.5;
+        rho[1] = rho[0]; tau[1] = tau[0]; gr[1] = gr[0]; gt[1] = gt[0]; h0[1] = h0[0]; h1[1] = h1[0]; h2[1] = h2[0];
+    }
+    float rho_sum = max(rho[0], 0.0) + max(rho[1], 0.0);
+    float D0 = 0.0;
+    float3 gD0 = float3(0.0);
+    [ForceUnroll] for (int s = 0; s < 2; ++s) {
+        if (!(rho[s] > 0.0)) continue;
+        D0 += COMP_CF * pow(rho[s], 5.0 / 3.0);
+        gD0 += 5.0 / 3.0 * COMP_CF * pow(rho[s], 2.0 / 3.0) * gr[s];
+    }
+    if (!(rho_sum >= a.comp_rho_min) || !(D0 > 0.0)) return float4(0.0);
+    if (K == 5u) {
+        float D = max(a.comp_d_min, 0.0);
+        float3 gD = float3(0.0);
+        [ForceUnroll] for (int s = 0; s < 2; ++s) {
+            if (!(rho[s] > 0.0)) continue;
+            float g2 = dot(gr[s], gr[s]);
+            float Ds = tau[s] - g2 / (8.0 * rho[s]);
+            if (Ds <= 0.0) continue;
+            D += Ds;
+            // d_x |grad rho|^2 = 2 sum_y grad_y rho H[y][x]
+            float3 dg2 = 2.0 * (gr[s].x * h0[s] + gr[s].y * h1[s] + gr[s].z * h2[s]);
+            gD += gt[s] - dg2 / (8.0 * rho[s]) + g2 * gr[s] / (8.0 * rho[s] * rho[s]);
+        }
+        float chi = D / D0;
+        float q = 1.0 + chi * chi;
+        return float4(-2.0 * chi / (q * q) * (gD - chi * gD0) / D0, 1.0 / q);
+    }
+    float tau_sum = max(tau[0], 0.0) + max(tau[1], 0.0);
+    if (!(tau_sum > 0.0)) return float4(0.0, 0.0, 0.0, 1.0);
+    // LOL = D0 / (tau + D0): d LOL = (tau dD0 - D0 dtau) / (tau + D0)^2
+    float3 gtau = (tau[0] > 0.0 ? gt[0] : float3(0.0)) + (tau[1] > 0.0 ? gt[1] : float3(0.0));
+    float den = tau_sum + D0;
+    return float4((tau_sum * gD0 - D0 * gtau) / (den * den), D0 / den);
+}
+
 // With the functions' ranges in o_A: the fields' ranges, the node's sheet bits and its children (or
-// itself as a brick). Every thread of the group calls it (barriers inside).
+// itself as a brick). Every thread of the group calls it (barriers inside). A composite set: field 0's
+// bits from its parts' ranges, and wherever it is kept every part's (positive) bit too, so that the bricks
+// get their corners (iso_comp_corners clears them again).
 void octree_finish(uint4 node, uint ni, uint tid) {
     IsoArgs a = MD_ARGS;
     GroupMemoryBarrierWithGroupSync();
+    bool comp = a.comp_kind != 0u;
     if (tid < a.num_fields) {
         uint fbits = (node.w >> (2u * tid)) & 3u;
-        if (fbits != 0u) {
+        if (fbits != 0u || (comp && tid > 0u)) {
             IsoField fd = a.fields[min(tid, 15u)];
             float2 rho = float2(0.0, 0.0);
             float rmag = 0.0;
@@ -418,11 +559,23 @@ void octree_finish(uint4 node, uint ni, uint tid) {
             }
             float e = fd.slack + float(fd.term_count + 8u) * 2.0 * U * rmag + 1.0e-35;
             rho += float2(-e, e);
-            uint bits = 0u;
-            if (rho.x <= fd.iso && rho.y >= fd.iso)   bits |= 1u;
-            if (rho.x <= -fd.iso && rho.y >= -fd.iso) bits |= 2u;
-            bits &= fbits;
-            if (bits != 0u) InterlockedOr(o_mask, bits << (2u * tid));
+            if (comp) {
+                o_frng[min(tid, 15u)] = rho;
+            } else {
+                uint bits = 0u;
+                if (rho.x <= fd.iso && rho.y >= fd.iso)   bits |= 1u;
+                if (rho.x <= -fd.iso && rho.y >= -fd.iso) bits |= 2u;
+                bits &= fbits;
+                if (bits != 0u) InterlockedOr(o_mask, bits << (2u * tid));
+            }
+        }
+    }
+    if (comp) {     // uniform
+        GroupMemoryBarrierWithGroupSync();
+        if (tid == 0u && (node.w & 1u) != 0u) {
+            float2 r = comp_range(a);
+            float iso = a.fields[0].iso;
+            if (r.x <= iso && r.y >= iso) o_mask = 1u | (0x55555554u & ((1u << (2u * min(a.num_fields, 15u))) - 1u));
         }
     }
     octree_emit(node, ni, tid);
@@ -931,6 +1084,47 @@ void iso_corners_fill(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
     }
 }
 
+// A composite set, after iso_corners_fill: field 0's corners from its parts', then the parts' bits cleared
+// (their slots stay, unused), so that the cells, quads and vertices are field 0's only. A group per brick.
+[shader("compute")]
+[numthreads(128, 1, 1)]
+void iso_comp_corners(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
+    IsoArgs a = MD_ARGS;
+    uint b = node_index(gid);
+    if (b >= a.count) return;                              // uniform per group
+    uint mask = a.bricks[b].w;
+    if ((mask & 3u) != 0u && tid < 125u) {
+        uint s0 = a.brick_slot[b];
+        float4 p[COMP_MAX];
+        [ForceUnroll] for (int i = 0; i < COMP_MAX; ++i) {
+            uint f = uint(i) + 1u;
+            bool on = f < a.num_fields && ((field_bits(mask) >> (2u * f)) & 1u) != 0u;
+            float c = a.corners[(s0 + field_slot(mask, min(f, a.num_fields - 1u))) * 125u + tid];   // clamped: llvmpipe loads anyway
+            p[i] = float4(0.0, 0.0, 0.0, on ? c : 0.0);
+        }
+        a.corners[(s0 + field_slot(mask, 0u)) * 125u + tid] = comp_eval(a, p).w;
+    }
+    GroupMemoryBarrierWithGroupSync();                     // every thread has its mask
+    if (tid == 0u) a.bricks[b].w = mask & 3u;
+}
+
+// A composite set's vertices: field 0's value and gradient (vval) from its parts' (vsub), where the vertex is
+// still moving (as the evaluators: a converged one keeps its values)
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void iso_comp_vertices(uint3 tid : SV_DispatchThreadID) {
+    IsoArgs a = MD_ARGS;
+    uint v = tid.x;
+    if (v >= a.count || a.vdone[v] != 0u) return;
+    float4 p[COMP_MAX];
+    [ForceUnroll] for (int i = 0; i < COMP_MAX; ++i) {
+        bool on = uint(i) + 1u < a.num_fields;
+        float4 q = a.vsub[min(uint(i), a.num_fields - 2u) * a.comp_stride + v];   // clamped: llvmpipe loads anyway
+        p[i] = on ? q : float4(0.0);
+    }
+    a.vval[v] = comp_eval(a, p);
+}
+
 // ------------------------------------------------------------------------------------------
 // Corners from a point list: the lattice points to evaluate, brick by brick (all 125 of a brick with
 // sheets, or with shared corners those not taken from a neighbour), and groups of 256 consecutive
@@ -1389,7 +1583,7 @@ struct IsoGemmEpilogue<let F : int, Mem : IGcMem, let VERT : int> : IGemmEpilogu
         if (a.canon != 0u) {
             for (uint f = 0u; f < (VERT == 0 ? a.num_fields : 1u); ++f) {
                 uint fw = f;
-                if (VERT != 0) fw = min(a.vinfo[min(v0 + pg, a.count - 1u)].z, 15u);   // the vertex's field
+                if (VERT != 0) fw = vertex_field(min(v0 + pg, a.count - 1u));   // the vertex's field
                 uint wb = fw * 3u * stride + col0;
                 float part[4] = {0.0, 0.0, 0.0, 0.0};
                 [ForceUnroll] for (int c = 0; c < FC; ++c) {
@@ -1457,7 +1651,7 @@ struct IsoGemmEpilogue<let F : int, Mem : IGcMem, let VERT : int> : IGemmEpilogu
                     }
                 } else if (ch == 0u) {
                     uint rb = rr * uint(F);                // rows rr .. rr + 3: value, d/dx, d/dy, d/dz
-                    IsoField fd = a.fields[min(a.vinfo[v0 + vl].z, 15u)];
+                    IsoField fd = a.fields[vertex_field(v0 + vl)];
                     float4 r = float4(0.0);
                     for (uint t = 0u; t < fd.term_count; ++t) {
                         IsoTerm tm = a.terms[fd.term_off + t];
@@ -1879,7 +2073,7 @@ struct IsoWideEpilogue<let F : int, Mem : IGcMem, let VERT : int> : IGemmEpilogu
         uint col0 = f0 + w.cg * uint(FC);
         for (uint f = 0u; f < (VERT == 0 ? a.num_fields : 1u); ++f) {
             uint fw = f;
-            if (VERT != 0) fw = min(a.vinfo[min(w.v0 + w.pg, a.count - 1u)].z, 15u);   // the vertex's field
+            if (VERT != 0) fw = vertex_field(min(w.v0 + w.pg, a.count - 1u));   // the vertex's field
             uint wb = fw * 3u * stride;
             float part[4] = {0.0, 0.0, 0.0, 0.0};
             [ForceUnroll] for (int c = 0; c < FC; ++c) {
@@ -2300,7 +2494,7 @@ void gemm_dform<let VERT : int>(uint3 gid, uint tid) {
         p = a.vpos[min(v0 + pg, a.count - 1u)].xyz;
         uint vo = min(tid, uint(G_GROUP) - 1u) >> 2;
         out_active = tid < uint(G_GROUP) && v0 + vo < a.count;
-        vf = min(a.vinfo[min(v0 + vo, a.count - 1u)].z, 15u);
+        vf = vertex_field(min(v0 + vo, a.count - 1u));
     }
     // The group's rows in ranges, each with the local list of its own rows' box: one range, all rows,
     // unless that list is too long (D_LS shells, DQ_CAP chunks), when the range is halved until it is

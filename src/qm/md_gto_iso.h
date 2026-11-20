@@ -94,7 +94,8 @@ md_gto_iso_field_t* md_gto_iso_field_create_density(const md_gto_basis_t* basis,
 // box by their bounds alone, with the same guarantee as theirs. It is 0 where the density is below rho_min, which
 // must be positive: the surface lies inside the box where the density reaches it. LOL falls to 0 in a gaussian
 // basis' tails by itself, so a small rho_min (1e-6) changes nothing an isovalue of interest shows.
-// CPU only for now: md_gto_iso_gpu_set_create refuses it.
+// On the GPU as a set of its own (md_gto_iso_gpu_set_create), as long as its parts' functions fit the factored
+// kernels (1024: six per occupied orbital for ELF, about 170 orbitals of a closed shell).
 //
 // The ELECTRON LOCALIZATION FUNCTION (md_qm_elf) the same way, from the same fields, which must be of the same
 // density: tau's functions are then the derivatives of rho's (md_qm_kinetic_orbitals: three per orbital), and the
@@ -255,6 +256,10 @@ typedef struct md_gto_iso_gpu_set_t md_gto_iso_gpu_set_t;
 // functions in all the corners and vertices). With md_gto_gpu_initialize called on the device, the matrices
 // are in tiles of the AO pairs that meet (md_gto_gpu_dmat), built on the device from the densities'
 // functions, and the call waits for that; otherwise dense, num_ao^2 floats each, made on the host.
+// A COMPOSITE field (md_gto_iso_field_create_lol, _elf) is a set's only field; it brings its own bases (its
+// parts', which the set evaluates as fields of their own, field 0 from theirs), so basis and atom_xyz may be NULL.
+// Its set extracts one mesh (num_fields 1, the positive sheet) and is not for md_gto_iso_gpu_evaluate. NULL with
+// more than 1024 functions in its parts: the CPU takes it.
 md_gto_iso_gpu_set_t* md_gto_iso_gpu_set_create(md_gpu_stream_t stream, const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
                                                 const md_gto_iso_field_t* const* fields, uint32_t num_fields, struct md_allocator_i* alloc);
 void md_gto_iso_gpu_set_destroy(md_gpu_stream_t stream, md_gto_iso_gpu_set_t* set);
