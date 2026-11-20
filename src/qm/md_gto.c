@@ -998,7 +998,9 @@ static md_gpu_kernel_t gto_k_density_gemm_phi      = NULL;
 static md_gpu_kernel_t gto_k_density_gemm_phi_grad = NULL;
 static md_gpu_kernel_t gto_k_density_gemm_dgather  = NULL;
 static md_gpu_kernel_t gto_k_mo_shell[GTO_SHAPE_COUNT][2] = {{0}};   // [shape][1, 8 orbitals per pass], 4 voxels per thread
+static md_gpu_kernel_t gto_k_mo_shell_grad[2] = {0};                 // [1, 8 orbitals per pass] with the gradient, 2 voxels per thread, 8x8x8
 static md_gpu_kernel_t gto_k_dmat_tiles_core  = NULL;  // md_gto_gpu_dmat_build, on the GEMM core
+static md_gpu_kernel_t gto_k_gradient_pack    = NULL;  // md_gto_gpu_gradient_pack
 // The GEMM passes on the GEMM core (gto_gemm_core.slang): the density's, ELF's and LOL's with their finish, the
 // orbitals'
 static md_gpu_kernel_t gto_k_density_core[2]  = {0};   // [32, 64 AO tile], 128 voxels per group
@@ -1039,6 +1041,7 @@ void md_gto_gpu_shutdown(void) {
     for (int sh = 0; sh < GTO_SHAPE_COUNT; ++sh) {
         for (int i = 0; i < 2; ++i) destroy_kernel(&gto_k_mo_shell[sh][i]);
     }
+    for (int i = 0; i < 2; ++i) destroy_kernel(&gto_k_mo_shell_grad[i]);
     for (int i = 0; i < 2; ++i) {
         destroy_kernel(&gto_k_density_core[i]);
         destroy_kernel(&gto_k_loc_core[i]);
@@ -1046,6 +1049,7 @@ void md_gto_gpu_shutdown(void) {
     destroy_kernel(&gto_k_loc_core_finish);
     destroy_kernel(&gto_k_mo_gemm);
     destroy_kernel(&gto_k_dmat_tiles_core);
+    destroy_kernel(&gto_k_gradient_pack);
     gto_gpu_device = NULL;
 }
 
@@ -1130,6 +1134,7 @@ typedef struct {
     md_gpu_addr_t   dm_map;
     md_gpu_addr_t   terms;
     md_gpu_storage_tex_t out_tex;
+    md_gpu_storage_tex_t out_grad;  // lol 2: the density's gradient
 } gto_density_gemm_args_t;
 
 /* Mirrors DmatArgs in gto_dmat.slang. */
@@ -2212,7 +2217,7 @@ static void gto_gemm_plan_log(const gto_gemm_plan_t* P) {
         const double gb = 1.0 / (1024.0 * 1024.0 * 1024.0);
         MD_LOG_INFO("GTO %s (GEMM) profile r2 (%s, a submission per pass): count+plan %.2f ms (host) | phi %.2f ms: %.2f G values, %.2f GB, %.1f G values/s | "
                     "dgather %.2f ms: %.2f GB | gemm[%s] %.2f ms: %.1f G multiply-adds, %.0f G/s | finish %.2f ms | %u batches, %u pieces, avg %.0f AOs per non-empty block, %.0f%% small",
-                    P->loc.on ? (a->lol ? "LOL" : "ELF") : a->num_mos ? "orbitals" : "density", P->t_wall ? "wall time: the queue does not time" : "GPU time",
+                    P->loc.on ? (a->lol == 2 ? "density with gradient" : a->lol ? "LOL" : "ELF") : a->num_mos ? "orbitals" : "density", P->t_wall ? "wall time: the queue does not time" : "GPU time",
                     P->t_count,
                     P->t_phi, (double)P->prof_phi * 1.0e-9, (double)P->prof_phi * sizeof(float) * gb, P->t_phi > 0 ? (double)P->prof_phi * 1.0e-6 / P->t_phi : 0.0,
                     P->t_dgather, (double)P->prof_db * sizeof(float) * gb,
@@ -2221,7 +2226,7 @@ static void gto_gemm_plan_log(const gto_gemm_plan_t* P) {
                     (double)total_ao / MD_MAX(1, nonempty), 100.0 * (double)total_small / MD_MAX(1, nonempty));
     }
     MD_LOG_DEBUG("GTO %s (GEMM [%s], " MD_GTO_GPU_GEMM_PIECES_REVISION "; " MD_GTO_GPU_GEMM_CORE_REVISION "): %u blocks, %u non-empty, %u batches in %u pieces (%.1f G multiply-adds), max %.1f MB Phi per batch; the calling thread spent %.1f ms on the counts (waiting for them, and what the stream held before them, unless a job) and the plan",
-                 P->loc.on ? (a->lol ? "LOL" : "ELF") : a->num_mos ? "orbitals" : "density", P->cfg.label, P->num_blocks, nonempty, P->num_batches, P->pieces, (double)P->work_total * 1.0e-9,
+                 P->loc.on ? (a->lol == 2 ? "density with gradient" : a->lol ? "LOL" : "ELF") : a->num_mos ? "orbitals" : "density", P->cfg.label, P->num_blocks, nonempty, P->num_batches, P->pieces, (double)P->work_total * 1.0e-9,
                  (double)(sizeof(float) * GTO_GEMM_BLOCK_VOXELS * P->max_ao * gto_gemm_channels(P)) / (1024.0 * 1024.0), P->t_count);
 }
 
@@ -2305,10 +2310,49 @@ static int gto_loc_gemm_count(gto_gemm_pending_t* p, md_gpu_stream_t stream, con
     return 1;
 }
 
-static bool gto_loc_launch_gemm(md_gpu_stream_t stream, const md_gto_gpu_localization_desc_t* desc) {
-    gto_gemm_pending_t p;
-    const int r = gto_loc_gemm_count(&p, stream, desc);
-    if (r <= 0) return r == 0;
+/* The density with its gradient (out_grad): ELF's two passes over the one matrix given, the finish writing rho and
+   grad rho by the op (lol 2). Its counting pass issued into p, as gto_loc_gemm_count's */
+static int gto_density_grad_count(gto_gemm_pending_t* p, md_gpu_stream_t stream, const md_gto_gpu_density_desc_t* desc, md_gpu_storage_tex_t out) {
+    md_memset(p, 0, sizeof(*p));
+    const md_gpu_storage_tex_t grad = md_gpu_texture_storage(desc->out_grad, 0);
+    if (!grad.handle) {
+        MD_LOG_ERROR("md_gto_gpu_density_launch: out_grad needs MD_GPU_TEX_STORAGE usage");
+        return -1;
+    }
+    if (!gto_density_gemm_kernels() || !gto_loc_core_aux_kernels()) {
+        MD_LOG_ERROR("md_gto_gpu_density_launch: GEMM kernels not available (md_gto_gpu_initialize not called?)");
+        return -1;
+    }
+    gto_gemm_cfg_t cfg;
+    if (!gto_gemm_config_pass(&cfg, GTO_GEMM_PASS_LOC, 0, 0)) return -1;
+
+    gto_density_gemm_args_t a;
+    gto_gemm_args_init(&a, desc->grid, desc->sample_offset, desc->basis, desc->atom_xyz, desc->op, out);
+    a.out_grad  = grad;
+    a.num_spins = 1;
+    a.lol       = 2;
+
+    const md_gto_gpu_dmat_t dm = desc->dmat;
+    gto_gemm_loc_t loc = {0};
+    loc.on        = 1;
+    loc.num_spins = 1;
+    loc.tiled     = dm ? 1u : 0u;
+    loc.nt        = dm ? dm->nt : 0u;
+    loc.D[0]      = dm ? dm->tiles : desc->coeff;
+    loc.tao[0]    = dm ? dm->tao : 0;
+    loc.map[0]    = dm ? dm->map : 0;
+    a.D_matrix = loc.D[0]; a.dm_tiled = loc.tiled; a.dm_nt = loc.nt; a.dm_tao = loc.tao[0]; a.dm_map = loc.map[0];
+
+    if (a.block_dim.x * a.block_dim.y * a.block_dim.z == 0) return 0;
+    if (!gto_gemm_count(p, stream, &a, desc->scratch_bytes, true, &cfg)) return -1;
+    p->loc = loc;
+    p->piece_work = desc->piece_work;
+    return 1;
+}
+
+/* What a counting pass in p plans, issued: waits for the counts on the calling thread */
+static bool gto_gemm_run_pending(md_gpu_stream_t stream, gto_gemm_pending_t* pp) {
+    gto_gemm_pending_t p = *pp;
     md_gpu_sync_wait(p.sync);
     p.waited_ms = md_tick_to_milliseconds(md_tick_now() - p.t_count0);
     gto_gemm_plan_t* P = gto_gemm_plan(&p);
@@ -2323,6 +2367,13 @@ static bool gto_loc_launch_gemm(md_gpu_stream_t stream, const md_gto_gpu_localiz
     gto_gemm_plan_log(P);
     gto_gemm_plan_free(P);
     return true;
+}
+
+static bool gto_loc_launch_gemm(md_gpu_stream_t stream, const md_gto_gpu_localization_desc_t* desc) {
+    gto_gemm_pending_t p;
+    const int r = gto_loc_gemm_count(&p, stream, desc);
+    if (r <= 0) return r == 0;
+    return gto_gemm_run_pending(stream, &p);
 }
 
 static bool gto_density_gemm_setup(gto_density_gemm_args_t* a, gto_gemm_cfg_t* cfg, const md_gto_gpu_density_desc_t* desc, md_gpu_storage_tex_t out) {
@@ -2375,6 +2426,11 @@ static bool gto_density_check(md_gpu_storage_tex_t* out, md_gpu_stream_t stream,
 void md_gto_gpu_density_launch(md_gpu_stream_t stream, const md_gto_gpu_density_desc_t* desc) {
     md_gpu_storage_tex_t out;
     if (!gto_density_check(&out, stream, desc)) return;
+    if (desc->out_grad) {
+        gto_gemm_pending_t p;
+        if (gto_density_grad_count(&p, stream, desc, out) > 0) gto_gemm_run_pending(stream, &p);
+        return;
+    }
     gto_density_launch_gemm(stream, desc, out);
 }
 
@@ -2428,6 +2484,12 @@ md_gto_gpu_job_t* md_gto_gpu_density_job_begin(md_gpu_stream_t stream, const md_
     if (!job) return NULL;
     job->stream = stream;
     job->in_flight = GTO_GEMM_JOB_IN_FLIGHT_0;
+    if (desc->out_grad) {
+        // nothing to evaluate, or what could not be issued (logged): done, as the launch would be
+        job->counting = gto_density_grad_count(&job->p, stream, desc, out) > 0;
+        job->issued = !job->counting;
+        return job;
+    }
     gto_gemm_cfg_t cfg;
     gto_density_gemm_args_t a;
     // nothing to evaluate, or what could not be issued (logged): done, as the launch would be
@@ -2533,6 +2595,7 @@ typedef struct {
     md_gpu_addr_t   coeffs;
     md_gpu_addr_t   weights;
     md_gpu_storage_tex_t out_tex;
+    md_gpu_storage_tex_t out_grad;  // the _grad kernels: the gradient
 } gto_mo_shell_args_t;
 
 #define GTO_MO_SHELL_MB 8   // orbitals per pass of the multi-orbital shell kernel
@@ -2561,10 +2624,20 @@ static md_gpu_kernel_t gto_mo_gemm_kernel(void) {
     return gto_k_mo_gemm;
 }
 
-static void gto_orbital_launch_shell(md_gpu_stream_t stream, const md_gto_gpu_orbital_desc_t* desc, md_gpu_storage_tex_t out) {
+/* The shell kernel compiled with the gradient (GRAD): 2 voxels per thread, the 8x8x8 blocks for every grid */
+static md_gpu_kernel_t gto_mo_shell_grad_kernel(uint32_t mb) {
+    if (!gto_gpu_device) return NULL;
+    const int im = mb == 1 ? 0 : 1;
+    md_gpu_kernel_t* slot = &gto_k_mo_shell_grad[im];
+    if (!*slot) ensure_kernel(gto_gpu_device, slot, im == 0 ? md_shader_eval_gto_mo_shell_v2_m1_grad_main_kernel() : md_shader_eval_gto_mo_shell_v2_m8_grad_main_kernel());
+    return *slot;
+}
+
+/* grad: out_grad's storage, or none (handle 0) */
+static void gto_orbital_launch_shell(md_gpu_stream_t stream, const md_gto_gpu_orbital_desc_t* desc, md_gpu_storage_tex_t out, md_gpu_storage_tex_t grad) {
     const uint32_t mb = desc->num_orbitals == 1 ? 1 : GTO_MO_SHELL_MB;
-    const int sh = gto_shape_of_dim((uint32_t)desc->grid->dim[2]);
-    md_gpu_kernel_t k = gto_mo_shell_kernel(mb, sh);
+    const int sh = grad.handle ? GTO_SHAPE_3D : gto_shape_of_dim((uint32_t)desc->grid->dim[2]);
+    md_gpu_kernel_t k = grad.handle ? gto_mo_shell_grad_kernel(mb) : gto_mo_shell_kernel(mb, sh);
     if (!k) {
         MD_LOG_ERROR("md_gto_gpu_orbital_launch: shell kernel not available (md_gto_gpu_initialize not called?)");
         return;
@@ -2589,6 +2662,7 @@ static void gto_orbital_launch_shell(md_gpu_stream_t stream, const md_gto_gpu_or
     a.coeffs          = desc->coeff;
     a.weights         = desc->weights;
     a.out_tex         = out;
+    a.out_grad        = grad;
 
     const uint32_t* blk = gto_block_shape[sh];
     const md_gpu_grid_t g = md_gpu_grid(MD_DIV_UP(a.grid_dim.x, blk[0]), MD_DIV_UP(a.grid_dim.y, blk[1]), MD_DIV_UP(a.grid_dim.z, blk[2]));
@@ -2615,6 +2689,35 @@ static void gto_orbital_launch_gemm(md_gpu_stream_t stream, const md_gto_gpu_orb
     gto_gemm_execute(stream, &a, desc->scratch_bytes, false, &cfg, 0);
 }
 
+/* Mirrors RootArgs in gto_gradient_pack.slang */
+typedef struct {
+    md_gpu_uint4         grid_dim;
+    md_gpu_storage_tex_t src;
+    md_gpu_storage_tex_t dst;
+} gto_gradient_pack_args_t;
+
+void md_gto_gpu_gradient_pack(md_gpu_stream_t stream, md_gpu_texture_t src_grad, md_gpu_texture_t dst, const md_grid_t* grid) {
+    if (!stream || !src_grad || !dst || !grid) {
+        MD_LOG_ERROR("md_gto_gpu_gradient_pack: invalid input");
+        return;
+    }
+    gto_gradient_pack_args_t a = {0};
+    a.src = md_gpu_texture_storage(src_grad, 0);
+    a.dst = md_gpu_texture_storage(dst, 0);
+    if (!a.src.handle || !a.dst.handle) {
+        MD_LOG_ERROR("md_gto_gpu_gradient_pack: both textures need MD_GPU_TEX_STORAGE usage");
+        return;
+    }
+    if (!gto_gpu_device) return;
+    ensure_kernel(gto_gpu_device, &gto_k_gradient_pack, md_shader_gto_gradient_pack_main_kernel());
+    if (!gto_k_gradient_pack) {
+        MD_LOG_ERROR("md_gto_gpu_gradient_pack: kernel not available (md_gto_gpu_initialize not called?)");
+        return;
+    }
+    a.grid_dim = (md_gpu_uint4){(uint32_t)grid->dim[0], (uint32_t)grid->dim[1], (uint32_t)grid->dim[2], 0};
+    md_gpu_launch(stream, gto_k_gradient_pack, md_gpu_grid(MD_DIV_UP(a.grid_dim.x, 8), MD_DIV_UP(a.grid_dim.y, 8), MD_DIV_UP(a.grid_dim.z, 4)), &a, sizeof(a));
+}
+
 void md_gto_gpu_orbital_launch(md_gpu_stream_t stream, const md_gto_gpu_orbital_desc_t* desc) {
     if (!stream || !desc || !desc->basis || !desc->atom_xyz || !desc->coeff || !desc->out_tex || !desc->grid) {
         MD_LOG_ERROR("md_gto_gpu_orbital_launch: invalid input");
@@ -2624,6 +2727,15 @@ void md_gto_gpu_orbital_launch(md_gpu_stream_t stream, const md_gto_gpu_orbital_
     const md_gpu_storage_tex_t out = md_gpu_texture_storage(desc->out_tex, 0);
     if (!out.handle) {
         MD_LOG_ERROR("md_gto_gpu_orbital_launch: out_tex needs MD_GPU_TEX_STORAGE usage");
+        return;
+    }
+    if (desc->out_grad) {
+        const md_gpu_storage_tex_t grad = md_gpu_texture_storage(desc->out_grad, 0);
+        if (!grad.handle) {
+            MD_LOG_ERROR("md_gto_gpu_orbital_launch: out_grad needs MD_GPU_TEX_STORAGE usage");
+            return;
+        }
+        gto_orbital_launch_shell(stream, desc, out, grad);
         return;
     }
 
@@ -2644,7 +2756,7 @@ void md_gto_gpu_orbital_launch(md_gpu_stream_t stream, const md_gto_gpu_orbital_
         algo = desc->num_orbitals <= GTO_MO_SHELL_MB ? MD_GTO_GPU_ORBITAL_ALGO_SHELL : MD_GTO_GPU_ORBITAL_ALGO_GEMM;
     }
     switch (algo) {
-    case MD_GTO_GPU_ORBITAL_ALGO_SHELL: gto_orbital_launch_shell(stream, desc, out); break;
+    case MD_GTO_GPU_ORBITAL_ALGO_SHELL: gto_orbital_launch_shell(stream, desc, out, (md_gpu_storage_tex_t){0}); break;
     case MD_GTO_GPU_ORBITAL_ALGO_GEMM:  gto_orbital_launch_gemm(stream, desc, out);  break;
     default:
         MD_LOG_ERROR("md_gto_gpu_orbital_launch: unknown algorithm %d", (int)algo);

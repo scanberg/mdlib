@@ -88,6 +88,22 @@ float gto_apply_op(float value, float prev, uint operation) {
     }
 }
 
+// The gradient g of value, taken by the op as gto_apply_op takes the value: |value|'s is sign(value) g; MAX and MIN
+// keep the gradient of the one they keep
+float3 gto_apply_op_grad(float value, float3 g, float prev, float3 prev_g, uint operation) {
+    if ((operation & OP_ABS) != 0u) {
+        g *= sign(value);
+        value = abs(value);
+    }
+    switch (operation & OP_ACCUM_MASK) {
+        case OP_ADD: return prev_g + g;
+        case OP_SUB: return prev_g - g;
+        case OP_MAX: return value > prev ? g : prev_g;
+        case OP_MIN: return value < prev ? g : prev_g;
+        default:     return g;
+    }
+}
+
 bool gto_op_reads_prev(uint operation) {
     return (operation & OP_ACCUM_MASK) != OP_SET;
 }

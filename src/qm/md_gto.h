@@ -471,6 +471,10 @@ typedef struct md_gto_gpu_density_desc_t {
     md_gpu_addr_t    coeff;       // packed upper-triangular D, or 0 with dmat
     md_gto_gpu_dmat_t dmat;       // D in tiles instead of coeff (made with the cutoff of basis)
     md_gpu_texture_t out_tex;     // needs MD_GPU_TEX_STORAGE; mip 0 is written
+    // Optional: the gradient of the density too (xyz, per bohr; w 0), RGBA32_FLOAT with MD_GPU_TEX_STORAGE, taken by
+    // op as the value is (md_gto_gpu_gradient_pack makes normals of it). The evaluation then takes ELF's two passes
+    // (Phi with the AOs' gradients, the symmetric product over four rows): four times the GEMM work of the density's.
+    md_gpu_texture_t out_grad;
 
     const struct md_grid_t* grid;
     // Optional grid sampling offset in index units, (0,0,0) = voxel origin, (0.5,0.5,0.5) = voxel center, etc.
@@ -624,6 +628,10 @@ typedef struct md_gto_gpu_orbital_desc_t {
     md_gpu_addr_t    atom_xyz;
     md_gpu_addr_t    coeff;
     md_gpu_texture_t out_tex;     // needs MD_GPU_TEX_STORAGE; mip 0 is written
+    // Optional: the gradient of the result too (xyz, per bohr; w 0: 2 psi grad psi summed for psi^2), RGBA32_FLOAT with
+    // MD_GPU_TEX_STORAGE, taken by op as the value is. Evaluated by the shell kernel (MD_GTO_GPU_ORBITAL_ALGO_SHELL,
+    // whatever algorithm says) compiled with the gradient: one without it does no part of that work.
+    md_gpu_texture_t out_grad;
 
     const struct md_grid_t* grid;
     // Optional grid sampling offset in index units, (0,0,0) = voxel origin, (0.5,0.5,0.5) = voxel center, etc.
@@ -643,6 +651,12 @@ typedef struct md_gto_gpu_orbital_desc_t {
     bool     exact_screening;              // SHELL: screen on |phi| only, not on |C| * |phi|
     size_t   scratch_bytes;                // GEMM: scratch budget per batch, 0 = 256 MB
 } md_gto_gpu_orbital_desc_t;
+
+// Normals of a gradient (out_grad of an evaluation, RGBA32_FLOAT) into dst (R32_UINT, MD_GPU_TEX_STORAGE, of the
+// same extent; mip 0): the direction g / |g| packed as RGB10A2 is, x in the low bits (GL_UNSIGNED_INT_2_10_10_10_REV):
+// each component c as round((c / 2 + 1 / 2) 1023), and alpha 3 where |g| > 0, 0 (and 512, 512, 512) where it is not.
+// For a renderer that reads the normals as an RGB10A2 texture: 4 bytes a voxel instead of 16.
+void md_gto_gpu_gradient_pack(md_gpu_stream_t stream, md_gpu_texture_t src_grad, md_gpu_texture_t dst, const struct md_grid_t* grid);
 
 // Issue an orbital evaluation into `stream`.
 // atom_xyz must contain packed float4 atom positions (xyz in Bohr).
