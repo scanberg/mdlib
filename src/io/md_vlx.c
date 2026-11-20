@@ -3861,6 +3861,61 @@ static double vlx_pressure_unit_to_gpa(md_str_t unit) {
 	return 0.0;
 }
 
+// What the wall is per tessera and in all, from the pressure P and the tesserae (all in Angstrom), published beside them:
+//   wall_energy_per_area   P lambda_j: the wall's energy over a tessera's area (Ha/bohr^2)
+//   wall_energy            P a_j lambda_j (kJ/mol), summing to the wall's energy E = <rho|V1>
+//   wall_density           <rho|g_j> = P a_j lambda_j / p_j: the density the tessera's Gaussian sees (e/bohr^3)
+//   amplitude_per_area     p_j / a_j (Ha bohr)
+//   buried                 1 for a tessera inside the sphere of another atom than its own (the switching keeps points
+//                          where spheres overlap), else 0
+// and the totals: the cavity's area sum a_j, the wall's energy, its effective volume sum a_j lambda_j (E / P), and the
+// share of the area that is buried. The units are ones md_unit prints as such (an energy per area in kJ/mol/Angstrom^2
+// it prints in SI base units).
+static void vlx_publish_gostshyp_wall(md_system_t* sys, double pressure_gpa, size_t count, size_t num_atoms, const md_double3_t* center,
+                                      const double* area, const double* amplitude, const double* decay, const uint32_t* atom,
+                                      const double* radius, const md_double3_t* atom_xyz, md_temp_scope_t temp) {
+	const double b = BOHR_TO_ANGSTROM;
+	const double au_pressure_gpa = 29421.02648438959;   // Eh / bohr^3 in GPa
+	const double gpa_a3_kjmol = 0.602214076;            // 1 GPa Angstrom^3 in kJ/mol
+	const double P_au = pressure_gpa / au_pressure_gpa;
+	double* e_area  = md_temp_alloc_array(temp, double, count);
+	double* e       = md_temp_alloc_array(temp, double, count);
+	double* dens    = md_temp_alloc_array(temp, double, count);
+	double* p_area  = md_temp_alloc_array(temp, double, count);
+	double* buried  = md_temp_alloc_array(temp, double, count);
+	double A = 0.0, E = 0.0, V = 0.0, A_buried = 0.0;
+	for (size_t j = 0; j < count; ++j) {
+		const double a_bohr2 = area[j] / (b * b), lambda_bohr = decay[j] / b;
+		e_area[j] = P_au * lambda_bohr;
+		e[j]      = gpa_a3_kjmol * pressure_gpa * area[j] * decay[j];
+		dens[j]   = amplitude[j] > 0.0 ? P_au * a_bohr2 * lambda_bohr / amplitude[j] : 0.0;
+		p_area[j] = a_bohr2 > 0.0 ? amplitude[j] / a_bohr2 : 0.0;
+		buried[j] = 0.0;
+		for (size_t k = 0; k < num_atoms; ++k) {
+			const double R = radius[k];
+			if (k == atom[j] || !(R > 0.0)) continue;
+			const double dx = center[j].x - atom_xyz[k].x, dy = center[j].y - atom_xyz[k].y, dz = center[j].z - atom_xyz[k].z;
+			if (dx * dx + dy * dy + dz * dz < R * R * 0.9999) { buried[j] = 1.0; break; }
+		}
+		A += area[j];
+		E += e[j];
+		V += area[j] * decay[j];
+		A_buried += buried[j] * area[j];
+	}
+	const md_unit_t ang   = md_unit_angstrom();
+	const md_unit_t bohr  = md_unit_bohr_radius();
+	const md_unit_t kjmol = md_unit_div(md_unit_scl(md_unit_joule(), 1e3), md_unit_mole());
+	md_qm_publish_series(sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/wall_energy_per_area"), MD_STR_LIT("Wall Energy per Area"), md_unit_div(md_unit_hartree(), md_unit_pow(bohr, 2)), e_area, count);
+	md_qm_publish_series(sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/wall_energy"), MD_STR_LIT("Wall Energy"), kjmol, e, count);
+	md_qm_publish_series(sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/wall_density"), MD_STR_LIT("Wall Density"), md_unit_div(md_unit_elementary_charge(), md_unit_pow(bohr, 3)), dens, count);
+	md_qm_publish_series(sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/amplitude_per_area"), MD_STR_LIT("Amplitude per Area"), md_unit_mul(md_unit_hartree(), bohr), p_area, count);
+	md_qm_publish_series(sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/buried"), MD_STR_LIT("Buried"), md_unit_none(), buried, count);
+	md_qm_publish_scalar(sys, MD_STR_LIT("vlx/scf/gostshyp/area"), MD_STR_LIT("Cavity Area"), md_unit_pow(ang, 2), A);
+	md_qm_publish_scalar(sys, MD_STR_LIT("vlx/scf/gostshyp/wall_energy"), MD_STR_LIT("Wall Energy"), kjmol, E);
+	md_qm_publish_scalar(sys, MD_STR_LIT("vlx/scf/gostshyp/effective_volume"), MD_STR_LIT("Effective Volume"), md_unit_pow(ang, 3), V);
+	md_qm_publish_scalar(sys, MD_STR_LIT("vlx/scf/gostshyp/buried_area_fraction"), MD_STR_LIT("Buried Area Fraction"), md_unit_none(), A > 0.0 ? A_buried / A : 0.0);
+}
+
 static void vlx_publish_gostshyp(const vlx_t* vlx, hid_t scf_handle) {
 	if (!h5_link_exists(scf_handle, "gostshyp_grid_points")) {
 		return;
@@ -3968,6 +4023,24 @@ static void vlx_publish_gostshyp(const vlx_t* vlx, hid_t scf_handle) {
 		}
 	}
 
+	// The pressure, in GPa (0: none, or in a unit not known)
+	double pressure_gpa = 0.0;
+	{
+		double pressure = 0.0;
+		md_str_t unit = {0};
+		if (h5_read_dataset_data(&pressure, 1, scf_handle, H5T_NATIVE_DOUBLE, "pressure")) {
+			double to_gpa = 1.0;
+			if (h5_read_str(&unit, scf_handle, "pressure_units", vlx->arena)) {
+				to_gpa = vlx_pressure_unit_to_gpa(unit);
+			}
+			if (to_gpa > 0.0) {
+				pressure_gpa = pressure * to_gpa;
+			} else {
+				MD_LOG_ERROR("VeloxChem: unknown pressure unit '" MD_STR_FMT "'; the GOSTSHYP pressure is not read", MD_STR_ARG(unit));
+			}
+		}
+	}
+
 	{
 		const md_unit_t ang  = md_unit_angstrom();
 		const md_unit_t au_p = md_unit_mul(md_unit_hartree(), md_unit_pow(md_unit_bohr_radius(), 3));  // p_j g_j is a potential energy
@@ -4004,18 +4077,9 @@ static void vlx_publish_gostshyp(const vlx_t* vlx, hid_t scf_handle) {
 			md_qm_publish_str(sys, MD_STR_LIT("vlx/scf/gostshyp/discretization"), MD_STR_LIT("Discretization"), discretization);
 		}
 
-		double pressure = 0.0;
-		md_str_t unit = {0};
-		if (h5_read_dataset_data(&pressure, 1, scf_handle, H5T_NATIVE_DOUBLE, "pressure")) {
-			double to_gpa = 1.0;
-			if (h5_read_str(&unit, scf_handle, "pressure_units", vlx->arena)) {
-				to_gpa = vlx_pressure_unit_to_gpa(unit);
-			}
-			if (to_gpa > 0.0) {
-				md_qm_publish_scalar(sys, MD_STR_LIT("vlx/scf/gostshyp/pressure"), MD_STR_LIT("Pressure"), md_unit_scl(md_unit_pascal(), 1e9), pressure * to_gpa);
-			} else {
-				MD_LOG_ERROR("VeloxChem: unknown pressure unit '" MD_STR_FMT "'; the GOSTSHYP pressure is not read", MD_STR_ARG(unit));
-			}
+		if (pressure_gpa > 0.0) {
+			md_qm_publish_scalar(sys, MD_STR_LIT("vlx/scf/gostshyp/pressure"), MD_STR_LIT("Pressure"), md_unit_scl(md_unit_pascal(), 1e9), pressure_gpa);
+			vlx_publish_gostshyp_wall(sys, pressure_gpa, count, num_atoms, center, area, amplitude, decay, atom, radius, vlx->atom_coordinates, temp);
 		}
 	}
 
