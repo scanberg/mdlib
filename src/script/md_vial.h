@@ -431,7 +431,8 @@ size_t md_vial_value_text(char* buf, size_t cap, const md_vial_draw_desc_t* desc
 
 // ### FILTERS ###
 // An expression that picks particles, as viamd's representations, groups and queries write them: compiled alone as one
-// statement, with the stored selections and the static selections of a program as names it may read.
+// statement, with the stored selections and the static selections of a program as names it may read. Nothing written
+// (empty, or only white space) picks every particle, as an empty filter does in md_filter.
 
 typedef struct md_vial_filter_desc_t {
     const struct md_system_t*       sys;        // required
