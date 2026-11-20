@@ -85,6 +85,31 @@ md_gto_iso_field_t* md_gto_iso_field_create_products(const md_gto_basis_t* basis
 md_gto_iso_field_t* md_gto_iso_field_create_density(const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
                                                     const double* density_matrix, struct md_allocator_i* alloc);
 
+// The LOCALIZED ORBITAL LOCATOR (md_qm_lol, md_qm.h) as a field of its own, made of each spin's density and
+// kinetic energy density as density fields (md_gto_iso_field_create_products: the density's orbitals over the
+// basis, md_qm_kinetic_orbitals' over the derivative basis); rho_b and tau_b NULL for a closed shell, whose rho_a
+// and tau_a are then the totals. It takes them: md_gto_iso_field_destroy of it destroys them (on failure, NULL
+// returned, they are still the caller's).
+// LOL is non-decreasing in the densities and decreasing in the kinetic energy densities, so it is bounded over a
+// box by their bounds alone, with the same guarantee as theirs. It is 0 where the density is below rho_min, which
+// must be positive: the surface lies inside the box where the density reaches it. LOL falls to 0 in a gaussian
+// basis' tails by itself, so a small rho_min (1e-6) changes nothing an isovalue of interest shows.
+// On the GPU as a set of its own (md_gto_iso_gpu_set_create), as long as its parts' functions fit the factored
+// kernels (1024: six per occupied orbital for ELF, about 170 orbitals of a closed shell).
+//
+// The ELECTRON LOCALIZATION FUNCTION (md_qm_elf) the same way, from the same fields, which must be of the same
+// density: tau's functions are then the derivatives of rho's (md_qm_kinetic_orbitals: three per orbital), and the
+// components of grad rho, which ELF needs besides, are products of the two fields' functions, enclosed over a box
+// from what their bounds compute anyway. ELF is bounded by interval arithmetic over its formula; its gradient,
+// for the vertices, is closed form from the two fields' functions (the density's Hessian from tau's gradients).
+// d_min as md_qm_elf (MD_QM_ELF_D_MIN: ELF falls to 0 in the tails, so the surface is bounded).
+md_gto_iso_field_t* md_gto_iso_field_create_elf(const md_gto_iso_field_t* rho_a, const md_gto_iso_field_t* tau_a,
+                                                const md_gto_iso_field_t* rho_b, const md_gto_iso_field_t* tau_b,
+                                                double rho_min, double d_min, struct md_allocator_i* alloc);
+md_gto_iso_field_t* md_gto_iso_field_create_lol(const md_gto_iso_field_t* rho_a, const md_gto_iso_field_t* tau_a,
+                                                const md_gto_iso_field_t* rho_b, const md_gto_iso_field_t* tau_b,
+                                                double rho_min, struct md_allocator_i* alloc);
+
 void md_gto_iso_field_destroy(md_gto_iso_field_t* field);
 
 // A hint: every local maximum of the field is at an atom, as for an SCF electron density (total, or of
@@ -97,6 +122,7 @@ void md_gto_iso_field_set_maxima_at_atoms(md_gto_iso_field_t* field, bool maxima
 enum {
     MD_GTO_ISO_FIELD_ORBITAL = 0,
     MD_GTO_ISO_FIELD_DENSITY = 1,
+    MD_GTO_ISO_FIELD_COMPOSITE = 2,   // a function of other fields (md_gto_iso_field_create_lol, _elf)
 };
 
 enum {
@@ -230,6 +256,10 @@ typedef struct md_gto_iso_gpu_set_t md_gto_iso_gpu_set_t;
 // functions in all the corners and vertices). With md_gto_gpu_initialize called on the device, the matrices
 // are in tiles of the AO pairs that meet (md_gto_gpu_dmat), built on the device from the densities'
 // functions, and the call waits for that; otherwise dense, num_ao^2 floats each, made on the host.
+// A COMPOSITE field (md_gto_iso_field_create_lol, _elf) is a set's only field; it brings its own bases (its
+// parts', which the set evaluates as fields of their own, field 0 from theirs), so basis and atom_xyz may be NULL.
+// Its set extracts one mesh (num_fields 1, the positive sheet) and is not for md_gto_iso_gpu_evaluate. NULL with
+// more than 1024 functions in its parts: the CPU takes it.
 md_gto_iso_gpu_set_t* md_gto_iso_gpu_set_create(md_gpu_stream_t stream, const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
                                                 const md_gto_iso_field_t* const* fields, uint32_t num_fields, struct md_allocator_i* alloc);
 void md_gto_iso_gpu_set_destroy(md_gpu_stream_t stream, md_gto_iso_gpu_set_t* set);

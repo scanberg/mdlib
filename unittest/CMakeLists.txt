@@ -86,6 +86,7 @@ set (SRC_FILES
     test_run_cache.c
     test_molden.c
     test_gto_int.c
+    test_gto_int_box.c
     test_topo_gto.c
     test_executor.c
 )

@@ -81,6 +81,13 @@ typedef enum md_attribute_flags_t {
     // AO density matrices are N^2 in the basis. Verified on create: rank >= 1, one component, and a
     // triangular innermost extent.
     MD_ATTRIBUTE_FLAG_PACKED_SYMMETRIC = 2,
+
+    // The PRINCIPAL quantity of its group: what the group is chiefly about, as its publisher knows it - the wall's energy
+    // per area among a GOSTSHYP cavity's tesserae, the surface charge among a continuum's. A statement about the data,
+    // not about how to show it; what shows the group takes it as its first choice (md_attributes_principal). At most
+    // one per group: verified on create and replace (a numeric attribute, and no other of its group flagged). Not
+    // inherited by an alias, which is in another group, or a second name in the same one.
+    MD_ATTRIBUTE_FLAG_PRINCIPAL = 4,
 } md_attribute_flags_t;
 
 // LAYOUT. Two independent things:
@@ -392,6 +399,9 @@ const md_attribute_t* md_attributes_find_in(const md_attributes_t* attributes, m
 
 // The attribute named leaf in attr's own group: the origin beside a vector, the bin beside a series.
 const md_attribute_t* md_attributes_sibling(const md_attributes_t* attributes, const md_attribute_t* attr, md_str_t leaf);
+
+// The principal quantity of a group (MD_ATTRIBUTE_FLAG_PRINCIPAL) among the attributes directly in it, or NULL
+const md_attribute_t* md_attributes_principal(const md_attributes_t* attributes, md_str_t group);
 
 // Every attribute at or below prefix, in path order. An optional trailing '/' is ignored and an
 // empty prefix matches everything. Attributes must not be added or removed while iterating.

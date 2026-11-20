@@ -866,6 +866,7 @@ if (MD_ENABLE_GPU)
               iso_cells iso_quads iso_relax iso_newton iso_eval_orbital iso_project_list_f1
               iso_bucket_count iso_bucket_scan iso_bucket_vertices iso_bucket_triangles
               iso_dmat_rows iso_points_load iso_points_store
+              iso_comp_corners iso_comp_vertices
     DEPENDS   ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_gemm_core.slang
   )
   # md_gto.c includes one aggregate header rather than two.

@@ -16,7 +16,7 @@
 #include <gto_iso_gpu_shaders.inl>
 
 // BENCHMARK (temporary, branch gto-iso-gpu-opt): which round of changes this is, in every profile report
-#define ISOG_REVISION "r45 (lattices to 1024 bricks a side: 4096 cells; r44: the GEMMs' widths by the function count alone)"
+#define ISOG_REVISION "r46 (composite fields: LOL, ELF from their parts; r45: lattices to 1024 bricks a side)"
 
 typedef struct isog_shell_t {        // mirrors IsoShell
     md_gpu_float4 c;
@@ -61,6 +61,10 @@ typedef struct isog_args_t {         // mirrors IsoArgs
     md_gpu_addr_t dm_tao, dm_map, dm_rows;
     md_gpu_addr_t pts, pval;
     uint32_t pts_stride, pts_field, _pad3, _pad4;
+    md_gpu_addr_t vsub;
+    uint32_t comp_kind, comp_spins;
+    float    comp_rho_min, comp_d_min;
+    uint32_t comp_stride, vfield, _pad5, _pad6;
 } isog_args_t;
 
 enum {
@@ -75,6 +79,7 @@ enum {
     ISOG_K_BCOUNT, ISOG_K_BSCAN, ISOG_K_BVERTS, ISOG_K_BTRIS,
     ISOG_K_DROWS,
     ISOG_K_PLOAD, ISOG_K_PSTORE,
+    ISOG_K_COMP_CORNERS, ISOG_K_COMP_VERTS,
     ISOG_K_COUNT
 };
 
@@ -251,6 +256,8 @@ static bool isog_kernels_make(void) {
         md_shader_gto_iso_gpu_iso_dmat_rows_kernel(),
         md_shader_gto_iso_gpu_iso_points_load_kernel(),
         md_shader_gto_iso_gpu_iso_points_store_kernel(),
+        md_shader_gto_iso_gpu_iso_comp_corners_kernel(),
+        md_shader_gto_iso_gpu_iso_comp_vertices_kernel(),
     };
     for (int i = 0; i < ISOG_K_COUNT; ++i) {
         if (!isog_k[i]) isog_k[i] = md_gpu_kernel_create(isog_device, &d[i]);
@@ -307,6 +314,10 @@ struct md_gto_iso_gpu_set_t {
     int           screen;           // the radii are coefficient-screened (sets of orbitals)
     int           eps_own;          // md_gto_iso_gpu_set_cutoff: the set's own cutoff exponent, 0: the switch's
     int           dm_eps_exp;       // the cutoff the D form's tiles were made for (0: no tiles)
+    // a composite field (md_gto_iso_field_create_lol, _elf): field 0, a function of fields 1 .. num_fields - 1
+    // (gto_iso_gpu.slang, "Composite fields"); comp_kind 0 otherwise
+    uint32_t      comp_kind, comp_spins;
+    double        comp_rho_min, comp_d_min;
 };
 
 static inline float isog_f32_up(double x);
@@ -571,19 +582,134 @@ static void isog_basis_free(iso_density_t* B) {
     B->ao_shells = NULL;
 }
 
+// A composite field's set (md_gto_iso_gpu_set_create): the functions its parts share, over the union of the
+// density's basis and tau's (the derivatives), and every field's terms over them. Field 0 has none (its values come
+// from the parts'). md_free'd with the heap allocator (isog_comp_free).
+typedef struct isog_comp_build_t {
+    uint32_t    ncol, nao;              // the functions, the union's AOs
+    double*     C;                      // [nao][ncol]
+    uint32_t    num_fields;             // 1 + the parts
+    iso_term_t* terms;
+    uint32_t    num_terms;
+    uint32_t    term_off[MD_GTO_ISO_GPU_MAX_FIELDS], term_count[MD_GTO_ISO_GPU_MAX_FIELDS];
+    double      slack[MD_GTO_ISO_GPU_MAX_FIELDS];
+} isog_comp_build_t;
+
+static void isog_comp_free(isog_comp_build_t* cb) {
+    free(cb->C);
+    free(cb->terms);
+    memset(cb, 0, sizeof(*cb));
+}
+
+// The parts, per spin s (a closed shell: one): LOL rho, tau, each its own functions (rho's AOs first, then
+// tau's); ELF rho, tau, d_x rho, d_y rho, d_z rho over six functions per orbital k, phi_k, G_kx, phi_k, G_ky, phi_k,
+// G_kz (G_ka = d_a phi_k, tau's functions 3k + a), so that every product of the gradient's components is a pair
+// (2j, 2j + 1) as the register-form epilogues take them: rho = sum w_k phi_k^2, tau = sum_a w'_ka G_ka^2,
+// d_a rho = sum 2 w_k phi_k G_ka. NULL, or what it could not do.
+static const char* isog_comp_layout(isog_comp_build_t* cb, const iso_composite_t* c) {
+    memset(cb, 0, sizeof(*cb));
+    const iso_density_t* r0 = c->rho[0]->dens;
+    const iso_density_t* t0 = c->tau[0]->dens;
+    const uint32_t nar = (uint32_t)r0->num_ao, nat = (uint32_t)t0->num_ao;
+    for (int s = 0; s < c->num_spins; ++s) {
+        const iso_density_t* r = c->rho[s]->dens;
+        const iso_density_t* t = c->tau[s]->dens;
+        if ((uint32_t)r->num_ao != nar || (uint32_t)t->num_ao != nat || r->num_ao_shells != r0->num_ao_shells || t->num_ao_shells != t0->num_ao_shells)
+            return "the spins' densities are over different bases";
+        if (c->kind == ISO_COMP_ELF && (r->slack != 0.0 || t->slack != 0.0)) return "a density with a factorization's slack (ELF takes products)";
+    }
+    const uint32_t K = c->kind == ISO_COMP_ELF ? 5u : 2u;
+    cb->num_fields = 1u + K * (uint32_t)c->num_spins;
+    if (cb->num_fields > MD_GTO_ISO_GPU_MAX_FIELDS) return "too many parts";
+    cb->nao = nar + nat;
+    // the columns and terms in all
+    uint32_t ncol = 0, nterm = 0;
+    for (int s = 0; s < c->num_spins; ++s) {
+        const iso_density_t* r = c->rho[s]->dens;
+        const iso_density_t* t = c->tau[s]->dens;
+        if (c->kind == ISO_COMP_ELF) {
+            ncol += 6u * (uint32_t)r->num_fn;
+            nterm += 7u * (uint32_t)r->num_fn;     // rho 1, tau 3, the gradient 3
+        } else {
+            ncol = (ncol + 1u) & ~1u;
+            ncol += (uint32_t)r->num_fn;
+            ncol = (ncol + 1u) & ~1u;
+            ncol += (uint32_t)t->num_fn;
+            nterm += (uint32_t)(r->num_terms + t->num_terms);
+        }
+    }
+    cb->ncol = ncol;
+    cb->C = (double*)calloc((size_t)cb->nao * ncol + 1, sizeof(double));
+    cb->terms = (iso_term_t*)malloc(sizeof(iso_term_t) * (nterm + 1));
+    if (!cb->C || !cb->terms) return "out of memory";
+    // column j over the union from function fn of density d, whose AOs start at row ao0
+    #define ISOG_COL(j, d, fn, ao0) do { for (int i_ = 0; i_ < (d)->num_ao; ++i_) cb->C[(size_t)((ao0) + i_) * ncol + (j)] = (d)->C[(size_t)i_ * (d)->num_fn + (fn)]; } while (0)
+    uint32_t col = 0, nt = 0;
+    cb->term_off[0] = 0; cb->term_count[0] = 0; cb->slack[0] = 0.0;
+    for (int s = 0; s < c->num_spins; ++s) {
+        const iso_density_t* r = c->rho[s]->dens;
+        const iso_density_t* t = c->tau[s]->dens;
+        const uint32_t f = 1u + K * (uint32_t)s;
+        if (c->kind == ISO_COMP_ELF) {
+            // create_elf checked: rho's term k is w_k phi_k^2, tau's 3k + a w_k / 2 G_ka^2
+            const uint32_t n = (uint32_t)r->num_fn, base = col;
+            for (uint32_t k = 0; k < n; ++k) {
+                for (uint32_t x = 0; x < 3; ++x) {
+                    ISOG_COL(base + 6 * k + 2 * x, r, (int)k, 0);
+                    ISOG_COL(base + 6 * k + 2 * x + 1, t, (int)(3 * k + x), nar);
+                }
+            }
+            col += 6u * n;
+            for (uint32_t p = 0; p < 5; ++p) {
+                cb->term_off[f + p] = nt;
+                for (uint32_t k = 0; k < n; ++k) {
+                    const double w = r->terms[k].w;
+                    const int c0 = (int)(base + 6 * k);
+                    if (p == 0) cb->terms[nt++] = (iso_term_t){w, c0, c0};
+                    else if (p == 1) for (int x = 0; x < 3; ++x) cb->terms[nt++] = (iso_term_t){t->terms[3 * k + x].w, c0 + 2 * x + 1, c0 + 2 * x + 1};
+                    else cb->terms[nt++] = (iso_term_t){2.0 * w, c0 + 2 * (int)(p - 2), c0 + 2 * (int)(p - 2) + 1};
+                }
+                cb->term_count[f + p] = nt - cb->term_off[f + p];
+                cb->slack[f + p] = 0.0;
+            }
+        } else {
+            const iso_density_t* part[2] = {r, t};
+            for (uint32_t p = 0; p < 2; ++p) {
+                const iso_density_t* d = part[p];
+                col = (col + 1u) & ~1u;
+                for (int j = 0; j < d->num_fn; ++j) ISOG_COL(col + (uint32_t)j, d, j, p == 0 ? 0u : nar);
+                cb->term_off[f + p] = nt;
+                for (int k = 0; k < d->num_terms; ++k) {
+                    const iso_term_t* tm = &d->terms[k];
+                    cb->terms[nt++] = (iso_term_t){tm->w, (int)col + tm->a, tm->b < 0 ? -1 : (int)col + tm->b};
+                }
+                cb->term_count[f + p] = nt - cb->term_off[f + p];
+                cb->slack[f + p] = d->slack;
+                col += (uint32_t)d->num_fn;
+            }
+        }
+    }
+    #undef ISOG_COL
+    MD_ASSERT(col == ncol && nt == nterm);
+    cb->num_terms = nt;
+    return NULL;
+}
+
 // The set's arrays, on the host and the device (md_gto_iso_gpu_set_create, which fills in the set's sizes first).
 // NULL, or what failed. The scratch is in temp; what it gives the set is the set's, freed by
-// md_gto_iso_gpu_set_destroy whether the set was made or not.
+// md_gto_iso_gpu_set_destroy whether the set was made or not. A composite's set: cb its functions and terms
+// (fields unused but for field 0's: the composite).
 static const char* isog_set_build(md_gto_iso_gpu_set_t* set, md_gpu_stream_t stream, md_temp_scope_t temp, const iso_density_t* B,
                                   const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
-                                  const md_gto_iso_field_t* const* fields, const int* first_of, bool dform_ok) {
+                                  const md_gto_iso_field_t* const* fields, const int* first_of, bool dform_ok,
+                                  const isog_comp_build_t* cb) {
     const uint32_t nao = set->num_ao, nsh = set->num_shells, nf = set->num_fn, stride = set->fn_stride, num_fields = set->num_fields;
     const bool factorless = set->factorless;
     const uint32_t align = set->orbitals_only ? 0u : 1u;
 
     // what the arrays hold: the terms (per distinct field), the primitives and critical intervals (per shell)
-    size_t num_terms = 0, num_prims = 0, num_crit = 0;
-    for (uint32_t k = 0; k < num_fields; ++k) {
+    size_t num_terms = cb ? cb->num_terms : 0, num_prims = 0, num_crit = 0;
+    for (uint32_t k = 0; k < num_fields && !cb; ++k) {
         if (first_of[k] != (int)k) continue;
         const iso_density_t* d = fields[k]->f.dens;
         num_terms += !d ? 1 : factorless ? 0 : (size_t)d->num_terms;
@@ -615,7 +741,24 @@ static const char* isog_set_build(md_gto_iso_gpu_set_t* set, md_gpu_stream_t str
     // given more than once shares its functions
     uint32_t f0 = 0;
     size_t nt = 0;
-    for (uint32_t k = 0; k < num_fields; ++k) {
+    if (cb) {   // a composite's: the parts' shared functions, each field's terms over them
+        for (uint32_t i = 0; i < nao; ++i) for (uint32_t j = 0; j < cb->ncol; ++j) C[(size_t)i * stride + j] = (float)cb->C[(size_t)i * cb->ncol + j];
+        for (uint32_t k = 0; k < num_fields; ++k) {
+            set->src[k] = k == 0 ? fields[0] : NULL;
+            set->host[k] = k == 0 ? fields[0]->f : (iso_field_t){0};
+            set->fields[k].term_off = (uint32_t)nt;
+            for (uint32_t t = 0; t < cb->term_count[k]; ++t) {
+                const iso_term_t* tm = &cb->terms[cb->term_off[k] + t];
+                const isog_term_t g = {(float)tm->w, (uint32_t)tm->a, tm->b < 0 ? 0xFFFFFFFFu : (uint32_t)tm->b, 0};
+                if (tm->b >= 0 && (g.a / 64u) != (g.b / 64u)) return "a pair term spans two tiles of 64 functions";
+                terms[nt++] = g;
+            }
+            set->fields[k].term_count = cb->term_count[k];
+            set->fields[k].slack = isog_f32_up(cb->slack[k]);
+        }
+        f0 = cb->ncol;
+    }
+    for (uint32_t k = 0; k < num_fields && !cb; ++k) {
         const md_gto_iso_field_t* fk = fields[k];
         set->src[k] = fk;
         set->host[k] = fk->f;
@@ -807,14 +950,82 @@ static const char* isog_set_build(md_gto_iso_gpu_set_t* set, md_gpu_stream_t str
     return NULL;
 }
 
+// A set of one composite field (LOL, ELF): its parts (isog_comp_layout) as fields 1 .., over the union of the
+// density's basis and tau's, the composite field 0
+static md_gto_iso_gpu_set_t* isog_set_create_comp(md_gpu_stream_t stream, const md_gto_iso_field_t* field, struct md_allocator_i* alloc) {
+    const iso_composite_t* c = field->f.comp;
+    isog_comp_build_t cb;
+    const char* err = isog_comp_layout(&cb, c);
+    if (!err && cb.ncol > isog_fn_cap) err = "more functions than the factored kernels hold (the CPU takes it)";
+    if (err) {
+        MD_LOG_ERROR("md_gto_iso_gpu_set_create: the composite field: %s", err);
+        isog_comp_free(&cb);
+        return NULL;
+    }
+    if (!isog_kernels_ready()) { isog_comp_free(&cb); return NULL; }
+    // the union basis: the density's AO shells, then tau's
+    const iso_density_t* r = c->rho[0]->dens;
+    const iso_density_t* t = c->tau[0]->dens;
+    iso_density_t B = {0};
+    B.num_ao_shells = r->num_ao_shells + t->num_ao_shells;
+    B.ao_shells = (iso_ao_shell_t*)calloc((size_t)B.num_ao_shells + 1, sizeof(iso_ao_shell_t));
+    if (!B.ao_shells) { isog_comp_free(&cb); MD_LOG_ERROR("md_gto_iso_gpu_set_create: out of memory"); return NULL; }
+    memcpy(B.ao_shells, r->ao_shells, sizeof(iso_ao_shell_t) * (size_t)r->num_ao_shells);
+    memcpy(B.ao_shells + r->num_ao_shells, t->ao_shells, sizeof(iso_ao_shell_t) * (size_t)t->num_ao_shells);
+    for (int i = r->num_ao_shells; i < B.num_ao_shells; ++i) B.ao_shells[i].ao += r->num_ao;
+    B.num_ao = (int)cb.nao;
+    iso_radial_init(&B.radial, B.ao_shells, B.num_ao_shells);
+
+    md_gto_iso_gpu_set_t* set = (md_gto_iso_gpu_set_t*)md_alloc(alloc, sizeof(md_gto_iso_gpu_set_t));
+    if (!set) {
+        MD_LOG_ERROR("md_gto_iso_gpu_set_create: out of memory");
+        isog_basis_free(&B);
+        isog_comp_free(&cb);
+        return NULL;
+    }
+    memset(set, 0, sizeof(*set));
+    set->alloc = alloc;
+    set->num_shells = (uint32_t)B.num_ao_shells;
+    set->num_ao = cb.nao;
+    set->num_fn = cb.ncol;
+    set->fn_stride = cb.ncol > 0 ? ((cb.ncol + 63u) / 64u) * 64u : 64u;
+    set->num_fields = cb.num_fields;
+    set->eps_exp = 10;
+    set->comp_kind = (uint32_t)c->kind;
+    set->comp_spins = (uint32_t)c->num_spins;
+    set->comp_rho_min = c->rho_min;
+    set->comp_d_min = c->d_min;
+    const md_gto_iso_field_t* fl[MD_GTO_ISO_GPU_MAX_FIELDS] = {field};
+    int first_of[MD_GTO_ISO_GPU_MAX_FIELDS];
+    for (int k = 0; k < MD_GTO_ISO_GPU_MAX_FIELDS; ++k) first_of[k] = k;
+    md_temp_scope_t temp = md_temp_begin();
+    err = isog_set_build(set, stream, temp, &B, NULL, NULL, 0, fl, first_of, false, &cb);
+    md_temp_end(temp);
+    isog_basis_free(&B);
+    isog_comp_free(&cb);
+    if (err) {
+        MD_LOG_ERROR("md_gto_iso_gpu_set_create: %s", err);
+        md_gto_iso_gpu_set_destroy(stream, set);
+        return NULL;
+    }
+    return set;
+}
+
 md_gto_iso_gpu_set_t* md_gto_iso_gpu_set_create(md_gpu_stream_t stream, const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
                                                 const md_gto_iso_field_t* const* fields, uint32_t num_fields, struct md_allocator_i* alloc) {
-    if (!stream || !basis || !atom_xyz || !fields || !alloc || num_fields == 0 || num_fields > MD_GTO_ISO_GPU_MAX_FIELDS) {
+    if (!stream || !fields || !alloc || num_fields == 0 || num_fields > MD_GTO_ISO_GPU_MAX_FIELDS) {
         MD_LOG_ERROR("md_gto_iso_gpu_set_create: invalid arguments (1 to %d fields)", MD_GTO_ISO_GPU_MAX_FIELDS);
         return NULL;
     }
     for (uint32_t k = 0; k < num_fields; ++k) {
         if (!fields[k]) { MD_LOG_ERROR("md_gto_iso_gpu_set_create: field %u is NULL", k); return NULL; }
+        if (fields[k]->f.comp && num_fields > 1) { MD_LOG_ERROR("md_gto_iso_gpu_set_create: field %u is a composite (md_gto_iso_field_create_lol, _elf), which must be the set's only field", k); return NULL; }
+    }
+    // a composite brings its own bases (its fields'), so basis and atom_xyz may be NULL for it
+    if (fields[0]->f.comp) return isog_set_create_comp(stream, fields[0], alloc);
+    if (!basis || !atom_xyz) {
+        MD_LOG_ERROR("md_gto_iso_gpu_set_create: invalid arguments (no basis)");
+        return NULL;
     }
     // The kernels with the set, on its thread: the first extraction then costs its own thread nothing for them
     // (seconds on a CPU device, a fraction of one on most GPUs)
@@ -888,7 +1099,7 @@ md_gto_iso_gpu_set_t* md_gto_iso_gpu_set_create(md_gpu_stream_t stream, const md
     set->eps_exp = 10;      // the radii isog_set_build derives (isog_set_eps re-derives them)
 
     md_temp_scope_t temp = md_temp_begin();
-    const char* err = isog_set_build(set, stream, temp, &B, basis, atom_xyz, atom_xyz_stride, fields, first_of, dform_ok);
+    const char* err = isog_set_build(set, stream, temp, &B, basis, atom_xyz, atom_xyz_stride, fields, first_of, dform_ok, NULL);
     md_temp_end(temp);
     isog_basis_free(&B);
     if (err) {
@@ -1029,6 +1240,10 @@ static void isog_args_set(isog_args_t* a, const md_gto_iso_gpu_set_t* set) {
     a->dm_tao = set->dm_tao.gpu;
     a->dm_map = set->dm_map.gpu;
     a->dprop = set->dprop.gpu;
+    a->comp_kind = set->comp_kind;
+    a->comp_spins = set->comp_spins;
+    a->comp_rho_min = (float)set->comp_rho_min;
+    a->comp_d_min = (float)set->comp_d_min;
 }
 
 // The kernel that evaluates value and gradient at a list of vertices (vpos; vinfo.z the field; vdone 0 for the
@@ -1836,6 +2051,11 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
                 MD_GPU_LAUNCH(s, isog_k[ISOG_K_CORNERS_FILL], isog_groups(nb), af);
                 isog_mark(s, "corners: fill shared", nb, 0);
             }
+            if (set->comp_kind) {   // a composite: field 0's corners from its parts', whose bits are cleared
+                MD_GPU_LAUNCH(s, isog_k[ISOG_K_COMP_CORNERS], isog_groups(nb), a);
+                isog_used(ISOG_K_COMP_CORNERS);
+                isog_mark(s, "corners: composite", nb, 0);
+            }
             if (!flood) {
                 isog_stage(s, desc, out, MD_GTO_ISO_GPU_STAGE_CORNERS, &j->ts);
                 j->stage = ISOG_J_NETS;
@@ -1976,7 +2196,11 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
             a.remap    = isog_jalloc(j, sizeof(uint32_t) * cap_v);
             a.bucket   = isog_jalloc(j, sizeof(uint32_t) * 192);
             a.vdone    = isog_jalloc(j, sizeof(uint32_t) * cap_v);
-            if (!a.vpos || !a.vpos_out || !a.vnrm || !a.vval || !a.vinfo || !a.quads || !a.remap || !a.bucket || !a.vdone) {
+            // a composite: its parts' values per vertex (iso_comp_vertices combines them)
+            const uint32_t nparts = set->comp_kind ? set->num_fields - 1u : 0u;
+            a.vsub = nparts ? isog_jalloc(j, sizeof(md_gpu_float4) * cap_v * nparts) : 0;
+            a.comp_stride = cap_v;
+            if (!a.vpos || !a.vpos_out || !a.vnrm || !a.vval || !a.vinfo || !a.quads || !a.remap || !a.bucket || !a.vdone || (nparts && !a.vsub)) {
                 isog_job_fail(j, "md_gto_iso_gpu_extract: out of device memory or buffer overflow");
                 break;
             }
@@ -2043,7 +2267,19 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
                     for (uint32_t it = 0; it <= iters; ++it) {
                         uint32_t act, grp;
                         isog_prof_active(s, v.vdone, nv, &act, &grp);
-                        if (it == 0 && n_eval_groups) isog_jlaunch(j, k_eval, v, n_eval_groups, 0.65f, 0.9f);
+                        if (nparts) {
+                            // a composite: each part's values into its own vsub, then field 0's from them
+                            for (uint32_t pt = 0; pt < nparts; ++pt) {
+                                isog_args_t vp = v;
+                                vp.vfield = pt + 2u;     // field pt + 1
+                                vp.vval = v.vsub + sizeof(md_gpu_float4) * (size_t)cap_v * pt;
+                                const float q0 = 0.65f + 0.25f * (float)pt / (float)nparts, q1 = 0.65f + 0.25f * (float)(pt + 1) / (float)nparts;
+                                if (it == 0 && n_eval_groups) isog_jlaunch(j, k_eval, vp, n_eval_groups, q0, q1);
+                                else MD_GPU_LAUNCH(s, k_eval, g_eval, vp);
+                            }
+                            MD_GPU_LAUNCH(s, isog_k[ISOG_K_COMP_VERTS], md_gpu_grid_for(isog_k[ISOG_K_COMP_VERTS], nv, 1, 1), v);
+                            isog_used(ISOG_K_COMP_VERTS);
+                        } else if (it == 0 && n_eval_groups) isog_jlaunch(j, k_eval, v, n_eval_groups, 0.65f, 0.9f);
                         else MD_GPU_LAUNCH(s, k_eval, g_eval, v);
                         isog_mark(s, "vertex eval", act, grp);
                         v.mode = it == iters ? 1u : 0u;     // 1: the normals; 0: a step (one predicted far below the tolerance ends the vertex)
@@ -2168,11 +2404,19 @@ md_gto_iso_gpu_job_t* md_gto_iso_gpu_job_begin(md_gpu_stream_t s, const md_gto_i
         return NULL;
     }
     if (!isog_kernels_ready() || !isog_set_current(s, set)) return NULL;
-    const uint32_t F = set->num_fields;
+    // a composite: one mesh, field 0's (its parts have no surfaces of their own)
+    const bool comp = set->comp_kind != 0;
+    const uint32_t F = comp ? 1u : set->num_fields;
     // root: the union of every field's surface box, as on the CPU (the same lattice for one field)
     double lo[3] = {DBL_MAX, DBL_MAX, DBL_MAX}, hi[3] = {-DBL_MAX, -DBL_MAX, -DBL_MAX};
     isog_field_t fields[MD_GTO_ISO_GPU_MAX_FIELDS];
     memset(fields, 0, sizeof(fields));     // all 16 uploaded: unrolled loops may read past num_fields
+    for (uint32_t k = F; k < set->num_fields; ++k) {
+        fields[k] = set->fields[k];
+        fields[k].iso = 1.0f;
+    }
+    if (comp && !isog_have(ISOG_K_COMP_CORNERS)) return NULL;
+    if (comp && !isog_have(ISOG_K_COMP_VERTS)) return NULL;
     uint32_t root_mask = 0;
     for (uint32_t k = 0; k < F; ++k) {
         if (!(desc->iso[k] > 0.0)) { MD_LOG_ERROR("md_gto_iso_gpu_extract: iso[%u] must be positive", k); return NULL; }
@@ -2181,7 +2425,8 @@ md_gto_iso_gpu_job_t* md_gto_iso_gpu_job_begin(md_gpu_stream_t s, const md_gto_i
         for (int a = 0; a < 3; ++a) { lo[a] = fmin(lo[a], bl[a]); hi[a] = fmax(hi[a], bh[a]); }
         fields[k] = set->fields[k];
         fields[k].iso = (float)desc->iso[k];
-        const uint32_t sheets = desc->sheets[k] ? (desc->sheets[k] & 3u) : 3u;
+        uint32_t sheets = desc->sheets[k] ? (desc->sheets[k] & 3u) : 3u;
+        if (comp) sheets &= 1u;     // LOL and ELF are >= 0
         root_mask |= sheets << (2u * k);
     }
     double origin[3];
@@ -2236,6 +2481,7 @@ md_gto_iso_gpu_job_t* md_gto_iso_gpu_job_begin(md_gpu_stream_t s, const md_gto_i
             for (int t = 0; t < dk->num_terms && flood; ++t) flood = dk->terms[t].a == dk->terms[t].b && dk->terms[t].w >= 0.0;
         }
     }
+    if (comp) flood = false;
     j->flood = flood;
     a->fields = isog_jalloc(j, sizeof(fields));
     a->counters = isog_jalloc(j, sizeof(uint32_t) * 12);
@@ -2477,6 +2723,10 @@ static md_gto_iso_gpu_eval_job_t* isog_eval_job_create(md_gpu_stream_t s, const 
     if (!s || !set || !desc || !desc->xyz || desc->num_fields == 0 || desc->num_fields > MD_GTO_ISO_GPU_MAX_FIELDS ||
         (!desc->out_value && !desc->out_gradient) || (desc->xyz_stride & 3u)) {
         MD_LOG_ERROR("md_gto_iso_gpu_evaluate: invalid arguments");
+        return NULL;
+    }
+    if (set->comp_kind) {
+        MD_LOG_ERROR("md_gto_iso_gpu_evaluate: a composite field's set (LOL, ELF) is for extraction only; evaluate it on the CPU (md_gto_iso_field_evaluate)");
         return NULL;
     }
     for (uint32_t k = 0; k < desc->num_fields; ++k) {

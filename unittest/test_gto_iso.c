@@ -2490,6 +2490,189 @@ UTEST(qm_elf, limits_and_reference) {
 }
 
 
+// ---------------------------------------------------------------------------------------------
+// LOL as a field of its own (md_gto_iso_field_create_lol): bounded through the density and the kinetic
+// energy density, meshed as any other field
+// ---------------------------------------------------------------------------------------------
+typedef struct iso_lol_src_t {
+    iso_dens_src_t      s;
+    md_gto_basis_t      dbasis;
+    md_gto_iso_field_t* rho;
+    md_gto_iso_field_t* tau;            // the LOL's (borrowed)
+    md_gto_iso_field_t* lol;
+    md_gto_iso_field_t* elf;
+} iso_lol_src_t;
+
+// open: two spins, each the alpha density (an open shell's form of a closed one: the same surfaces, through the code
+// for two spins)
+static bool iso_lol_src_load_ex(iso_lol_src_t* l, const char* file, double rho_min, bool open) {
+    memset(l, 0, sizeof(*l));
+    if (!iso_dens_src_load_ex(&l->s, file, false)) return false;
+    md_allocator_i* heap = md_get_heap_allocator();
+    // closed shells: the totals, as viamd takes them
+    const md_str_t path = open ? MD_STR_LIT("orbital/alpha/density") : MD_STR_LIT("orbital/total/density");
+    double *rr = NULL, *rw = NULL, *kr = NULL, *kw = NULL;
+    size_t rna = 0, kna = 0;
+    const size_t rn = md_qm_density_orbitals(&rr, &rw, &rna, &l->s.t.sys, path, heap);
+    const size_t kn = md_qm_kinetic_orbitals(&kr, &kw, &kna, &l->dbasis, &l->s.t.sys, path, heap);
+    // each composite takes its own fields; rho and tau are the LOL's (spin a), for evaluating them alone
+    md_gto_iso_field_t* f[8] = {0};
+    const int nf = open ? 8 : 4;
+    for (int k = 0; k < nf / 2 && rn && kn; ++k) {
+        f[2 * k]     = md_gto_iso_field_create_products(&l->s.basis, l->s.xyz, 0, rr, NULL, rw, rn, heap);
+        f[2 * k + 1] = md_gto_iso_field_create_products(&l->dbasis, l->s.xyz, 0, kr, NULL, kw, kn, heap);
+    }
+    if (!open) {
+        if (f[0] && f[1]) l->lol = md_gto_iso_field_create_lol(f[0], f[1], NULL, NULL, rho_min, heap);
+        if (f[2] && f[3]) l->elf = md_gto_iso_field_create_elf(f[2], f[3], NULL, NULL, rho_min, MD_QM_ELF_D_MIN, heap);
+    } else {
+        bool all = true;
+        for (int k = 0; k < 8; ++k) all &= f[k] != NULL;
+        if (all) l->lol = md_gto_iso_field_create_lol(f[0], f[1], f[2], f[3], rho_min, heap);
+        if (all) l->elf = md_gto_iso_field_create_elf(f[4], f[5], f[6], f[7], rho_min, MD_QM_ELF_D_MIN, heap);
+    }
+    l->rho = f[0];
+    l->tau = f[1];
+    md_free(heap, rr, sizeof(double) * rn * rna);
+    md_free(heap, rw, sizeof(double) * rn);
+    md_free(heap, kr, sizeof(double) * kn * kna);
+    md_free(heap, kw, sizeof(double) * kn);
+    return l->lol != NULL && l->elf != NULL;
+}
+
+static bool iso_lol_src_load(iso_lol_src_t* l, const char* file, double rho_min) { return iso_lol_src_load_ex(l, file, rho_min, false); }
+
+static void iso_lol_src_free(iso_lol_src_t* l) {
+    md_gto_iso_field_destroy(l->elf);   // and the fields each took
+    md_gto_iso_field_destroy(l->lol);
+    md_gto_basis_free(&l->dbasis, md_get_heap_allocator());
+    iso_dens_src_free(&l->s);
+}
+
+// Its value is md_qm_lol of the two fields, its gradient the value's
+UTEST(gto_iso_lol, value_and_gradient) {
+    static const char* files[] = {"h2o.h5", "amide.h5"};
+    for (int fi = 0; fi < 2; ++fi) {
+        iso_lol_src_t l;
+        ASSERT_TRUE(iso_lol_src_load(&l, files[fi], 1e-6));
+        md_gto_iso_field_info_t info;
+        md_gto_iso_field_info(&info, l.lol);
+        EXPECT_EQ(info.kind, (uint32_t)MD_GTO_ISO_FIELD_COMPOSITE);
+        enum { N = 1000 };
+        iso_rng_t rng = {17};
+        double* pd = (double*)malloc(sizeof(double) * 3 * N);
+        iso_dens_points(pd, N, &l.s, &rng);
+        for (int kind = 0; kind < 2; ++kind) {
+        const md_gto_iso_field_t* fld = kind == 0 ? l.lol : l.elf;
+        double worst_v = 0.0, worst_g = 0.0;
+        for (int i = 0; i < N; ++i) {
+            const float p[3] = {(float)pd[3 * i], (float)pd[3 * i + 1], (float)pd[3 * i + 2]};
+            double v, g[3], r, t, gr[3];
+            md_gto_iso_field_evaluate(fld, p, 1, 0, &v, g);
+            md_gto_iso_field_evaluate(l.rho, p, 1, 0, &r, gr);
+            md_gto_iso_field_evaluate(l.tau, p, 1, 0, &t, NULL);
+            const double g2 = gr[0] * gr[0] + gr[1] * gr[1] + gr[2] * gr[2];
+            const double ref = kind == 0 ? md_qm_lol_closed_shell(r, t, 1e-6) : md_qm_elf_closed_shell(r, g2, t, 1e-6, MD_QM_ELF_D_MIN);
+            worst_v = fmax(worst_v, fabs(v - ref));
+            if (r < 1e-4) continue;   // the gradient where the value is well above rho_min's cut
+            const float hh = 1.0f / 512.0f;
+            for (int a = 0; a < 3; ++a) {
+                float pp[3] = {p[0], p[1], p[2]}, pm[3] = {p[0], p[1], p[2]};
+                pp[a] += hh; pm[a] -= hh;
+                double vp, vm;
+                md_gto_iso_field_evaluate(fld, pp, 1, 0, &vp, NULL);
+                md_gto_iso_field_evaluate(fld, pm, 1, 0, &vm, NULL);
+                float pp2[3] = {p[0], p[1], p[2]}, pm2[3] = {p[0], p[1], p[2]};
+                pp2[a] += 2 * hh; pm2[a] -= 2 * hh;
+                double vp2, vm2;
+                md_gto_iso_field_evaluate(fld, pp2, 1, 0, &vp2, NULL);
+                md_gto_iso_field_evaluate(fld, pm2, 1, 0, &vm2, NULL);
+                // fourth order central difference
+                const double fd = (vm2 - 8.0 * vm + 8.0 * vp - vp2) / (12.0 * (double)hh);
+                worst_g = fmax(worst_g, fabs(fd - g[a]) / fmax(1.0, fabs(g[a])));
+            }
+        }
+        printf("  %-9s %s against md_qm: %.1e; gradient against central differences: %.1e\n", files[fi], kind ? "ELF" : "LOL", worst_v, worst_g);
+        EXPECT_LT(worst_v, 1e-12);
+        EXPECT_LT(worst_g, 1e-4);
+        }
+        free(pd);
+        iso_lol_src_free(&l);
+    }
+}
+
+// Bounded through its fields, the cache misses no crossing cell: its meshes are dense Surface Nets'
+// over the whole lattice; and the display mesh is closed. How close it lies to the surface is held at the
+// finer cell sizes (GTO_ISO_REPORT=1, ~2.5 min for the dense lattices): LOL's surfaces at 0.6 and 0.7 are
+// small pieces about its maxima, a few cells across at 0.2 - 0.3 bohr.
+UTEST(gto_iso_lol, cache_is_dense_surface_nets_and_meshes_close) {
+    typedef struct { const char* file; int elf; double h, iso_min, iso_max; bool fine; } lcase_t;
+    static const lcase_t cases[] = {
+        {"h2o.h5",   0, 0.2,  0.5, 0.7, false},
+        {"amide.h5", 0, 0.3,  0.5, 0.7, false},
+        {"h2o.h5",   1, 0.2,  0.75, 0.85, false},
+        {"amide.h5", 1, 0.3,  0.75, 0.85, false},
+        {"h2o.h5",   0, 0.1,  0.5, 0.7, true},
+        {"amide.h5", 0, 0.15, 0.5, 0.7, true},
+        {"h2o.h5",   1, 0.1,  0.75, 0.85, true},
+        {"amide.h5", 1, 0.15, 0.75, 0.85, true},
+    };
+    for (int ci = 0; ci < 8; ++ci) {
+        const lcase_t* c = &cases[ci];
+        if (c->fine && !iso_report()) continue;
+        iso_lol_src_t l;
+        ASSERT_TRUE(iso_lol_src_load(&l, c->file, 1e-6));
+        md_gto_iso_field_t* fld = c->elf ? l.elf : l.lol;
+        md_tick_t t0 = md_tick_now();
+        md_gto_iso_cache_t* cache = md_gto_iso_cache_create(fld, &(md_gto_iso_cache_desc_t){.cell_size = c->h, .iso_min = c->iso_min, .iso_max = c->iso_max}, md_get_heap_allocator());
+        const double t_cache = iso_seconds_since(t0);
+        ASSERT_TRUE(cache != NULL);
+        md_gto_iso_cache_info_t info;
+        md_gto_iso_cache_info(&info, cache);
+        const double lattice = pow((double)info.cells_per_axis + 1.0, 3.0);
+        printf("  %-9s %s [%.2f, %.2f] h %.2f: %u bricks of %u^3 cells (%.2f%% of the lattice's points), octree %.3fs, corners %.3fs, cache %.3fs\n",
+               c->file, c->elf ? "ELF" : "LOL", c->iso_min, c->iso_max, c->h, info.num_bricks, info.cells_per_axis, 100.0 * 125.0 * info.num_bricks / lattice,
+               info.seconds_octree, info.seconds_corners, t_cache);
+        const double isos[3] = {c->iso_min, 0.5 * (c->iso_min + c->iso_max), c->iso_max};
+        for (int k = 0; k < 3; ++k) {
+            md_gto_iso_mesh_t raw, q;
+            ASSERT_TRUE(md_gto_iso_mesh_extract(&raw, cache, &(md_gto_iso_mesh_desc_t){.iso = isos[k]}, md_get_heap_allocator()));
+            t0 = md_tick_now();
+            int dnv[2], dnq[2];
+            iso_dense_counts(fld, &info, isos[k], dnv, dnq);
+            const double t_dense = iso_seconds_since(t0);
+            ASSERT_TRUE(md_gto_iso_mesh_extract(&q, cache, &(md_gto_iso_mesh_desc_t){.iso = isos[k], .project_iterations = 8, .relax_iterations = 3}, md_get_heap_allocator()));
+            printf("     iso %.2f: %u vertices (dense lattice %d, %.1fs), %u triangles (dense %d); sheet - %u\n", isos[k],
+                   raw.sheet_vertex_count[0], dnv[0], t_dense, raw.sheet_index_count[0] / 3, 2 * dnq[0], raw.sheet_vertex_count[1]);
+            EXPECT_EQ((int)raw.sheet_vertex_count[0], dnv[0]);
+            EXPECT_EQ((int)raw.sheet_index_count[0], 6 * dnq[0]);
+            EXPECT_EQ(raw.sheet_vertex_count[1], 0u);
+            EXPECT_GT(raw.sheet_vertex_count[0], 0u);
+            iso_mesh_t mr, mq;
+            iso_api_sheet(&mr, &raw, 0, isos[k], c->h);
+            iso_api_sheet(&mq, &q, 0, isos[k], c->h);
+            iso_metrics_t er, eq;
+            iso_mesh_metrics(&er, &mr, &fld->f);
+            iso_mesh_metrics(&eq, &mq, &fld->f);
+            printf("       raw      "); iso_print_metrics("", &er);
+            printf("       display  "); iso_print_metrics("", &eq);
+            printf("       worst at (%.2f %.2f %.2f), |grad| %.3g\n", eq.dev_where[0], eq.dev_where[1], eq.dev_where[2], eq.dev_grad);
+            EXPECT_EQ(eq.boundary_edges, 0);
+            EXPECT_EQ(eq.euler, er.euler);
+            if (c->fine) {
+                EXPECT_GT(eq.orient_ok, 0.99);
+                EXPECT_LT(eq.dev_rms, 0.07);
+            }
+            iso_mesh_free(&mr);
+            iso_mesh_free(&mq);
+            md_gto_iso_mesh_free(&raw);
+            md_gto_iso_mesh_free(&q);
+        }
+        md_gto_iso_cache_destroy(cache);
+        iso_lol_src_free(&l);
+    }
+}
+
 #if MD_ENABLE_GPU
 #include <core/md_gpu.h>
 #include "gto_iso_shaders.inl"
@@ -3320,6 +3503,130 @@ UTEST(gto_iso_gpu_lib, matches_cpu_reference) {
         iso_dens_prod_free(&p);
     }
     iso_dens_src_free(&s);
+    md_gto_iso_gpu_shutdown();
+    iso_gpu_free(&g);
+}
+
+// LOL and ELF (composite fields) on the GPU against the CPU cache: no crossing cell of the double precision lattice
+// outside the GPU's bricks, the corners as close as float allows, and the meshes alike (closed, the same topology, as
+// close to the surface). At the default evaluation cutoff (1e-6) the corners in the tails differ by up to 3e-4: rho and
+// tau there are of the order of the AOs the cutoff drops, and LOL is their ratio; at 1e-10 the composite's arithmetic
+// in float is what is left (1e-5).
+UTEST(gto_iso_gpu_lib, composite_matches_cpu) {
+    iso_gpu_t g;
+    if (!iso_gpu_init(&g)) { iso_gpu_free(&g); UTEST_SKIP(iso_gpu_no_device()); }
+    md_gto_iso_gpu_initialize(g.dev);
+    typedef struct { const char* file; int elf; double h, iso; bool open; } ccase_t;
+    static const ccase_t cases[] = {
+        {"h2o.h5",   0, 0.2,  0.6, false},
+        {"amide.h5", 0, 0.25, 0.6, false},
+        {"h2o.h5",   1, 0.2,  0.8, false},
+        {"amide.h5", 1, 0.25, 0.8, false},
+        {"h2o.h5",   0, 0.2,  0.6, true},     // two spins
+        {"h2o.h5",   1, 0.2,  0.8, true},
+    };
+    for (int ci = 0; ci < 2 * (int)(sizeof(cases) / sizeof(cases[0])); ++ci) {
+        const ccase_t* c = &cases[ci / 2];
+        const int eps = ci % 2 ? 10 : 0;    // the switch's (1e-6), 1e-10
+        iso_lol_src_t l;
+        ASSERT_TRUE(iso_lol_src_load_ex(&l, c->file, 1e-6, c->open));
+        md_gto_iso_field_t* field = c->elf ? l.elf : l.lol;
+        const double h = c->h;
+
+        md_gto_iso_cache_t* cache = md_gto_iso_cache_create(field, &(md_gto_iso_cache_desc_t){.cell_size = h, .iso_min = c->iso}, md_get_heap_allocator());
+        ASSERT_TRUE(cache != NULL);
+        md_gto_iso_mesh_t cm;
+        ASSERT_TRUE(md_gto_iso_mesh_extract(&cm, cache, &(md_gto_iso_mesh_desc_t){.iso = c->iso, .project_iterations = 8, .relax_iterations = 3}, md_get_heap_allocator()));
+
+        const md_gto_iso_field_t* fl[1] = {field};
+        md_gto_iso_gpu_set_t* set = md_gto_iso_gpu_set_create(g.s, NULL, NULL, 0, fl, 1, md_get_heap_allocator());
+        ASSERT_TRUE(set != NULL);
+        ASSERT_TRUE(md_gto_iso_gpu_set_cutoff(g.s, set, eps));
+        md_gto_iso_gpu_desc_t gd = {.cell_size = h, .project_iterations = 8, .relax_iterations = 3};
+        gd.iso[0] = c->iso;
+        isog_debug_t dbg = {0};
+        isog_debug = &dbg;
+        md_gto_iso_gpu_mesh_t gm;
+        md_tick_t t0 = md_tick_now();
+        ASSERT_TRUE(md_gto_iso_gpu_extract(g.s, set, &gd, &gm));
+        const double t_gpu = iso_gl_seconds(t0);
+        isog_debug = NULL;
+        EXPECT_EQ(gm.num_fields, 1u);
+        EXPECT_NEAR(dbg.origin[0], cache->origin[0], 1e-9);
+        EXPECT_EQ(dbg.brick_level, cache->brick_levels);
+
+        iso_map_t gmap;
+        iso_map_init(&gmap, dbg.num_bricks + 1);
+        uint32_t gpu_bricks = 0;
+        for (uint32_t b = 0; b < dbg.num_bricks; ++b) {
+            if ((dbg.bricks[4 * b + 3] & 3u) == 0) continue;
+            iso_map_put(&gmap, iso_key3((int)dbg.bricks[4 * b], (int)dbg.bricks[4 * b + 1], (int)dbg.bricks[4 * b + 2]), b);
+            gpu_bricks++;
+        }
+        long crossing = 0, missed = 0, compared = 0, sign_flips = 0;
+        double max_err = 0.0;
+        const iso_brick_store_t* st = &cache->store;
+        iso_lattice_t lat = {.f = &field->f, .h = h, .store = st};
+        memcpy(lat.origin, cache->origin, sizeof(lat.origin));
+        for (uint32_t b = 0; b < st->num_bricks; ++b) {
+            const int32_t* bc = st->coord + 4 * b;
+            uint32_t gb;
+            const bool have = iso_map_get(&gmap, iso_key3(bc[0], bc[1], bc[2]), &gb);
+            for (int cell = 0; cell < 64; ++cell) {
+                const int x = bc[0] * 4 + (cell & 3), y = bc[1] * 4 + ((cell >> 2) & 3), z = bc[2] * 4 + (cell >> 4);
+                int pos = 0;
+                for (int k = 0; k < 8; ++k) pos += iso_lattice_corner(&lat, x + (k & 1), y + ((k >> 1) & 1), z + ((k >> 2) & 1)) - c->iso > 0.0;
+                if (pos == 0 || pos == 8) continue;
+                crossing++;
+                if (!have || !(dbg.bricks[4 * gb + 3] & 1u)) missed++;
+            }
+            if (!have) continue;
+            for (int k = 0; k < 125; ++k) {
+                const float cv = st->corner[125 * (size_t)b + k];
+                if (cv != cv) continue;
+                const float gv = dbg.corners[125 * (size_t)dbg.slots[gb] + k];
+                compared++;
+                max_err = fmax(max_err, fabs((double)gv - cv));
+                sign_flips += (cv - c->iso > 0.0) != (gv - c->iso > 0.0);
+            }
+        }
+        iso_map_free(&gmap);
+
+        md_gto_iso_mesh_t hm;
+        ASSERT_TRUE(md_gto_iso_gpu_mesh_read(g.s, &gm, 0, &hm, md_get_heap_allocator()));
+        printf("  %-9s %s%s h %.2f iso %.2f cutoff 1e-%d: bricks GPU %u CPU %u | crossing cells %ld, missed by GPU %ld | corners %ld: max |gpu-cpu| %.1e, sign flips %ld | %.2fs\n",
+               c->file, c->elf ? "ELF" : "LOL", c->open ? " (2 spins)" : "", h, c->iso, eps ? eps : 6, gpu_bricks, st->num_bricks, crossing, missed, compared, max_err, sign_flips, t_gpu);
+        EXPECT_EQ(missed, 0);
+        EXPECT_LT(max_err, eps ? 2.0e-5 : 1.0e-3);
+        EXPECT_EQ(gm.open_edges, 0u);
+        EXPECT_EQ(hm.sheet_vertex_count[1], 0u);
+        printf("     vertices GPU %u CPU %u, triangles GPU %u CPU %u\n", hm.sheet_vertex_count[0], cm.sheet_vertex_count[0], hm.sheet_index_count[0] / 3, cm.sheet_index_count[0] / 3);
+        EXPECT_LE(fabs((double)hm.sheet_vertex_count[0] - cm.sheet_vertex_count[0]), 4.0 * sign_flips);
+        EXPECT_GT(hm.sheet_vertex_count[0], 0u);
+        if (hm.sheet_vertex_count[0]) {
+            iso_mesh_t mg, mc;
+            iso_api_sheet(&mg, &hm, 0, c->iso, h);
+            iso_api_sheet(&mc, &cm, 0, c->iso, h);
+            iso_metrics_t eg, ec;
+            iso_mesh_metrics(&eg, &mg, &field->f);
+            iso_mesh_metrics(&ec, &mc, &field->f);
+            printf("     GPU  "); iso_print_metrics("", &eg);
+            printf("     CPU  "); iso_print_metrics("", &ec);
+            EXPECT_EQ(eg.boundary_edges, 0);
+            EXPECT_EQ(eg.euler, ec.euler);
+            EXPECT_GT(eg.orient_ok, ec.orient_ok - 0.01);     // LOL's small pieces at 0.2 bohr: 0.96 on both
+            EXPECT_LT(eg.dev_rms, 1.2 * ec.dev_rms + 0.005);
+            iso_mesh_free(&mg);
+            iso_mesh_free(&mc);
+        }
+        md_gto_iso_mesh_free(&hm);
+        md_gto_iso_gpu_mesh_free(g.s, &gm);
+        md_gto_iso_gpu_set_destroy(g.s, set);
+        free(dbg.bricks); free(dbg.slots); free(dbg.corners);
+        md_gto_iso_mesh_free(&cm);
+        md_gto_iso_cache_destroy(cache);
+        iso_lol_src_free(&l);
+    }
     md_gto_iso_gpu_shutdown();
     iso_gpu_free(&g);
 }

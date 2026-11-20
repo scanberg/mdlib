@@ -192,6 +192,22 @@ md_attribute_id_t md_qm_publish_series(md_system_t* sys, md_str_t path, md_str_t
     return md_qm_publish(sys, path, label, unit, format, values, count * sizeof(double));
 }
 
+md_attribute_id_t md_qm_publish_principal_series(md_system_t* sys, md_str_t path, md_str_t label, md_unit_t unit, const double* values, size_t count) {
+    MD_ASSERT(sys);
+    if (!values || count == 0) {
+        return MD_ATTRIBUTE_INVALID;
+    }
+    return md_attributes_replace(&sys->attributes, &(md_attribute_desc_t){
+        .path      = path,
+        .format    = {.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = { (uint32_t)count }},
+        .flags     = MD_ATTRIBUTE_FLAG_PRINCIPAL,
+        .unit      = unit,
+        .label     = label,
+        .data      = values,
+        .byte_size = count * sizeof(double),
+    });
+}
+
 md_attribute_id_t md_qm_publish_vec3_series(md_system_t* sys, md_str_t path, md_str_t label, md_unit_t unit, const md_double3_t* values, size_t count) {
     if (!values || count == 0) {
         return MD_ATTRIBUTE_INVALID;

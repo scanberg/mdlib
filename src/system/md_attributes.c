@@ -895,6 +895,22 @@ static bool attr_build(md_attributes_t* attributes, const md_attribute_desc_t* d
         }
     }
 
+    // PRINCIPAL is a claim about the group: one quantity is what it is about, so a second is a publisher contradicting
+    // itself. The one being replaced (the same path) is not a second.
+    if (desc->flags & MD_ATTRIBUTE_FLAG_PRINCIPAL) {
+        if (!md_attribute_type_is_numeric(format.type)) {
+            MD_LOG_ERROR("Attribute '" MD_STR_FMT "' is principal but not numeric", MD_STR_ARG(path));
+            return false;
+        }
+        const size_t slash = md_str_rfind_char(path, '/');
+        const md_str_t group = slash == MD_STR_NPOS ? (md_str_t){0} : md_str_substr(path, 0, slash);
+        const md_attribute_t* other = md_attributes_principal(attributes, group);
+        if (other && !md_str_eq(other->path, path)) {
+            MD_LOG_ERROR("Attribute '" MD_STR_FMT "' is principal, but '" MD_STR_FMT "' already is in its group", MD_STR_ARG(path), MD_STR_ARG(other->path));
+            return false;
+        }
+    }
+
     // TEMPORAL is a claim about the outermost axis, so it is checked rather than believed. This is
     // the whole reason for tagging instead of inferring: a shape that merely looks frame sized is a
     // coincidence, while a tag that disagrees with its axis is a bug, and catching it here beats
@@ -1049,7 +1065,8 @@ md_attribute_id_t md_attributes_alias(md_attributes_t* attributes, md_attribute_
     const md_attribute_format_t  format   = tgt->format;
     const md_unit_t              unit     = tgt->unit;
     void* const                  data     = tgt->data;
-    const md_attribute_flags_t   flags    = tgt->flags;
+    // PRINCIPAL is about the target's group, not about the datum (MD_ATTRIBUTE_FLAG_PRINCIPAL)
+    const md_attribute_flags_t   flags    = (md_attribute_flags_t)(tgt->flags & ~MD_ATTRIBUTE_FLAG_PRINCIPAL);
     const md_attribute_id_t      root     = tgt->root;
     const uint64_t               version  = tgt->version;
     const md_attribute_virtual_t virt     = tgt->virt;   // still owned by the target: see attr_release
@@ -1497,6 +1514,15 @@ const md_attribute_t* md_attributes_sibling(const md_attributes_t* attributes, c
         return NULL;
     }
     return md_attributes_find_in(attributes, md_attribute_group(attr), leaf);
+}
+
+const md_attribute_t* md_attributes_principal(const md_attributes_t* attributes, md_str_t group) {
+    MD_ASSERT(attributes);
+    while (group.len && group.ptr[group.len - 1] == '/') group.len -= 1;
+    for (md_attribute_iter_t it = md_attributes_iter(attributes, group); md_attributes_next(&it);) {
+        if ((it.attr->flags & MD_ATTRIBUTE_FLAG_PRINCIPAL) && md_str_eq(md_attribute_group(it.attr), group)) return it.attr;
+    }
+    return NULL;
 }
 
 const md_attribute_t* md_attributes_axis(const md_attributes_t* attributes, const md_attribute_t* attr) {

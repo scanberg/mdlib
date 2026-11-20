@@ -2170,6 +2170,48 @@ UTEST(attributes, find_in_and_sibling) {
     md_attributes_free(&t);
 }
 
+// The principal quantity of a group: one per group, a number, found by its group alone, and not carried by an alias
+UTEST(attributes, principal_is_one_per_group) {
+    md_attributes_t t = {.alloc = md_get_heap_allocator()};
+    const double v[3] = {1.0, 2.0, 3.0};
+    const md_attribute_format_t fmt = {.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = {3}};
+
+    EXPECT_EQ(md_attributes_principal(&t, MD_STR_LIT("cav/tessera")), NULL);
+    const md_attribute_id_t area = md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = MD_STR_INIT("cav/tessera/area"), .format = fmt, .unit = md_unit_none(), .data = v, .byte_size = sizeof(v)});
+    const md_attribute_id_t wall = md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = MD_STR_INIT("cav/tessera/wall"), .format = fmt, .flags = MD_ATTRIBUTE_FLAG_PRINCIPAL, .unit = md_unit_none(), .data = v, .byte_size = sizeof(v)});
+    ASSERT_NE(area, MD_ATTRIBUTE_INVALID);
+    ASSERT_NE(wall, MD_ATTRIBUTE_INVALID);
+    EXPECT_EQ(md_attributes_principal(&t, MD_STR_LIT("cav/tessera")), md_attributes_get(&t, wall));
+    EXPECT_EQ(md_attributes_principal(&t, MD_STR_LIT("cav/tessera/")), md_attributes_get(&t, wall));   // trailing '/' ignored
+    EXPECT_EQ(md_attributes_principal(&t, MD_STR_LIT("cav")), NULL);                                   // not of the group above
+
+    // A second in the same group contradicts the first: refused. In another group, its own.
+    EXPECT_EQ(md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = MD_STR_INIT("cav/tessera/charge"), .format = fmt, .flags = MD_ATTRIBUTE_FLAG_PRINCIPAL, .unit = md_unit_none(), .data = v, .byte_size = sizeof(v)}), MD_ATTRIBUTE_INVALID);
+    EXPECT_NE(md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = MD_STR_INIT("pcm/tessera/charge"), .format = fmt, .flags = MD_ATTRIBUTE_FLAG_PRINCIPAL, .unit = md_unit_none(), .data = v, .byte_size = sizeof(v)}), MD_ATTRIBUTE_INVALID);
+
+    // Replaced at its own path, it is not a second of itself
+    EXPECT_EQ(md_attributes_replace(&t, &(md_attribute_desc_t){
+        .path = MD_STR_INIT("cav/tessera/wall"), .format = fmt, .flags = MD_ATTRIBUTE_FLAG_PRINCIPAL, .unit = md_unit_none(), .data = v, .byte_size = sizeof(v)}), wall);
+
+    // Only a number is a quantity
+    const md_str_t names[3] = {MD_STR_INIT("a"), MD_STR_INIT("b"), MD_STR_INIT("c")};
+    EXPECT_EQ(md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = MD_STR_INIT("str/name"), .format = {.type = MD_ATTRIBUTE_TYPE_STR, .components = 1, .rank = 1, .shape = {3}},
+        .flags = MD_ATTRIBUTE_FLAG_PRINCIPAL, .unit = md_unit_none(), .data = names, .byte_size = sizeof(names)}), MD_ATTRIBUTE_INVALID);
+
+    // An alias is in another group (or a second name in this one): it does not carry the flag
+    const md_attribute_id_t alias = md_attributes_alias(&t, wall, MD_STR_LIT("elsewhere/wall"), (md_str_t){0}, (md_str_t){0});
+    ASSERT_NE(alias, MD_ATTRIBUTE_INVALID);
+    EXPECT_EQ(md_attributes_get(&t, alias)->flags & MD_ATTRIBUTE_FLAG_PRINCIPAL, 0);
+    EXPECT_EQ(md_attributes_principal(&t, MD_STR_LIT("elsewhere")), NULL);
+
+    md_attributes_free(&t);
+}
+
 UTEST(attributes, iterate) {
     md_attributes_t t = {.alloc = md_get_heap_allocator()};
     // Deliberately out of order, and with "atom-x", which sorts inside the run of "atom" without being under it
