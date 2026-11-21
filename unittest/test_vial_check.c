@@ -568,6 +568,17 @@ UTEST_F(vial_check, keyword_logic) {
     EXPECT_TYPE_ON(P, "n = count(particle(name='HB[!1]'))\n", 1, "int, static = 30");
     EXPECT_TYPE_ON(T, "n = len(residue(name='GL[NUY]'))\n", 1, "int, static = 159");
     EXPECT_TYPE_ON(T, "n = len(residue(name=['GLN', 'GLU', 'GLY']))\n", 1, "int, static = 159");
+    // Fragments, by name: what kind of piece one is follows from what it holds
+    EXPECT_TYPE_ON(T, "f = fragment('phenyl')\n", 1, "set[75], static");
+    EXPECT_TYPE_ON(T, "n = len(fragment('phen*'))\n", 1, "int, static = 75");
+    EXPECT_TYPE_ON(T, "l = label(fragment('phenyl'))[0]\n", 1, "str, static = 'phenyl/TYR24/A'");
+    EXPECT_TYPE_ON(P, "n = len(fragment(backbone))\n", 1, "int, static = 31");
+    EXPECT_TYPE_ON(P, "l = label(residue[1].fragment)\n", 1, "str[4], static");
+    EXPECT_TYPE_ON(P, "l = label(residue[1].fragment)[0]\n", 1, "str, static = 'peptide/ALA1'");
+    EXPECT_DIAGS_ON(T, "f = fragment(kind='ring')\n", "E0202 1: `fragment` takes no keyword `kind`; it takes name and scope\n");
+    EXPECT_DIAGS_ON(T, "f = fragment(name=1)\n", "E0206 1: `name` takes a string, a list of strings, or and/or/not over strings; this is int\n");
+    EXPECT_DIAGS_ON(T, "f = fragments\n", "E0201 1: `fragments` is not defined | fragment\n");
+    EXPECT_DIAGS_ON(T, "f = fragment('benzyl')\n", "W0601 1: `fragment('benzyl')` matches nothing in its scope\n");
     // A force field's types come from a topology alone: a PDB has none, so type= and type(s) are E0208 on it rather
     // than matching nothing, and never fall back to the names
     EXPECT_DIAGS_ON(P, "t = particle(type='CT')\n", "E0208 1: the data gives no force-field types; they come from a topology (.tpr, .top, "

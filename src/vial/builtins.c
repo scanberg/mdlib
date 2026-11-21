@@ -17,7 +17,7 @@
 static const vial_builtin_t builtins[] = {
     // Selectors, usable bare for all their units
     {"particle", SEL}, {"atom", SEL}, {"bead", SEL}, {"residue", SEL}, {"part", SEL}, {"polymer", SEL}, {"molecule", SEL},
-    {"chain", SEL}, {"tail", SEL}, {"head", SEL}, {"ring", SEL}, {"group", SEL},
+    {"chain", SEL}, {"tail", SEL}, {"head", SEL}, {"ring", SEL}, {"group", SEL}, {"fragment", SEL},
     // Predefined sets
     {"protein", SET}, {"nucleic", SET}, {"water", SET}, {"ion", SET}, {"lipid", SET}, {"backbone", SET},
     {"sidechain", SET}, {"nucleobase", SET}, {"nucleoside", SET}, {"system", SET | F},
@@ -102,7 +102,7 @@ static const struct { const char* word; const char* name; } synonyms[] = {
     // Names are singular, whatever the shape of what they give: the type says that
     {"particles", "particle"}, {"atoms", "atom"}, {"beads", "bead"}, {"residues", "residue"}, {"parts", "part"},
     {"polymers", "polymer"}, {"molecules", "molecule"}, {"chains", "chain"}, {"tails", "tail"}, {"heads", "head"},
-    {"rings", "ring"}, {"groups", "group"}, {"bonds", "bond"}, {"labels", "label"},
+    {"rings", "ring"}, {"groups", "group"}, {"fragments", "fragment"}, {"bonds", "bond"}, {"labels", "label"},
 };
 
 const char* vial_builtin_synonym(md_str_t word) {

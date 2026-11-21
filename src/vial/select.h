@@ -22,6 +22,8 @@ typedef enum vial_level_t {
     VIAL_LEVEL_HEAD,            // a head of a lipid: a connected part of what is not a tail, with its hydrogens
     VIAL_LEVEL_RING,            // a ring of the bonds (md_ring_data_t): 3 to 7 atoms, the smallest rings
     VIAL_LEVEL_GROUP,           // a group the data gives (md_group_data_t): any particles, overlapping other groups
+    VIAL_LEVEL_FRAGMENT,        // a fragment of a molecule (md_fragment.h): a ring system, a functional group, a piece of
+                                // the backbone, a tail; one to an atom, and not within one residue
 } vial_level_t;
 
 // The kinds of a part, as the reference names them. mdlib's non-polymer parts are told apart here: a lipid when its
@@ -76,6 +78,13 @@ typedef struct vial_sys_t {
     uint32_t    num_groups;
     uint32_t*   group_offset;   // [group + 1]
     uint32_t*   group_atoms;
+    // Fragments, once needed, in the system's order (by their first particle) as the other units are: the particles of
+    // each, ascending, and which of mdlib's each is
+    bool        have_frags;
+    uint32_t    num_frags;
+    uint32_t*   frag_offset;    // [fragment + 1]
+    uint32_t*   frag_atoms;
+    uint32_t*   frag_idx;       // [fragment] md_fragment_idx_t
     // The atoms of the metallic phases, once needed: 1 for such an atom (md_bond_metallic_atoms)
     bool        have_metallic;
     uint8_t*    metallic;       // [atom]

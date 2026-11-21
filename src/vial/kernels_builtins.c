@@ -3015,6 +3015,7 @@ static uint8_t level_of(const char* name, uint8_t* pkind) {
     if (!strcmp(name, "head")) return VIAL_LEVEL_HEAD;
     if (!strcmp(name, "ring")) return VIAL_LEVEL_RING;
     if (!strcmp(name, "group")) return VIAL_LEVEL_GROUP;
+    if (!strcmp(name, "fragment")) return VIAL_LEVEL_FRAGMENT;
     return VIAL_LEVEL_NONE;
 }
 
@@ -3033,12 +3034,15 @@ static bool k_select(vial_kctx_t* k, const char* name, const bargs_t* ba, vial_v
     for (uint32_t i = 0; i < ba->n; ++i) {
         const vial_val_t* v = ba->v[i];
         if (!v) continue;
+        uint8_t key = VIAL_KEY_NONE;
         if (!ba->names[i].len) {
-            if (v->dtype != VIAL_DT_SET) return vial_rt_fail(k, "R0103", "%s takes sets as positional arguments here", name);
-            q.within = v->sets;
-            continue;
+            // A set is what the units contain; a string the name, a chain's id, as the check reads it
+            if (v->dtype == VIAL_DT_SET) { q.within = v->sets; continue; }
+            if (v->dtype != VIAL_DT_STR) return vial_rt_fail(k, "R0103", "%s takes a set or a name as its positional argument", name);
+            key = level == VIAL_LEVEL_CHAIN ? VIAL_KEY_ID : VIAL_KEY_NAME;
+        } else {
+            key = vial_select_key(ba->names[i]);
         }
-        const uint8_t key = vial_select_key(ba->names[i]);
         if (key == VIAL_KEY_SCOPE) {
             if (v->dtype == VIAL_DT_SET) q.scope = v->sets->single ? v->sets : vial_sets_merge(v->sets, k->alloc);
             continue;

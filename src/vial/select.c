@@ -3,6 +3,7 @@
 #include "select.h"
 
 #include <md_system.h>
+#include <md_fragment.h>
 #include <md_element.h>
 #include <core/md_common.h>
 #include <core/md_array.h>
@@ -179,6 +180,48 @@ static void need_rings(vial_sys_t* s) {
         uint32_t* dst = s->ring_atoms + s->ring_offset[r];
         const uint32_t n = s->ring_offset[r + 1] - s->ring_offset[r];
         for (uint32_t k = 0; k < n; ++k) dst[k] = (uint32_t)a[k];
+        qsort(dst, n, sizeof(uint32_t), cmp_u32);
+    }
+}
+
+static int cmp_u64(const void* a, const void* b) {
+    const uint64_t x = *(const uint64_t*)a, y = *(const uint64_t*)b;
+    return x < y ? -1 : x > y;
+}
+
+static void need_frags(vial_sys_t* s) {
+    if (s->have_frags) return;
+    s->have_frags = true;
+    const md_system_t* sys = s->sys;
+    const uint32_t num = (uint32_t)md_system_fragment_count(sys);
+    // mdlib's fragments run by molecule and then as its template has them: put them in the order of their first
+    // particle, each fragment's least, so fragment('phenyl')[0] is the first phenyl along the chain
+    uint64_t* order = md_alloc(s->alloc, (num + 1) * sizeof(uint64_t));
+    for (uint32_t f = 0; f < num; ++f) {
+        uint32_t least = UINT32_MAX;
+        for (md_fragment_atom_iter_t it = md_fragment_atom_iter(sys, f); md_fragment_atom_iter_next(&it);) {
+            if ((uint32_t)it.atom < least) least = (uint32_t)it.atom;
+        }
+        order[f] = (uint64_t)least << 32 | f;
+    }
+    qsort(order, num, sizeof(uint64_t), cmp_u64);
+    s->num_frags = num;
+    s->frag_idx = md_alloc(s->alloc, (num + 1) * sizeof(uint32_t));
+    s->frag_offset = md_alloc(s->alloc, (num + 1) * sizeof(uint32_t));
+    uint32_t total = 0;
+    s->frag_offset[0] = 0;
+    for (uint32_t u = 0; u < num; ++u) {
+        s->frag_idx[u] = (uint32_t)order[u];
+        s->frag_offset[u + 1] = total += (uint32_t)md_system_fragment_atom_count(sys, s->frag_idx[u]);
+    }
+    s->frag_atoms = md_alloc(s->alloc, (total + 1) * sizeof(uint32_t));
+    for (uint32_t u = 0; u < num; ++u) {
+        uint32_t* dst = s->frag_atoms + s->frag_offset[u];
+        uint32_t n = 0;
+        const uint32_t room = s->frag_offset[u + 1] - s->frag_offset[u];
+        for (md_fragment_atom_iter_t it = md_fragment_atom_iter(sys, s->frag_idx[u]); md_fragment_atom_iter_next(&it) && n < room;) {
+            dst[n++] = (uint32_t)it.atom;
+        }
         qsort(dst, n, sizeof(uint32_t), cmp_u32);
     }
 }
@@ -506,6 +549,18 @@ size_t vial_unit_label(char* buf, size_t cap, vial_sys_t* s, uint8_t level, uint
         if (n > 0 && (size_t)n < cap && r != NONE32) n += (int)residue_label(buf + n, cap - n, s, r);
         break;
     }
+    case VIAL_LEVEL_FRAGMENT: {
+        // Its name and the residue its first particle is in: phenyl/TYR66, peptide/ALA5
+        need_frags(s);
+        if (unit >= s->num_frags) break;
+        const md_str_t name = md_system_fragment_name(sys, s->frag_idx[unit]);
+        n = snprintf(buf, cap, "%.*s/", (int)name.len, name.ptr);
+        const uint32_t first = s->frag_offset[unit] < s->frag_offset[unit + 1] ? s->frag_atoms[s->frag_offset[unit]] : NONE32;
+        const uint32_t r = first != NONE32 ? atom_res(s, first) : NONE32;
+        if (n > 0 && (size_t)n < cap && r != NONE32) n += (int)residue_label(buf + n, cap - n, s, r);
+        else if (n > 0 && (size_t)n <= cap) buf[--n] = '\0';    // in no residue: its name alone
+        break;
+    }
     case VIAL_LEVEL_GROUP: {
         // Its name; a group that shares its name with another, its roles too: rest/tc
         const md_group_data_t* g = &sys->group;
@@ -621,6 +676,7 @@ static uint32_t takes(uint8_t level) {
     case VIAL_LEVEL_HEAD:     return K(VIAL_KEY_SCOPE);
     case VIAL_LEVEL_RING:     return K(VIAL_KEY_KIND) | K(VIAL_KEY_SIZE) | K(VIAL_KEY_SCOPE);
     case VIAL_LEVEL_GROUP:    return K(VIAL_KEY_NAME) | K(VIAL_KEY_ROLE) | K(VIAL_KEY_SCOPE);
+    case VIAL_LEVEL_FRAGMENT: return K(VIAL_KEY_NAME) | K(VIAL_KEY_SCOPE);
     default: return 0;
     }
 }
@@ -640,6 +696,7 @@ const char* vial_select_keywords(uint8_t level) {
     case VIAL_LEVEL_HEAD:     return "scope";
     case VIAL_LEVEL_RING:     return "kind, size and scope";
     case VIAL_LEVEL_GROUP:    return "name, role and scope";
+    case VIAL_LEVEL_FRAGMENT: return "name and scope";
     default: return "";
     }
 }
@@ -655,6 +712,7 @@ const char* vial_select_name(uint8_t level) {
     case VIAL_LEVEL_HEAD:     return "head";
     case VIAL_LEVEL_RING:     return "ring";
     case VIAL_LEVEL_GROUP:    return "group";
+    case VIAL_LEVEL_FRAGMENT: return "fragment";
     default: return "sets";
     }
 }
@@ -1052,6 +1110,15 @@ static bool ring_passes(const vial_sys_t* s, const vial_select_t* q, uint32_t r)
     return true;
 }
 
+// A fragment by its name (md_system_fragment_name), the one keyword it takes besides scope
+static bool fragment_passes(const vial_sys_t* s, const vial_select_t* q, uint32_t f) {
+    for (size_t i = 0; i < md_array_size(q->filters); ++i) {
+        const vial_filter_t* fl = &q->filters[i];
+        if (fl->key == VIAL_KEY_NAME && !match_str(fl, md_system_fragment_name(s->sys, s->frag_idx[f]), true)) return false;
+    }
+    return true;
+}
+
 // A group's roles are tags, several to a group (md_group_role_name)
 static bool test_group_role(const vial_match_t* m, const void* user) {
     if (m->kind != VIAL_MATCH_STR) return false;
@@ -1229,6 +1296,7 @@ vial_sets_t* vial_select(vial_sys_t* s, const vial_select_t* q, md_allocator_i* 
     case VIAL_LEVEL_TAIL:     need_tails(s); num_units = s->num_tails; break;
     case VIAL_LEVEL_HEAD:     need_heads(s); num_units = s->num_heads; break;
     case VIAL_LEVEL_RING:     need_rings(s); num_units = s->num_rings; break;
+    case VIAL_LEVEL_FRAGMENT: need_frags(s); num_units = s->num_frags; break;
     case VIAL_LEVEL_GROUP:    break;
     default: break;
     }
@@ -1249,6 +1317,7 @@ vial_sets_t* vial_select(vial_sys_t* s, const vial_select_t* q, md_allocator_i* 
         case VIAL_LEVEL_HEAD:     pass = true;                     size = s->head_offset[u + 1] - s->head_offset[u]; break;
         case VIAL_LEVEL_RING:     pass = ring_passes(s, q, u);     size = s->ring_offset[u + 1] - s->ring_offset[u]; break;
         case VIAL_LEVEL_GROUP:    pass = group_passes(s, q, u);    size = s->group_offset[u + 1] - s->group_offset[u]; break;
+        case VIAL_LEVEL_FRAGMENT: pass = fragment_passes(s, q, u); size = s->frag_offset[u + 1] - s->frag_offset[u]; break;
         default: break;
         }
         if (!pass) continue;
@@ -1275,6 +1344,7 @@ vial_sets_t* vial_select(vial_sys_t* s, const vial_select_t* q, md_allocator_i* 
         case VIAL_LEVEL_HEAD:     list = s->head_atoms; beg = s->head_offset[u]; end = s->head_offset[u + 1]; break;
         case VIAL_LEVEL_RING:     list = s->ring_atoms; beg = s->ring_offset[u]; end = s->ring_offset[u + 1]; break;
         case VIAL_LEVEL_GROUP:    list = s->group_atoms; beg = s->group_offset[u]; end = s->group_offset[u + 1]; break;
+        case VIAL_LEVEL_FRAGMENT: list = s->frag_atoms; beg = s->frag_offset[u]; end = s->frag_offset[u + 1]; break;
         default: break;
         }
         const uint32_t mark = w;

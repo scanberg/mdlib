@@ -1721,6 +1721,27 @@ UTEST(vial_ir, particle_roles_and_values) {
     md_arena_allocator_destroy(alloc);
 }
 
+// Fragments, as when compiling so per frame: a scope that changes per frame takes the selector to evaluation
+UTEST(vial_ir, fragments) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
+    const md_system_t* T = vial_test_system('T');
+    const md_system_state_t* Ts = vial_test_state('T');
+    ASSERT_TRUE(T && Ts);
+    uint32_t n = 0;
+    EXPECT_TRUE(vial_ir__same_sets("fragment('phenyl')", "fragment('phenyl', scope=within(1000.0, of=particle(resname='GTP')))", T, Ts, alloc, &n));
+    EXPECT_EQ(75u, n);
+    // A positional name per frame, as for every selector
+    EXPECT_TRUE(vial_ir__same_sets("residue('TYR')", "residue('TYR', scope=within(1000.0, of=particle(resname='GTP')))", T, Ts, alloc, &n));
+    EXPECT_TRUE(vial_ir__same_sets("chain('B')", "chain('B', scope=within(1000.0, of=particle(resname='GTP')))", T, Ts, alloc, &n));
+    EXPECT_EQ(1u, n);
+    EXPECT_TRUE(vial_ir__same_sets("residue('TYR')[0].fragment", "(residue('TYR')[0] and within(1000.0, of=particle(resname='GTP'))).fragment",
+                                   T, Ts, alloc, &n));
+    EXPECT_EQ(6u, n);
+    // Every atom with an element is in one fragment
+    EXPECT_EQ(vial_ir__count("atom", T, Ts, alloc), vial_ir__count("particle(fragment)", T, Ts, alloc));
+    md_arena_allocator_destroy(alloc);
+}
+
 // A force field's type (type=, type(s)), of atoms, beads and virtual sites alike, as the topology gives it; and the
 // B-factors (bfactor(s)) as the file gives them
 UTEST(vial_ir, particle_types_and_bfactors) {
@@ -3719,4 +3740,5 @@ UTEST(vial_ir, sets_described) {
     }
     md_arena_allocator_destroy(alloc);
 }
+
 

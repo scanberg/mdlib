@@ -68,6 +68,7 @@ static uint8_t selector_level(md_str_t name, uint8_t* particle_kind) {
     if (md_str_eq(name, MD_STR_LIT("head"))) return VIAL_LEVEL_HEAD;
     if (md_str_eq(name, MD_STR_LIT("ring"))) return VIAL_LEVEL_RING;
     if (md_str_eq(name, MD_STR_LIT("group"))) return VIAL_LEVEL_GROUP;
+    if (md_str_eq(name, MD_STR_LIT("fragment"))) return VIAL_LEVEL_FRAGMENT;
     return VIAL_LEVEL_NONE;
 }
 

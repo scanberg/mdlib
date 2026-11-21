@@ -3,6 +3,7 @@
 #include <md_system.h>
 #include <md_element.h>
 #include <md_attributes.h>
+#include <md_fragment.h>
 #include "infer.h"
 #include "ir.h"
 #include "builtins.h"
@@ -744,6 +745,11 @@ static void system_values(cmpl_t* c, const md_system_t* sys, md_str_t callee, md
             const md_str_t n = md_particle_type_name(&sys->atom.type, t);
             cmpl_add(c, n, n, MD_VIAL_COMPLETION_VALUE);
         }
+    } else if (particles && IS(kw, "type")) {
+        for (size_t t = 0; t < sys->atom.type.count; ++t) {
+            const md_str_t n = md_particle_type_ff_type(&sys->atom.type, t);
+            if (!md_str_empty(n)) cmpl_add(c, n, n, MD_VIAL_COMPLETION_VALUE);
+        }
     } else if (particles && IS(kw, "element")) {
         for (size_t t = 0; t < sys->atom.type.count && sys->atom.type.z; ++t) {
             const md_str_t n = md_atomic_number_symbol(sys->atom.type.z[t]);
@@ -762,6 +768,11 @@ static void system_values(cmpl_t* c, const md_system_t* sys, md_str_t callee, md
     } else if (IS(callee, "molecule") && (IS(kw, "name") || !kw.len)) {
         for (size_t i = 0; i < md_system_molecule_type_count(sys); ++i) {
             const md_str_t n = md_system_molecule_type_name(sys, i);
+            cmpl_add(c, n, n, MD_VIAL_COMPLETION_VALUE);
+        }
+    } else if (IS(callee, "fragment") && (IS(kw, "name") || !kw.len)) {
+        for (size_t i = 0; i < md_system_fragment_type_count(sys); ++i) {
+            const md_str_t n = md_fragment_type_name(sys, (md_fragment_type_idx_t)i);
             cmpl_add(c, n, n, MD_VIAL_COMPLETION_VALUE);
         }
     }
@@ -887,7 +898,8 @@ bool md_vial_complete(md_vial_completions_t* out, const md_vial_program_t* prog,
             if (b->flags & VIAL_BUILTIN_PROPERTY) cmpl_add(&c, md_str_from_cstr(b->name), md_str_from_cstr(b->name), MD_VIAL_COMPLETION_PROPERTY);
         }
         // The selectors within each set, for .residue[i] and .particle(...)
-        static const char* views[] = {"particle", "atom", "bead", "residue", "ring", "part", "polymer", "molecule", "head", "tail", "group"};
+        static const char* views[] = {"particle", "atom", "bead", "residue", "ring", "fragment", "part", "polymer", "molecule", "head", "tail",
+                                      "group"};
         for (size_t i = 0; i < MD_COUNTOF(views); ++i) cmpl_add(&c, md_str_from_cstr(views[i]), md_str_from_cstr(views[i]), MD_VIAL_COMPLETION_PROPERTY);
     } else {
         // The call's parameters first

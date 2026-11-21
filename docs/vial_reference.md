@@ -279,6 +279,7 @@ Names are singular, as every function's is, whatever the shape of what they give
 | `tail(...)` | `set[n]`, one per tail | a tail of a lipid: an acyl, alkyl or sphingoid chain, or the ring skeleton of a sterol, with its branches and hydrogens; labelled by its number in its lipid, `tail2/DPPC1` |
 | `head(...)` | `set[n]`, one per head | a head of a lipid: a connected part of what is not a tail, with its hydrogens; a lipid has one, a bolalipid two. `particle(head) or particle(tail)` is every lipid whose anatomy is known, which a lipid by name in a system without bonds is not. Labelled `head1/DPPC1` |
 | `ring(...)` | `set[n]`, one per ring | a ring of the bonds, 3 to 7 atoms, the smallest rings: naphthalene has two. Fused rings share particles. Labelled by its number in the residue it starts in, `ring2/TRP5` |
+| `fragment(...)` | `set[n]`, one per fragment | a chemical piece of a molecule, by its name: a ring system (`phenyl`, `indolyl`), a functional group (`carboxylate`, `hydroxyl`), a piece of a backbone (`peptide`, `alpha carbon`, `ribose`), an alkyl or a linker (`methyl`, `C3 linker`), a lipid tail; every atom is in one. Fragments are no level of residues: a peptide group is the C and O of one residue and the N of the next. Labelled by its name and the residue its first particle is in, `phenyl/TYR24/A`. See Fragments |
 | `molecule(...)` | `set[n]`, one per molecule | what the bonds hold together, or a topology's molecule |
 | `chain(...)` | `set[n]`, one per chain | everything filed under one author chain id; E0207 where the data gives none |
 | `group(...)` | `set[n]`, one per group | a named set of particles the data gives: the index groups of a GROMACS tpr or .ndx file. Groups are no level of the structure: one holds any particles, and groups overlap. See Groups |
@@ -315,6 +316,7 @@ Names are singular, as every function's is, whatever the shape of what they give
 |  | `chain` | the author id of its chain | string or list |
 | `chain` | `id` | the author chain id | string or list |
 | `group` | `name` | the group's name | a glob, or a list |
+| `fragment` | `name` | the fragment's name, as a particle's tooltip gives it | a glob, or a list |
 |  | `role` | what the simulation used it for, by its mdp option: tc (tc-grps), energy (energygrps), acc, freeze, user1, user2, comm (comm-grps), compressed-x, orire-fit, qmmm | string or list |
 | all of them | `scope` | the set to search instead of the default scope | a set, or `system` |
 
@@ -428,6 +430,27 @@ t      = type(particle)                                    # error E0208
 ```
 
 The kinds of a part: `polymer` is any polymer strand, `peptide`, `nucleic`, `dna` and `rna` the strands of those kinds (`nucleic` is DNA, RNA or a hybrid), and `glycan` a tree of saccharides or one sugar. A part that is no polymer is a `lipid` when its residues are lipids, an `ion` when it is one ion, a `water`, or else a `ligand`. A molecule has no kind of its own, since a glycoprotein holds a strand and its glycans: select the parts, and `molecule(part(kind='peptide'))` gives the molecules they are in.
+
+### Fragments
+
+A fragment is a piece of a molecule that a chemist would name: the level at which one says where a charge, an excitation or a contact sits, the phenyl of TYR24. mdlib finds them from the bonds, their orders and the rings (md_fragment.h), and every atom with an element is in exactly one, its hydrogens with it. They are selected by name; what kind of piece a fragment is follows from what it holds, so it is selected with the sets that say so: `fragment(backbone)` is the pieces of the backbones, as every fragment holding a backbone atom is one; `fragment(ring)` holds a ring atom, the ring systems with what of a ring the backbone or a linker took, as proline's; `tail()` is the lipid tails. A fragment may span residues, so `residue('TYR')[0].fragment` is the fragments with a particle in that residue, with the particles they share with it, the peptide groups on either side included.
+
+```python
+# on T
+phe    = fragment('phenyl')                                # -> set[75]: of every phenylalanine and tyrosine
+aro    = len(residue(name='PHE' or 'TYR'))                 # -> 76: TYR283 of chain B ends at CB in the file, so has no ring
+first  = label(fragment('phenyl'))[0]                      # -> 'phenyl/TYR24/A'
+gtp    = label(fragment(particle(resname='GTP')))          # -> str[7]: triphosphate, methylene, oxolanyl, ...
+kinds  = fragment(kind='ring')                             # error E0202: fragments take name and scope
+```
+
+```python
+# on P
+pieces = len(fragment)                                     # -> 46
+bb     = len(fragment(backbone))                           # -> 31: the ammonium, 15 alpha carbons, 14 peptides and the carboxylate
+me     = len(fragment('methyl'))                           # -> 15
+ends   = label(fragment('ammonium' or 'carboxylate'))     # -> str[2]
+```
 
 ### Positional arguments
 
