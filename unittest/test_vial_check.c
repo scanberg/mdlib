@@ -757,6 +757,11 @@ UTEST_F(vial_check, folds_and_loops) {
         "E0403 4: `break` under a condition that changes per frame: a loop runs the same turns in every frame, so the "
         "condition must be known when compiling; where() chooses a value per frame\n");
     EXPECT_DIAGS("break\n", "E0101 1: `break` outside a loop\n");
+    // A return is a def's: at top level, also within a top-level loop, there is nothing to return from, and what
+    // follows is still checked
+    EXPECT_DIAGS("return 1\nx = y\n", "E0101 1: `return` outside a def\nE0201 2: `y` is not defined\n");
+    EXPECT_DIAGS("for q in range(3):\n    return q\n", "E0101 2: `return` outside a def\n");
+    EXPECT_DIAGS("def f():\n    for q in range(3):\n        return q\n    return 0\ny = f()\n", "");
 }
 
 // pi, prod, median, percentile, cumsum, sort and argsort: their types, and what they refuse

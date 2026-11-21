@@ -314,6 +314,25 @@ UTEST_F(vial_fuzz, extremes) {
     }
 }
 
+// Inputs the mutations found, kept: each passes every check
+UTEST_F(vial_fuzz, found) {
+    static const char* inputs[] = {
+        // A return in a top-level loop, whose names are a frame of their own but no def's: it was lowered as the
+        // def's return, a yield in the middle of the top level
+        "for r in residue(chain='A', kind='amino_acid')[0:3]:\n    return sqrt(sum(w * d2) / sum(w))\n",
+        "for i in range(3):\n    return 1\n",
+        "for i in range(2):\n    for j in range(2):\n        return j\n",
+    };
+    md_allocator_i* scratch = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
+    for (size_t i = 0; i < MD_COUNTOF(inputs); ++i) {
+        const char* err = fuzz_check_copy(inputs[i], strlen(inputs[i]), scratch);
+        if (err) printf("found input %zu: %s\n", i, err);
+        EXPECT_TRUE(err == NULL);
+        md_arena_allocator_reset(scratch);
+    }
+    md_arena_allocator_destroy(scratch);
+}
+
 UTEST_F(vial_fuzz, mutations) {
     const size_t iterations = (size_t)fuzz_env("VIAL_FUZZ_ITERATIONS", 3000);
     fuzz_rng_t rng = {fuzz_env("VIAL_FUZZ_SEED", 0x5eed5eedull) | 1};
