@@ -40,6 +40,11 @@ typedef struct vial_desc_t {
     const vial_sets_t*  sets;   // the array's sets, when known
 } vial_desc_t;
 
+typedef struct vial_note_t {
+    uint32_t        node;
+    char            text[64];
+} vial_note_t;
+
 typedef struct vial_types_t {
     uint32_t        base;       // the arrays by node id cover ids from base: 0 for a script, a def's first node for a call
     vial_type_t*    types;      // md_array by node id
@@ -56,6 +61,8 @@ typedef struct vial_types_t {
     // The script's own built-in calls, by node id of its tree: the parameters the call binds against, recorded before
     // its arguments are, so that a call being typed has them; for completion
     struct vx_sig_t* sigs;      // md_array, from the top level's
+    // A line hover shows beside an expression's type: at()'s frame and its time
+    struct vial_note_t* notes;  // md_array
     // __all__: when the script binds it, exactly the names it lists are published
     bool            has_all;
     md_str_t*          all;        // md_array

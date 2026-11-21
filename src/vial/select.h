@@ -148,6 +148,16 @@ vial_sets_t* vial_sets_units_at(const vial_sets_t* a, const vial_sets_t* u, cons
 // a molecule of one residue as that residue, else its kind or name and chain, peptide/A
 size_t vial_unit_label(char* buf, size_t cap, vial_sys_t* s, uint8_t level, uint32_t unit);
 
+// ### THE RUN'S FRAMES ###
+
+// The run's time axis, <run>/time: the time of each frame in ps where it has a unit of time, else its own numbers;
+// NULL, and 0 frames, where the run has none
+double* vial_run_times(const struct md_system_t* sys, md_str_t run, md_allocator_i* alloc, size_t* num_frames);
+// The frame of the run closest to time t (ps, as vial_run_times gives them), and that frame's time: 1 found; 0 where the
+// run has no time axis; -1 where t lies outside the run, before its first frame or past its last by more than half
+// the spacing of its frames (a run of one frame has only its own time). Equally close frames give the earlier.
+int     vial_run_frame_at(const struct md_system_t* sys, md_str_t run, double t, int64_t* frame, double* frame_time);
+
 // ### SELECTORS ###
 
 typedef enum vial_key_t {

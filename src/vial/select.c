@@ -3,11 +3,13 @@
 #include "select.h"
 
 #include <md_system.h>
+#include <md_attributes.h>
 #include <md_fragment.h>
 #include <md_element.h>
 #include <core/md_common.h>
 #include <core/md_array.h>
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -644,6 +646,49 @@ size_t vial_unit_label(char* buf, size_t cap, vial_sys_t* s, uint8_t level, uint
     default: break;
     }
     return n > 0 ? ((size_t)n < cap ? (size_t)n : cap ? cap - 1 : 0) : 0;
+}
+
+// ### THE RUN'S FRAMES ###
+
+double* vial_run_times(const md_system_t* sys, md_str_t run, md_allocator_i* alloc, size_t* num_frames) {
+    *num_frames = 0;
+    if (!sys || md_str_empty(run)) return NULL;
+    char path[512];
+    snprintf(path, sizeof(path), "%.*s/time", (int)run.len, run.ptr);
+    const md_attribute_t* time = md_attributes_find(&sys->attributes, md_str_from_cstr(path));
+    if (!time || time->format.rank < 1 || !time->format.shape[0]) return NULL;
+    const size_t n = time->format.shape[0];
+    double* t = md_alloc(alloc, n * sizeof(double));
+    double f;
+    const md_unit_t unit = !md_unit_is_none(time->unit) && md_unit_conversion_factor(&f, time->unit, md_unit_picosecond()) ? md_unit_picosecond() : md_unit_none();
+    if (md_attribute_extract_f64(t, n, &sys->attributes, time, md_attribute_slice_all(), unit) != n) return NULL;
+    *num_frames = n;
+    return t;
+}
+
+int vial_run_frame_at(const md_system_t* sys, md_str_t run, double t, int64_t* frame, double* frame_time) {
+    md_temp_scope_t temp = md_temp_begin();
+    size_t n = 0;
+    const double* times = vial_run_times(sys, run, md_temp_allocator(temp), &n);
+    int r = 0;
+    if (times) {
+        // The axis does not decrease (md_attributes): the first frame not before t, and the one before it
+        size_t lo = 0, hi = n;
+        while (lo < hi) { const size_t mid = lo + (hi - lo) / 2; if (times[mid] < t) lo = mid + 1; else hi = mid; }
+        size_t k = lo < n ? lo : n - 1;
+        if (lo > 0 && (lo == n || t - times[lo - 1] <= times[lo] - t)) k = lo - 1;
+        const double half = n > 1 ? 0.5 * (times[n - 1] - times[0]) / (double)(n - 1) : 0.0;
+        const double slack = 1e-9 * (fabs(times[k]) > 1.0 ? fabs(times[k]) : 1.0);
+        if (t < times[0] - half - slack || t > times[n - 1] + half + slack) {
+            r = -1;
+        } else {
+            *frame = (int64_t)k;
+            *frame_time = times[k];
+            r = 1;
+        }
+    }
+    md_temp_end(temp);
+    return r;
 }
 
 // ### SELECTORS ###

@@ -154,17 +154,42 @@ bool vial_interp_init(vial_interp_t* in, const vial_ir_t* ir, vial_sys_t* sys, c
     return true;
 }
 
-// at(x, frame=i): x as it is at frame i, computed in a step of its own before frames are evaluated
+// The frame an at() reads: frame=, its second argument, or time=, its third, the frame closest to it on the run's axis as
+// the check found it (vial_run_frame_at), in ps where it has no unit
+static bool at_frame(vial_interp_t* in, vial_kctx_t* k, const vial_ir_op_t* op, int64_t* index) {
+    const vial_ir_t* ir = in->ir;
+    const vial_ssa_t fv = op->num_args > 1 ? ir->args[op->arg_beg + 1] : 0;
+    const vial_ssa_t tv = op->num_args > 2 ? ir->args[op->arg_beg + 2] : 0;
+    if (fv && in->state[fv]) {
+        const vial_val_t* f = &in->vals[fv];
+        if (f->dtype != VIAL_DT_INT || !f->data) return vial_rt_fail(k, "R0103", "at()'s frame is an int");
+        *index = *(const int32_t*)f->data;
+        return true;
+    }
+    if (!tv || !in->state[tv]) return vial_rt_fail(k, "R0103", "at() needs a value and a frame");
+    const vial_val_t* t = &in->vals[tv];
+    if (!t->data || (t->dtype != VIAL_DT_FLOAT && t->dtype != VIAL_DT_FLOAT64 && t->dtype != VIAL_DT_INT)) {
+        return vial_rt_fail(k, "R0103", "at()'s time is a number");
+    }
+    double ps = t->dtype == VIAL_DT_FLOAT ? *(const float*)t->data : t->dtype == VIAL_DT_FLOAT64 ? *(const double*)t->data : *(const int32_t*)t->data;
+    const vial_type_t* tt = &ir->values[tv].type;
+    double f = 1.0;
+    if (tt->unit_kind == VIAL_UNIT_KNOWN && !md_unit_is_none(tt->unit) && md_unit_conversion_factor(&f, tt->unit, md_unit_picosecond())) ps *= f;
+    double at_time;
+    if (vial_run_frame_at(in->msys, in->run, ps, index, &at_time) <= 0) {
+        return vial_rt_fail(k, "R0104", "at() reads the run at %g ps, which it does not have", ps);
+    }
+    return true;
+}
+
+// at(x, frame=i), at(x, time=t): x as it is at that frame, computed in a step of its own before frames are evaluated
 static bool eval_at(vial_interp_t* in, uint32_t opi) {
     const vial_ir_t* ir = in->ir;
     const vial_ir_op_t* op = &ir->ops[opi];
     vial_kctx_t k = {.in = in, .op = op};
     const vial_ssa_t xv = op->num_args > 0 ? ir->args[op->arg_beg] : 0;
-    const vial_ssa_t fv = op->num_args > 1 ? ir->args[op->arg_beg + 1] : 0;
-    if (!xv || !fv || !in->state[fv]) return vial_rt_fail(&k, "R0103", "at() needs a value and a frame");
-    const vial_val_t* f = &in->vals[fv];
-    if (f->dtype != VIAL_DT_INT || !f->data) return vial_rt_fail(&k, "R0103", "at()'s frame is an int");
-    const int64_t index = *(const int32_t*)f->data;
+    int64_t index = 0;
+    if (!xv || !at_frame(in, &k, op, &index)) return xv ? false : vial_rt_fail(&k, "R0103", "at() needs a value and a frame");
     if (!in->load_frame) return vial_rt_fail(&k, "R0103", "at() needs the run's frames");
     vial_frame_t fr;
     if (!in->load_frame(in->load_user, index, &fr)) return vial_rt_fail(&k, "R0104", "at() reads frame %lld, which the run does not have", (long long)index);
@@ -670,11 +695,8 @@ static bool region_at(vial_interp_t* in, uint32_t region, size_t at_pos, md_allo
     const vial_ir_op_t* op = &ir->ops[r->ops[at_pos]];
     vial_kctx_t k = {.in = in, .op = op, .map_index = -1};
     const vial_ssa_t xv = op->num_args > 0 ? ir->args[op->arg_beg] : 0;
-    const vial_ssa_t fv = op->num_args > 1 ? ir->args[op->arg_beg + 1] : 0;
-    if (!xv || !fv || !in->state[fv]) return vial_rt_fail(&k, "R0103", "at() needs a value and a frame");
-    const vial_val_t* f = &in->vals[fv];
-    if (f->dtype != VIAL_DT_INT || !f->data) return vial_rt_fail(&k, "R0103", "at()'s frame is an int");
-    const int64_t index = *(const int32_t*)f->data;
+    int64_t index = 0;
+    if (!xv || !at_frame(in, &k, op, &index)) return xv ? false : vial_rt_fail(&k, "R0103", "at() needs a value and a frame");
     if (!in->load_frame) return vial_rt_fail(&k, "R0103", "at() needs the run's frames");
 
     // What x needs of the def's ops before it, and nothing from outside that changes per frame

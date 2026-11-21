@@ -1830,6 +1830,76 @@ UTEST(vial_ir, attr_reads_the_run_per_frame) {
     md_arena_allocator_destroy(alloc);
 }
 
+// at(x, time=t) reads the frame closest to t on the run's axis, as at(x, frame=k) reads frame k; hover says which frame
+// and the time it has, for either
+UTEST(vial_ir, at_time) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(64));
+    md_system_t sys = {.alloc = alloc};
+    md_system_state_t st = {.alloc = alloc};
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.gro"), NULL));
+    ASSERT_TRUE(md_trr_system_publish_run(&sys, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.trr"), MD_STR_LIT("run/t"), MD_RUN_FLAG_DISABLE_CACHE_WRITE));
+    const md_attribute_t* frames = md_attributes_find(&sys.attributes, MD_STR_LIT("run/t/time"));
+    ASSERT_TRUE(frames != NULL);
+    const uint32_t F = frames->format.shape[0];
+    ASSERT_GT(F, 3u);
+    double* ft = md_alloc(alloc, F * sizeof(double));
+    ASSERT_EQ((size_t)F, md_attribute_extract_f64(ft, F, &sys.attributes, frames, md_attribute_slice_all(), md_unit_picosecond()));
+    const double dt = ft[3] - ft[2];
+    ASSERT_GT(dt, 0.0);
+
+    // Frame 2 three ways: by its number, by a time a third of a frame past it in ps, and the same in ns
+    char src[512], tf[64];
+    snprintf(src, sizeof(src), "a = at(particle[0].xyz, frame=2)\nb = at(particle[0].xyz, time=%.6f)\nc = at(particle[0].xyz, time=%.9f ns)\n",
+        ft[2] + dt / 3.0, (ft[2] - dt / 3.0) / 1000.0);
+    snprintf(tf, sizeof(tf), "frame 2, t = %g ps", ft[2]);
+    md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &(md_vial_compile_desc_t){.sys = &sys, .run = MD_STR_LIT("run/t"), .num_frames = F}, alloc);
+    ASSERT_TRUE(prog != NULL);
+    const md_vial_diagnostic_t* dg;
+    const size_t ndg = md_vial_diagnostics(prog, &dg);
+    for (size_t i = 0; i < ndg; ++i) printf("%.5s %.*s\n", dg[i].code, (int)dg[i].message.len, dg[i].message.ptr);
+    ASSERT_EQ(0u, (unsigned)ndg);
+    const char* calls[3] = {"at(particle[0].xyz, frame", "at(particle[0].xyz, time=", "at(particle[0].xyz, time=%"};
+    for (int i = 0; i < 3; ++i) {
+        const char* at = i < 2 ? strstr(src, calls[i]) : strstr(strstr(src, calls[1]) + 1, calls[1]);
+        ASSERT_TRUE(at != NULL);
+        md_vial_hover_t h;
+        ASSERT_TRUE(md_vial_expr_info(prog, md_vial_expr_at(prog, (uint32_t)(at - src) + 1), &h));
+        EXPECT_STREQ(tf, h.note);
+    }
+    md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = &sys, .run = MD_STR_LIT("run/t")}, alloc);
+    ASSERT_TRUE(e != NULL);
+    const bool ran = md_vial_eval_run(e);
+    const md_vial_diagnostic_t* ed;
+    const size_t ned = md_vial_eval_diagnostics(e, &ed);
+    for (size_t i = 0; i < ned; ++i) printf("%.5s %.*s\n", ed[i].code, (int)ed[i].message.len, ed[i].message.ptr);
+    ASSERT_TRUE(ran);
+    const md_attributes_t* out = md_vial_eval_attributes(e);
+    const md_attribute_t* oa = md_attributes_find(out, MD_STR_LIT("script/a"));
+    const md_attribute_t* ob = md_attributes_find(out, MD_STR_LIT("script/b"));
+    const md_attribute_t* oc = md_attributes_find(out, MD_STR_LIT("script/c"));
+    ASSERT_TRUE(oa && ob && oc && oa->data && ob->data && oc->data);
+    for (int k = 0; k < 3; ++k) {
+        EXPECT_EQ(((const float*)oa->data)[k], ((const float*)ob->data)[k]);
+        EXPECT_EQ(((const float*)oa->data)[k], ((const float*)oc->data)[k]);
+    }
+    md_vial_eval_free(e);
+    md_vial_program_free(prog);
+
+    // A time outside the run, and frame= with time= or neither
+    const char* bad[3] = {"a = at(particle[0].xyz, time=1e9)\n", "a = at(particle[0].xyz, frame=1, time=2.0)\n", "a = at(particle[0].xyz)\n"};
+    const char* code[3] = {"E0405", "E0204", "E0204"};
+    for (int i = 0; i < 3; ++i) {
+        md_vial_program_t* p = md_vial_compile(md_str_from_cstr(bad[i]), &(md_vial_compile_desc_t){.sys = &sys, .run = MD_STR_LIT("run/t"), .num_frames = F}, alloc);
+        ASSERT_TRUE(p != NULL);
+        const size_t n = md_vial_diagnostics(p, &dg);
+        if (n) printf("%.5s %.*s\n", dg[0].code, (int)dg[0].message.len, dg[0].message.ptr);
+        ASSERT_EQ(1u, (unsigned)n);
+        EXPECT_EQ(0, strncmp(dg[0].code, code[i], 5));
+        md_vial_program_free(p);
+    }
+    md_arena_allocator_destroy(alloc);
+}
+
 // Fragments, as when compiling so per frame: a scope that changes per frame takes the selector to evaluation
 UTEST(vial_ir, fragments) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));

@@ -181,6 +181,9 @@ typedef struct md_vial_hover_t {
     uint32_t        unit_at, unit_len;
     bool            has_number;
     double          number;
+    // A line about the expression, for an editor to show beside its type: which frame an at() reads, and the run's
+    // time at it ("frame 12, t = 1200 ps"), by frame= or the closest to time=. Empty for most expressions.
+    char            note[64];
 } md_vial_hover_t;
 
 bool md_vial_hover(const md_vial_program_t* prog, uint32_t offset, md_vial_hover_t* out);

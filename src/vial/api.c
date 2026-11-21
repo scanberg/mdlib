@@ -489,6 +489,9 @@ bool md_vial_expr_info(const md_vial_program_t* prog, uint32_t expr, md_vial_hov
     out->pass = public_pass(ty);
     const vial_value_t* v = &prog->types.values[best];
     if (vial_value_is_scalar(v)) vial_value_print(out->value, sizeof(out->value), v);
+    for (size_t i = 0; i < md_array_size(prog->types.notes); ++i) {
+        if (prog->types.notes[i].node == best) snprintf(out->note, sizeof(out->note), "%s", prog->types.notes[i].text);
+    }
     if (ty->dtype != VIAL_DT_TUPLE && ty->unit_kind == VIAL_UNIT_KNOWN && !md_unit_is_none(ty->unit)) {
         // The type prints its dtype and extents, then a space and the unit: neither of the first has a space
         char u[128];

@@ -708,9 +708,9 @@ static T call_over_frames(infer_t* x, vial_node_id call, md_str_t name, const ch
         return t;
     }
     if (md_str_eq(name, MD_STR_LIT("at"))) {
-        static const vx_param_t p[] = {{"x", VX_KIND_WHOLE, true}, {"frame", VX_KIND_WHOLE, true}};
-        vial_node_id a[2];
-        if (!vx_bind(x, call, fname, p, 2, a)) return err();
+        static const vx_param_t p[] = {{"x", VX_KIND_WHOLE, true}, {"frame", VX_KIND_WHOLE, false}, {"time", VX_KIND_WHOLE, false}};
+        vial_node_id a[3] = {0, 0, 0};
+        if (!vx_bind(x, call, fname, p, 3, a)) return err();
         const T v = x->out->types[(a[0]) - x->out->base];
         if (vial_type_is_error(&v)) return err();
         if (v.stage == VIAL_STAGE_TRAJECTORY || calls_at(x, a[0])) {
@@ -718,11 +718,55 @@ static T call_over_frames(infer_t* x, vial_node_id call, md_str_t name, const ch
                 : "at() reads one frame, and this reads another with at()", vx_tstr(&v));
             return err();
         }
-        int64_t k;
-        if (!static_int(x, a[1], "frame=", 0, &k)) return err();
-        if (x->c->num_frames && (uint64_t)k >= x->c->num_frames) {
-            vx_diag_fix(x, "E0405", a[1], NULL, "frame %lld of a run with %llu frames", (long long)k, (unsigned long long)x->c->num_frames);
+        if (!a[1] == !a[2]) {
+            vx_diag_fix(x, "E0204", call, NULL, "`at` takes the frame as frame= or as time=, one of them");
             return err();
+        }
+        // The frame, by its number or the time closest to it, and the time it has: hover shows both
+        const vial_sys_t* vs = x->sys;
+        const md_str_t run = x->c->run;
+        int64_t k = 0;
+        double tk = 0.0;
+        bool timed = false;
+        if (a[1]) {
+            if (!static_int(x, a[1], "frame=", 0, &k)) return err();
+            if (x->c->num_frames && (uint64_t)k >= x->c->num_frames) {
+                vx_diag_fix(x, "E0405", a[1], NULL, "frame %lld of a run with %llu frames", (long long)k, (unsigned long long)x->c->num_frames);
+                return err();
+            }
+            size_t nf = 0;
+            md_temp_scope_t temp = md_temp_begin_avoid(x->alloc);
+            const double* times = vs ? vial_run_times(vs->sys, run, md_temp_allocator(temp), &nf) : NULL;
+            if (times && (uint64_t)k < nf) { tk = times[k]; timed = true; }
+            md_temp_end(temp);
+        } else {
+            // A time, in ps where it has no unit, as time() gives it
+            const vial_value_t tv = vx_value_of(x, a[2]);
+            const T tt = x->out->types[(a[2]) - x->out->base];
+            double t = tv.kind == VIAL_VAL_FLOAT ? tv.f : (double)tv.i, f = 1.0;
+            const bool unitless = tt.unit_kind != VIAL_UNIT_KNOWN || md_unit_is_none(tt.unit);
+            if ((tv.kind != VIAL_VAL_FLOAT && tv.kind != VIAL_VAL_INT) || (!unitless && !md_unit_conversion_factor(&f, tt.unit, md_unit_picosecond()))) {
+                vx_diag_fix(x, "E0313", a[2], NULL, "time= is a time, known when compiling, such as 10 ns; this is %s", vx_tstr(&tt));
+                return err();
+            }
+            t *= f;
+            const int r = vs ? vial_run_frame_at(vs->sys, run, t, &k, &tk) : 0;
+            if (r < 0) {
+                size_t nf = 0;
+                md_temp_scope_t temp = md_temp_begin_avoid(x->alloc);
+                const double* times = vial_run_times(vs->sys, run, md_temp_allocator(temp), &nf);
+                vx_diag_fix(x, "E0405", a[2], NULL, "%g ps is outside the run, which runs from %g to %g ps", t, times ? times[0] : 0.0,
+                    times ? times[nf - 1] : 0.0);
+                md_temp_end(temp);
+                return err();
+            }
+            timed = r > 0;
+        }
+        if (timed || a[1]) {
+            vial_note_t note = {.node = call};
+            if (timed) snprintf(note.text, sizeof(note.text), "frame %lld, t = %g ps", (long long)k, tk);
+            else snprintf(note.text, sizeof(note.text), "frame %lld", (long long)k);
+            md_array_push(x->out->notes, note, x->alloc);
         }
         T t = v;
         t.stage = VIAL_STAGE_STATIC;
