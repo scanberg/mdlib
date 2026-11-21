@@ -145,7 +145,8 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_G
 }
 
 // ELF or LOL of the terms of a batch's entries (or 0 for the empty blocks: terms_valid 0), into out_tex: one group per
-// block
+// block. lol 2: the density itself (of one spin: the matrix given) into out_tex and its gradient into out_grad, each by
+// the operation (gto_apply_op, gto_apply_op_grad)
 [shader("compute")]
 [numthreads(BLOCK_TX, 1, 1)]
 void finish_main(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
@@ -155,6 +156,22 @@ void finish_main(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
     uint4 e1 = args.block_table[2u * b + 1u];
     const uint3 vox = e0.xyz * BLOCK_SHAPE + block_voxel(tid);
     if (!all(vox < args.grid_dim.xyz)) return;
+    if (args.lol == 2u) {
+        float  rho = 0.0f;
+        float3 g   = float3(0.0f);
+        if (args.terms_valid != 0u) {
+            const uint plane = args.terms_stride * BLOCK_VOXELS;
+            const uint o = e1.w * BLOCK_VOXELS + tid;
+            rho = args.terms[o];
+            g   = float3(args.terms[o + plane], args.terms[o + 2u * plane], args.terms[o + 3u * plane]);
+        }
+        const bool   reads  = gto_op_reads_prev(args.operation);
+        const float  prev   = reads ? args.out_tex[vox] : 0.0f;
+        const float3 prev_g = reads ? args.out_grad[vox].xyz : float3(0.0f);
+        args.out_tex[vox]  = gto_apply_op(rho, prev, args.operation);
+        args.out_grad[vox] = float4(gto_apply_op_grad(rho, g, prev, prev_g, args.operation), 0.0f);
+        return;
+    }
     float value = 0.0f;
     if (args.terms_valid != 0u) {
         const uint plane = args.terms_stride * BLOCK_VOXELS;

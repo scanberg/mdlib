@@ -939,6 +939,302 @@ UTEST(gto, orbital_gpu_algorithms_agree) {
     md_gpu_device_destroy(device);
 }
 
+
+// max |a - ref| over every component / max |ref|, or DBL_MAX for a value of a not finite. a: RGBA (xyz the gradient),
+// ref: xyz
+static double gto_test_grad_rel_diff(const float* a, const double* ref, size_t n, double* out_ref_max) {
+    double ref_max = 0.0, d = 0.0;
+    for (size_t v = 0; v < n; ++v) for (int q = 0; q < 3; ++q) ref_max = MD_MAX(ref_max, fabs(ref[3 * v + q]));
+    for (size_t v = 0; v < n; ++v) for (int q = 0; q < 3; ++q) {
+        if (!gto_test_is_finite(a[4 * v + q])) return DBL_MAX;
+        d = MD_MAX(d, fabs((double)a[4 * v + q] - ref[3 * v + q]));
+    }
+    if (out_ref_max) *out_ref_max = ref_max;
+    return d / ref_max;
+}
+
+// The gradients the GPU evaluations write beside their values (out_grad), against the CPU's analytic ones in double at
+// the voxels' centres: an orbital (psi), its magnitude (ABS: sign(psi) grad psi), a sum of two launches (ADD), signed
+// weights of squares (sum w 2 psi grad psi), the density (ELF's passes: 2 sum grad phi D phi); and the normals packed
+// as RGB10A2 (md_gto_gpu_gradient_pack) against the direction of the density's.
+UTEST(gto, gradients_gpu_match_cpu) {
+    md_gpu_device_t device = md_gpu_device_create(NULL);
+    if (!device) {
+        UTEST_SKIP(gto_test_no_device_reason());
+    }
+    md_gpu_stream_t stream = md_gpu_stream_default(device, MD_GPU_STREAM_COMPUTE);
+    md_temp_scope_t temp = md_temp_begin();
+
+    vlx_test_t t = {0};
+    ASSERT_TRUE(vlx_test_load(&t, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5"), MD_MEGABYTES(32)));
+    const size_t num_atoms = t.sys.atom.count;
+    float* atom_xyz = (float*)md_temp_alloc_array(temp, float, 3 * num_atoms);
+    ASSERT_EQ(vlx_test_atom_xyz_bohr(atom_xyz, 3 * num_atoms, &t), num_atoms);
+    md_gto_basis_t basis = {0};
+    ASSERT_TRUE(qm_test_basis(&basis, &t));
+    const size_t num_ao = md_gto_basis_num_ao(&basis);
+
+    const size_t num_mo = 8;
+    double** mo = (double**)md_temp_alloc_array(temp, double*, num_mo);
+    for (size_t m = 0; m < num_mo; ++m) {
+        mo[m] = (double*)md_temp_alloc_array(temp, double, num_ao);
+        ASSERT_EQ(qm_test_row(mo[m], num_ao, &t, MD_STR_LIT("orbital/alpha/coefficient"), m), num_ao);
+    }
+    size_t dim = 0;
+    double* D = qm_test_matrix(&t, MD_STR_LIT("orbital/total/density"), &dim);
+    if (!D) D = qm_test_matrix(&t, MD_STR_LIT("orbital/alpha/density"), &dim);
+    ASSERT_TRUE(D != NULL);
+    ASSERT_EQ(dim, num_ao);
+
+    md_gto_gpu_initialize(device);
+    md_gto_gpu_basis_t gb = md_gto_gpu_basis_create(stream, &(md_gto_gpu_basis_desc_t){ .basis = &basis, .cutoff = 1.0e-6 });
+    ASSERT_TRUE(gb != NULL);
+    md_gpu_addr_t atoms   = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, md_gto_gpu_atom_buffer_size(num_atoms)).gpu;
+    md_gpu_addr_t coeff   = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, md_gto_gpu_coeff_size_mo(num_mo, num_ao)).gpu;
+    md_gpu_addr_t dcoeff  = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, md_gto_gpu_coeff_size_density(num_ao)).gpu;
+    md_gpu_addr_t weights = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, sizeof(float) * num_mo).gpu;
+    float w[8];
+    for (size_t m = 0; m < num_mo; ++m) w[m] = (m & 1) ? -0.5f : 1.0f + 0.1f * (float)m;
+    {
+        float* p = (float*)md_gpu_upload_begin(stream, atoms, md_gto_gpu_atom_buffer_size(num_atoms));
+        md_gto_gpu_atom_pack(p, atom_xyz, 0, num_atoms);
+        md_gpu_upload_end(stream);
+        p = (float*)md_gpu_upload_begin(stream, coeff, md_gto_gpu_coeff_size_mo(num_mo, num_ao));
+        md_gto_gpu_coeff_pack_mo(p, (const double* const*)mo, NULL, num_mo, num_ao);
+        md_gpu_upload_end(stream);
+        p = (float*)md_gpu_upload_begin(stream, dcoeff, md_gto_gpu_coeff_size_density(num_ao));
+        md_gto_gpu_coeff_pack_density(p, D, num_ao);
+        md_gpu_upload_end(stream);
+        md_gpu_upload(stream, weights, w, sizeof(float) * num_mo);
+    }
+
+    const int gd[3] = { 37, 29, 34 };
+    md_grid_t grid = {
+        .orientation = md_float3x3_ident(),
+        .origin  = md_float3_set(-5.5f, -4.3f, -5.0f),
+        .spacing = md_float3_set(0.3f, 0.3f, 0.3f),
+        .dim     = { gd[0], gd[1], gd[2] },
+    };
+    const size_t num_vox = (size_t)gd[0] * gd[1] * gd[2];
+    const md_gpu_texture_desc_t td = { .type = MD_GPU_TEX_3D, .format = MD_GPU_FORMAT_R32_FLOAT, .usage = MD_GPU_TEX_STORAGE,
+        .width = (uint32_t)gd[0], .height = (uint32_t)gd[1], .depth_or_layers = (uint32_t)gd[2] };
+    md_gpu_texture_desc_t gdsc = td;
+    gdsc.format = MD_GPU_FORMAT_RGBA32_FLOAT;
+    md_gpu_texture_desc_t pdsc = td;
+    pdsc.format = MD_GPU_FORMAT_R32_UINT;
+    md_gpu_texture_t tex  = md_gpu_texture_create(stream, &td);
+    md_gpu_texture_t gtex = md_gpu_texture_create(stream, &gdsc);
+    md_gpu_texture_t ptex = md_gpu_texture_create(stream, &pdsc);
+    md_gpu_mem_t rb  = md_gpu_malloc(stream, MD_GPU_MEM_HOST_READ, sizeof(float) * num_vox);
+    md_gpu_mem_t rbg = md_gpu_malloc(stream, MD_GPU_MEM_HOST_READ, 4 * sizeof(float) * num_vox);
+    md_gpu_mem_t rbp = md_gpu_malloc(stream, MD_GPU_MEM_HOST_READ, sizeof(uint32_t) * num_vox);
+    ASSERT_TRUE(tex && gtex && ptex && rb.cpu && rbg.cpu && rbp.cpu);
+
+    // the CPU's, in double: psi and grad psi of each orbital, rho and grad rho
+    double* psi  = (double*)md_temp_alloc_array(temp, double, num_vox * num_mo);
+    double* gpsi = (double*)md_temp_alloc_array(temp, double, 3 * num_vox * num_mo);
+    double* rho  = (double*)md_temp_alloc_array(temp, double, num_vox);
+    double* grho = (double*)md_temp_alloc_array(temp, double, 3 * num_vox);
+    {
+        double* ao  = (double*)md_temp_alloc_array(temp, double, num_ao);
+        double* aog = (double*)md_temp_alloc_array(temp, double, 3 * num_ao);
+        double* Dao = (double*)md_temp_alloc_array(temp, double, num_ao);
+        for (int z = 0; z < gd[2]; ++z) for (int y = 0; y < gd[1]; ++y) for (int x = 0; x < gd[0]; ++x) {
+            const double p[3] = { grid.origin.x + (x + 0.5) * 0.3, grid.origin.y + (y + 0.5) * 0.3, grid.origin.z + (z + 0.5) * 0.3 };
+            qm_test_ao_at(ao, aog, &basis, atom_xyz, p);
+            const size_t v = ((size_t)z * gd[1] + y) * gd[0] + x;
+            for (size_t m = 0; m < num_mo; ++m) {
+                double u = 0.0, g[3] = {0, 0, 0};
+                for (size_t i = 0; i < num_ao; ++i) {
+                    u += mo[m][i] * ao[i];
+                    for (int q = 0; q < 3; ++q) g[q] += mo[m][i] * aog[3 * i + q];
+                }
+                psi[v * num_mo + m] = u;
+                for (int q = 0; q < 3; ++q) gpsi[3 * (v * num_mo + m) + q] = g[q];
+            }
+            double r = 0.0, g[3] = {0, 0, 0};
+            for (size_t i = 0; i < num_ao; ++i) {
+                double u = 0.0;
+                for (size_t j = 0; j < num_ao; ++j) u += D[i * num_ao + j] * ao[j];
+                Dao[i] = u;
+                r += ao[i] * u;
+                for (int q = 0; q < 3; ++q) g[q] += 2.0 * aog[3 * i + q] * u;
+            }
+            rho[v] = r;
+            for (int q = 0; q < 3; ++q) grho[3 * v + q] = g[q];
+        }
+    }
+
+    float*  val  = (float*)md_temp_alloc_array(temp, float, num_vox);
+    float*  vref = (float*)md_temp_alloc_array(temp, float, num_vox);
+    double* gref = (double*)md_temp_alloc_array(temp, double, 3 * num_vox);
+    float*  nan_buf = (float*)md_temp_alloc_array(temp, float, 4 * num_vox);
+    #define GT_READ()                                                                     \
+        do {                                                                              \
+            md_gpu_copy_from_texture(stream, rb.gpu, tex, NULL);                          \
+            md_gpu_copy_from_texture(stream, rbg.gpu, gtex, NULL);                        \
+            md_gpu_stream_sync(stream);                                                   \
+            md_memcpy(val, rb.cpu, sizeof(float) * num_vox);                              \
+        } while (0)
+    #define GT_CHECK(name, tol)                                                           \
+        do {                                                                              \
+            double vmax = 0.0, gmax = 0.0;                                                \
+            for (size_t v_ = 0; v_ < num_vox; ++v_) vmax = MD_MAX(vmax, fabs(vref[v_]));  \
+            const double rv = gto_test_rel_diff(val, vref, num_vox, vmax);                \
+            const double rg = gto_test_grad_rel_diff((const float*)rbg.cpu, gref, num_vox, &gmax); \
+            printf("gradients [%s]: value %.3e, gradient %.3e (max |grad| %.3g)\n", name, rv, rg, gmax); \
+            EXPECT_LT(rv, tol);                                                           \
+            EXPECT_LT(rg, 3.0 * (tol));     /* three components summed in float */        \
+        } while (0)
+
+    // the orbitals, by the shell kernel with its gradient
+    #define GT_ORB(first, count, mode_, op_, w_)                                          \
+        do {                                                                              \
+            md_gto_gpu_orbital_desc_t od = {                                              \
+                .basis = gb, .atom_xyz = atoms, .coeff = coeff + sizeof(float) * num_ao * (first), \
+                .out_tex = tex, .out_grad = gtex, .grid = &grid, .sample_offset = {0.5f, 0.5f, 0.5f}, \
+                .num_orbitals = (count), .eval_mode = (mode_), .op = (op_), .weights = (w_), \
+                .exact_screening = true,                                                  \
+            };                                                                            \
+            md_gto_gpu_orbital_launch(stream, &od);                                       \
+        } while (0)
+
+    {   // one orbital
+        gto_test_poison(stream, tex, nan_buf, num_vox);
+        gto_test_poison(stream, gtex, nan_buf, 4 * num_vox);
+        GT_ORB(4, 1, MD_GTO_EVAL_MODE_PSI, MD_GTO_OP_SET, 0);
+        GT_READ();
+        for (size_t v = 0; v < num_vox; ++v) {
+            vref[v] = (float)psi[v * num_mo + 4];
+            for (int q = 0; q < 3; ++q) gref[3 * v + q] = gpsi[3 * (v * num_mo + 4) + q];
+        }
+        GT_CHECK("psi", 1.0e-5);
+    }
+    {   // its magnitude
+        GT_ORB(4, 1, MD_GTO_EVAL_MODE_PSI, MD_GTO_OP_SET | MD_GTO_OP_ABS, 0);
+        GT_READ();
+        for (size_t v = 0; v < num_vox; ++v) {
+            const double x = psi[v * num_mo + 4];
+            const double sg = x > 0.0 ? 1.0 : x < 0.0 ? -1.0 : 0.0;
+            vref[v] = (float)fabs(x);
+            for (int q = 0; q < 3; ++q) gref[3 * v + q] = sg * gpsi[3 * (v * num_mo + 4) + q];
+        }
+        GT_CHECK("|psi|", 1.0e-5);
+    }
+    {   // two orbitals, as a set and an add
+        GT_ORB(2, 1, MD_GTO_EVAL_MODE_PSI, MD_GTO_OP_SET, 0);
+        GT_ORB(3, 1, MD_GTO_EVAL_MODE_PSI, MD_GTO_OP_ADD, 0);
+        GT_READ();
+        for (size_t v = 0; v < num_vox; ++v) {
+            vref[v] = (float)(psi[v * num_mo + 2] + psi[v * num_mo + 3]);
+            for (int q = 0; q < 3; ++q) gref[3 * v + q] = gpsi[3 * (v * num_mo + 2) + q] + gpsi[3 * (v * num_mo + 3) + q];
+        }
+        GT_CHECK("psi_2 + psi_3 (add)", 1.0e-5);
+    }
+    {   // signed weights of squares, several orbitals a pass
+        GT_ORB(0, num_mo, MD_GTO_EVAL_MODE_PSI_SQUARED, MD_GTO_OP_SET, weights);
+        GT_READ();
+        for (size_t v = 0; v < num_vox; ++v) {
+            double r = 0.0, g[3] = {0, 0, 0};
+            for (size_t m = 0; m < num_mo; ++m) {
+                const double x = psi[v * num_mo + m];
+                r += w[m] * x * x;
+                for (int q = 0; q < 3; ++q) g[q] += w[m] * 2.0 * x * gpsi[3 * (v * num_mo + m) + q];
+            }
+            vref[v] = (float)r;
+            for (int q = 0; q < 3; ++q) gref[3 * v + q] = g[q];
+        }
+        GT_CHECK("sum w psi^2", 1.0e-5);
+    }
+    {   // the density, a launch and a job of the packed matrix, and a launch of it in tiles (a dmat)
+        md_gto_gpu_dmat_t dm = md_gto_gpu_dmat_create(stream, &(md_gto_gpu_dmat_desc_t){ .basis = &basis, .atom_xyz = atom_xyz, .cutoff = 1.0e-6 });
+        ASSERT_TRUE(dm != NULL);
+        ASSERT_TRUE(md_gto_gpu_dmat_set_matrix(stream, dm, D));
+        for (int job = 0; job < 3; ++job) {
+            gto_test_poison(stream, tex, nan_buf, num_vox);
+            gto_test_poison(stream, gtex, nan_buf, 4 * num_vox);
+            md_gto_gpu_density_desc_t dd = {
+                .basis = gb, .atom_xyz = atoms, .coeff = job == 2 ? 0 : dcoeff, .dmat = job == 2 ? dm : NULL,
+                .out_tex = tex, .out_grad = gtex, .grid = &grid,
+                .sample_offset = {0.5f, 0.5f, 0.5f}, .op = MD_GTO_OP_SET, .scratch_bytes = 256 * 1024,
+            };
+            if (job == 1) {
+                md_gto_gpu_job_t* j = md_gto_gpu_density_job_begin(stream, &dd);
+                ASSERT_TRUE(j != NULL);
+                while (!md_gto_gpu_job_poll(j, false)) {}
+                md_gto_gpu_job_end(j);
+            } else {
+                md_gto_gpu_density_launch(stream, &dd);
+            }
+            GT_READ();
+            for (size_t v = 0; v < num_vox; ++v) {
+                vref[v] = (float)rho[v];
+                for (int q = 0; q < 3; ++q) gref[3 * v + q] = grho[3 * v + q];
+            }
+            GT_CHECK(job == 1 ? "density (job)" : job == 2 ? "density (dmat)" : "density", 1.0e-5);
+        }
+        md_gto_gpu_dmat_destroy(stream, dm);
+    }
+    {   // the normals of the density's gradient, packed: the direction of what was evaluated (gtex) to 10 bits, at
+        // every voxel; and that of the CPU's where the density is in the range of its isosurfaces (1e-4 to 1)
+        md_gto_gpu_gradient_pack(stream, gtex, ptex, &grid);
+        md_gpu_copy_from_texture(stream, rbp.gpu, ptex, NULL);
+        md_gpu_stream_sync(stream);
+        const uint32_t* pk = (const uint32_t*)rbp.cpu;
+        const float*    gg = (const float*)rbg.cpu;
+        double max_pack = 0.0, max_cpu = 0.0;
+        size_t counted = 0, iso = 0, bad_alpha = 0;
+        for (size_t v = 0; v < num_vox; ++v) {
+            const double g[3] = { gg[4 * v], gg[4 * v + 1], gg[4 * v + 2] };
+            const double gl = sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]);
+            const uint32_t u = pk[v];
+            if ((u >> 30) != 3u) { bad_alpha += gl > 0.0; continue; }
+            double n[3] = { (double)(u & 1023u), (double)((u >> 10) & 1023u), (double)((u >> 20) & 1023u) };
+            double nl = 0.0;
+            for (int q = 0; q < 3; ++q) { n[q] = n[q] / 1023.0 * 2.0 - 1.0; nl += n[q] * n[q]; }
+            nl = sqrt(nl);
+            double c = 0.0;
+            for (int q = 0; q < 3; ++q) c += n[q] / nl * g[q] / gl;
+            max_pack = MD_MAX(max_pack, acos(MD_MIN(1.0, MD_MAX(-1.0, c))));
+            counted++;
+            if (rho[v] >= 1.0e-4 && rho[v] <= 1.0) {
+                const double* r = grho + 3 * v;
+                const double rl = sqrt(r[0] * r[0] + r[1] * r[1] + r[2] * r[2]);
+                double cr = 0.0;
+                for (int q = 0; q < 3; ++q) cr += n[q] / nl * r[q] / rl;
+                max_cpu = MD_MAX(max_cpu, acos(MD_MIN(1.0, MD_MAX(-1.0, cr))));
+                iso++;
+            }
+        }
+        printf("gradients [packed normals]: %zu voxels, max angle %.3e rad to the evaluated gradient; %zu in the isosurfaces' range, "
+               "%.3e rad to the CPU's; %zu without a direction\n", counted, max_pack, iso, max_cpu, bad_alpha);
+        EXPECT_GT(counted, num_vox / 2);
+        EXPECT_LT(max_pack, 3.0e-3);    // 10 bits: a step of 2 / 1023 a component
+        EXPECT_GT(iso, (size_t)1000);
+        EXPECT_LT(max_cpu, 5.0e-3);
+        EXPECT_EQ(bad_alpha, (size_t)0);
+    }
+    #undef GT_ORB
+    #undef GT_CHECK
+    #undef GT_READ
+
+    md_gpu_free(stream, rbp.gpu);
+    md_gpu_free(stream, rbg.gpu);
+    md_gpu_free(stream, rb.gpu);
+    md_gpu_texture_destroy(ptex);
+    md_gpu_texture_destroy(gtex);
+    md_gpu_texture_destroy(tex);
+    md_gpu_free(stream, weights);
+    md_gpu_free(stream, dcoeff);
+    md_gpu_free(stream, coeff);
+    md_gpu_free(stream, atoms);
+    md_gto_gpu_basis_destroy(stream, gb);
+    md_gpu_stream_sync(stream);
+    md_gto_gpu_shutdown();
+    qm_test_free(&t);
+    md_temp_end(temp);
+    md_gpu_device_destroy(device);
+}
 #endif
 
 // The amide / ne / myjob cube comparisons used to sit here, disabled. They were removed with the

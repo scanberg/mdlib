@@ -45,7 +45,7 @@ struct RootArgs {
     uint     d_spin_offset;     // floats into D_blocks of the spin being gathered and multiplied (ELF, LOL: two spins)
     uint     spin;              // ELF, LOL: the spin of this GEMM pass (its terms)
     uint     num_spins;         // ELF, LOL: 1, the total density of a closed shell (two equal spins), or 2
-    uint     lol;               // ELF, LOL: 0 ELF, 1 LOL
+    uint     lol;               // ELF, LOL: 0 ELF, 1 LOL; 2 the density and its gradient (out_grad), by the operation
     float    rho_min;           // ELF, LOL: below it (both spins) the value is 0
     float    d_min;             // ELF: added to D (md_qm_elf's d_min)
     uint     terms_stride;      // ELF, LOL: entries of a batch's terms, per spin and term
@@ -68,6 +68,7 @@ struct RootArgs {
     uint*    dm_map;            // dm_tiled: tile pair -> pool entry
     float*   terms;             // ELF, LOL: per spin rho, grad rho (3), tau of the batch's voxels: [spin][5][entry][512]
     DescriptorHandle<RWTexture3D<float>> out_tex;
+    DescriptorHandle<RWTexture3D<float4>> out_grad;     // lol 2: the density's gradient (xyz)
 };
 
 struct MdGpuRoot { RootArgs* args_ptr; };

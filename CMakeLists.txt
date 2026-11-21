@@ -371,6 +371,9 @@ set(GTO_SLANG_FILES
   src/shaders/gto/eval_gto_mo_shell_v4_m8.slang
   src/shaders/gto/eval_gto_mo_shell_v4_m1_2d.slang
   src/shaders/gto/eval_gto_mo_shell_v4_m8_2d.slang
+  # with the gradient (GRAD), 1 or 8 a pass, 8x8x8
+  src/shaders/gto/eval_gto_mo_shell_v2_m1_grad.slang
+  src/shaders/gto/eval_gto_mo_shell_v2_m8_grad.slang
   # the density's and the orbitals' GEMM passes on the GEMM core (gto_gemm_core.slang)
   src/shaders/gto/eval_gto_density_core_128x32.slang
   src/shaders/gto/eval_gto_density_core_128x64.slang
@@ -703,7 +706,7 @@ set(SHADER_FILES ${GL_SHADER_FILES} ${TOPO_SLANG_FILES} ${TOPO_GTO_SLANG_FILE} $
     src/shaders/gto/gto_common.slang src/shaders/gto/gto_gemm_args.slang
     src/shaders/gto/gto_dmat_common.slang src/shaders/gto/gto_dmat.slang
     src/shaders/gto/eval_gto_density_gemm.slang
-    src/shaders/gto/eval_gto_mo_shell.slang src/shaders/gto/eval_gto_mo_gemm.slang
+    src/shaders/gto/eval_gto_mo_shell.slang src/shaders/gto/eval_gto_mo_gemm.slang src/shaders/gto/gto_gradient_pack.slang
     src/shaders/gto/eval_gto_int_potential.slang src/shaders/gto/gto_int_hermite.slang
     src/shaders/gto/eval_gto_int_potential_xyz.slang src/shaders/gto/gto_int_potential_common.slang
     src/shaders/gto/eval_gto_int_potential_far.slang)
@@ -808,6 +811,13 @@ if (MD_ENABLE_GPU)
     SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/eval_gto_density_gemm.slang
     ENTRIES   count_main phi_main dgather_main phi_grad_main
     DEPENDS   ${GTO_SLANG_INCLUDES}
+  )
+  # md_gto_gpu_gradient_pack: normals of a gradient, packed as RGB10A2
+  compile_gpu_shaders(gto_gradient_pack_shaders.inl
+    TARGET    mdlib
+    NAMESPACE md_shader
+    SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/gto/gto_gradient_pack.slang
+    ENTRIES   main
   )
   # md_gto_gpu_dmat: a density matrix in tiles, built from orbitals
   compile_gpu_shaders(gto_dmat_shaders.inl

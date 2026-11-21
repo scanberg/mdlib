@@ -25,6 +25,10 @@
 //   * MB orbitals per pass (1 or 8): MB = 1 for the common single orbital without
 //     wasted accumulators; MB = 8 for small sets of orbitals. Larger sets belong on
 //     the GEMM path (eval_gto_mo_gemm.slang).
+//
+// GRAD (the *_grad.slang wrappers): the gradient of the result too, into out_grad (xyz, w 0), by the same op -
+//   grad psi_m = sum_mu C[m][mu] grad phi_mu, grad phi = N (grad(x^i y^j z^k) R + x^i y^j z^k 2 (r - A) dR/dr^2),
+//   dR/dr^2 = -sum_p c_p alpha_p exp(-alpha_p r^2); grad (psi^2) = 2 psi grad psi. World units (per bohr).
 
 #include "../md_gpu.slang"
 
@@ -82,6 +86,7 @@ struct RootArgs {
     float*   coeffs;            // [num_mos][num_aos]
     float*   weights;           // [num_mos], if has_weights
     DescriptorHandle<RWTexture3D<float>> out_tex;
+    DescriptorHandle<RWTexture3D<float4>> out_grad;     // GRAD only
 };
 
 struct MdGpuRoot { RootArgs* args_ptr; };
@@ -106,6 +111,17 @@ static const float CART_NORM[35] = {
     0.577350269f, 0.258198890f, 0.097590007f, 0.258198890f, 0.333333333f, 0.258198890f, 0.097590007f };
 
 #define LOG2E 1.44269504089f
+#define LN2   0.69314718056f
+
+#ifdef GRAD
+// The gradient of x^i y^j z^k (ijk packed as CART_IJK)
+float3 gto_monomial_grad(float3 d, uint ijk) {
+    const uint i = ijk & 0xFu, j = (ijk >> 4u) & 0xFu, k = (ijk >> 8u) & 0xFu;
+    return float3(i != 0u ? float(i) * gto_monomial(d, ijk - 0x001u) : 0.0f,
+                  j != 0u ? float(j) * gto_monomial(d, ijk - 0x010u) : 0.0f,
+                  k != 0u ? float(k) * gto_monomial(d, ijk - 0x100u) : 0.0f);
+}
+#endif
 
 groupshared uint chunk_shell[WG_SIZE];
 
@@ -123,6 +139,10 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_G
         coord[v]  = mul(args.index_to_world, float4(float3(vox[v]), 1.0f)).xyz;
         result[v] = 0.0f;
     }
+#ifdef GRAD
+    float3 result_g[VPT];
+    [ForceUnroll] for (int v = 0; v < VPT; ++v) result_g[v] = float3(0.0f);
+#endif
 
     for (uint mo_base = 0u; mo_base < args.num_mos; mo_base += MB) {
         const uint mo_count = min((uint)MB, args.num_mos - mo_base);
@@ -130,6 +150,11 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_G
         float psi[VPT][MB];
         [ForceUnroll] for (int v = 0; v < VPT; ++v)
             [ForceUnroll] for (int m = 0; m < MB; ++m) psi[v][m] = 0.0f;
+#ifdef GRAD
+        float3 gpsi[VPT][MB];
+        [ForceUnroll] for (int v = 0; v < VPT; ++v)
+            [ForceUnroll] for (int m = 0; m < MB; ++m) gpsi[v][m] = float3(0.0f);
+#endif
 
         for (uint base = 0u; base < args.num_shells; base += WG_SIZE) {
             // Screen one chunk of shells.
@@ -181,10 +206,23 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_G
                     r2[v] = dot(d[v], d[v]);
                     R[v]  = 0.0f;
                 }
+#ifdef GRAD
+                float Rp[VPT];      // sum_p c_p alpha_p log2(e) exp(-alpha_p r^2): dR/dr^2 = -Rp ln 2
+                [ForceUnroll] for (int v = 0; v < VPT; ++v) Rp[v] = 0.0f;
+                for (uint p = 0u; p < info.y; ++p) {
+                    const float2 cp = args.shell_prim[info.x + p];
+                    [ForceUnroll] for (int v = 0; v < VPT; ++v) {
+                        const float e = cp.x * exp2(-cp.y * r2[v]);
+                        R[v]  += e;
+                        Rp[v] += cp.y * e;
+                    }
+                }
+#else
                 for (uint p = 0u; p < info.y; ++p) {
                     const float2 cp = args.shell_prim[info.x + p];
                     [ForceUnroll] for (int v = 0; v < VPT; ++v) R[v] += cp.x * exp2(-cp.y * r2[v]);
                 }
+#endif
 
                 const uint nc = gto_num_cart(info.z);
                 const uint tb = CART_BASE[min(info.z, 4u)];
@@ -198,8 +236,13 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_G
                         cf[m] = (uint(m) < mo_count) ? cv : 0.0f;
                     }
                     [ForceUnroll] for (int v = 0; v < VPT; ++v) {
-                        const float phi = nrm * gto_monomial(d[v], ijk) * R[v];
+                        const float mono = gto_monomial(d[v], ijk);
+                        const float phi = nrm * mono * R[v];
                         [ForceUnroll] for (int m = 0; m < MB; ++m) psi[v][m] += cf[m] * phi;
+#ifdef GRAD
+                        const float3 gphi = nrm * (gto_monomial_grad(d[v], ijk) * R[v] - (2.0f * LN2 * mono * Rp[v]) * d[v]);
+                        [ForceUnroll] for (int m = 0; m < MB; ++m) gpsi[v][m] += cf[m] * gphi;
+#endif
                     }
                 }
             }
@@ -213,6 +256,9 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_G
                 [ForceUnroll] for (int v = 0; v < VPT; ++v) {
                     const float x = psi[v][m];
                     result[v] += w * ((args.mode != 0u) ? x * x : x);
+#ifdef GRAD
+                    result_g[v] += w * ((args.mode != 0u) ? 2.0f * x * gpsi[v][m] : gpsi[v][m]);
+#endif
                 }
             }
         }
@@ -222,6 +268,10 @@ void main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid : SV_G
         if (all(vox[v] < args.grid_dim.xyz)) {
             const float prev = gto_op_reads_prev(args.operation) ? args.out_tex[vox[v]] : 0.0f;
             args.out_tex[vox[v]] = gto_apply_op(result[v], prev, args.operation);
+#ifdef GRAD
+            const float3 prev_g = gto_op_reads_prev(args.operation) ? args.out_grad[vox[v]].xyz : float3(0.0f);
+            args.out_grad[vox[v]] = float4(gto_apply_op_grad(result[v], result_g[v], prev, prev_g, args.operation), 0.0f);
+#endif
         }
     }
 }
