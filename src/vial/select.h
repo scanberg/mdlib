@@ -76,6 +76,9 @@ typedef struct vial_sys_t {
     uint32_t    num_groups;
     uint32_t*   group_offset;   // [group + 1]
     uint32_t*   group_atoms;
+    // The atoms of the metallic phases, once needed: 1 for such an atom (md_bond_metallic_atoms)
+    bool        have_metallic;
+    uint8_t*    metallic;       // [atom]
 } vial_sys_t;
 
 md_str_t   vial_sys_chain_id(const vial_sys_t* s, int32_t chain);   // empty for -1
@@ -151,20 +154,44 @@ typedef enum vial_key_t {
     VIAL_KEY_SCOPE,
     VIAL_KEY_SIZE,              // rings: the number of atoms
     VIAL_KEY_ROLE,              // groups: what the simulation used them for (md_group_role_name)
+    // A particle's chemistry, of each atom (md_chem_perceive, md_bond_metallic_atoms)
+    VIAL_KEY_HYBRIDIZATION,     // sp, sp2 or sp3, where one was perceived
+    VIAL_KEY_AROMATIC,          // in an aromatic ring
+    VIAL_KEY_METALLIC,          // of a metallic phase: an atom of a metallic bond
+    VIAL_KEY_HYDROGENS,         // the hydrogens attached, explicit and implicit
+    VIAL_KEY_FORMAL_CHARGE,
     VIAL_KEY_COUNT
 } vial_key_t;
 
-// One value a keyword matches: a string (a glob where the keyword takes one), an int, or an inclusive range
+typedef enum vial_match_kind_t {
+    VIAL_MATCH_STR = 0,         // a string, a glob where the keyword takes one
+    VIAL_MATCH_INT,
+    VIAL_MATCH_RANGE,           // inclusive
+    VIAL_MATCH_BOOL,            // lo: 0 or 1
+    VIAL_MATCH_AND,             // of the num operands after it
+    VIAL_MATCH_OR,              // of the num operands after it; a list is one
+    VIAL_MATCH_NOT,             // of the one operand after it
+} vial_match_kind_t;
+
+// One node of what a keyword matches: a value, or and/or/not over the nodes after it
 typedef struct vial_match_t {
-    uint8_t     kind;           // 0 string, 1 int, 2 range
-    md_str_t       s;
+    uint8_t     kind;           // vial_match_kind_t
+    uint32_t    num;            // and, or: the number of operands
+    md_str_t    s;
     int64_t     lo, hi;
 } vial_match_t;
 
+// A keyword and what it matches, in prefix order: name='CA' is one value; name=['CA', 'CB'] and name='CA' or 'CB' are an or
+// of two; name='H*' and not 'HA' an and of a value and a not. Every node stands for the values it accepts: or is their
+// union, and their intersection, and not the complement among the values of what has the keyword's property at all, so
+// not's complement never reaches what has none (chain=not 'A' is the other chains, not also what is in no chain).
 typedef struct vial_filter_t {
     uint8_t         key;        // vial_key_t
-    vial_match_t*   any;        // md_array: a list means any of its values
+    vial_match_t*   expr;       // md_array, prefix order
 } vial_filter_t;
+
+// Whether a value satisfies a filter's expression: test says whether one value node holds for it
+bool vial_filter_holds(const vial_filter_t* f, bool (*test)(const vial_match_t* m, const void* user), const void* user);
 
 typedef struct vial_select_t {
     uint8_t                 level;          // the selector's: particles is VIAL_LEVEL_PARTICLE
@@ -187,6 +214,8 @@ const char* vial_select_kinds(uint8_t level);
 
 // Whether a role= value is the name of a role of groups (md_group_role_name)
 bool        vial_select_role_known(md_str_t role);
+// Whether a value is a hybridization a particle selector takes: sp, sp2 or sp3
+bool        vial_select_hybridization_known(md_str_t hyb);
 
 // Evaluates a selector: one set for particles, one set per unit otherwise, in the system's order
 vial_sets_t* vial_select(vial_sys_t* s, const vial_select_t* q, md_allocator_i* alloc);

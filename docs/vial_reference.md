@@ -294,6 +294,11 @@ Names are singular, as every function's is, whatever the shape of what they give
 |  | `resid` | the number of its residue in the file | int, `a..b` or a list |
 |  | `resname` | the name of its residue | string with `*` and `?`, or a list |
 |  | `chain` | the author id of its chain | string or list |
+|  | `hybridization` | sp, sp2 or sp3, as perceived from the bonds; a hydrogen or a metal has none | string or list |
+|  | `aromatic` | in an aromatic ring | True or False |
+|  | `metallic` | of a metallic phase: an atom of a metallic bond | True or False |
+|  | `hydrogens` | the hydrogens attached, explicit and implicit | int, `a..b` or a list |
+|  | `formal_charge` | its formal charge | int, `a..b` or a list |
 | `residue` | `id` | the sequence number in the file | int, `a..b` or a list |
 |  | `name` | the residue name | string with `*` and `?`, or a list |
 |  | `kind` | amino\_acid, nucleotide, water, ion, lipid, other | string or list |
@@ -314,6 +319,55 @@ Names are singular, as every function's is, whatever the shape of what they give
 A particle's serial is the number its file gives it. Where the file gives none, the count continues implicitly, one up from the particle before: a file without serials counts 1, 2, 3, and a file that wraps or stops counting past 99,999, as GRO and plain PDB do, goes on 100000, 100001. So serials are unique, and in a file that skips records, such as T, which keeps only the first alternate location, they are still the numbers on its lines. mdlib stores them only where they cannot be derived from the position plus a constant. Selecting by serial is not supported yet, as mdlib keeps no serials: it is E0801, and a particle is selected by its position, `particle[i]`, until it does.
 
 A list means any of its values, and separate keywords must all hold. `element` ignores case, so `'MG'`, `'Mg'` and `'mg'` are magnesium; names and ids do not.
+
+### Values with and, or and not
+
+A keyword's value stands for the values it accepts, and `or`, `and` and `not` combine values as they combine sets: `or` is any of them, so `'sp' or 'sp2'` is the list `['sp', 'sp2']`, `and` all of them, and `not` the others. Values are quoted strings, as Python writes options, also where a keyword has a fixed set of them; a glob is a value too, so `name='C*' and not 'CA'` is every carbon but the alpha carbons. Precedence is Python's: `not` binds tighter than `and`, and `and` than `or`.
+
+`not` takes the complement among the values of what has the property at all, never within the scope: `chain=not 'A'` is the other chains, and not also what the data files under no chain, and `hybridization=not 'sp3'` is the sp and sp2 atoms, never a hydrogen, which has no hybridization. The complement within the scope is the set operation, `not atom(hybridization='sp3')`, which holds the hydrogens. A property of several values, as a ring's kinds, takes `and` as all of them: `ring(kind='hetero' and 'aromatic')` is the rings that are both, as `'heteroaromatic'` says it, and `ring(kind=not 'aromatic')` the aliphatic ones. A property of one value matches no `and` of two: `atom(hybridization='sp' and 'sp3')` matches nothing (W0601).
+
+The values are fixed when compiling, and so is the selection: within a scope that changes per frame, a keyword's `and`, `or` or `not` is E0801. Outside a keyword's value, strings have no `and` or `or` (E0319), and `and` and `or` over sets are their intersection and union, as `scope=a or b` takes them.
+
+```python
+# on T
+not_w  = residue(kind=not 'water')                     # -> set[872]: 880 less the eight waters
+ab     = residue(chain=not 'C', kind='amino_acid')     # -> set[865]: chain C is VLB alone
+lig    = residue(name=not 'SO4' and not 'HOH', kind='other')   # -> set[3]: GTP, GDP and VLB; MG is an ion
+lig2   = residue(name=not ('SO4' or 'HOH'), kind='other')      # -> set[3]: the same, as Python groups it
+c_nca  = count(particle(name='C*' and not 'CA', chain='A'))    # -> 1726
+r_ends = residue(id=1..10 or 430..440, chain='A')      # -> set[21]
+het    = ring(kind='hetero' and 'aromatic')            # -> set[n]
+ali    = ring(kind=not 'aromatic')                     # -> set[n]
+no_hyb = count(atom(hybridization='sp' and 'sp3'))     # warning W0601 -> 0: an atom has one hybridization
+str_or = 'sp' or 'sp3'                                 # error E0319: strings have no or outside a keyword's value
+```
+
+### Chemistry
+
+A particle's chemistry is what mdlib perceives from the bonds: each atom's hybridization, whether it is aromatic, the hydrogens it carries and its formal charge, and the metallic phases from the metallic bonds. Only an atom has chemistry, so none of these keywords matches a bead or a virtual site, also under `not`; a hybridization is perceived for a heavy atom of the bonds, so a hydrogen or a metal has none, and its count of hydrogens is the explicit ones plus those a file without hydrogens implies, as T's are. viamd's tooltip of an atom lists the same keywords with the values it has, as a script writes them.
+
+```python
+# on T
+sp2_c  = count(atom(element='C', hybridization='sp2', chain='A'))    # -> 846
+aro    = count(atom(aromatic=True, chain='A'))                       # -> 338
+aro_n  = count(atom(aromatic=True, element='N'))                     # -> 63
+po4_o  = count(atom(formal_charge=-1, resname='GTP'))                # -> 4: the triphosphate's charged oxygens
+ch3    = count(atom(element='C', hydrogens=3, chain='A'))            # -> 258: implied, as T has no hydrogens
+metal  = count(atom(metallic=True))                                  # warning W0601 -> 0: T has no metallic phase
+hyb_x  = atom(hybridization='sp4')                                   # error E0206: the hybridizations are sp, sp2 and sp3
+aro_s  = atom(aromatic='yes')                                        # error E0206: True or False
+```
+
+```python
+# on P
+csp3   = count(atom(element='C', hybridization='sp3'))     # -> 30: CA and CB of each alanine
+csp2   = count(atom(element='C', hybridization=not 'sp3')) # -> 15: the carbonyl carbons
+h_none = count(atom(element='H', hybridization=not 'sp3')) # warning W0601 -> 0: a hydrogen has no hybridization
+no_h   = count(atom(hydrogens=0))                          # -> 108: the 77 hydrogens, 16 oxygens and 15 carbonyl carbons
+nh3    = count(atom(element='N', hydrogens=3))             # -> 1: the N-terminus
+q      = count(atom(formal_charge=not 0))                  # -> 2: the N-terminal N+ and a C-terminal O-
+n_pos  = count(atom(formal_charge=+1))                    # -> 1: +1 as the tooltip writes it
+```
 
 The kinds of a part: `polymer` is any polymer strand, `peptide`, `nucleic`, `dna` and `rna` the strands of those kinds (`nucleic` is DNA, RNA or a hybrid), and `glycan` a tree of saccharides or one sugar. A part that is no polymer is a `lipid` when its residues are lipids, an `ion` when it is one ion, a `water`, or else a `ligand`. A molecule has no kind of its own, since a glycoprotein holds a strand and its glycans: select the parts, and `molecule(part(kind='peptide'))` gives the molecules they are in.
 

@@ -491,7 +491,7 @@ UTEST_F(vial_check, selector_diagnostics) {
         "E0206 1: 'amino' is not a residue kind; the kinds are amino_acid, nucleotide, water, ion, lipid and other | 'amino_acid'\n");
     EXPECT_DIAGS_ON(T, "r = residue(kind='')\n",
         "E0206 1: '' is not a residue kind; the kinds are amino_acid, nucleotide, water, ion, lipid and other\n");
-    EXPECT_DIAGS_ON(T, "r = residue(id='12')\n", "E0206 1: `id` takes an int, a range a..b, or a list of ints; this is str\n");
+    EXPECT_DIAGS_ON(T, "r = residue(id='12')\n", "E0206 1: `id` takes an int, a range a..b, a list of ints, or and/or/not over them; this is str\n");
     EXPECT_DIAGS_ON(T, "r = residue(id=39..45, chain='A')\n", "W0601 1: `residue(id=39..45, chain='A')` matches nothing in its scope\n");
     EXPECT_DIAGS_ON(T, "p = particle(resid=501)\n",
         "W0602 1: `resid=501` matches residues in chains A and B; the merged set hides which | resid=501, chain='A'\n");
@@ -514,6 +514,43 @@ UTEST_F(vial_check, selector_diagnostics) {
     EXPECT_DIAGS_ON(T, "near = residue(within(5.0, of=particle(resname='GTP')))\nd = distance(near.com, particle(name='MG'))\n__all__ = ['near']\n", "");
     EXPECT_TYPE_ON(P, "l = label(residue)[0]\n", 1, "str, static = 'ALA1'");
     EXPECT_TYPE_ON(P, "l = label(part)[0]\n", 1, "str, static = 'peptide1'");
+}
+
+// A keyword's value with and, or and not: the values it accepts, combined as sets are; a list is an or of its values
+UTEST_F(vial_check, keyword_logic) {
+    const md_system_t* T = vial_test_system('T');
+    const md_system_t* P = vial_test_system('P');
+    ASSERT_TRUE(T != NULL && P != NULL);
+    // A list and an or are one thing; positional names take it too
+    EXPECT_TYPE_ON(T, "r = residue(name=['ALA', 'GLY'])\n", 1, "set[123], static");
+    EXPECT_TYPE_ON(T, "r = residue(name='ALA' or 'GLY')\n", 1, "set[123], static");
+    EXPECT_TYPE_ON(T, "r = residue('ALA' or 'GLY')\n", 1, "set[123], static");
+    EXPECT_TYPE_ON(T, "r = residue(kind='amino_acid', name=not ('ALA' or 'GLY'))\n", 1, "set[742], static");
+    EXPECT_TYPE_ON(T, "r = residue(id=1..10 or 430..440, chain='A')\n", 1, "set[21], static");
+    // A ring's kinds are tags: and is all of them
+    EXPECT_TYPE_ON(T, "r = ring(kind='heteroaromatic')\n", 1, "set[36], static");
+    EXPECT_TYPE_ON(T, "r = ring(kind='hetero' and 'aromatic')\n", 1, "set[36], static");
+    EXPECT_TYPE_ON(T, "r = ring(kind='aliphatic')\n", 1, "set[47], static");
+    EXPECT_TYPE_ON(T, "r = ring(kind=not 'aromatic')\n", 1, "set[47], static");
+    // and/or over sets stay their intersection and union, which scope= takes
+    EXPECT_TYPE_ON(T, "r = residue(scope=water or particle(resname='GTP'))\n", 1, "set[9], static");
+    // A value the keyword does not take, under and/or/not: reported at that value
+    EXPECT_DIAGS_ON(T, "r = residue(id=5 or 'A')\n", "E0206 1: `id` takes an int, a range a..b, a list of ints, or and/or/not over them; this is str\n");
+    EXPECT_DIAGS_ON(T, "r = residue(kind=not 'amino')\n",
+        "E0206 1: 'amino' is not a residue kind; the kinds are amino_acid, nucleotide, water, ion, lipid and other | 'amino_acid'\n");
+    EXPECT_DIAGS_ON(T, "a = atom(hybridization='sp' or 'sp4')\n", "E0206 1: 'sp4' is not a hybridization; the hybridizations are sp, sp2 and sp3\n");
+    // Strings have no and/or of their own: outside a keyword's value it stays E0319
+    EXPECT_DIAGS_ON(T, "h = 'sp' or 'sp3'\n", "E0319 1: `or` takes bools or sets; this is str\n");
+    // A selection made per frame takes a keyword's values when evaluating, and and/or/not over strings is none
+    EXPECT_DIAGS_ON(T, "r = residue(scope=water[water.z > 40.0], name=not 'SO4')\n",
+        "E0801 1: and/or/not in a keyword's value is resolved when compiling; a selection that changes per frame does not take it yet\n");
+    // Chemistry: not is among the atoms that have the property, so never a hydrogen for a hybridization
+    EXPECT_TYPE_ON(P, "a = atom(hybridization=not 'sp3')\nr = residue(a)\n", 2, "set[15], static");
+    EXPECT_DIAGS_ON(P, "n = count(atom(element='H', hybridization=not 'sp3'))\n",
+        "W0601 1: `atom(element='H', hybridization=…` matches nothing in its scope\n");
+    EXPECT_DIAGS_ON(P, "b = bead(hydrogens=0)\n", "W0601 1: `bead(hydrogens=0)` matches nothing in its scope\n");
+    EXPECT_DIAGS_ON(T, "a = atom(aromatic=not True, metallic=False)\nb = atom(aromatic=1)\n",
+        "E0206 2: `aromatic` takes True or False; this is int\n");
 }
 
 UTEST_F(vial_check, selectors_without_a_system) {

@@ -2949,15 +2949,18 @@ static bool k_select(vial_kctx_t* k, const char* name, const bargs_t* ba, vial_v
             continue;
         }
         if (key == VIAL_KEY_NONE) return vial_rt_fail(k, "R0103", "%s takes no keyword %.*s", name, (int)ba->names[i].len, ba->names[i].ptr);
+        // Any of its values: an or of them
         vial_filter_t f = {.key = key};
         const size_t cnt = vial_val_count(v);
+        md_array_push(f.expr, ((vial_match_t){.kind = VIAL_MATCH_OR, .num = (uint32_t)cnt}), k->alloc);
         for (size_t e = 0; e < cnt; ++e) {
             vial_match_t m = {0};
-            if (v->dtype == VIAL_DT_STR) { m.kind = 0; m.s = ((const md_str_t*)v->data)[e]; }
-            else if (v->dtype == VIAL_DT_RANGE) { m.kind = 2; m.lo = (int64_t)((const double*)v->data)[0]; m.hi = (int64_t)((const double*)v->data)[1]; }
-            else if (v->dtype == VIAL_DT_INT) { m.kind = 1; m.lo = ((const int32_t*)v->data)[e]; }
-            else return vial_rt_fail(k, "R0103", "a keyword's value here is a string, an int or a range");
-            md_array_push(f.any, m, k->alloc);
+            if (v->dtype == VIAL_DT_STR) { m.kind = VIAL_MATCH_STR; m.s = ((const md_str_t*)v->data)[e]; }
+            else if (v->dtype == VIAL_DT_RANGE) { m.kind = VIAL_MATCH_RANGE; m.lo = (int64_t)((const double*)v->data)[0]; m.hi = (int64_t)((const double*)v->data)[1]; }
+            else if (v->dtype == VIAL_DT_INT) { m.kind = VIAL_MATCH_INT; m.lo = ((const int32_t*)v->data)[e]; }
+            else if (v->dtype == VIAL_DT_BOOL) { m.kind = VIAL_MATCH_BOOL; m.lo = ((const uint8_t*)v->data)[e]; }
+            else return vial_rt_fail(k, "R0103", "a keyword's value here is a string, an int, a range or a bool");
+            md_array_push(f.expr, m, k->alloc);
         }
         md_array_push(q.filters, f, k->alloc);
     }

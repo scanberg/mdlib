@@ -94,17 +94,20 @@ static void report_no_serials(infer_t* x, vial_node_id at) {
     vx_diag_fix(x, "E0801", at, NULL, "selecting particles by serial is not supported yet; select them by position, particle[i]");
 }
 
-// Whether a keyword takes strings or ints
-static bool key_takes_str(uint8_t level, uint8_t key) {
+// What a keyword's values are: strings, ints or bools
+static uint8_t key_dtype(uint8_t level, uint8_t key) {
     switch (key) {
-    case VIAL_KEY_NAME: case VIAL_KEY_ELEMENT: case VIAL_KEY_KIND: case VIAL_KEY_RESNAME: case VIAL_KEY_CHAIN: case VIAL_KEY_ROLE: return true;
-    case VIAL_KEY_ID: return level == VIAL_LEVEL_CHAIN;
-    default: return false;
+    case VIAL_KEY_NAME: case VIAL_KEY_ELEMENT: case VIAL_KEY_KIND: case VIAL_KEY_RESNAME: case VIAL_KEY_CHAIN: case VIAL_KEY_ROLE:
+    case VIAL_KEY_HYBRIDIZATION: return VIAL_DT_STR;
+    case VIAL_KEY_AROMATIC: case VIAL_KEY_METALLIC: return VIAL_DT_BOOL;
+    case VIAL_KEY_ID: return level == VIAL_LEVEL_CHAIN ? VIAL_DT_STR : VIAL_DT_INT;
+    default: return VIAL_DT_INT;
     }
 }
 
 static const char* key_word(uint8_t key) {
-    static const char* words[] = {"", "name", "serial", "element", "kind", "resid", "resname", "chain", "id", "scope", "size", "role"};
+    static const char* words[] = {"", "name", "serial", "element", "kind", "resid", "resname", "chain", "id", "scope", "size", "role",
+                                  "hybridization", "aromatic", "metallic", "hydrogens", "formal_charge"};
     return key < MD_COUNTOF(words) ? words[key] : "";
 }
 
@@ -116,63 +119,138 @@ static bool int_of(const vial_value_t* v, int64_t* out) {
 
 // One value of a keyword, from a node already typed: a string, an int or a range. 1 when known, 0 when not known
 // when compiling, -1 when it is a value the keyword does not take.
-static int match_of(infer_t* x, vial_node_id node, bool wants_str, vial_match_t* m) {
+static int match_of(infer_t* x, vial_node_id node, uint8_t want, vial_match_t* m) {
     const T t = x->out->types[(node) - x->out->base];
     const vial_value_t v = vx_value_of(x, node);
     memset(m, 0, sizeof(*m));
-    if (wants_str) {
+    if (want == VIAL_DT_BOOL) {
+        if (t.dtype != VIAL_DT_BOOL || t.ndim) return -1;
+        if (v.kind != VIAL_VAL_BOOL) return 0;
+        m->kind = VIAL_MATCH_BOOL; m->lo = v.b;
+        return 1;
+    }
+    if (want == VIAL_DT_STR) {
         if (t.dtype != VIAL_DT_STR || t.ndim) return -1;
         if (v.kind != VIAL_VAL_STR) return 0;
-        m->kind = 0; m->s = v.s;
+        m->kind = VIAL_MATCH_STR; m->s = v.s;
         return 1;
     }
     if (t.dtype == VIAL_DT_RANGE && vx_kind(x, node) == VIAL_N_RANGE) {
         const vial_value_t lo = vx_value_of(x, vx_child(x, node, 0)), hi = vx_value_of(x, vx_child(x, node, 1));
         if (!int_of(&lo, &m->lo) || !int_of(&hi, &m->hi)) return 0;
-        m->kind = 2;
+        m->kind = VIAL_MATCH_RANGE;
         return 1;
     }
     if (t.dtype == VIAL_DT_RANGE) return 0;
     if (t.dtype != VIAL_DT_INT || t.ndim) return -1;
     if (!int_of(&v, &m->lo)) return 0;
-    m->kind = 1;
+    m->kind = VIAL_MATCH_INT;
     return 1;
 }
 
-// A keyword's value: one value, or a list of them. Typed already. 1 known, 0 not known, -1 refused (reported).
-static int filter_of(infer_t* x, uint8_t level, uint8_t key, vial_node_id node, vial_filter_t* f) {
-    const bool wants_str = key_takes_str(level, key);
-    const T t = x->out->types[(node) - x->out->base];
-    f->key = key;
-    f->any = NULL;
-    int known = 1;
-    if (vx_kind(x, node) == VIAL_N_LIST && t.ndim == 1) {
-        for (uint32_t i = 0; i < vx_num_children(x, node); ++i) {
-            vial_match_t m;
-            const int r = match_of(x, vx_child(x, node, i), wants_str, &m);
-            if (r < 0) { known = -1; break; }
-            if (r == 0) known = 0;
-            else md_array_push(f->any, m, x->alloc);
-        }
-    } else if (t.ndim == 1 && t.dtype == (wants_str ? VIAL_DT_STR : VIAL_DT_INT)) {
-        known = 0;      // a list from elsewhere: typed, not evaluated here
-    } else {
-        vial_match_t m;
-        known = match_of(x, node, wants_str, &m);
-        if (known == 1) md_array_push(f->any, m, x->alloc);
+static bool is_logic(const infer_t* x, vial_node_id n) {
+    const vial_node_kind_t k = vx_kind(x, n);
+    return k == VIAL_N_BOOLOP || k == VIAL_N_NOT;
+}
+
+// The leaves under and/or/not: false when one is no value a keyword takes (a set, a float), or failed
+static bool logic_leaves_are_values(infer_t* x, vial_node_id n, bool* any_str, uint8_t* stage) {
+    if (is_logic(x, n)) {
+        bool ok = true;
+        for (uint32_t i = 0; i < vx_num_children(x, n); ++i) ok = logic_leaves_are_values(x, vx_child(x, n, i), any_str, stage) && ok;
+        return ok;
     }
+    const T t = vx_infer(x, n);
+    if (vial_type_is_error(&t)) return false;
+    const bool value = (t.ndim == 0 && (t.dtype == VIAL_DT_STR || t.dtype == VIAL_DT_INT || t.dtype == VIAL_DT_RANGE)) ||
+                       (t.ndim == 1 && vx_kind(x, n) == VIAL_N_LIST && (t.dtype == VIAL_DT_STR || t.dtype == VIAL_DT_INT));
+    *any_str = *any_str || t.dtype == VIAL_DT_STR;
+    if (t.stage > *stage) *stage = t.stage;
+    return value;
+}
+
+static void type_logic(infer_t* x, vial_node_id n, const T* t) {
+    if (!is_logic(x, n)) return;
+    x->out->types[(n) - x->out->base] = *t;
+    x->out->typed[(n) - x->out->base] = 1;
+    for (uint32_t i = 0; i < vx_num_children(x, n); ++i) type_logic(x, vx_child(x, n, i), t);
+}
+
+// Whether a keyword's value is and/or/not over the values it takes, as name='H*' and not 'HA', and if so its type. Its
+// leaves are typed as any value is; the and/or/not over them stand for the values they accept, so they are typed as
+// their leaves, a str or an int, and are no expression of their own (strings have no and/or, E0319): nothing of them
+// is lowered. and/or over sets stays their intersection and union, which is no keyword's value.
+static bool value_logic(infer_t* x, vial_node_id n, T* out) {
+    if (!is_logic(x, n)) return false;
+    bool any_str = false;
+    uint8_t stage = VIAL_STAGE_STATIC;
+    if (!logic_leaves_are_values(x, n, &any_str, &stage)) return false;
+    T t = vial_type_scalar(any_str ? VIAL_DT_STR : VIAL_DT_INT);
+    t.stage = stage;
+    type_logic(x, n, &t);
+    *out = t;
+    return true;
+}
+
+// A keyword's value as its expression, appended to *e in prefix order (vial_filter_t): one value, a list (an or of its
+// values), or and/or/not over them. 1 known, 0 not known when compiling, -1 a value the keyword does not take, whose
+// node *bad receives.
+static int expr_of(infer_t* x, vial_node_id node, uint8_t want, vial_match_t** e, vial_node_id* bad) {
+    const T t = x->out->types[(node) - x->out->base];
+    const vial_node_kind_t k = vx_kind(x, node);
+    const bool list = k == VIAL_N_LIST && t.ndim == 1;
+    if (is_logic(x, node) || list) {
+        const uint32_t n = vx_num_children(x, node);
+        const uint8_t mk = list ? VIAL_MATCH_OR : k == VIAL_N_NOT ? VIAL_MATCH_NOT : x->t->nodes[node].sub == VIAL_KW_AND ? VIAL_MATCH_AND : VIAL_MATCH_OR;
+        md_array_push(*e, ((vial_match_t){.kind = mk, .num = n}), x->alloc);
+        int known = 1;
+        for (uint32_t i = 0; i < n; ++i) {
+            const int r = expr_of(x, vx_child(x, node, i), want, e, bad);
+            if (r < 0) return -1;
+            if (r == 0) known = 0;
+        }
+        return known;
+    }
+    if (t.ndim == 1 && t.dtype == want) return 0;   // a list from elsewhere: typed, not evaluated here
+    vial_match_t m;
+    const int r = match_of(x, node, want, &m);
+    if (r < 0) { *bad = node; return -1; }
+    md_array_push(*e, m, x->alloc);
+    return r;
+}
+
+// A keyword's value: one value, a list of them, or and/or/not over them. Typed already. 1 known, 0 not known, -1
+// refused (reported).
+static int filter_of(infer_t* x, uint8_t level, uint8_t key, vial_node_id node, vial_filter_t* f) {
+    const uint8_t want = key_dtype(level, key);
+    f->key = key;
+    f->expr = NULL;
+    vial_node_id bad = node;
+    const int known = expr_of(x, node, want, &f->expr, &bad);
     if (known < 0) {
-        vx_diag_fix(x, "E0206", node, NULL, "`%s` takes %s; this is %s", key_word(key),
-            wants_str ? "a string or a list of strings" : "an int, a range a..b, or a list of ints", vx_tstr(&t));
+        const T bt = x->out->types[(bad) - x->out->base];
+        vx_diag_fix(x, "E0206", bad, NULL, "`%s` takes %s; this is %s", key_word(key),
+            want == VIAL_DT_STR ? "a string, a list of strings, or and/or/not over strings" :
+            want == VIAL_DT_BOOL ? "True or False" : "an int, a range a..b, a list of ints, or and/or/not over them",
+            vx_tstr(&bt));
         return -1;
     }
+    if (key == VIAL_KEY_HYBRIDIZATION && known == 1) {
+        for (size_t i = 0; i < md_array_size(f->expr); ++i) {
+            if (f->expr[i].kind != VIAL_MATCH_STR || vial_select_hybridization_known(f->expr[i].s)) continue;
+            char ex[VIAL_EXCERPT_MAX + 4];
+            const md_str_t e = vial_excerpt(ex, sizeof(ex), f->expr[i].s);
+            vx_diag_fix(x, "E0206", node, NULL, "'%.*s' is not a hybridization; the hybridizations are sp, sp2 and sp3", (int)e.len, e.ptr);
+            return -1;
+        }
+    }
     if (key == VIAL_KEY_KIND && known == 1) {
-        for (size_t i = 0; i < md_array_size(f->any); ++i) {
-            if (vial_select_kind_known(level, f->any[i].s)) continue;
+        for (size_t i = 0; i < md_array_size(f->expr); ++i) {
+            if (f->expr[i].kind != VIAL_MATCH_STR || vial_select_kind_known(level, f->expr[i].s)) continue;
             // A kind that starts the same, such as amino for amino_acid, is offered as the fix
             const char* kinds = vial_select_kinds(level);
             char fix[64] = "";
-            const md_str_t w = f->any[i].s;
+            const md_str_t w = f->expr[i].s;
             for (const char* p = kinds; *p && w.len;) {
                 const char* e = p;
                 while (*e && *e != ',' && *e != ' ') ++e;
@@ -188,10 +266,10 @@ static int filter_of(infer_t* x, uint8_t level, uint8_t key, vial_node_id node, 
         }
     }
     if (key == VIAL_KEY_ROLE && known == 1) {
-        for (size_t i = 0; i < md_array_size(f->any); ++i) {
-            if (vial_select_role_known(f->any[i].s)) continue;
+        for (size_t i = 0; i < md_array_size(f->expr); ++i) {
+            if (f->expr[i].kind != VIAL_MATCH_STR || vial_select_role_known(f->expr[i].s)) continue;
             char ex[VIAL_EXCERPT_MAX + 4];
-            const md_str_t e = vial_excerpt(ex, sizeof(ex), f->any[i].s);
+            const md_str_t e = vial_excerpt(ex, sizeof(ex), f->expr[i].s);
             vx_diag_fix(x, "E0206", node, NULL, "'%.*s' is not a role of groups; the roles are tc, energy, acc, freeze, user1, user2, comm, "
                 "compressed-x, orire-fit and qmmm", (int)e.len, e.ptr);
             return -1;
@@ -224,6 +302,7 @@ static T selector_call(infer_t* x, vial_node_id call, md_str_t name) {
     bool failed = false, known = x->sys != NULL;
     uint32_t num_pos = 0;
     vial_node_id resid_arg = 0;
+    vial_node_id logic_at = 0;      // the first keyword value of and/or/not, which only a selection made when compiling takes
     const uint32_t n = vx_num_children(x, call);
 
     if (level == VIAL_LEVEL_CHAIN && no_chains(x)) { report_no_chains(x, call); failed = true; }
@@ -233,7 +312,9 @@ static T selector_call(infer_t* x, vial_node_id call, md_str_t name) {
         if (!arg) continue;
         if (vx_kind(x, arg) == VIAL_N_KWARG) {
             const vial_node_id kn = vx_child(x, arg, 0), vn = vx_child(x, arg, 1);
-            const T vt = vn ? vx_infer(x, vn) : err();
+            T vt;
+            if (vn && value_logic(x, vn, &vt)) { if (!logic_at) logic_at = vn; }
+            else vt = vn ? vx_infer(x, vn) : err();
             if (!kn || !vn || vial_type_is_error(&vt)) { failed = true; continue; }
             const md_str_t kw = vx_text(x, kn);
             const uint8_t key = vial_select_key(kw);
@@ -273,7 +354,9 @@ static T selector_call(infer_t* x, vial_node_id call, md_str_t name) {
             continue;
         }
         // A positional argument: at most one
-        const T vt = vx_infer(x, arg);
+        T vt;
+        if (value_logic(x, arg, &vt)) { if (!logic_at) logic_at = arg; }
+        else vt = vx_infer(x, arg);
         num_pos += 1;
         if (num_pos > 1) {
             char fix[96] = "";
@@ -365,18 +448,25 @@ static T selector_call(infer_t* x, vial_node_id call, md_str_t name) {
     for (size_t i = 0; polymers && !failed && i < md_array_size(q.filters); ++i) {
         const vial_filter_t* f = &q.filters[i];
         if (f->key != VIAL_KEY_KIND) continue;
-        for (size_t j = 0; j < md_array_size(f->any); ++j) {
+        for (size_t j = 0; j < md_array_size(f->expr); ++j) {
             static const char* strands[] = {"polymer", "peptide", "nucleic", "dna", "rna"};
+            if (f->expr[j].kind != VIAL_MATCH_STR) continue;
             bool ok = false;
-            for (size_t k = 0; k < MD_COUNTOF(strands) && !ok; ++k) ok = md_str_eq(f->any[j].s, md_str_from_cstr(strands[k]));
+            for (size_t k = 0; k < MD_COUNTOF(strands) && !ok; ++k) ok = md_str_eq(f->expr[j].s, md_str_from_cstr(strands[k]));
             if (ok) continue;
             vx_diag_fix(x, "E0206", call, NULL, "'%.*s' is not a kind of polymer; the kinds are polymer, peptide, nucleic, dna and rna",
-                (int)f->any[j].s.len, f->any[j].s.ptr);
+                (int)f->expr[j].s.len, f->expr[j].s.ptr);
             failed = true;
             break;
         }
     }
     if (failed) return err();
+    if (logic_at && (stage.stage != VIAL_STAGE_STATIC || !known)) {
+        // Evaluation takes a keyword's values, and and/or/not over strings is no value
+        vx_diag_fix(x, "E0801", logic_at, NULL, "and/or/not in a keyword's value is resolved when compiling; a selection %s does not take it yet",
+            stage.stage != VIAL_STAGE_STATIC ? "that changes per frame" : "of values not known when compiling");
+        return err();
+    }
     if (stage.stage != VIAL_STAGE_STATIC) return selector_unknown(level, stage.stage, call);
     if (!known) return selector_unknown(level, VIAL_STAGE_STATIC, call);
 
@@ -539,7 +629,7 @@ bool vx_name_is_glob(md_str_t name) {
 static vial_sets_t* select_named(infer_t* x, uint8_t level, md_str_t name) {
     vial_select_t q = {.level = level};
     vial_filter_t f = {.key = VIAL_KEY_NAME};
-    md_array_push(f.any, ((vial_match_t){.kind = 0, .s = name}), x->alloc);
+    md_array_push(f.expr, ((vial_match_t){.kind = VIAL_MATCH_STR, .s = name}), x->alloc);
     md_array_push(q.filters, f, x->alloc);
     return vial_select(x->sys, &q, x->alloc);
 }

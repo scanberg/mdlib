@@ -597,6 +597,8 @@ static const struct { const char* word; uint8_t key; } keywords[] = {
     {"name", VIAL_KEY_NAME}, {"serial", VIAL_KEY_SERIAL}, {"element", VIAL_KEY_ELEMENT}, {"kind", VIAL_KEY_KIND},
     {"resid", VIAL_KEY_RESID}, {"resname", VIAL_KEY_RESNAME}, {"chain", VIAL_KEY_CHAIN}, {"id", VIAL_KEY_ID},
     {"scope", VIAL_KEY_SCOPE}, {"size", VIAL_KEY_SIZE}, {"role", VIAL_KEY_ROLE},
+    {"hybridization", VIAL_KEY_HYBRIDIZATION}, {"aromatic", VIAL_KEY_AROMATIC}, {"metallic", VIAL_KEY_METALLIC},
+    {"hydrogens", VIAL_KEY_HYDROGENS}, {"formal_charge", VIAL_KEY_FORMAL_CHARGE},
 };
 
 uint8_t vial_select_key(md_str_t keyword) {
@@ -608,7 +610,9 @@ uint8_t vial_select_key(md_str_t keyword) {
 static uint32_t takes(uint8_t level) {
     switch (level) {
     case VIAL_LEVEL_PARTICLE: return K(VIAL_KEY_NAME) | K(VIAL_KEY_SERIAL) | K(VIAL_KEY_ELEMENT) | K(VIAL_KEY_KIND) |
-                                     K(VIAL_KEY_RESID) | K(VIAL_KEY_RESNAME) | K(VIAL_KEY_CHAIN) | K(VIAL_KEY_SCOPE);
+                                     K(VIAL_KEY_RESID) | K(VIAL_KEY_RESNAME) | K(VIAL_KEY_CHAIN) | K(VIAL_KEY_SCOPE) |
+                                     K(VIAL_KEY_HYBRIDIZATION) | K(VIAL_KEY_AROMATIC) | K(VIAL_KEY_METALLIC) |
+                                     K(VIAL_KEY_HYDROGENS) | K(VIAL_KEY_FORMAL_CHARGE);
     case VIAL_LEVEL_RESIDUE:  return K(VIAL_KEY_ID) | K(VIAL_KEY_NAME) | K(VIAL_KEY_KIND) | K(VIAL_KEY_CHAIN) | K(VIAL_KEY_SCOPE);
     case VIAL_LEVEL_PART:     return K(VIAL_KEY_KIND) | K(VIAL_KEY_CHAIN) | K(VIAL_KEY_SCOPE);
     case VIAL_LEVEL_MOLECULE: return K(VIAL_KEY_NAME) | K(VIAL_KEY_CHAIN) | K(VIAL_KEY_SCOPE);
@@ -626,7 +630,8 @@ bool vial_select_takes(uint8_t level, uint8_t key) { return key < 32 && (takes(l
 
 const char* vial_select_keywords(uint8_t level) {
     switch (level) {
-    case VIAL_LEVEL_PARTICLE: return "name, serial, element, kind, resid, resname, chain and scope";
+    case VIAL_LEVEL_PARTICLE: return "name, serial, element, kind, resid, resname, chain, hybridization, aromatic, metallic, hydrogens, "
+                                     "formal_charge and scope";
     case VIAL_LEVEL_RESIDUE:  return "id, name, kind, chain and scope";
     case VIAL_LEVEL_PART:     return "kind, chain and scope";
     case VIAL_LEVEL_MOLECULE: return "name, chain and scope";
@@ -697,43 +702,71 @@ bool vial_glob(md_str_t p, md_str_t t) {
     return i == p.len;
 }
 
-static bool match_str(const vial_filter_t* f, md_str_t s, bool glob) {
-    for (size_t k = 0; k < md_array_size(f->any); ++k) {
-        const vial_match_t* m = &f->any[k];
-        if (m->kind != 0) continue;
-        if (glob ? vial_glob(m->s, s) : md_str_eq(m->s, s)) return true;
+// The node at *i and its operands, *i left past them: every operand is walked, also past the one that decides
+static bool holds_at(const vial_match_t* e, uint32_t n, uint32_t* i, bool (*test)(const vial_match_t*, const void*), const void* user) {
+    if (*i >= n) return false;
+    const vial_match_t* m = &e[(*i)++];
+    switch (m->kind) {
+    case VIAL_MATCH_NOT: return !holds_at(e, n, i, test, user);
+    case VIAL_MATCH_AND:
+    case VIAL_MATCH_OR: {
+        bool r = m->kind == VIAL_MATCH_AND;
+        for (uint32_t k = 0; k < m->num; ++k) {
+            const bool b = holds_at(e, n, i, test, user);
+            r = m->kind == VIAL_MATCH_AND ? r && b : r || b;
+        }
+        return r;
     }
-    return false;
+    default: return test(m, user);
+    }
+}
+
+bool vial_filter_holds(const vial_filter_t* f, bool (*test)(const vial_match_t* m, const void* user), const void* user) {
+    uint32_t i = 0;
+    return holds_at(f->expr, (uint32_t)md_array_size(f->expr), &i, test, user);
+}
+
+typedef struct str_test_t { md_str_t s; bool glob; } str_test_t;
+
+static bool test_str(const vial_match_t* m, const void* user) {
+    const str_test_t* t = user;
+    return m->kind == VIAL_MATCH_STR && (t->glob ? vial_glob(m->s, t->s) : md_str_eq(m->s, t->s));
+}
+
+static bool match_str(const vial_filter_t* f, md_str_t s, bool glob) {
+    const str_test_t t = {s, glob};
+    return vial_filter_holds(f, test_str, &t);
 }
 
 // Element symbols ignore case: MG, Mg and mg are magnesium, and no two symbols differ only in case
+static bool test_element(const vial_match_t* m, const void* user) {
+    return m->kind == VIAL_MATCH_STR && md_str_eq_ignore_case(m->s, *(const md_str_t*)user);
+}
+
 static bool match_element(const vial_filter_t* f, md_str_t s) {
-    for (size_t k = 0; k < md_array_size(f->any); ++k) {
-        const vial_match_t* m = &f->any[k];
-        if (m->kind == 0 && md_str_eq_ignore_case(m->s, s)) return true;
-    }
-    return false;
+    return vial_filter_holds(f, test_element, &s);
+}
+
+static bool test_int(const vial_match_t* m, const void* user) {
+    const int64_t v = *(const int64_t*)user;
+    return (m->kind == VIAL_MATCH_INT && m->lo == v) || (m->kind == VIAL_MATCH_RANGE && m->lo <= v && v <= m->hi);
 }
 
 static bool match_int(const vial_filter_t* f, int64_t v) {
-    for (size_t k = 0; k < md_array_size(f->any); ++k) {
-        const vial_match_t* m = &f->any[k];
-        if (m->kind == 1 && m->lo == v) return true;
-        if (m->kind == 2 && m->lo <= v && v <= m->hi) return true;
-    }
-    return false;
+    return vial_filter_holds(f, test_int, &v);
+}
+
+static bool test_part_kind(const vial_match_t* m, const void* user) {
+    if (m->kind != VIAL_MATCH_STR) return false;
+    const uint8_t k = *(const uint8_t*)user;
+    const md_str_t w = m->s;
+    if (md_str_eq(w, MD_STR_LIT("polymer"))) return k >= VIAL_PART_PEPTIDE && k <= VIAL_PART_POLYMER;
+    if (md_str_eq(w, MD_STR_LIT("nucleic"))) return k == VIAL_PART_DNA || k == VIAL_PART_RNA || k == VIAL_PART_NUCLEIC;
+    return md_str_eq(w, md_str_from_cstr(part_kind_name(k)));
 }
 
 static bool match_part_kind(const vial_filter_t* f, uint8_t k) {
-    for (size_t q = 0; q < md_array_size(f->any); ++q) {
-        const vial_match_t* m = &f->any[q];
-        if (m->kind != 0) continue;
-        const md_str_t w = m->s;
-        if (md_str_eq(w, MD_STR_LIT("polymer")) && k >= VIAL_PART_PEPTIDE && k <= VIAL_PART_POLYMER) return true;
-        if (md_str_eq(w, MD_STR_LIT("nucleic")) && (k == VIAL_PART_DNA || k == VIAL_PART_RNA || k == VIAL_PART_NUCLEIC)) return true;
-        if (md_str_eq(w, md_str_from_cstr(part_kind_name(k))) && !md_str_eq(w, MD_STR_LIT("nucleic"))) return true;
-    }
-    return false;
+    return vial_filter_holds(f, test_part_kind, &k);
 }
 
 static bool chain_matches(const vial_sys_t* s, const vial_filter_t* f, int32_t c) {
@@ -774,8 +807,9 @@ static uint8_t* type_mask(const vial_sys_t* s, const vial_select_t* q, md_alloca
             switch (f->key) {
             case VIAL_KEY_NAME: pass = match_str(f, MD_LABEL_STR(sys->atom.type.name[t]), true); break;
             case VIAL_KEY_ELEMENT: {
-                const md_str_t sym = sys->atom.type.z ? md_atomic_number_symbol(sys->atom.type.z[t]) : MD_STR_LIT("");
-                pass = match_element(f, sym);
+                // A bead or a virtual site has no element: it is none of element='s values, also under not
+                const md_atomic_number_t z = sys->atom.type.z ? sys->atom.type.z[t] : 0;
+                pass = z != 0 && match_element(f, md_atomic_number_symbol(z));
                 break;
             }
             case VIAL_KEY_KIND: pass = kind < MD_COUNTOF(particle_kinds) && match_str(f, md_str_from_cstr(particle_kinds[kind]), false); break;
@@ -785,6 +819,71 @@ static uint8_t* type_mask(const vial_sys_t* s, const vial_select_t* q, md_alloca
         ok[t] = pass;
     }
     return ok;
+}
+
+static const char* hybridizations[] = {"sp", "sp2", "sp3"};   // md_hybridization_t from 1, as md_hybridization_name spells it
+
+bool vial_select_hybridization_known(md_str_t hyb) {
+    return in_list(hybridizations, MD_COUNTOF(hybridizations), hyb);
+}
+
+static bool test_bool(const vial_match_t* m, const void* user) {
+    return m->kind == VIAL_MATCH_BOOL && (m->lo != 0) == *(const bool*)user;
+}
+
+// Whether a particle selector has chemistry filters, and what they read made ready: the metallic phases' atoms
+static bool chemistry_filters(vial_sys_t* s, const vial_select_t* q) {
+    bool any = false;
+    for (size_t i = 0; i < md_array_size(q->filters); ++i) {
+        const uint8_t k = q->filters[i].key;
+        if (k < VIAL_KEY_HYBRIDIZATION || k > VIAL_KEY_FORMAL_CHARGE) continue;
+        any = true;
+        if (k == VIAL_KEY_METALLIC && !s->have_metallic) {
+            s->have_metallic = true;
+            s->metallic = md_alloc(s->alloc, s->num_atoms + 1);
+            md_bond_metallic_atoms(s->metallic, &s->sys->bond, s->num_atoms);
+        }
+    }
+    return any;
+}
+
+// The chemistry filters of a particle selector, of each atom: what md_chem_perceive found (hybridization, aromatic, the
+// hydrogens, the formal charge) and the metallic phases (md_bond_metallic_atoms). Only what has an element has
+// chemistry, and a hybridization or a count of hydrogens only where one was perceived (a hydrogen or a metal has no
+// hybridization): what has none is none of a filter's values, also under not, so hybridization=not 'sp3' is the sp and
+// sp2 atoms and never a hydrogen, a bead or a virtual site.
+static bool atom_passes(const vial_sys_t* s, const vial_select_t* q, uint32_t a) {
+    const md_system_t* sys = s->sys;
+    if (md_atom_atomic_number(&sys->atom, a) == 0) return false;
+    const md_atom_flags_t flags = md_system_atom_flags(sys, a);
+    for (size_t i = 0; i < md_array_size(q->filters); ++i) {
+        const vial_filter_t* f = &q->filters[i];
+        switch (f->key) {
+        case VIAL_KEY_HYBRIDIZATION: {
+            const md_hybridization_t h = md_atom_flags_hybridization(flags);
+            if (h == MD_HYBRIDIZATION_UNKNOWN || !match_str(f, md_str_from_cstr(md_hybridization_name(h)), false)) return false;
+            break;
+        }
+        case VIAL_KEY_AROMATIC: {
+            const bool v = (flags & MD_ATOM_FLAG_AROMATIC) != 0;
+            if (!vial_filter_holds(f, test_bool, &v)) return false;
+            break;
+        }
+        case VIAL_KEY_METALLIC: {
+            const bool v = s->metallic && s->metallic[a];
+            if (!vial_filter_holds(f, test_bool, &v)) return false;
+            break;
+        }
+        case VIAL_KEY_HYDROGENS: {
+            const int h = md_atom_hydrogen_count(&sys->atom, a);
+            if (h < 0 || !match_int(f, h)) return false;
+            break;
+        }
+        case VIAL_KEY_FORMAL_CHARGE: if (!match_int(f, md_atom_formal_charge(&sys->atom, a))) return false; break;
+        default: break;
+        }
+    }
+    return true;
 }
 
 static bool residue_passes(const vial_sys_t* s, const vial_select_t* q, uint32_t r) {
@@ -819,8 +918,22 @@ static bool part_passes(const vial_sys_t* s, const vial_select_t* q, uint32_t p)
     return true;
 }
 
-// kind= any of aromatic (every bond aromatic), aliphatic (not), hetero (an atom other than C), heteroaromatic (both),
-// sugar (a furanose or pyranose); size= the number of atoms
+// A ring's kinds are tags, several to a ring: aromatic (every bond aromatic), aliphatic (not), hetero (an atom other than
+// C), heteroaromatic (both), sugar (a furanose or pyranose)
+static bool test_ring_kind(const vial_match_t* m, const void* user) {
+    if (m->kind != VIAL_MATCH_STR) return false;
+    const uint32_t flags = *(const uint32_t*)user;
+    const bool aro = flags & MD_RING_FLAG_AROMATIC, het = flags & MD_RING_FLAG_HETERO;
+    const md_str_t w = m->s;
+    if (md_str_eq(w, MD_STR_LIT("aromatic")))       return aro;
+    if (md_str_eq(w, MD_STR_LIT("aliphatic")))      return !aro;
+    if (md_str_eq(w, MD_STR_LIT("hetero")))         return het;
+    if (md_str_eq(w, MD_STR_LIT("heteroaromatic"))) return het && aro;
+    if (md_str_eq(w, MD_STR_LIT("sugar")))          return flags & MD_RING_FLAG_SUGAR;
+    return false;
+}
+
+// kind= its kinds (test_ring_kind); size= the number of atoms
 static bool ring_passes(const vial_sys_t* s, const vial_select_t* q, uint32_t r) {
     const uint32_t flags = md_system_ring_flags(s->sys, r);
     for (size_t i = 0; i < md_array_size(q->filters); ++i) {
@@ -828,23 +941,24 @@ static bool ring_passes(const vial_sys_t* s, const vial_select_t* q, uint32_t r)
         if (f->key == VIAL_KEY_SIZE) {
             if (!match_int(f, (int64_t)(s->ring_offset[r + 1] - s->ring_offset[r]))) return false;
         } else if (f->key == VIAL_KEY_KIND) {
-            bool any = false;
-            for (size_t k = 0; k < md_array_size(f->any) && !any; ++k) {
-                const md_str_t w = f->any[k].s;
-                const bool aro = flags & MD_RING_FLAG_AROMATIC, het = flags & MD_RING_FLAG_HETERO;
-                if (md_str_eq(w, MD_STR_LIT("aromatic"))) any = aro;
-                else if (md_str_eq(w, MD_STR_LIT("aliphatic"))) any = !aro;
-                else if (md_str_eq(w, MD_STR_LIT("hetero"))) any = het;
-                else if (md_str_eq(w, MD_STR_LIT("heteroaromatic"))) any = het && aro;
-                else if (md_str_eq(w, MD_STR_LIT("sugar"))) any = flags & MD_RING_FLAG_SUGAR;
-            }
-            if (!any) return false;
+            if (!vial_filter_holds(f, test_ring_kind, &flags)) return false;
         }
     }
     return true;
 }
 
-// name= its name, a glob; role= any of the roles it has (md_group_role_name)
+// A group's roles are tags, several to a group (md_group_role_name)
+static bool test_group_role(const vial_match_t* m, const void* user) {
+    if (m->kind != VIAL_MATCH_STR) return false;
+    const uint32_t roles = *(const uint32_t*)user;
+    for (int r = 0; r < MD_GROUP_ROLE_COUNT; ++r) {
+        if ((roles & (1u << r)) && md_str_eq(m->s, md_str_from_cstr(md_group_role_name((md_group_role_t)r)))) return true;
+    }
+    return false;
+}
+
+// name= its name, a glob; role= its roles (test_group_role). A group of an index file has no role, so no role= holds
+// for it, also under not
 static bool group_passes(const vial_sys_t* s, const vial_select_t* q, uint32_t u) {
     const md_group_data_t* g = &s->sys->group;
     for (size_t i = 0; i < md_array_size(q->filters); ++i) {
@@ -852,13 +966,8 @@ static bool group_passes(const vial_sys_t* s, const vial_select_t* q, uint32_t u
         if (f->key == VIAL_KEY_NAME) {
             if (!match_str(f, g->name[u], true)) return false;
         } else if (f->key == VIAL_KEY_ROLE) {
-            bool any = false;
-            for (size_t k = 0; k < md_array_size(f->any) && !any; ++k) {
-                for (int r = 0; r < MD_GROUP_ROLE_COUNT && !any; ++r) {
-                    any = (g->roles[u] & (1u << r)) && md_str_eq(f->any[k].s, md_str_from_cstr(md_group_role_name((md_group_role_t)r)));
-                }
-            }
-            if (!any) return false;
+            const uint32_t roles = g->roles[u];
+            if (!roles || !vial_filter_holds(f, test_group_role, &roles)) return false;
         }
     }
     return true;
@@ -877,9 +986,9 @@ static uint32_t* group_order(vial_sys_t* s, const vial_select_t* q, uint32_t* n,
     uint32_t* order = md_alloc(alloc, (s->num_groups + 1) * sizeof(uint32_t));
     for (size_t i = 0; i < md_array_size(q->filters); ++i) {
         const vial_filter_t* f = &q->filters[i];
-        if (f->key != VIAL_KEY_ROLE || md_array_size(f->any) != 1) continue;
+        if (f->key != VIAL_KEY_ROLE || md_array_size(f->expr) != 1 || f->expr[0].kind != VIAL_MATCH_STR) continue;
         for (int r = 0; r < MD_GROUP_ROLE_COUNT; ++r) {
-            if (!md_str_eq(f->any[0].s, md_str_from_cstr(md_group_role_name((md_group_role_t)r)))) continue;
+            if (!md_str_eq(f->expr[0].s, md_str_from_cstr(md_group_role_name((md_group_role_t)r)))) continue;
             size_t num;
             const uint32_t* role_order = md_system_group_role_order(g, (md_group_role_t)r, &num);
             uint32_t k = 0;
@@ -935,6 +1044,7 @@ static vial_sets_t* select_particles_of(vial_sys_t* s, const vial_select_t* q, m
     const uint32_t* items = vial_sets_items(q->within, 0);
     const uint32_t n = vial_sets_size(q->within, 0);
     const uint8_t* types = type_mask(s, q, alloc);
+    const bool chem = chemistry_filters(s, q);
     const uint64_t* scope = q->scope ? bitmap(q->scope, s->num_atoms, alloc) : NULL;
     vial_sets_t* out = sets_new(1, n, alloc);
     out->single = true;
@@ -953,6 +1063,7 @@ static vial_sets_t* select_particles_of(vial_sys_t* s, const vial_select_t* q, m
             const md_particle_type_idx_t t = sys->atom.type_idx[a];
             if ((uint32_t)t >= s->num_types || !types[t]) continue;
         }
+        if (chem && !atom_passes(s, q, a)) continue;
         out->idx[w++] = a;
     }
     out->offset[1] = w;
@@ -970,6 +1081,7 @@ vial_sets_t* vial_select(vial_sys_t* s, const vial_select_t* q, md_allocator_i* 
         // lookup of its type's mask
         const md_system_t* sys = s->sys;
         const uint8_t* types = type_mask(s, q, alloc);
+        const bool chem = chemistry_filters(s, q);
         const uint32_t num_units = s->num_res ? s->num_res : 1;
         // The residues that pass, and room for their particles: a selection costs its size, not the system's
         uint32_t room = 0;
@@ -994,6 +1106,7 @@ vial_sets_t* vial_select(vial_sys_t* s, const vial_select_t* q, md_allocator_i* 
                     const md_particle_type_idx_t t = sys->atom.type_idx[a];
                     if ((uint32_t)t >= s->num_types || !types[t]) continue;
                 }
+                if (chem && !atom_passes(s, q, a)) continue;
                 out->idx[n++] = a;
             }
         }
