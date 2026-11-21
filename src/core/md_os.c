@@ -473,12 +473,10 @@ size_t md_path_write_exe(char* buf, size_t buf_cap) {
         return 0;
     }
     const size_t len = utf16_to_utf8_path(buf, buf_cap, w_buf, (int)w_len);
-    if (len == 0) {
-        MD_LOG_ERROR("Failed to get path to executable");
-        return 0;
+    if (len > 0) {
+        md_chars_replace(buf, len, '\\', '/');
+        return len;
     }
-    md_chars_replace(buf, len, '\\', '/');
-    return len;
 #elif MD_PLATFORM_LINUX
     const ssize_t res = readlink("/proc/self/exe", buf, buf_cap - 1);
     if (res != -1) {
