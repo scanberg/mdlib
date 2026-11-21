@@ -57,6 +57,12 @@ typedef struct vial_interp_t {
         uint64_t                epoch, key;
         struct md_bond_delta_t* delta;
     } bond_delta;
+    // The hydrogen bonds' query (md_hbond_query_init) for the set bond() reads them within, by key: of the topology alone,
+    // so made once for a set that stays, and again for one that changes. Freed with the interpreter.
+    struct {
+        uint64_t                key;
+        struct md_hbond_query_t* query;
+    } hbond;
     size_t                      max_elements;   // the most elements one value may have (R0105); 0 for the default
     vial_val_t*                 vals;       // md_array by ssa
     uint8_t*                    state;      // md_array by ssa: 0 not computed, 1 computed for this frame, 2 static

@@ -639,7 +639,7 @@ UTEST_F(vial_check, bond_keywords) {
     EXPECT_TYPE_ON(T, "n = len(bond(kind='covalent' or 'coordinate'))\n", 1, "int, static = 7085");
     EXPECT_TYPE_ON(T, "n = len(bond(kind='covalent'))\n", 1, "int, static = 7078");
     EXPECT_TYPE_ON(T, "n = len(bond(kind='coordinate'))\n", 1, "int, static = 7");     // MG and its ligands
-    EXPECT_TYPE_ON(T, "n = len(bond(kind='noncovalent'))\n", 1, "int, static = 0");
+    EXPECT_TYPE_ON(T, "n = len(bond(kind='noncovalent'))\n", 1, "int, frame");   // hydrogen bonds are found per frame
     // An order is one value per bond: a resonance's word, else 1 to 3; the coordinate bonds have none
     EXPECT_TYPE_ON(T, "n = len(bond(order=1))\n", 1, "int, static = 5078");
     EXPECT_TYPE_ON(T, "n = len(bond(order=2))\n", 1, "int, static = 946");
@@ -667,6 +667,13 @@ UTEST_F(vial_check, bond_keywords) {
     EXPECT_DIAGS_ON(T, "b = bond(within(5.0, of=particle(resname='GTP')), order=not 1)\n",
         "E0801 1: and/or/not in a keyword's value is resolved when compiling; a selection that changes per frame does not take it yet\n");
     EXPECT_TYPE_ON(T, "b = bond(within(5.0, of=particle(resname='GTP')), order=['aromatic', 'delocalized'])\n", 1, "set[?][2], frame");
+    // Hydrogen bonds are found at each frame; T has no hydrogens on its N and O to find them with
+    EXPECT_TYPE_ON(P, "h = bond(kind='hydrogen')\n", 1, "set[?][2], frame");
+    EXPECT_DIAGS_ON(P, "h = bond(kind='hydrogen')\n", "");
+    EXPECT_DIAGS_ON(T, "h = bond(kind='hydrogen')\n", "W0601 1: `bond(kind='hydrogen')` finds no hydrogen bonds: the system's N and O carry no hydrogens\n");
+    EXPECT_TYPE_ON(P, "h = bond(kind='hydrogen', origin='user')\n", 1, "set[0][2], static");
+    EXPECT_DIAGS_ON(P, "h = bond(kind='hydrogen' or 'covalent')\n", "E0801 1: and/or/not in a keyword's value is resolved when compiling; hydrogen bonds, "
+        "found per frame, do not take it yet: a list takes its place\n");
     // The bonds of each frame against the system's, with an atom in s
     EXPECT_TYPE_ON(T, "f = formed(particle(resname='GTP'))\n", 1, "set[?][2], frame");
     EXPECT_TYPE_ON(T, "f = broken(tolerance=0.2, breakable=['file', 'inferred', 'topology'])\n", 1, "set[?][2], frame");

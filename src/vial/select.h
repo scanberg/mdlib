@@ -262,6 +262,9 @@ bool        vial_select_bond_origin_known(md_str_t origin);
 // flattened, as bond() gives it.
 vial_sets_t* vial_select_bonds(const vial_sys_t* s, const vial_sets_t* within, const vial_filter_t* filters, size_t num_filters,
                                md_allocator_i* alloc);
+// Whether the filters let a hydrogen bond computed for a frame through (kind hydrogen, origin inferred, no order): such
+// bonds are found at each frame from the geometry (md_hbond), besides the hydrogen bonds the system holds
+bool         vial_select_bonds_hydrogen(const vial_filter_t* filters, size_t num_filters);
 
 // The predefined sets: protein, nucleic, water, ion, lipid, backbone, sidechain, system; NULL for another name
 vial_sets_t* vial_select_predefined(vial_sys_t* s, md_str_t name, md_allocator_i* alloc);

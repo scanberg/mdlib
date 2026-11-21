@@ -92,6 +92,7 @@ UTEST(vial_ir, lowers_and_verifies) {
 #include <md_gro.h>
 #include <md_tpr.h>
 #include <md_trr.h>
+#include <md_hbond.h>
 #include <md_mmcif.h>
 #include <md_attributes.h>
 #include <md_infer.h>
@@ -1918,6 +1919,74 @@ UTEST(vial_ir, bonds_per_frame) {
     snprintf(b, sizeof(b), "bond(%s, kind=['coordinate'])", near);
     EXPECT_TRUE(vial_ir__same_sets("bond(kind='coordinate')", b, T, Ts, alloc, &n));
     EXPECT_EQ(14u, n);
+    md_arena_allocator_destroy(alloc);
+}
+
+// bond(kind='hydrogen') finds the hydrogen bonds of each frame from the geometry (md_hbond), of origin inferred
+UTEST(vial_ir, hydrogen_bonds_per_frame) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
+    // Two waters, the hydrogen H1 of the first pointing at the oxygen of the second, 2.8 Å apart
+    static const char pdb[] =
+        "HETATM    1  O   HOH A   1       0.000   0.000   0.000  1.00  0.00           O\n"
+        "HETATM    2  H1  HOH A   1       0.960   0.000   0.000  1.00  0.00           H\n"
+        "HETATM    3  H2  HOH A   1      -0.240   0.930   0.000  1.00  0.00           H\n"
+        "HETATM    4  O   HOH A   2       2.800   0.000   0.000  1.00  0.00           O\n"
+        "HETATM    5  H1  HOH A   2       3.040   0.930   0.000  1.00  0.00           H\n"
+        "HETATM    6  H2  HOH A   2       3.040  -0.930   0.000  1.00  0.00           H\n"
+        "END\n";
+    md_system_t sys = {.alloc = alloc};
+    md_system_state_t st = {.alloc = alloc};
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, md_str_from_cstr(pdb), NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
+    const md_vial_filter_desc_t at0 = {.sys = &sys, .state = &st};
+    md_vial_filter_t f;
+    // One, H...A, the hydrogen first
+    ASSERT_TRUE(md_vial_filter(&f, MD_STR_LIT("bond(kind='hydrogen')"), &at0, alloc));
+    ASSERT_EQ(2u, f.num_sets);
+    EXPECT_EQ(1u, f.atoms[f.offsets[0]]);
+    EXPECT_EQ(3u, f.atoms[f.offsets[1]]);
+    ASSERT_TRUE(md_vial_filter(&f, MD_STR_LIT("bond(kind='noncovalent', origin='inferred')"), &at0, alloc));
+    EXPECT_EQ(2u, f.num_sets);
+    // Both ends in the set
+    ASSERT_TRUE(md_vial_filter(&f, MD_STR_LIT("bond(residue[1], kind='hydrogen')"), &at0, alloc));
+    EXPECT_EQ(0u, f.num_sets);
+    ASSERT_TRUE(md_vial_filter(&f, MD_STR_LIT("bond(particle[1] or residue[1], kind='hydrogen')"), &at0, alloc));
+    EXPECT_EQ(2u, f.num_sets);
+    // Of origin inferred and no order: origin='user' and order= keep them out
+    ASSERT_TRUE(md_vial_filter(&f, MD_STR_LIT("bond(kind='hydrogen', origin='user')"), &at0, alloc));
+    EXPECT_EQ(0u, f.num_sets);
+    ASSERT_TRUE(md_vial_filter(&f, MD_STR_LIT("bond(kind=['hydrogen', 'covalent'], order=1)"), &at0, alloc));
+    EXPECT_EQ(8u, f.num_sets);      // the four O-H
+    md_system_free(&sys);
+
+    // Per frame over a run: what md_hbond finds in each of P's 38 frames
+    const md_system_t* P = vial_test_system('P');
+    const int64_t nf = vial_test_run('P');
+    ASSERT_TRUE(P && nf > 0);
+    md_vial_program_t* prog = md_vial_compile(MD_STR_LIT("n = len(bond(kind='hydrogen'))\n"), &(md_vial_compile_desc_t){.sys = P, .run = MD_STR_LIT("run")}, alloc);
+    ASSERT_TRUE(prog != NULL);
+    md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = P, .run = MD_STR_LIT("run"), .executor = test_executor_of_threads(2)}, alloc);
+    ASSERT_TRUE(e && md_vial_eval_run(e));
+    const md_attribute_t* a = md_attributes_find(md_vial_eval_attributes(e), MD_STR_LIT("script/n"));
+    ASSERT_TRUE(a && a->data);
+    ASSERT_EQ((uint32_t)nf, a->format.shape[0]);
+    const md_str_t paths[] = {MD_STR_LIT("atom/position"), MD_STR_LIT("unitcell")};
+    md_system_extract_t* ex = md_system_extract_begin(P, MD_STR_LIT("run"), paths, 2, alloc);
+    ASSERT_TRUE(ex != NULL);
+    md_system_state_t fs = {.alloc = alloc};
+    md_system_state_init(&fs, P->atom.count);
+    int32_t total = 0;
+    for (int64_t fi = 0; fi < nf; ++fi) {
+        ASSERT_TRUE(md_system_extract_frame(ex, fi, &fs));
+        md_hbond_set_t hs = {0};
+        ASSERT_TRUE(md_hbond_compute(&hs, &(md_hbond_desc_t){0}, P, &fs, alloc));
+        EXPECT_EQ((int32_t)hs.count, ((const int32_t*)a->data)[fi]);
+        total += (int32_t)hs.count;
+    }
+    md_system_extract_end(ex);
+    EXPECT_GT(total, 0);
+    md_vial_eval_free(e);
+    md_vial_program_free(prog);
     md_arena_allocator_destroy(alloc);
 }
 
@@ -4025,5 +4094,6 @@ UTEST(vial_ir, sets_described) {
     }
     md_arena_allocator_destroy(alloc);
 }
+
 
 

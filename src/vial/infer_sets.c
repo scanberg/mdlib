@@ -11,6 +11,7 @@
 #include <md_system.h>
 #include <md_match.h>
 #include <md_attributes.h>
+#include <md_hbond.h>
 #include <md_smiles.h>
 #include <md_element.h>
 #include <core/md_bitset.h>
@@ -1410,6 +1411,30 @@ static T call_bonds(infer_t* x, vial_node_id call) {
     t.stage = st.stage;
     const vial_value_t sv = sn ? vx_value_of(x, sn) : (vial_value_t){0};
     const bool all = !sn || st.dtype == VIAL_DT_NONE;
+    // Hydrogen bonds are found at each frame from the geometry (md_hbond), where the filters let one through, as of
+    // kind='hydrogen' with no origin= or order= to keep them out: the bonds are then per frame
+    if (vial_select_bonds_hydrogen(q.filters, md_array_size(q.filters))) {
+        if (logic_at) {
+            vx_diag_fix(x, "E0801", logic_at, NULL, "and/or/not in a keyword's value is resolved when compiling; hydrogen bonds, found per frame, "
+                "do not take it yet: a list takes its place");
+            return err();
+        }
+        if (x->sys) {
+            md_hbond_query_t hq = {0};
+            md_temp_scope_t temp = md_temp_begin_avoid(x->alloc);
+            const bool none = md_hbond_query_init(&hq, &(md_hbond_desc_t){0}, x->sys->sys, md_temp_allocator(temp)) && (hq.flags & MD_HBOND_FLAG_NO_HYDROGENS);
+            md_temp_end(temp);
+            if (none) {
+                char ex[VIAL_EXCERPT_MAX + 4];
+                const md_str_t e = vial_excerpt(ex, sizeof(ex), vx_text(x, call));
+                vx_diag_fix(x, "W0601", call, NULL, "`%.*s` finds no hydrogen bonds: the system's N and O carry no hydrogens", (int)e.len, e.ptr);
+            }
+        }
+        t.stage = VIAL_STAGE_FRAME;
+        vial_type_push_dim(&t, (vial_extent_t){.kind = VIAL_EXT_DYNAMIC, .id = (uint32_t)call});
+        vial_type_push_dim(&t, vial_extent_static(2));
+        return t;
+    }
     if (!x->sys || st.stage != VIAL_STAGE_STATIC || (!all && sv.kind != VIAL_VAL_SETS) || !known) {
         // and/or/not is resolved when compiling, as for a selector
         if (logic_at && x->sys && st.stage != VIAL_STAGE_STATIC) {

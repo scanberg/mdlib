@@ -11,6 +11,7 @@
 #include "accum.h"
 
 #include <md_system.h>
+#include <md_hbond.h>
 
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
@@ -242,6 +243,7 @@ static bool eval_mcs(vial_interp_t* in, uint32_t opi) {
 
 void vial_interp_free(vial_interp_t* in) {
     free_accums(in);
+    if (in->hbond.query) { md_hbond_query_free(in->hbond.query); md_free(md_get_heap_allocator(), in->hbond.query, sizeof(md_hbond_query_t)); }
     for (int d = 0; d < VIAL_MAP_SCRATCH_DEPTH; ++d) if (in->map_scratch[d]) md_vm_arena_destroy(in->map_scratch[d]);
     if (in->temp) md_vm_arena_destroy(in->temp);
     if (in->alloc) md_arena_allocator_destroy(in->alloc);

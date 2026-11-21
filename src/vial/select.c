@@ -1477,6 +1477,11 @@ static bool bond_passes(md_bond_flags_t f, const vial_filter_t* filters, size_t 
     return kind_given || md_bond_is_graph(f);
 }
 
+bool vial_select_bonds_hydrogen(const vial_filter_t* filters, size_t num_filters) {
+    const md_bond_flags_t f = md_bond_flags_set_origin(md_bond_flags_set_kind(MD_BOND_FLAG_NONE, MD_BOND_KIND_HYDROGEN), MD_BOND_ORIGIN_INFERRED);
+    return bond_passes(f, filters, num_filters);
+}
+
 vial_sets_t* vial_select_bonds(const vial_sys_t* s, const vial_sets_t* within, const vial_filter_t* filters, size_t num_filters,
                                md_allocator_i* alloc) {
     const md_system_t* sys = s->sys;
