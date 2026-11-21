@@ -294,6 +294,7 @@ Names are singular, as every function's is, whatever the shape of what they give
 |  | `resid` | the number of its residue in the file | int, `a..b` or a list |
 |  | `resname` | the name of its residue | string with `*` and `?`, or a list |
 |  | `chain` | the author id of its chain | string or list |
+|  | `role` | its roles: backbone, main, side, base, sugar, terminus, n\_terminus, c\_terminus, 5\_terminus, 3\_terminus, qm; see Roles | string or list |
 |  | `hybridization` | sp, sp2 or sp3, as perceived from the bonds; a hydrogen or a metal has none | string or list |
 |  | `aromatic` | in an aromatic ring | True or False |
 |  | `metallic` | of a metallic phase: an atom of a metallic bond | True or False |
@@ -342,6 +343,33 @@ no_hyb = count(atom(hybridization='sp' and 'sp3'))     # warning W0601 -> 0: an 
 str_or = 'sp' or 'sp3'                                 # error E0319: strings have no or outside a keyword's value
 ```
 
+### Roles
+
+A particle's roles are what it is to its strand and its simulation, several to a particle, so `role=` takes `and` as all of them. `'backbone'` is what a strand runs through, the least that its secondary structure and geometry are derived from: N, CA and C of an amino acid, as GROMACS's Backbone group has it (VMD, MDAnalysis and PyMOL add the carbonyl O, which has no role here), and P, O5', C5', C4', C3' and O3' of a nucleotide. `'main'` is the backbone and what of its residue hangs off it that is no side: an amino acid's main chain as GROMACS's MainChain has it, N, CA, C, O and the C-terminal oxygens, with the hydrogens on them, H, HA and the N-terminal ones; a nucleotide's sugar-phosphate chain with its phosphate oxygens and the hydrogens of its terminal hydroxyls. `'side'` is an amino acid's side chain, from CB outwards, and a nucleotide's nucleoside, its sugar and base, with their hydrogens and a ribose's O2'. HA is no part of the side, though GROMACS's SideChain, every atom of the protein but its main chain, holds it: it is on CA, and a hydrogen goes with its atom. A nucleotide's levels nest, the nucleoside over its base, so `'base'` and `'sugar'` split its side finer; the sugar's C3' and C4' are its backbone too, and `role='side' and not 'backbone'` is what of it is off the chain. `'n_terminus'` and `'c_terminus'` are the end groups of a peptide strand, `'5_terminus'` and `'3_terminus'` those of a nucleic acid, and `'terminus'` either end of any strand. `'qm'` is the QM region the data gives, as `group(role='qmmm')` is the group of it in a GROMACS run. Every particle has its roles, none for most of a solvent, so `role=not 'qm'` is the MM part, waters included. Roles come from the bonds, also for the beads of the coarse-grained types mdlib knows, so `role=` holds for beads too.
+
+```python
+# on T
+side_a = count(particle(role='side', chain='A'))           # -> 1661
+sc_a   = count(sidechain and particle(chain='A'))          # -> 1661: the same, as other tools name it
+bb_a   = count(particle(role='backbone', chain='A'))       # -> 1299: N, CA and C of 433 amino acids
+ends   = count(particle(role='terminus'))                  # -> 6
+qm     = count(particle(role='qm'))                        # warning W0601 -> 0: T has no QM region
+mm     = count(particle(role=not 'qm'))                    # -> 6927: every particle
+sc_r   = particle(role='sidechain')                        # error E0206: the roles are backbone, side, base, sugar, ...
+```
+
+```python
+# on P
+n_end  = count(atom(role='n_terminus'))                    # -> 4: N and its three hydrogens
+c_end  = count(atom(role='c_terminus'))                    # -> 3
+ends   = count(atom(role='terminus'))                      # -> 7
+bb_n   = count(atom(role='backbone' and 'n_terminus'))     # -> 1: the N
+main   = count(atom(role='main'))                          # -> 93: N, CA, C, O and OXT, with H, HA and the N-terminal hydrogens
+whole  = count(atom(role='main' or 'side'))                # -> 153: every atom, as P has no caps
+both   = count(atom(role='main' and 'side'))               # warning W0601 -> 0: an amino acid's side starts at CB
+end_5  = count(atom(role='5_terminus'))                    # warning W0601 -> 0: P is a peptide
+```
+
 ### Chemistry
 
 A particle's chemistry is what mdlib perceives from the bonds: each atom's hybridization, whether it is aromatic, the hydrogens it carries and its formal charge, and the metallic phases from the metallic bonds. Only an atom has chemistry, so none of these keywords matches a bead or a virtual site, also under `not`; a hybridization is perceived for a heavy atom of the bonds, so a hydrogen or a metal has none, and its count of hydrogens is the explicit ones plus those a file without hydrogens implies, as T's are. viamd's tooltip of an atom lists the same keywords with the values it has, as a script writes them.
@@ -367,6 +395,12 @@ no_h   = count(atom(hydrogens=0))                          # -> 108: the 77 hydr
 nh3    = count(atom(element='N', hydrogens=3))             # -> 1: the N-terminus
 q      = count(atom(formal_charge=not 0))                  # -> 2: the N-terminal N+ and a C-terminal O-
 n_pos  = count(atom(formal_charge=+1))                    # -> 1: +1 as the tooltip writes it
+hyb    = hybridization(particle)                          # -> str[153]
+k      = kind(particle)                                   # -> str[153]
+q_net  = sum(formal_charge(particle))                     # -> 0: the two charges cancel
+sp2    = particle[hybridization(particle) == 'sp2']       # -> set
+aro    = aromatic(particle)                               # -> bool[153]
+h_c    = sum(hydrogens(atom(element='C')))                # -> 60: CA's one and CB's three, of fifteen alanines
 ```
 
 The kinds of a part: `polymer` is any polymer strand, `peptide`, `nucleic`, `dna` and `rna` the strands of those kinds (`nucleic` is DNA, RNA or a hybrid), and `glycan` a tree of saccharides or one sugar. A part that is no polymer is a `lipid` when its residues are lipids, an `ion` when it is one ion, a `water`, or else a `ligand`. A molecule has no kind of its own, since a glycoprotein holds a strand and its glycans: select the parts, and `molecule(part(kind='peptide'))` gives the molecules they are in.
@@ -398,7 +432,7 @@ lys  = group('Protein').residue(name='LYS')            # -> set[n]: the lysines,
 
 ### Predefined names
 
-`protein`, `nucleic`, `water`, `ion`, `lipid`, `backbone`, `sidechain`, `nucleobase` and `nucleoside` are sets: `protein` is the particles of the peptide parts, with their caps and the modified residues bonded into them, `nucleic` those of the nucleic acid parts, and `water`, `ion` and `lipid` those of the parts of that kind. `backbone` is N, CA and C of the amino acids and the sugar-phosphate chain of the nucleotides, `sidechain` an amino acid's atoms from CB outwards, `nucleobase` the base of a nucleotide and `nucleoside` its sugar and base. A lipid's anatomy is units, not kinds, since a lipid has two tails or, a bolalipid, two heads: `head` and `tail` are selectors, and `particle(head)` and `particle(tail)` all of them as one set. `system` is every particle, whatever the scope; `system('name')` names another loaded system once viamd holds several.
+`protein`, `nucleic`, `water`, `ion`, `lipid`, `backbone`, `sidechain`, `nucleobase` and `nucleoside` are sets: `protein` is the particles of the peptide parts, with their caps and the modified residues bonded into them, `nucleic` those of the nucleic acid parts, and `water`, `ion` and `lipid` those of the parts of that kind. `backbone` is N, CA and C of the amino acids and the sugar-phosphate chain of the nucleotides, `sidechain` an amino acid's atoms from CB outwards, `nucleobase` the base of a nucleotide and `nucleoside` its sugar and base: shortcuts for roles, as other tools name them (see Roles), `backbone` being `particle(role='backbone')`, `sidechain` the amino acids' share of `particle(role='side')`, `nucleobase` `particle(role='base')` and `nucleoside` the nucleotides' share of `particle(role='side')`. A lipid's anatomy is units, not kinds, since a lipid has two tails or, a bolalipid, two heads: `head` and `tail` are selectors, and `particle(head)` and `particle(tail)` all of them as one set. `system` is every particle, whatever the scope; `system('name')` names another loaded system once viamd holds several.
 
 ### Scope
 
@@ -740,6 +774,7 @@ Keywords mean the same wherever they appear. `weights=` takes `'mass'`, `None` o
 | --- | --- | --- |
 | `s.xyz` | `float[n][3]` Å | frame stage; n is `count(s)`. On coordinates, a float array whose last dimension is 3, itself. On an array of sets that each hold one particle, one position per set; on other arrays of sets E0318, since their positions do not form one array: `particle(res_a).xyz` merges them, and a def with a `points` or `group` parameter maps over them |
 | `mass(s)`, `charge(s)`, `element(s)`, `name(s)`, `bfactor(s)` | `float[n]` u, e, or `str[n]` | per-particle properties of a set; static, except `bfactor` where the file gives one per frame |
+| `kind(s)`, `hybridization(s)`, `aromatic(s)`, `metallic(s)`, `hydrogens(s)`, `formal_charge(s)` | `str[n]`, `bool[n]` or `int[n]` | the value of each particle for the keyword of `particle` of that name, spelt as the keyword takes it; static. Defined for every particle: what has no such property, a bead's hybridization or a hydrogen's, gives `''`, `False` or `0` |
 | `particle(x)` on an array | `set` | the particles an array's first particle dimension describes, so `mass(particle(fit(s.xyz, ref)))` works after a fit; an array with no such dimension is E0311 |
 | `s.com`, `com(s, weights='mass')` | `float[3]` Å | the centre of mass, periodic-aware: the mean of the points placed in the images nearest it, seeded from their circular mean, so for a group smaller than half the cell it is the mean of the group made whole, wherever the trajectory wrapped it; takes a set or points, and maps over arrays of sets. `com(s, weights=None)` is the centre of geometry, `centroid(s)`; `weights=` is as everywhere, below |
 | `weight(p, weights='mass')` | `float[n]` | one weight per point of p, as `weights=` means it everywhere: the particles' masses (u) for `'mass'`, ones for None, or the array given. What the prelude's defs weigh with, and a def of your own can |

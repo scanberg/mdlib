@@ -551,6 +551,16 @@ UTEST_F(vial_check, keyword_logic) {
     EXPECT_DIAGS_ON(P, "b = bead(hydrogens=0)\n", "W0601 1: `bead(hydrogens=0)` matches nothing in its scope\n");
     EXPECT_DIAGS_ON(T, "a = atom(aromatic=not True, metallic=False)\nb = atom(aromatic=1)\n",
         "E0206 2: `aromatic` takes True or False; this is int\n");
+    // Roles: a particle's, and a group's, each its own
+    EXPECT_DIAGS_ON(T, "s = particle(role='sidechain')\n", "E0206 1: 'sidechain' is not a role of particles; the roles are backbone, main, side, base, sugar, "
+        "terminus, n_terminus, c_terminus, 5_terminus, 3_terminus and qm\n");
+    EXPECT_DIAGS_ON(T, "s = particle(role='energy')\n", "E0206 1: 'energy' is not a role of particles; the roles are backbone, main, side, base, sugar, "
+        "terminus, n_terminus, c_terminus, 5_terminus, 3_terminus and qm\n");
+    EXPECT_TYPE_ON(T, "r = residue(particle(role='side' and not 'backbone'))\n", 1, "set[802], static");
+    EXPECT_TYPE_ON(P, "v = hybridization(particle)\nw = aromatic(particle)\nn = hydrogens(particle)\n", 3, "int[153], static");
+    EXPECT_TYPE_ON(P, "v = hybridization(particle)\n", 1, "str[153], static");
+    EXPECT_TYPE_ON(P, "w = aromatic(residue[0])\n", 1, "bool[12], static");
+    EXPECT_DIAGS_ON(P, "k = kind(residue)\n", "E0318 1: `residue` holds sets whose sizes may differ; their particles' kinds do not form one array | kind(particle(residue))\n");
 }
 
 UTEST_F(vial_check, selectors_without_a_system) {

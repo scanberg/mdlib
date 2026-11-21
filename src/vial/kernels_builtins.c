@@ -679,20 +679,52 @@ static bool k_property(vial_kctx_t* k, const char* name, const vial_val_t* s, vi
     }
     const uint32_t n = vial_sets_size(s->sets, 0);
     const uint32_t* idx = vial_sets_items(s->sets, 0);
-    const bool str = !strcmp(name, "name") || !strcmp(name, "element");
-    vial_val_t o; if (!vial_k_make(k, str ? VIAL_DT_STR : VIAL_DT_FLOAT, 1, &n, &o)) return false;
-    const md_attribute_t* charges = !strcmp(name, "charge") ? md_attributes_find(&sys->attributes, MD_STR_LIT("atom/charge")) : NULL;
-    const float* cq = charges ? md_attribute_view(charges, MD_ATTRIBUTE_TYPE_F32, 1, 1) : NULL;
-    const int which = !strcmp(name, "mass") ? 0 : !strcmp(name, "charge") ? 1 : !strcmp(name, "name") ? 2 : !strcmp(name, "element") ? 3 : -1;
+    enum { P_MASS, P_CHARGE, P_NAME, P_ELEMENT, P_KIND, P_HYBRIDIZATION, P_AROMATIC, P_METALLIC, P_HYDROGENS, P_FORMAL_CHARGE };
+    static const char* names[] = {"mass", "charge", "name", "element", "kind", "hybridization", "aromatic", "metallic", "hydrogens", "formal_charge"};
+    int which = -1;
+    for (int p = 0; p < (int)MD_COUNTOF(names) && which < 0; ++p) if (!strcmp(name, names[p])) which = p;
     if (which < 0) return vial_rt_fail(k, "R0103", "%s is not evaluated yet", name);
-    const float* ms = which == 0 ? k_masses(k) : NULL;
+    const uint8_t dt = which == P_NAME || which == P_ELEMENT || which == P_KIND || which == P_HYBRIDIZATION ? VIAL_DT_STR :
+                       which == P_AROMATIC || which == P_METALLIC ? VIAL_DT_BOOL :
+                       which == P_HYDROGENS || which == P_FORMAL_CHARGE ? VIAL_DT_INT : VIAL_DT_FLOAT;
+    vial_val_t o; if (!vial_k_make(k, dt, 1, &n, &o)) return false;
+    const md_attribute_t* charges = which == P_CHARGE ? md_attributes_find(&sys->attributes, MD_STR_LIT("atom/charge")) : NULL;
+    const float* cq = charges ? md_attribute_view(charges, MD_ATTRIBUTE_TYPE_F32, 1, 1) : NULL;
+    const float* ms = which == P_MASS ? k_masses(k) : NULL;
+    uint8_t* metallic = NULL;
+    if (which == P_METALLIC) {
+        metallic = md_alloc(k->alloc, sys->atom.count + 1);
+        md_bond_metallic_atoms(metallic, &sys->bond, sys->atom.count);
+    }
+    // As the keywords of particle() spell them, and total: what has no such property has '' or False or 0, so a value
+    // is defined for every particle (a bead has no hybridization, is not aromatic and carries no hydrogens)
+    static const char* kinds[] = {"atom", "bead", "virtual"};     // md_particle_kind_t
     for (uint32_t i = 0; i < n; ++i) {
         const size_t a = idx[i];
+        const bool chem = md_atom_atomic_number(&sys->atom, a) != 0;
         switch (which) {
-        case 0:  ((float*)o.data)[i] = k_mass(ms, sys, a); break;
-        case 1:  ((float*)o.data)[i] = cq ? cq[a] : (float)md_atom_formal_charge(&sys->atom, a); break;
-        case 2:  ((md_str_t*)o.data)[i] = md_atom_name(&sys->atom, a); break;
-        default: ((md_str_t*)o.data)[i] = md_atomic_number_symbol(md_atom_atomic_number(&sys->atom, a)); break;
+        case P_MASS:    ((float*)o.data)[i] = k_mass(ms, sys, a); break;
+        case P_CHARGE:  ((float*)o.data)[i] = cq ? cq[a] : (float)md_atom_formal_charge(&sys->atom, a); break;
+        case P_NAME:    ((md_str_t*)o.data)[i] = md_atom_name(&sys->atom, a); break;
+        case P_ELEMENT: ((md_str_t*)o.data)[i] = md_atomic_number_symbol(md_atom_atomic_number(&sys->atom, a)); break;
+        case P_KIND: {
+            const uint32_t pk = (uint32_t)md_atom_particle_kind(&sys->atom, a);
+            ((md_str_t*)o.data)[i] = md_str_from_cstr(pk < MD_COUNTOF(kinds) ? kinds[pk] : "");
+            break;
+        }
+        case P_HYBRIDIZATION: {
+            const md_hybridization_t h = chem ? md_atom_flags_hybridization(md_system_atom_flags(sys, a)) : MD_HYBRIDIZATION_UNKNOWN;
+            ((md_str_t*)o.data)[i] = h == MD_HYBRIDIZATION_UNKNOWN ? (md_str_t){0} : md_str_from_cstr(md_hybridization_name(h));
+            break;
+        }
+        case P_AROMATIC: ((uint8_t*)o.data)[i] = chem && (md_system_atom_flags(sys, a) & MD_ATOM_FLAG_AROMATIC); break;
+        case P_METALLIC: ((uint8_t*)o.data)[i] = chem && metallic[a]; break;
+        case P_HYDROGENS: {
+            const int h = chem ? md_atom_hydrogen_count(&sys->atom, a) : 0;
+            ((int32_t*)o.data)[i] = h > 0 ? h : 0;
+            break;
+        }
+        default: ((int32_t*)o.data)[i] = chem ? md_atom_formal_charge(&sys->atom, a) : 0; break;
         }
     }
     o.origin = s->sets;
@@ -3164,7 +3196,8 @@ bool vial_k_builtin(vial_kctx_t* k, const char* name, const vial_val_t* const* a
     if (IS("arange")) return k_arange(k, arg(&ba, "lo", 0), arg(&ba, "hi", 1), arg(&ba, "step", 2), out);
     if (IS("eye")) return k_eye(k, arg(&ba, "n", 0), out);
     if (IS("spread")) return k_spread(k, arg(&ba, "values", 0), arg(&ba, "groups", 1), arg(&ba, "combine", 2), out);
-    if (IS("mass") || IS("charge") || IS("name") || IS("element")) return k_property(k, name, arg(&ba, "s", 0), out);
+    if (IS("mass") || IS("charge") || IS("name") || IS("element") || IS("kind") || IS("hybridization") || IS("aromatic") ||
+        IS("metallic") || IS("hydrogens") || IS("formal_charge")) return k_property(k, name, arg(&ba, "s", 0), out);
     if (IS("norm") || IS("normalize")) return k_norm(k, arg(&ba, "v", 0), IS("normalize"), out);
     if (IS("dot") || IS("cross")) return k_dot_cross(k, arg(&ba, "u", 0), arg(&ba, "v", 1), IS("cross"), out);
     if (IS("sum") || IS("mean") || IS("std") || IS("var") || IS("any") || IS("all") || IS("argmin") || IS("argmax") ||

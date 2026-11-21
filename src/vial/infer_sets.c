@@ -265,7 +265,17 @@ static int filter_of(infer_t* x, uint8_t level, uint8_t key, vial_node_id node, 
             return -1;
         }
     }
-    if (key == VIAL_KEY_ROLE && known == 1) {
+    if (key == VIAL_KEY_ROLE && level == VIAL_LEVEL_PARTICLE && known == 1) {
+        for (size_t i = 0; i < md_array_size(f->expr); ++i) {
+            if (f->expr[i].kind != VIAL_MATCH_STR || vial_select_particle_role_known(f->expr[i].s)) continue;
+            char ex[VIAL_EXCERPT_MAX + 4];
+            const md_str_t e = vial_excerpt(ex, sizeof(ex), f->expr[i].s);
+            vx_diag_fix(x, "E0206", node, NULL, "'%.*s' is not a role of particles; the roles are backbone, main, side, base, sugar, "
+                "terminus, n_terminus, c_terminus, 5_terminus, 3_terminus and qm", (int)e.len, e.ptr);
+            return -1;
+        }
+    }
+    if (key == VIAL_KEY_ROLE && level == VIAL_LEVEL_GROUP && known == 1) {
         for (size_t i = 0; i < md_array_size(f->expr); ++i) {
             if (f->expr[i].kind != VIAL_MATCH_STR || vial_select_role_known(f->expr[i].s)) continue;
             char ex[VIAL_EXCERPT_MAX + 4];

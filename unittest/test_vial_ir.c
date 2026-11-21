@@ -1636,6 +1636,80 @@ UTEST(vial_ir, selector_views) {
     md_arena_allocator_destroy(alloc);
 }
 
+// A particle's roles (role=) and the values of its keywords (kind(s), hybridization(s), ...): each value function picks
+// what its keyword does, and the roles give what the predefined sets name
+UTEST(vial_ir, particle_roles_and_values) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
+    const md_system_t* P = vial_test_system('P');
+    const md_system_state_t* Ps = vial_test_state('P');
+    ASSERT_TRUE(P && Ps);
+    EXPECT_EQ(vial_ir__count("sidechain", P, Ps, alloc), vial_ir__count("particle(role='side')", P, Ps, alloc));
+    EXPECT_EQ(vial_ir__count("backbone", P, Ps, alloc), vial_ir__count("particle(role='backbone')", P, Ps, alloc));
+    const uint32_t n_end = vial_ir__count("particle(role='n_terminus')", P, Ps, alloc), c_end = vial_ir__count("particle(role='c_terminus')", P, Ps, alloc);
+    EXPECT_EQ(4u, n_end);   // N and its three hydrogens
+    EXPECT_EQ(3u, c_end);
+    EXPECT_EQ(n_end + c_end, vial_ir__count("particle(role='terminus')", P, Ps, alloc));
+    EXPECT_EQ(0u, vial_ir__count("particle(role='5_terminus' or '3_terminus' or 'qm')", P, Ps, alloc));
+    // main: N, CA, C, O and OXT with H, HA and the N-terminal hydrogens; with side, every atom of a peptide without caps
+    EXPECT_EQ(93u, vial_ir__count("particle(role='main')", P, Ps, alloc));   // 45 backbone, 16 oxygens, 17 H on N, 15 HA
+    EXPECT_EQ(15u, vial_ir__count("particle(role='main', name='HA')", P, Ps, alloc));
+    EXPECT_EQ(0u, vial_ir__count("particle(role='side', name='HA')", P, Ps, alloc));
+    EXPECT_EQ(153u, vial_ir__count("particle(role='main' or 'side')", P, Ps, alloc));
+    EXPECT_EQ(0u, vial_ir__count("particle(role='main' and 'side')", P, Ps, alloc));
+    EXPECT_EQ(vial_ir__count("backbone", P, Ps, alloc), vial_ir__count("particle(role='main' and 'backbone')", P, Ps, alloc));
+    EXPECT_EQ(153u, vial_ir__count("particle(role=not 'qm')", P, Ps, alloc));
+
+    vial_ir__run_t r;
+    const char* src =
+        "q  = sum(formal_charge(particle))\n"
+        "h  = sum(hydrogens(atom(element='C')))\n"
+        "s1 = count(atom(hybridization='sp2'))\n"
+        "s2 = count(particle[hybridization(particle) == 'sp2'])\n"
+        "f1 = count(atom(formal_charge=not 0))\n"
+        "f2 = count(particle[formal_charge(particle) != 0])\n"
+        "a1 = count(particle[aromatic(particle)])\n"
+        "m1 = count(particle[metallic(particle)])\n"
+        "k1 = count(particle[kind(particle) == 'atom'])\n"
+        "h3 = count(particle[hydrogens(particle) == 3])\n"
+        "h4 = count(atom(hydrogens=3))\n";
+    ASSERT_TRUE(vial_ir__start(&r, src, P));
+    const bool ok = vial_interp_static(&r.in);
+    if (!ok) printf("failed: %s %s\n", r.in.error.code, r.in.error.message);
+    EXPECT_TRUE(ok);
+    char buf[256], buf2[256];
+    EXPECT_STREQ("0", vial_ir__out(&r, "q", buf, sizeof(buf)));      // the N-terminal N+ and a C-terminal O-
+    EXPECT_STREQ("60", vial_ir__out(&r, "h", buf, sizeof(buf)));     // CA's one and CB's three, of fifteen alanines
+    EXPECT_STREQ(vial_ir__out(&r, "s1", buf, sizeof(buf)), vial_ir__out(&r, "s2", buf2, sizeof(buf2)));
+    EXPECT_STREQ("2", vial_ir__out(&r, "f1", buf, sizeof(buf)));
+    EXPECT_STREQ("2", vial_ir__out(&r, "f2", buf, sizeof(buf)));
+    EXPECT_STREQ("0", vial_ir__out(&r, "a1", buf, sizeof(buf)));
+    EXPECT_STREQ("0", vial_ir__out(&r, "m1", buf, sizeof(buf)));
+    EXPECT_STREQ("153", vial_ir__out(&r, "k1", buf, sizeof(buf)));
+    EXPECT_STREQ(vial_ir__out(&r, "h3", buf, sizeof(buf)), vial_ir__out(&r, "h4", buf2, sizeof(buf2)));
+    vial_ir__end(&r);
+
+    // A nucleotide's side is its nucleoside, its sugar and base, and its ends are 5' and 3'
+    md_system_t sys;
+    md_system_state_t st;
+    ASSERT_TRUE(vial_ir__load_file(&sys, &st, "nucl-dna.gro", alloc));
+    const uint32_t base = vial_ir__count("nucleobase", &sys, &st, alloc), side = vial_ir__count("nucleoside", &sys, &st, alloc);
+    EXPECT_GT(base, 0u);
+    EXPECT_EQ(base, vial_ir__count("particle(role='base')", &sys, &st, alloc));
+    EXPECT_EQ(side, vial_ir__count("particle(role='side') and nucleic", &sys, &st, alloc));
+    EXPECT_EQ(side, vial_ir__count("particle(role='sugar' or 'base')", &sys, &st, alloc));
+    EXPECT_GT(vial_ir__count("particle(role='side' and 'backbone')", &sys, &st, alloc), 0u);    // C3' and C4'
+    // main: the sugar-phosphate chain with its phosphate oxygens; with side, every atom of the strands
+    EXPECT_GT(vial_ir__count("particle(role='main' and not 'backbone') and nucleic", &sys, &st, alloc), 0u);
+    EXPECT_EQ(0u, vial_ir__count("nucleic and not particle(role='main' or 'side')", &sys, &st, alloc));
+    const uint32_t e5 = vial_ir__count("particle(role='5_terminus')", &sys, &st, alloc), e3 = vial_ir__count("particle(role='3_terminus')", &sys, &st, alloc);
+    EXPECT_GT(e5, 0u);
+    EXPECT_GT(e3, 0u);
+    EXPECT_EQ(e5 + e3, vial_ir__count("particle(role='terminus') and nucleic", &sys, &st, alloc));
+    EXPECT_EQ(0u, vial_ir__count("particle(role='n_terminus' or 'c_terminus') and nucleic", &sys, &st, alloc));
+    md_system_free(&sys);
+    md_arena_allocator_destroy(alloc);
+}
+
 UTEST(vial_ir, anatomy_sets) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
     md_system_t sys;

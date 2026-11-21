@@ -611,7 +611,7 @@ static uint32_t takes(uint8_t level) {
     switch (level) {
     case VIAL_LEVEL_PARTICLE: return K(VIAL_KEY_NAME) | K(VIAL_KEY_SERIAL) | K(VIAL_KEY_ELEMENT) | K(VIAL_KEY_KIND) |
                                      K(VIAL_KEY_RESID) | K(VIAL_KEY_RESNAME) | K(VIAL_KEY_CHAIN) | K(VIAL_KEY_SCOPE) |
-                                     K(VIAL_KEY_HYBRIDIZATION) | K(VIAL_KEY_AROMATIC) | K(VIAL_KEY_METALLIC) |
+                                     K(VIAL_KEY_ROLE) | K(VIAL_KEY_HYBRIDIZATION) | K(VIAL_KEY_AROMATIC) | K(VIAL_KEY_METALLIC) |
                                      K(VIAL_KEY_HYDROGENS) | K(VIAL_KEY_FORMAL_CHARGE);
     case VIAL_LEVEL_RESIDUE:  return K(VIAL_KEY_ID) | K(VIAL_KEY_NAME) | K(VIAL_KEY_KIND) | K(VIAL_KEY_CHAIN) | K(VIAL_KEY_SCOPE);
     case VIAL_LEVEL_PART:     return K(VIAL_KEY_KIND) | K(VIAL_KEY_CHAIN) | K(VIAL_KEY_SCOPE);
@@ -630,8 +630,8 @@ bool vial_select_takes(uint8_t level, uint8_t key) { return key < 32 && (takes(l
 
 const char* vial_select_keywords(uint8_t level) {
     switch (level) {
-    case VIAL_LEVEL_PARTICLE: return "name, serial, element, kind, resid, resname, chain, hybridization, aromatic, metallic, hydrogens, "
-                                     "formal_charge and scope";
+    case VIAL_LEVEL_PARTICLE: return "name, serial, element, kind, resid, resname, chain, role, hybridization, aromatic, metallic, "
+                                     "hydrogens, formal_charge and scope";
     case VIAL_LEVEL_RESIDUE:  return "id, name, kind, chain and scope";
     case VIAL_LEVEL_PART:     return "kind, chain and scope";
     case VIAL_LEVEL_MOLECULE: return "name, chain and scope";
@@ -831,12 +831,71 @@ static bool test_bool(const vial_match_t* m, const void* user) {
     return m->kind == VIAL_MATCH_BOOL && (m->lo != 0) == *(const bool*)user;
 }
 
-// Whether a particle selector has chemistry filters, and what they read made ready: the metallic phases' atoms
-static bool chemistry_filters(vial_sys_t* s, const vial_select_t* q) {
+static const char* particle_roles[] = {"backbone", "main", "side", "base", "sugar", "terminus", "n_terminus", "c_terminus",
+                                      "5_terminus", "3_terminus", "qm"};
+
+bool vial_select_particle_role_known(md_str_t role) {
+    return in_list(particle_roles, MD_COUNTOF(particle_roles), role);
+}
+
+typedef struct role_test_t {
+    md_atom_flags_t flags;
+    bool            main;           // role_main
+    bool            nucleotide;     // of a nucleotide, whose ends are 5' and 3' rather than N and C
+    bool            qm;
+} role_test_t;
+
+// main: the backbone, and the atoms of its residue bonded to a backbone atom that are no side. Of an amino acid that is
+// its main chain as GROMACS has it (N, CA, C, O and the C-terminal oxygens) with the hydrogens on it (H, HA and the
+// N-terminal ones; CB and proline's CD are its side), of a nucleotide the sugar-phosphate chain with its phosphate
+// oxygens and the hydrogens of its terminal hydroxyls. A cap is a residue of its own, so none of it is main.
+static bool role_main(const vial_sys_t* s, uint32_t a, md_atom_flags_t flags) {
+    if (flags & MD_ATOM_FLAG_BACKBONE) return true;
+    if (flags & (MD_ATOM_FLAG_SIDE_CHAIN | MD_ATOM_FLAG_NUCLEOSIDE)) return false;
+    const uint32_t r = atom_res(s, a);
+    if (r == NONE32) return false;
+    for (md_bond_iter_t it = md_bond_iter(&s->sys->bond, a); md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
+        const md_atom_idx_t b = md_bond_iter_atom_index(&it);
+        if (b < 0 || (uint32_t)b >= s->num_atoms) continue;
+        if ((md_system_atom_flags(s->sys, (size_t)b) & MD_ATOM_FLAG_BACKBONE) && atom_res(s, (uint32_t)b) == r) return true;
+    }
+    return false;
+}
+
+// A particle's roles are tags, several to a particle: its part in an amino acid or a nucleotide of a strand
+// (md_atom_flags_t: what the chain runs through, the backbone, and the side: an amino acid's side chain, a nucleotide's
+// nucleoside, its sugar and base), the ends of the strand, and its part in the simulation as the data gives it, the QM
+// region. main is the backbone and what of its residue hangs off it that is no side (role_main). A nucleotide's levels
+// nest, nucleoside over base, so base and sugar are finer than side; its side overlaps the backbone (C3' and C4' are
+// both). An amino acid's side starts at CB: HA, on CA, is main, though GROMACS's SideChain, every atom of the protein
+// but its main chain, holds it. terminus is either end, of any strand. Every particle has a set of roles, empty for
+// most of a solvent, so not takes the complement among all of them: role=not 'qm' is the MM part, waters included.
+static bool test_particle_role(const vial_match_t* m, const void* user) {
+    if (m->kind != VIAL_MATCH_STR) return false;
+    const role_test_t* r = user;
+    const md_atom_flags_t f = r->flags;
+    const md_str_t w = m->s;
+    if (md_str_eq(w, MD_STR_LIT("backbone")))   return f & MD_ATOM_FLAG_BACKBONE;
+    if (md_str_eq(w, MD_STR_LIT("main")))       return r->main;
+    if (md_str_eq(w, MD_STR_LIT("side")))       return f & (MD_ATOM_FLAG_SIDE_CHAIN | MD_ATOM_FLAG_NUCLEOSIDE);
+    if (md_str_eq(w, MD_STR_LIT("base")))       return f & MD_ATOM_FLAG_NUCLEOBASE;
+    if (md_str_eq(w, MD_STR_LIT("sugar")))      return (f & MD_ATOM_FLAG_NUCLEOSIDE) && !(f & MD_ATOM_FLAG_NUCLEOBASE);
+    if (md_str_eq(w, MD_STR_LIT("terminus")))   return f & (MD_ATOM_FLAG_TERMINAL_BEG | MD_ATOM_FLAG_TERMINAL_END);
+    if (md_str_eq(w, MD_STR_LIT("n_terminus"))) return (f & MD_ATOM_FLAG_TERMINAL_BEG) && !r->nucleotide;
+    if (md_str_eq(w, MD_STR_LIT("c_terminus"))) return (f & MD_ATOM_FLAG_TERMINAL_END) && !r->nucleotide;
+    if (md_str_eq(w, MD_STR_LIT("5_terminus"))) return (f & MD_ATOM_FLAG_TERMINAL_BEG) && r->nucleotide;
+    if (md_str_eq(w, MD_STR_LIT("3_terminus"))) return (f & MD_ATOM_FLAG_TERMINAL_END) && r->nucleotide;
+    if (md_str_eq(w, MD_STR_LIT("qm")))         return r->qm;
+    return false;
+}
+
+// Whether a particle selector has filters of each particle, role and chemistry, and what they read made ready: the
+// metallic phases' atoms
+static bool particle_filters(vial_sys_t* s, const vial_select_t* q) {
     bool any = false;
     for (size_t i = 0; i < md_array_size(q->filters); ++i) {
         const uint8_t k = q->filters[i].key;
-        if (k < VIAL_KEY_HYBRIDIZATION || k > VIAL_KEY_FORMAL_CHARGE) continue;
+        if (k != VIAL_KEY_ROLE && (k < VIAL_KEY_HYBRIDIZATION || k > VIAL_KEY_FORMAL_CHARGE)) continue;
         any = true;
         if (k == VIAL_KEY_METALLIC && !s->have_metallic) {
             s->have_metallic = true;
@@ -847,39 +906,51 @@ static bool chemistry_filters(vial_sys_t* s, const vial_select_t* q) {
     return any;
 }
 
-// The chemistry filters of a particle selector, of each atom: what md_chem_perceive found (hybridization, aromatic, the
-// hydrogens, the formal charge) and the metallic phases (md_bond_metallic_atoms). Only what has an element has
-// chemistry, and a hybridization or a count of hydrogens only where one was perceived (a hydrogen or a metal has no
-// hybridization): what has none is none of a filter's values, also under not, so hybridization=not 'sp3' is the sp and
-// sp2 atoms and never a hydrogen, a bead or a virtual site.
+// The filters of a particle selector of each particle: its roles (test_particle_role), and its chemistry, what
+// md_chem_perceive found (hybridization, aromatic, the hydrogens, the formal charge) and the metallic phases
+// (md_bond_metallic_atoms). Only what has an element has chemistry, and a hybridization or a count of hydrogens only
+// where one was perceived (a hydrogen or a metal has no hybridization): what has none is none of a chemistry filter's
+// values, also under not, so hybridization=not 'sp3' is the sp and sp2 atoms and never a hydrogen, a bead or a
+// virtual site.
 static bool atom_passes(const vial_sys_t* s, const vial_select_t* q, uint32_t a) {
     const md_system_t* sys = s->sys;
-    if (md_atom_atomic_number(&sys->atom, a) == 0) return false;
+    const bool chem = md_atom_atomic_number(&sys->atom, a) != 0;
     const md_atom_flags_t flags = md_system_atom_flags(sys, a);
     for (size_t i = 0; i < md_array_size(q->filters); ++i) {
         const vial_filter_t* f = &q->filters[i];
         switch (f->key) {
+        case VIAL_KEY_ROLE: {
+            const uint32_t r = atom_res(s, a);
+            const role_test_t t = {
+                .flags = flags,
+                .main = role_main(s, a, flags),
+                .nucleotide = r != NONE32 && md_system_residue_kind(sys, r) == MD_RESIDUE_KIND_NUCLEOTIDE,
+                .qm = md_atom_is_qm(&sys->atom, a),
+            };
+            if (!vial_filter_holds(f, test_particle_role, &t)) return false;
+            break;
+        }
         case VIAL_KEY_HYBRIDIZATION: {
             const md_hybridization_t h = md_atom_flags_hybridization(flags);
-            if (h == MD_HYBRIDIZATION_UNKNOWN || !match_str(f, md_str_from_cstr(md_hybridization_name(h)), false)) return false;
+            if (!chem || h == MD_HYBRIDIZATION_UNKNOWN || !match_str(f, md_str_from_cstr(md_hybridization_name(h)), false)) return false;
             break;
         }
         case VIAL_KEY_AROMATIC: {
             const bool v = (flags & MD_ATOM_FLAG_AROMATIC) != 0;
-            if (!vial_filter_holds(f, test_bool, &v)) return false;
+            if (!chem || !vial_filter_holds(f, test_bool, &v)) return false;
             break;
         }
         case VIAL_KEY_METALLIC: {
             const bool v = s->metallic && s->metallic[a];
-            if (!vial_filter_holds(f, test_bool, &v)) return false;
+            if (!chem || !vial_filter_holds(f, test_bool, &v)) return false;
             break;
         }
         case VIAL_KEY_HYDROGENS: {
             const int h = md_atom_hydrogen_count(&sys->atom, a);
-            if (h < 0 || !match_int(f, h)) return false;
+            if (!chem || h < 0 || !match_int(f, h)) return false;
             break;
         }
-        case VIAL_KEY_FORMAL_CHARGE: if (!match_int(f, md_atom_formal_charge(&sys->atom, a))) return false; break;
+        case VIAL_KEY_FORMAL_CHARGE: if (!chem || !match_int(f, md_atom_formal_charge(&sys->atom, a))) return false; break;
         default: break;
         }
     }
@@ -1044,7 +1115,7 @@ static vial_sets_t* select_particles_of(vial_sys_t* s, const vial_select_t* q, m
     const uint32_t* items = vial_sets_items(q->within, 0);
     const uint32_t n = vial_sets_size(q->within, 0);
     const uint8_t* types = type_mask(s, q, alloc);
-    const bool chem = chemistry_filters(s, q);
+    const bool each = particle_filters(s, q);
     const uint64_t* scope = q->scope ? bitmap(q->scope, s->num_atoms, alloc) : NULL;
     vial_sets_t* out = sets_new(1, n, alloc);
     out->single = true;
@@ -1063,7 +1134,7 @@ static vial_sets_t* select_particles_of(vial_sys_t* s, const vial_select_t* q, m
             const md_particle_type_idx_t t = sys->atom.type_idx[a];
             if ((uint32_t)t >= s->num_types || !types[t]) continue;
         }
-        if (chem && !atom_passes(s, q, a)) continue;
+        if (each && !atom_passes(s, q, a)) continue;
         out->idx[w++] = a;
     }
     out->offset[1] = w;
@@ -1081,7 +1152,7 @@ vial_sets_t* vial_select(vial_sys_t* s, const vial_select_t* q, md_allocator_i* 
         // lookup of its type's mask
         const md_system_t* sys = s->sys;
         const uint8_t* types = type_mask(s, q, alloc);
-        const bool chem = chemistry_filters(s, q);
+        const bool each = particle_filters(s, q);
         const uint32_t num_units = s->num_res ? s->num_res : 1;
         // The residues that pass, and room for their particles: a selection costs its size, not the system's
         uint32_t room = 0;
@@ -1106,7 +1177,7 @@ vial_sets_t* vial_select(vial_sys_t* s, const vial_select_t* q, md_allocator_i* 
                     const md_particle_type_idx_t t = sys->atom.type_idx[a];
                     if ((uint32_t)t >= s->num_types || !types[t]) continue;
                 }
-                if (chem && !atom_passes(s, q, a)) continue;
+                if (each && !atom_passes(s, q, a)) continue;
                 out->idx[n++] = a;
             }
         }

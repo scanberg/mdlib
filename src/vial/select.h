@@ -153,7 +153,7 @@ typedef enum vial_key_t {
     VIAL_KEY_ID,
     VIAL_KEY_SCOPE,
     VIAL_KEY_SIZE,              // rings: the number of atoms
-    VIAL_KEY_ROLE,              // groups: what the simulation used them for (md_group_role_name)
+    VIAL_KEY_ROLE,              // groups: what the simulation used them for (md_group_role_name); particles: their roles
     // A particle's chemistry, of each atom (md_chem_perceive, md_bond_metallic_atoms)
     VIAL_KEY_HYBRIDIZATION,     // sp, sp2 or sp3, where one was perceived
     VIAL_KEY_AROMATIC,          // in an aromatic ring
@@ -214,6 +214,9 @@ const char* vial_select_kinds(uint8_t level);
 
 // Whether a role= value is the name of a role of groups (md_group_role_name)
 bool        vial_select_role_known(md_str_t role);
+// Whether a value is a role of particles: backbone, main, side, base, sugar, terminus, n_terminus, c_terminus,
+// 5_terminus, 3_terminus or qm
+bool        vial_select_particle_role_known(md_str_t role);
 // Whether a value is a hybridization a particle selector takes: sp, sp2 or sp3
 bool        vial_select_hybridization_known(md_str_t hyb);
 

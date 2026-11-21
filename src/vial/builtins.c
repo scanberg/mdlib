@@ -23,6 +23,8 @@ static const vial_builtin_t builtins[] = {
     {"sidechain", SET}, {"nucleobase", SET}, {"nucleoside", SET}, {"system", SET | F},
     // Geometry and structure
     {"mass", F}, {"weight", F}, {"charge", F}, {"element", F}, {"name", F}, {"bfactor", F}, {"com", F | P},
+    // The values of a particle's properties that are keywords of particle(), one per particle
+    {"kind", F}, {"hybridization", F}, {"aromatic", F}, {"metallic", F}, {"hydrogens", F}, {"formal_charge", F},
     {"displacement", F}, {"closest_pair", F}, {"farthest_pair", F}, {"angle", F}, {"dihedral", F}, {"within", F},
     {"fit", F},
     // Reductions

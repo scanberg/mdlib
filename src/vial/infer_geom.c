@@ -466,7 +466,8 @@ static T call_weight(infer_t* x, vial_node_id call) {
     return t;
 }
 
-// mass, charge, element, name, bfactor: one value per particle of a set
+// mass, charge, element, name, bfactor, and the values of the keywords of particle() that are one per particle (kind,
+// hybridization, aromatic, metallic, hydrogens, formal_charge): one value per particle of a set
 static T call_property(infer_t* x, vial_node_id call, md_str_t name) {
     static const param_t params[] = {{"s", VK_WHOLE, true}};
     vial_node_id args[1];
@@ -487,8 +488,11 @@ static T call_property(infer_t* x, vial_node_id call, md_str_t name) {
         vx_diag_fix(x, "E0318", args[0], fix, "`%s` holds sets whose sizes may differ; their particles' %ss do not form one array", ex, fname);
         return err();
     }
-    const bool str = md_str_eq(name, MD_STR_LIT("element")) || md_str_eq(name, MD_STR_LIT("name"));
-    T t = vial_type_scalar(str ? VIAL_DT_STR : VIAL_DT_FLOAT);
+    const bool str = md_str_eq(name, MD_STR_LIT("element")) || md_str_eq(name, MD_STR_LIT("name")) || md_str_eq(name, MD_STR_LIT("kind")) ||
+                     md_str_eq(name, MD_STR_LIT("hybridization"));
+    const bool boolean = md_str_eq(name, MD_STR_LIT("aromatic")) || md_str_eq(name, MD_STR_LIT("metallic"));
+    const bool integer = md_str_eq(name, MD_STR_LIT("hydrogens")) || md_str_eq(name, MD_STR_LIT("formal_charge"));
+    T t = vial_type_scalar(str ? VIAL_DT_STR : boolean ? VIAL_DT_BOOL : integer ? VIAL_DT_INT : VIAL_DT_FLOAT);
     if (md_str_eq(name, MD_STR_LIT("mass")))    t.unit = unit_named("u");
     if (md_str_eq(name, MD_STR_LIT("charge")))  t.unit = unit_named("e");
     if (md_str_eq(name, MD_STR_LIT("bfactor"))) t.unit = md_unit_mul(unit_named("angstrom"), unit_named("angstrom"));
@@ -638,7 +642,9 @@ bool vx_call_geom(infer_t* x, vial_node_id call, const vial_builtin_t* b, T* out
     if (md_str_eq(name, MD_STR_LIT("com")))          { *out = call_com(x, call, "com", 0, 0); return true; }
     if (md_str_eq(name, MD_STR_LIT("weight")))       { *out = call_weight(x, call); return true; }
     if (md_str_eq(name, MD_STR_LIT("mass")) || md_str_eq(name, MD_STR_LIT("charge")) || md_str_eq(name, MD_STR_LIT("element")) ||
-        md_str_eq(name, MD_STR_LIT("name")) || md_str_eq(name, MD_STR_LIT("bfactor"))) { *out = call_property(x, call, name); return true; }
+        md_str_eq(name, MD_STR_LIT("name")) || md_str_eq(name, MD_STR_LIT("bfactor")) || md_str_eq(name, MD_STR_LIT("kind")) ||
+        md_str_eq(name, MD_STR_LIT("hybridization")) || md_str_eq(name, MD_STR_LIT("aromatic")) || md_str_eq(name, MD_STR_LIT("metallic")) ||
+        md_str_eq(name, MD_STR_LIT("hydrogens")) || md_str_eq(name, MD_STR_LIT("formal_charge"))) { *out = call_property(x, call, name); return true; }
     if (md_str_eq(name, MD_STR_LIT("displacement")))  { *out = call_displacement(x, call); return true; }
     if (md_str_eq(name, MD_STR_LIT("angle")))         { *out = call_angle(x, call, false); return true; }
     if (md_str_eq(name, MD_STR_LIT("dihedral")))      { *out = call_angle(x, call, true); return true; }
