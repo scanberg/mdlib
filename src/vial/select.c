@@ -840,43 +840,26 @@ bool vial_select_particle_role_known(md_str_t role) {
 
 typedef struct role_test_t {
     md_atom_flags_t flags;
-    bool            main;           // role_main
     bool            nucleotide;     // of a nucleotide, whose ends are 5' and 3' rather than N and C
     bool            qm;
 } role_test_t;
 
-// main: the backbone, and the atoms of its residue bonded to a backbone atom that are no side. Of an amino acid that is
-// its main chain as GROMACS has it (N, CA, C, O and the C-terminal oxygens) with the hydrogens on it (H, HA and the
-// N-terminal ones; CB and proline's CD are its side), of a nucleotide the sugar-phosphate chain with its phosphate
-// oxygens and the hydrogens of its terminal hydroxyls. A cap is a residue of its own, so none of it is main.
-static bool role_main(const vial_sys_t* s, uint32_t a, md_atom_flags_t flags) {
-    if (flags & MD_ATOM_FLAG_BACKBONE) return true;
-    if (flags & (MD_ATOM_FLAG_SIDE_CHAIN | MD_ATOM_FLAG_NUCLEOSIDE)) return false;
-    const uint32_t r = atom_res(s, a);
-    if (r == NONE32) return false;
-    for (md_bond_iter_t it = md_bond_iter(&s->sys->bond, a); md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
-        const md_atom_idx_t b = md_bond_iter_atom_index(&it);
-        if (b < 0 || (uint32_t)b >= s->num_atoms) continue;
-        if ((md_system_atom_flags(s->sys, (size_t)b) & MD_ATOM_FLAG_BACKBONE) && atom_res(s, (uint32_t)b) == r) return true;
-    }
-    return false;
-}
-
 // A particle's roles are tags, several to a particle: its part in an amino acid or a nucleotide of a strand
 // (md_atom_flags_t: what the chain runs through, the backbone, and the side: an amino acid's side chain, a nucleotide's
 // nucleoside, its sugar and base), the ends of the strand, and its part in the simulation as the data gives it, the QM
-// region. main is the backbone and what of its residue hangs off it that is no side (role_main). A nucleotide's levels
-// nest, nucleoside over base, so base and sugar are finer than side; its side overlaps the backbone (C3' and C4' are
-// both). An amino acid's side starts at CB: HA, on CA, is main, though GROMACS's SideChain, every atom of the protein
-// but its main chain, holds it. terminus is either end, of any strand. Every particle has a set of roles, empty for
-// most of a solvent, so not takes the complement among all of them: role=not 'qm' is the MM part, waters included.
+// region. main is the backbone and what of its residue hangs off it that is no side (MD_ATOM_FLAG_MAIN_CHAIN). A
+// nucleotide's levels nest, nucleoside over base, so base and sugar are finer than side; its side overlaps the
+// backbone (C3' and C4' are both). An amino acid's side starts at CB: HA, on CA, is main, though GROMACS's SideChain,
+// every atom of the protein but its main chain, holds it. terminus is either end, of any strand. Every particle has a
+// set of roles, empty for most of a solvent, so not takes the complement among all of them: role=not 'qm' is the MM
+// part, waters included.
 static bool test_particle_role(const vial_match_t* m, const void* user) {
     if (m->kind != VIAL_MATCH_STR) return false;
     const role_test_t* r = user;
     const md_atom_flags_t f = r->flags;
     const md_str_t w = m->s;
     if (md_str_eq(w, MD_STR_LIT("backbone")))   return f & MD_ATOM_FLAG_BACKBONE;
-    if (md_str_eq(w, MD_STR_LIT("main")))       return r->main;
+    if (md_str_eq(w, MD_STR_LIT("main")))       return f & MD_ATOM_FLAG_MAIN_CHAIN;
     if (md_str_eq(w, MD_STR_LIT("side")))       return f & (MD_ATOM_FLAG_SIDE_CHAIN | MD_ATOM_FLAG_NUCLEOSIDE);
     if (md_str_eq(w, MD_STR_LIT("base")))       return f & MD_ATOM_FLAG_NUCLEOBASE;
     if (md_str_eq(w, MD_STR_LIT("sugar")))      return (f & MD_ATOM_FLAG_NUCLEOSIDE) && !(f & MD_ATOM_FLAG_NUCLEOBASE);
@@ -923,7 +906,6 @@ static bool atom_passes(const vial_sys_t* s, const vial_select_t* q, uint32_t a)
             const uint32_t r = atom_res(s, a);
             const role_test_t t = {
                 .flags = flags,
-                .main = role_main(s, a, flags),
                 .nucleotide = r != NONE32 && md_system_residue_kind(sys, r) == MD_RESIDUE_KIND_NUCLEOTIDE,
                 .qm = md_atom_is_qm(&sys->atom, a),
             };

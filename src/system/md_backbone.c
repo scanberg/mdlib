@@ -644,6 +644,7 @@ static bool atom_bonded_outside(const md_system_t* sys, int atom, md_urange_t ra
 //   MD_ATOM_FLAG_NUCLEOBASE    the base
 //   MD_ATOM_FLAG_TERMINAL_BEG  a free amino group, a free 5' hydroxyl
 //   MD_ATOM_FLAG_TERMINAL_END  a free carboxyl group, a free 3' hydroxyl
+//   MD_ATOM_FLAG_MAIN_CHAIN    the backbone and what of its residue hangs off it that is no side (flag_main_chain)
 // Not every match is a residue of a chain. One which is all of a residue of its own (a residue which holds no other)
 // is one where the system names it a standard residue, or where it is linked to another residue by its backbone (a
 // peptide bond from its N or C, a phosphodiester bond from its P or O3'): that keeps out the ligands which hold the
@@ -813,7 +814,8 @@ static void perceive_polymer_atoms(md_system_t* sys, const md_system_state_t* st
     }
 
     // Found anew: the roles of atoms are this step's alone (those of beads their model's)
-    const uint32_t roles = MD_ATOM_FLAG_BACKBONE | MD_ATOM_FLAG_SIDE_CHAIN | MD_ATOM_FLAG_NUCLEOSIDE | MD_ATOM_FLAG_NUCLEOBASE | MD_ATOM_FLAG_TERMINAL_BEG | MD_ATOM_FLAG_TERMINAL_END;
+    const uint32_t roles = MD_ATOM_FLAG_BACKBONE | MD_ATOM_FLAG_SIDE_CHAIN | MD_ATOM_FLAG_NUCLEOSIDE | MD_ATOM_FLAG_NUCLEOBASE | MD_ATOM_FLAG_TERMINAL_BEG | MD_ATOM_FLAG_TERMINAL_END |
+                           MD_ATOM_FLAG_MAIN_CHAIN;
     for (size_t i = 0; i < num_atoms; ++i) {
         if (md_atom_particle_kind(&sys->atom, i) == MD_PARTICLE_ATOM) {
             sys->atom.flags[i] = (md_atom_flags_t)((uint32_t)sys->atom.flags[i] & ~roles);
@@ -1170,6 +1172,37 @@ static bool residue_classified_as_previous(const md_system_t* sys, size_t r) {
     return true;
 }
 
+// The main chain, of the roles found (POLYMER ATOMS): the backbone, and the atoms of its residue bonded to one of it that
+// are no side (a side chain or a nucleoside): what hangs off the backbone, a carbonyl O, the C-terminal oxygens, a
+// phosphate oxygen and the hydrogens on all of them (H, HA, the N-terminal ones, a terminal hydroxyl's). So it is
+// GROMACS's MainChain with its hydrogens, and of a nucleotide its sugar-phosphate chain with its phosphate oxygens; a cap
+// is a residue of its own, and none of it is main. Of every particle: a bead by the roles its model gave it, so a
+// backbone bead is of the main chain. Without residues, the system is the one residue.
+static void flag_main_chain(md_system_t* sys) {
+    const size_t n = sys->atom.count;
+    if (!sys->atom.flags || md_array_size(sys->atom.flags) < n) return;
+    const uint32_t mc = MD_ATOM_FLAG_MAIN_CHAIN, bb = MD_ATOM_FLAG_BACKBONE, side = MD_ATOM_FLAG_SIDE_CHAIN | MD_ATOM_FLAG_NUCLEOSIDE;
+    for (size_t i = 0; i < n; ++i) {
+        const uint32_t f = (uint32_t)sys->atom.flags[i] & ~mc;
+        sys->atom.flags[i] = (md_atom_flags_t)((f & bb) ? (f | mc) : f);
+    }
+    const size_t num_res = sys->residue.count;
+    for (size_t r = 0; r < (num_res ? num_res : 1); ++r) {
+        const md_urange_t range = num_res ? md_system_residue_atom_range(sys, r) : (md_urange_t){0, (uint32_t)n};
+        for (uint32_t i = range.beg; i < range.end && i < n; ++i) {
+            if ((uint32_t)sys->atom.flags[i] & (bb | side)) continue;
+            md_bond_iter_t it = md_bond_iter(&sys->bond, i);
+            for (; md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
+                const md_atom_idx_t b = md_bond_iter_atom_index(&it);
+                if (atom_in_range(b, range) && ((uint32_t)sys->atom.flags[b] & bb)) {
+                    sys->atom.flags[i] = (md_atom_flags_t)((uint32_t)sys->atom.flags[i] | mc);
+                    break;
+                }
+            }
+        }
+    }
+}
+
 bool md_system_infer_residue_flags(md_system_t* sys, const md_system_state_t* state) {
     if (!sys) {
         MD_LOG_ERROR("Missing system");
@@ -1179,6 +1212,7 @@ bool md_system_infer_residue_flags(md_system_t* sys, const md_system_state_t* st
     if (sys->atom.count) {
         MD_ASSERT(sys->alloc);
         perceive_polymer_atoms(sys, state);
+        flag_main_chain(sys);
     }
     if (sys->residue.count == 0) {
         return true;

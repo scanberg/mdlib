@@ -457,11 +457,12 @@ UTEST(martini, martini2_dna) {
             const md_atom_flags_t flags = md_atom_flags(&sys.atom, i);
             EXPECT_EQ(MD_PARTICLE_BEAD, md_atom_particle_kind(&sys.atom, i));
             EXPECT_EQ(0, md_atom_atomic_number(&sys.atom, i));
+            // A backbone bead is of the main chain too (flag_main_chain)
             if (md_str_eq(name, MD_STR_LIT("BB1"))) {
-                EXPECT_EQ((int)MD_ATOM_FLAG_BACKBONE, (int)flags);
+                EXPECT_EQ((int)(MD_ATOM_FLAG_BACKBONE | MD_ATOM_FLAG_MAIN_CHAIN), (int)flags);
                 EXPECT_EQ(72.0f, md_atom_mass(&sys.atom, i));
             } else if (md_str_eq(name, MD_STR_LIT("BB2")) || md_str_eq(name, MD_STR_LIT("BB3"))) {
-                EXPECT_EQ((int)(MD_ATOM_FLAG_BACKBONE | MD_ATOM_FLAG_NUCLEOSIDE), (int)flags);
+                EXPECT_EQ((int)(MD_ATOM_FLAG_BACKBONE | MD_ATOM_FLAG_NUCLEOSIDE | MD_ATOM_FLAG_MAIN_CHAIN), (int)flags);
                 EXPECT_EQ(45.0f, md_atom_mass(&sys.atom, i));
             } else {
                 EXPECT_EQ((int)(MD_ATOM_FLAG_NUCLEOBASE | MD_ATOM_FLAG_NUCLEOSIDE), (int)flags);
