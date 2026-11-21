@@ -1430,7 +1430,8 @@ bool vial_select_bond_origin_known(md_str_t origin) {
     return false;
 }
 
-// A bond's kind, by md_bond_kind_names: 'interaction' is the four interactions
+// A bond's kind, by md_bond_kind_names: 'covalent' is the bond graph, covalent and coordinate bonds, and 'interaction'
+// the four interactions
 static bool test_bond_kind(const vial_match_t* m, const void* user) {
     if (m->kind != VIAL_MATCH_STR) return false;
     const md_bond_flags_t f = *(const md_bond_flags_t*)user;

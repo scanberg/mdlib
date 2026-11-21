@@ -8498,8 +8498,8 @@ static void bond_collect_atom(md_bitmask_t* b, uint32_t atom, const md_bitset_t*
 //   a, b       Without either: all bonds. With a: the bonds with both atoms in a, one set per element of a (bond(residue(:))
 //              is the bonds within each residue). With b as well: the bonds with one atom in the element of a and the other
 //              in b. With b alone: the bonds with an atom in b.
-//   kind       Any of md_bond_kind_names: 'covalent', 'coordinate', 'elastic', 'metallic', 'interaction' (the four
-//              below), 'contact', 'hydrogen', 'ionic', 'halogen'; 'noncovalent' as 'interaction'.
+//   kind       Any of md_bond_kind_names: 'covalent' (covalent and coordinate), 'coordinate', 'elastic', 'metallic',
+//              'interaction' (the four below), 'contact', 'hydrogen', 'ionic', 'halogen'; 'noncovalent' as 'interaction'.
 //   order      The order (an int or a range, 0 for unknown) of a bond of the graph: non-covalent bonds have none.
 //   resonance  Any of 'aromatic', 'delocalized', 'localized' (neither), of a bond of the graph.
 //   origin     Any of 'file', 'topology', 'user', 'inferred'.

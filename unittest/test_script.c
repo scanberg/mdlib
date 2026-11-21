@@ -7131,6 +7131,7 @@ UTEST(script, bondsets) {
         "nc      = bond(kind='noncovalent');"
         "inter_b = bond(kind='interaction');"
         "contact = bond(kind={'contact', 'ionic', 'halogen'});"
+        "plain   = bond(kind='covalent') and not bond(kind='coordinate');"
         "graph   = bond(kind={'covalent', 'coordinate'});"
         "user    = bond(origin='user');"
         "ordered = bond(order=0:4);"
@@ -7138,10 +7139,10 @@ UTEST(script, bondsets) {
         "c_o     = bond(element('C'), element('O'));"
         "at_mg   = bond(b=element('Mg'));"
         "per_res = bond(residue(:));"
-        "none_b  = cov and coord_b;"
-        "either  = cov or coord_b;"
-        "other   = not cov;"
-        "odd     = graph xor cov;"
+        "none_b  = plain and coord_b;"
+        "either  = plain or coord_b;"
+        "other   = not plain;"
+        "odd     = graph xor plain;"
         "mg_side = atom(coord_b);"
         "ends_r  = atom(bond(residue(:)));"
         "n_all   = count(all_b);"
@@ -7158,8 +7159,9 @@ UTEST(script, bondsets) {
     ASSERT_TRUE(md_script_ir_valid(ir));
 
     EXPECT_EQ(8, bondset_count_of(ir, "all_b", &sys, &st, alloc));
-    // 'interaction' is every non-covalent bond, as 'noncovalent' was
-    EXPECT_EQ(6, bondset_count_of(ir, "cov", &sys, &st, alloc));
+    // 'covalent' is the bond graph, coordinate bonds too; 'interaction' every non-covalent bond, as 'noncovalent' was
+    EXPECT_EQ(7, bondset_count_of(ir, "cov", &sys, &st, alloc));
+    EXPECT_EQ(6, bondset_count_of(ir, "plain", &sys, &st, alloc));
     EXPECT_EQ(1, bondset_count_of(ir, "coord_b", &sys, &st, alloc));
     EXPECT_EQ(1, bondset_count_of(ir, "hb", &sys, &st, alloc));
     EXPECT_EQ(1, bondset_count_of(ir, "nc", &sys, &st, alloc));

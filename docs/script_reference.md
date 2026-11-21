@@ -1202,7 +1202,7 @@ The kinds, and what they select:
 
 | Kind | Bonds |
 |---|---|
-| `"covalent"` | Of the bond graph, not coordination |
+| `"covalent"` | The bond graph: covalent bonds and coordinate bonds, which are covalent bonds whose pair of electrons comes from one atom |
 | `"coordinate"` | Metal-ligand bonds |
 | `"elastic"` | Springs of the force field which hold a coarse grained molecule in shape (an elastic network), or restraints: kept with the bonds, but no bonds of the molecule |
 | `"metallic"` | Between the atoms of a metal in bulk, at a surface or in a particle, to every neighbour of the first coordination shell: kept with the bonds, but no bonds of a molecule. What touches the metal has no bonds to it but those formed in a frame (`bond_delta`) |
@@ -1212,7 +1212,8 @@ The kinds, and what they select:
 | `"ionic"` | Between two ions or charged groups: a salt bridge, an ion pair |
 | `"halogen"` | Halogen bonds, C-X…A |
 
-A bond is of one kind, so a charge-assisted hydrogen bond is a `"hydrogen"` bond.
+A bond is of one kind, so a charge-assisted hydrogen bond is a `"hydrogen"` bond. The covalent bonds without the
+coordinate ones are `bond(kind='covalent') and not bond(kind='coordinate')`.
 
 ### bond
 

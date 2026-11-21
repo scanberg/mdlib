@@ -36,7 +36,7 @@ const char* md_bond_kind_name(md_bond_kind_t kind) {
 }
 
 static const md_bond_kind_name_t bond_kind_names[] = {
-    {"covalent",    MD_BOND_FLAG_KIND_MASK,     (md_bond_flags_t)MD_BOND_KIND_COVALENT},
+    {"covalent",    (md_bond_flags_t)0xC0,      (md_bond_flags_t)0x00},     // md_bond_is_graph: covalent and coordinate
     {"coordinate",  MD_BOND_FLAG_KIND_MASK,     (md_bond_flags_t)MD_BOND_KIND_COORDINATE},
     {"elastic",     MD_BOND_FLAG_KIND_MASK,     (md_bond_flags_t)MD_BOND_KIND_ELASTIC},
     {"metallic",    MD_BOND_FLAG_KIND_MASK,     (md_bond_flags_t)MD_BOND_KIND_METALLIC},

@@ -37,8 +37,8 @@ struct md_executor_t;
 //     COVALENT     0x00  A bond of the molecule, also between two metals of a molecule (the Mn-Mn of Mn2(CO)10, the
 //                        Mo-Mo of a paddlewheel): whether a bond involves a metal is a question for the elements of its
 //                        atoms. Two metal atoms of a metallic phase have a METALLIC bond instead.
-//     COORDINATE   0x20  A metal-ligand bond, dative (its pair of electrons comes from the ligand), which counts towards
-//                        the valence of neither atom: every bond between a metal and a non-metal unless its kind was
+//     COORDINATE   0x20  A metal-ligand bond, a covalent bond whose pair of electrons comes from the ligand (dative),
+//                        which counts towards the valence of neither atom: every bond between a metal and a non-metal unless its kind was
 //                        given (md_system_infer_coordination), and any other bond a file says is one. Whether the ligand
 //                        is then an anion (the thiolate of a zinc finger cysteine) is for the perception of its atom to
 //                        say (md_chem_perceive), not the bond.
@@ -176,7 +176,10 @@ const char* md_bond_origin_name(md_bond_origin_t origin);   // "" for a value ou
 const char* md_bond_kind_name(md_bond_kind_t kind);
 
 // The words of the kinds, as the script selects them: a bond is of a word when (flags & mask) == value. Each kind of
-// md_bond_kind_t has its word (md_bond_kind_name), and 'interaction' takes in the four interactions.
+// md_bond_kind_t has its word (md_bond_kind_name), and two of the words take in several kinds: 'covalent' the bond
+// graph, covalent and coordinate bonds (a coordinate bond is a covalent bond whose pair of electrons comes from one
+// atom), and 'interaction' the four interactions. A covalent bond is then the one kind no word names alone: 'covalent'
+// and not 'coordinate'.
 typedef struct md_bond_kind_name_t {
     const char*     name;
     md_bond_flags_t mask;

@@ -364,7 +364,8 @@ UTEST(bonds, kind_names) {
     const struct { md_bond_flags_t flags; const char* kinds; } cases[] = {
         { MD_BOND_FLAG_NONE,                                                    "covalent" },
         { MD_BOND_FLAG_AROMATIC | 2,                                            "covalent" },
-        { (md_bond_flags_t)MD_BOND_KIND_COORDINATE,                             "coordinate" },
+        // A coordinate bond is a covalent bond, of the graph
+        { (md_bond_flags_t)MD_BOND_KIND_COORDINATE,                             "covalent coordinate" },
         // A spring is of no other kind
         { (md_bond_flags_t)MD_BOND_KIND_ELASTIC,                                "elastic" },
         { (md_bond_flags_t)MD_BOND_KIND_METALLIC,                               "metallic" },

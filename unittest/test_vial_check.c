@@ -637,9 +637,9 @@ UTEST_F(vial_check, bond_keywords) {
     ASSERT_TRUE(T != NULL && P != NULL);
     EXPECT_TYPE_ON(T, "n = len(bond())\n", 1, "int, static = 7085");
     EXPECT_TYPE_ON(T, "n = len(bond(kind='covalent' or 'coordinate'))\n", 1, "int, static = 7085");
-    // Covalent and coordinate by default, the bonds shown; a kind written is that kind alone
-    EXPECT_TYPE_ON(T, "n = len(bond(kind='covalent'))\n", 1, "int, static = 7078");
-    EXPECT_TYPE_ON(T, "n = len(bond(kind=['covalent', 'coordinate']))\n", 1, "int, static = 7085");
+    // 'covalent' is the bond graph, the default, the bonds shown: a coordinate bond is a covalent one
+    EXPECT_TYPE_ON(T, "n = len(bond(kind='covalent'))\n", 1, "int, static = 7085");
+    EXPECT_TYPE_ON(T, "n = len(bond(kind='covalent' and not 'coordinate'))\n", 1, "int, static = 7078");
     EXPECT_TYPE_ON(T, "n = len(bond(kind='coordinate'))\n", 1, "int, static = 7");     // MG and its ligands
     EXPECT_TYPE_ON(T, "n = len(bond(kind='interaction'))\n", 1, "int, frame");   // hydrogen bonds are found per frame
     EXPECT_TYPE_ON(T, "n = len(bond(kind=['contact', 'ionic', 'halogen']))\n", 1, "int, static = 0");
