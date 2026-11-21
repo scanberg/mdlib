@@ -1,7 +1,8 @@
 // The checker, step 4: the selectors, the predefined sets, set algebra and indexing, and len, count and labels.
 //
 // With a system, every static selector is evaluated when compiling: its sets are known, so their sizes, counts and
-// labels are too, and W0601 (matches nothing), W0602 (a resid in several chains) and E0207 (no chains) are given.
+// labels are too, and W0601 (matches nothing), W0602 (a resid in several chains), E0207 (no chains) and E0208 (no
+// force-field types) are given.
 // Without one, the same calls are typed with extents not known. A selector with a frame-stage argument, such as a
 // spatial set or a scope that changes per frame, is frame stage, its length known only per frame.
 
@@ -88,6 +89,20 @@ static void report_no_chains(infer_t* x, vial_node_id at) {
         "the data gives no chain ids, and chains are never inferred; a strand is found as a part");
 }
 
+// Whether the data gives no force-field types: only a topology does, and what a loader types from the names alone has
+// none (md_particle_type_ff_type)
+bool vx_no_ff_types(const infer_t* x) {
+    if (!x->sys) return false;
+    const md_particle_type_data_t* td = &x->sys->sys->atom.type;
+    for (size_t t = 0; t < td->count; ++t) if (!md_str_empty(md_particle_type_ff_type(td, t))) return false;
+    return true;
+}
+
+void vx_report_no_ff_types(infer_t* x, vial_node_id at) {
+    vx_diag_fix(x, "E0208", at, NULL, "the data gives no force-field types; they come from a topology (.tpr, .top, a LAMMPS data "
+        "file) and are never inferred: select by name= and element=, or by hybridization=, aromatic= and hydrogens=");
+}
+
 // mdlib keeps no serial numbers yet, and a serial is not its position where the file skips records, so a particle is
 // selected by its position until it does, rather than by a number that would match the wrong one
 static void report_no_serials(infer_t* x, vial_node_id at) {
@@ -97,8 +112,8 @@ static void report_no_serials(infer_t* x, vial_node_id at) {
 // What a keyword's values are: strings, ints or bools
 static uint8_t key_dtype(uint8_t level, uint8_t key) {
     switch (key) {
-    case VIAL_KEY_NAME: case VIAL_KEY_ELEMENT: case VIAL_KEY_KIND: case VIAL_KEY_RESNAME: case VIAL_KEY_CHAIN: case VIAL_KEY_ROLE:
-    case VIAL_KEY_HYBRIDIZATION: return VIAL_DT_STR;
+    case VIAL_KEY_NAME: case VIAL_KEY_ELEMENT: case VIAL_KEY_KIND: case VIAL_KEY_TYPE: case VIAL_KEY_RESNAME: case VIAL_KEY_CHAIN:
+    case VIAL_KEY_ROLE: case VIAL_KEY_HYBRIDIZATION: return VIAL_DT_STR;
     case VIAL_KEY_AROMATIC: case VIAL_KEY_METALLIC: return VIAL_DT_BOOL;
     case VIAL_KEY_ID: return level == VIAL_LEVEL_CHAIN ? VIAL_DT_STR : VIAL_DT_INT;
     default: return VIAL_DT_INT;
@@ -106,8 +121,8 @@ static uint8_t key_dtype(uint8_t level, uint8_t key) {
 }
 
 static const char* key_word(uint8_t key) {
-    static const char* words[] = {"", "name", "serial", "element", "kind", "resid", "resname", "chain", "id", "scope", "size", "role",
-                                  "hybridization", "aromatic", "metallic", "hydrogens", "formal_charge"};
+    static const char* words[] = {"", "name", "serial", "element", "kind", "type", "resid", "resname", "chain", "id", "scope", "size",
+                                  "role", "hybridization", "aromatic", "metallic", "hydrogens", "formal_charge"};
     return key < MD_COUNTOF(words) ? words[key] : "";
 }
 
@@ -354,6 +369,7 @@ static T selector_call(infer_t* x, vial_node_id call, md_str_t name) {
                 continue;
             }
             if (key == VIAL_KEY_CHAIN && no_chains(x)) { report_no_chains(x, arg); failed = true; continue; }
+            if (key == VIAL_KEY_TYPE && vx_no_ff_types(x)) { vx_report_no_ff_types(x, arg); failed = true; continue; }
             if (key == VIAL_KEY_SERIAL) { report_no_serials(x, arg); failed = true; continue; }
             vial_filter_t f;
             const int r = filter_of(x, level, key, vn, &f);

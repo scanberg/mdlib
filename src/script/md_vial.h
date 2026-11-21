@@ -92,7 +92,7 @@ typedef struct md_vial_compile_desc_t {
     uint32_t flags;     // MD_VIAL_COMPILE_*
 
     // The system the script runs on. Selectors and the predefined sets are evaluated against it when compiling, so
-    // their sizes, counts and labels are known and W0601, W0602 and E0207 are given. NULL compiles without one:
+    // their sizes, counts and labels are known and W0601, W0602, E0207 and E0208 are given. NULL compiles without one:
     // selectors are typed with extents not known. The checker reads it only during md_vial_compile, and a program
     // compiled against it holds its topology version. Stored selections are given below.
     const struct md_system_t* sys;

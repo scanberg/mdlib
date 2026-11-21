@@ -147,6 +147,7 @@ typedef enum vial_key_t {
     VIAL_KEY_SERIAL,
     VIAL_KEY_ELEMENT,
     VIAL_KEY_KIND,
+    VIAL_KEY_TYPE,              // particles: the force field's type, where the data gives one (md_particle_type_ff_type)
     VIAL_KEY_RESID,
     VIAL_KEY_RESNAME,
     VIAL_KEY_CHAIN,

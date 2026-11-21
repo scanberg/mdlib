@@ -90,6 +90,9 @@ UTEST(vial_ir, lowers_and_verifies) {
 #include "../src/vial/interp.h"
 #include <md_pdb.h>
 #include <md_gro.h>
+#include <md_tpr.h>
+#include <md_mmcif.h>
+#include <md_attributes.h>
 #include <md_infer.h>
 #include <core/md_geom.h>
 #include <core/md_vec_math.h>
@@ -1570,7 +1573,8 @@ static bool vial_ir__load_file(md_system_t* sys, md_system_state_t* st, const ch
     *sys = (md_system_t){.alloc = alloc};
     *st = (md_system_state_t){.alloc = alloc};
     const md_str_t p = md_str_from_cstr(path);
-    const bool ok = strstr(file, ".gro") ? md_gro_system_init_from_file(sys, st, p, NULL) : md_pdb_system_init_from_file(sys, st, p, NULL);
+    const bool ok = strstr(file, ".gro") ? md_gro_system_init_from_file(sys, st, p, NULL) :
+                    strstr(file, ".tpr") ? md_tpr_system_init_from_file(sys, st, p, NULL) : md_pdb_system_init_from_file(sys, st, p, NULL);
     return ok && md_system_infer(sys, st, NULL);
 }
 
@@ -1706,6 +1710,105 @@ UTEST(vial_ir, particle_roles_and_values) {
     EXPECT_GT(e3, 0u);
     EXPECT_EQ(e5 + e3, vial_ir__count("particle(role='terminus') and nucleic", &sys, &st, alloc));
     EXPECT_EQ(0u, vial_ir__count("particle(role='n_terminus' or 'c_terminus') and nucleic", &sys, &st, alloc));
+    md_system_free(&sys);
+    md_arena_allocator_destroy(alloc);
+}
+
+// A force field's type (type=, type(s)), of atoms, beads and virtual sites alike, as the topology gives it; and the
+// B-factors (bfactor(s)) as the file gives them
+UTEST(vial_ir, particle_types_and_bfactors) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
+    md_system_t sys;
+    md_system_state_t st;
+    // AMBER: a type is finer than an element and is no name: CA is the alpha carbon by name, an aromatic carbon by type
+    ASSERT_TRUE(vial_ir__load_file(&sys, &st, "tpr/peptide_tip4p.tpr", alloc));
+    EXPECT_EQ(2074u, vial_ir__count("particle(type='*')", &sys, &st, alloc));
+    EXPECT_EQ(7u, vial_ir__count("particle(type='CT')", &sys, &st, alloc));
+    EXPECT_EQ(4u, vial_ir__count("particle(type='CA')", &sys, &st, alloc));
+    EXPECT_EQ(2u, vial_ir__count("particle(name='CA')", &sys, &st, alloc));
+    EXPECT_EQ(0u, vial_ir__count("particle(name='CA', type='CA')", &sys, &st, alloc));
+    EXPECT_EQ(506u, vial_ir__count("particle(type='OW*')", &sys, &st, alloc));
+    EXPECT_EQ(4u, vial_ir__count("particle(type='Na' or 'Cl')", &sys, &st, alloc));
+    // TIP4P's M is a virtual site with a type of its own
+    EXPECT_EQ(506u, vial_ir__count("particle(type='MW')", &sys, &st, alloc));
+    EXPECT_EQ(506u, vial_ir__count("particle(kind='virtual', type='MW')", &sys, &st, alloc));
+    EXPECT_EQ(0u, vial_ir__count("atom(type='MW')", &sys, &st, alloc));
+    EXPECT_EQ(2074u - 506u, vial_ir__count("particle(type=not 'MW')", &sys, &st, alloc));
+    {
+        vial_ir__run_t r;
+        const char* src =
+            "t1 = count(particle[type(particle) == 'CT'])\n"
+            "t0 = count(particle[type(particle) == ''])\n"
+            "tm = type(particle(name='MW'))[0]\n";
+        ASSERT_TRUE(vial_ir__start(&r, src, &sys));
+        const bool ok = vial_interp_static(&r.in);
+        if (!ok) printf("failed: %s %s\n", r.in.error.code, r.in.error.message);
+        EXPECT_TRUE(ok);
+        char buf[256];
+        EXPECT_STREQ("7", vial_ir__out(&r, "t1", buf, sizeof(buf)));
+        EXPECT_STREQ("0", vial_ir__out(&r, "t0", buf, sizeof(buf)));
+        EXPECT_STREQ("'MW'", vial_ir__out(&r, "tm", buf, sizeof(buf)));
+        vial_ir__end(&r);
+    }
+    md_system_free(&sys);
+    // Martini: a bead's name repeats across residues, and its type says which bead it is
+    ASSERT_TRUE(vial_ir__load_file(&sys, &st, "martini/martini2_dna.tpr", alloc));
+    EXPECT_EQ(24u, vial_ir__count("bead(name='SC2')", &sys, &st, alloc));
+    EXPECT_EQ(8u, vial_ir__count("bead(name='SC2', type='TG2')", &sys, &st, alloc));
+    EXPECT_EQ(44u, vial_ir__count("bead(type='Q*')", &sys, &st, alloc));
+    EXPECT_EQ(48u, vial_ir__count("bead(type='T*' and not 'TN*')", &sys, &st, alloc));
+    md_system_free(&sys);
+
+    // T's B-factors, as the file gives them
+    const md_system_t* T = vial_test_system('T');
+    ASSERT_TRUE(T);
+    const float* b = md_attribute_view(md_attributes_find(&T->attributes, MD_STR_LIT("atom/b_factor")), MD_ATTRIBUTE_TYPE_F32, 1, 1);
+    ASSERT_TRUE(b);
+    double bmax = 0.0;
+    uint32_t over = 0;
+    for (size_t a = 0; a < T->atom.count; ++a) { bmax = b[a] > bmax ? b[a] : bmax; over += b[a] > 150.0f; }
+    {
+        vial_ir__run_t r;
+        ASSERT_TRUE(vial_ir__start(&r, "m = max(bfactor(particle))\nn = count(particle[bfactor(particle) > 150.0])\n", T));
+        const bool ok = vial_interp_static(&r.in);
+        if (!ok) printf("failed: %s %s\n", r.in.error.code, r.in.error.message);
+        EXPECT_TRUE(ok);
+        char buf[256], want[64];
+        snprintf(want, sizeof(want), "%u", over);
+        EXPECT_GT(over, 0u);
+        EXPECT_LT(over, (uint32_t)T->atom.count);
+        EXPECT_STREQ(want, vial_ir__out(&r, "n", buf, sizeof(buf)));
+        const double got = atof(vial_ir__out(&r, "m", buf, sizeof(buf)));
+        EXPECT_NEAR(bmax, got, 1e-3 * bmax);
+        vial_ir__end(&r);
+    }
+    // An atom the file gives no B-factor ('?') is missing, and reductions skip it
+    static const char cif[] =
+        "data_TEST\n"
+        "loop_\n"
+        "_atom_site.group_PDB\n_atom_site.id\n_atom_site.type_symbol\n_atom_site.label_atom_id\n_atom_site.label_alt_id\n"
+        "_atom_site.label_comp_id\n_atom_site.label_asym_id\n_atom_site.label_entity_id\n_atom_site.label_seq_id\n"
+        "_atom_site.Cartn_x\n_atom_site.Cartn_y\n_atom_site.Cartn_z\n_atom_site.B_iso_or_equiv\n"
+        "ATOM 1 N N . ALA A 1 1 0.000 0.000 0.000 10.0\n"
+        "ATOM 2 C CA . ALA A 1 1 1.458 0.000 0.000 20.0\n"
+        "ATOM 3 C C . ALA A 1 1 2.009 1.420 0.000 ?\n"
+        "ATOM 4 O O . ALA A 1 1 1.251 2.390 0.000 30.0\n"
+        "#\n";
+    sys = (md_system_t){.alloc = alloc};
+    st = (md_system_state_t){.alloc = alloc};
+    ASSERT_TRUE(md_mmcif_system_init_from_str(&sys, &st, (md_str_t){cif, sizeof(cif) - 1}, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
+    {
+        vial_ir__run_t r;
+        ASSERT_TRUE(vial_ir__start(&r, "b = bfactor(particle)\nn = sum(valid(b))\nm = mean(b)\n", &sys));
+        const bool ok = vial_interp_static(&r.in);
+        if (!ok) printf("failed: %s %s\n", r.in.error.code, r.in.error.message);
+        EXPECT_TRUE(ok);
+        char buf[256];
+        EXPECT_STREQ("3", vial_ir__out(&r, "n", buf, sizeof(buf)));
+        EXPECT_STREQ("20.0", vial_ir__out(&r, "m", buf, sizeof(buf)));
+        vial_ir__end(&r);
+    }
     md_system_free(&sys);
     md_arena_allocator_destroy(alloc);
 }
@@ -3557,3 +3660,4 @@ UTEST(vial_ir, sets_described) {
     }
     md_arena_allocator_destroy(alloc);
 }
+

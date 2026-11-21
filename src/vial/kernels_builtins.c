@@ -679,17 +679,23 @@ static bool k_property(vial_kctx_t* k, const char* name, const vial_val_t* s, vi
     }
     const uint32_t n = vial_sets_size(s->sets, 0);
     const uint32_t* idx = vial_sets_items(s->sets, 0);
-    enum { P_MASS, P_CHARGE, P_NAME, P_ELEMENT, P_KIND, P_HYBRIDIZATION, P_AROMATIC, P_METALLIC, P_HYDROGENS, P_FORMAL_CHARGE };
-    static const char* names[] = {"mass", "charge", "name", "element", "kind", "hybridization", "aromatic", "metallic", "hydrogens", "formal_charge"};
+    enum { P_MASS, P_CHARGE, P_BFACTOR, P_NAME, P_ELEMENT, P_KIND, P_TYPE, P_HYBRIDIZATION, P_AROMATIC, P_METALLIC, P_HYDROGENS,
+           P_FORMAL_CHARGE };
+    static const char* names[] = {"mass", "charge", "bfactor", "name", "element", "kind", "type", "hybridization", "aromatic", "metallic",
+                                  "hydrogens", "formal_charge"};
     int which = -1;
     for (int p = 0; p < (int)MD_COUNTOF(names) && which < 0; ++p) if (!strcmp(name, names[p])) which = p;
     if (which < 0) return vial_rt_fail(k, "R0103", "%s is not evaluated yet", name);
-    const uint8_t dt = which == P_NAME || which == P_ELEMENT || which == P_KIND || which == P_HYBRIDIZATION ? VIAL_DT_STR :
+    const uint8_t dt = which == P_NAME || which == P_ELEMENT || which == P_KIND || which == P_TYPE || which == P_HYBRIDIZATION ? VIAL_DT_STR :
                        which == P_AROMATIC || which == P_METALLIC ? VIAL_DT_BOOL :
                        which == P_HYDROGENS || which == P_FORMAL_CHARGE ? VIAL_DT_INT : VIAL_DT_FLOAT;
     vial_val_t o; if (!vial_k_make(k, dt, 1, &n, &o)) return false;
     const md_attribute_t* charges = which == P_CHARGE ? md_attributes_find(&sys->attributes, MD_STR_LIT("atom/charge")) : NULL;
     const float* cq = charges ? md_attribute_view(charges, MD_ATTRIBUTE_TYPE_F32, 1, 1) : NULL;
+    // B-factors, in Å², as the PDB and mmCIF loaders publish them; NAN, an atom the file gives none, and every atom where
+    // there is no column, are missing
+    const md_attribute_t* bfactors = which == P_BFACTOR ? md_attributes_find(&sys->attributes, MD_STR_LIT("atom/b_factor")) : NULL;
+    const float* bq = bfactors ? md_attribute_view(bfactors, MD_ATTRIBUTE_TYPE_F32, 1, 1) : NULL;
     const float* ms = which == P_MASS ? k_masses(k) : NULL;
     uint8_t* metallic = NULL;
     if (which == P_METALLIC) {
@@ -705,6 +711,10 @@ static bool k_property(vial_kctx_t* k, const char* name, const vial_val_t* s, vi
         switch (which) {
         case P_MASS:    ((float*)o.data)[i] = k_mass(ms, sys, a); break;
         case P_CHARGE:  ((float*)o.data)[i] = cq ? cq[a] : (float)md_atom_formal_charge(&sys->atom, a); break;
+        case P_BFACTOR:
+            ((float*)o.data)[i] = bq ? bq[a] : 0.0f;
+            if (!bq || isnan(bq[a])) vial_val_set_missing(&o, i, k->alloc);
+            break;
         case P_NAME:    ((md_str_t*)o.data)[i] = md_atom_name(&sys->atom, a); break;
         case P_ELEMENT: ((md_str_t*)o.data)[i] = md_atomic_number_symbol(md_atom_atomic_number(&sys->atom, a)); break;
         case P_KIND: {
@@ -712,6 +722,7 @@ static bool k_property(vial_kctx_t* k, const char* name, const vial_val_t* s, vi
             ((md_str_t*)o.data)[i] = md_str_from_cstr(pk < MD_COUNTOF(kinds) ? kinds[pk] : "");
             break;
         }
+        case P_TYPE: ((md_str_t*)o.data)[i] = md_particle_type_ff_type(&sys->atom.type, (size_t)md_atom_particle_type_idx(&sys->atom, a)); break;
         case P_HYBRIDIZATION: {
             const md_hybridization_t h = chem ? md_atom_flags_hybridization(md_system_atom_flags(sys, a)) : MD_HYBRIDIZATION_UNKNOWN;
             ((md_str_t*)o.data)[i] = h == MD_HYBRIDIZATION_UNKNOWN ? (md_str_t){0} : md_str_from_cstr(md_hybridization_name(h));
@@ -3196,8 +3207,8 @@ bool vial_k_builtin(vial_kctx_t* k, const char* name, const vial_val_t* const* a
     if (IS("arange")) return k_arange(k, arg(&ba, "lo", 0), arg(&ba, "hi", 1), arg(&ba, "step", 2), out);
     if (IS("eye")) return k_eye(k, arg(&ba, "n", 0), out);
     if (IS("spread")) return k_spread(k, arg(&ba, "values", 0), arg(&ba, "groups", 1), arg(&ba, "combine", 2), out);
-    if (IS("mass") || IS("charge") || IS("name") || IS("element") || IS("kind") || IS("hybridization") || IS("aromatic") ||
-        IS("metallic") || IS("hydrogens") || IS("formal_charge")) return k_property(k, name, arg(&ba, "s", 0), out);
+    if (IS("mass") || IS("charge") || IS("bfactor") || IS("name") || IS("element") || IS("kind") || IS("type") || IS("hybridization") ||
+        IS("aromatic") || IS("metallic") || IS("hydrogens") || IS("formal_charge")) return k_property(k, name, arg(&ba, "s", 0), out);
     if (IS("norm") || IS("normalize")) return k_norm(k, arg(&ba, "v", 0), IS("normalize"), out);
     if (IS("dot") || IS("cross")) return k_dot_cross(k, arg(&ba, "u", 0), arg(&ba, "v", 1), IS("cross"), out);
     if (IS("sum") || IS("mean") || IS("std") || IS("var") || IS("any") || IS("all") || IS("argmin") || IS("argmax") ||

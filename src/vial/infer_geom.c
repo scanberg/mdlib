@@ -10,6 +10,10 @@
 #include <core/md_common.h>
 #include <core/md_array.h>
 
+#include <md_attributes.h>
+#include <md_system.h>
+
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -467,7 +471,7 @@ static T call_weight(infer_t* x, vial_node_id call) {
 }
 
 // mass, charge, element, name, bfactor, and the values of the keywords of particle() that are one per particle (kind,
-// hybridization, aromatic, metallic, hydrogens, formal_charge): one value per particle of a set
+// type, hybridization, aromatic, metallic, hydrogens, formal_charge): one value per particle of a set
 static T call_property(infer_t* x, vial_node_id call, md_str_t name) {
     static const param_t params[] = {{"s", VK_WHOLE, true}};
     vial_node_id args[1];
@@ -489,13 +493,27 @@ static T call_property(infer_t* x, vial_node_id call, md_str_t name) {
         return err();
     }
     const bool str = md_str_eq(name, MD_STR_LIT("element")) || md_str_eq(name, MD_STR_LIT("name")) || md_str_eq(name, MD_STR_LIT("kind")) ||
-                     md_str_eq(name, MD_STR_LIT("hybridization"));
+                     md_str_eq(name, MD_STR_LIT("type")) || md_str_eq(name, MD_STR_LIT("hybridization"));
     const bool boolean = md_str_eq(name, MD_STR_LIT("aromatic")) || md_str_eq(name, MD_STR_LIT("metallic"));
     const bool integer = md_str_eq(name, MD_STR_LIT("hydrogens")) || md_str_eq(name, MD_STR_LIT("formal_charge"));
     T t = vial_type_scalar(str ? VIAL_DT_STR : boolean ? VIAL_DT_BOOL : integer ? VIAL_DT_INT : VIAL_DT_FLOAT);
     if (md_str_eq(name, MD_STR_LIT("mass")))    t.unit = unit_named("u");
     if (md_str_eq(name, MD_STR_LIT("charge")))  t.unit = unit_named("e");
-    if (md_str_eq(name, MD_STR_LIT("bfactor"))) t.unit = md_unit_mul(unit_named("angstrom"), unit_named("angstrom"));
+    if (md_str_eq(name, MD_STR_LIT("type")) && vx_no_ff_types(x)) { vx_report_no_ff_types(x, call); return err(); }
+    if (md_str_eq(name, MD_STR_LIT("bfactor"))) {
+        t.unit = md_unit_mul(unit_named("angstrom"), unit_named("angstrom"));
+        // The B-factors the file gives, as md_pdb and md_mmcif publish them; an atom it gives none (NAN) is missing
+        const float* b = x->sys ? md_attribute_view(md_attributes_find(&x->sys->sys->attributes, MD_STR_LIT("atom/b_factor")),
+            MD_ATTRIBUTE_TYPE_F32, 1, 1) : NULL;
+        if (x->sys && !b) {
+            vx_diag_fix(x, "E0208", call, NULL, "the data gives no B-factors; they come from a PDB or mmCIF file, and a column "
+                "where every atom has the same value is not kept");
+            return err();
+        }
+        bool gaps = !b;
+        for (uint32_t i = 0; b && !gaps && i < x->sys->num_atoms; ++i) gaps = isnan(b[i]);
+        if (gaps) t.flags |= VIAL_TYPE_MISSING;
+    }
     t.stage = s.stage;
     vial_type_push_dim(&t, particle_extent(x, &s, args[0]));
     return t;
@@ -643,8 +661,8 @@ bool vx_call_geom(infer_t* x, vial_node_id call, const vial_builtin_t* b, T* out
     if (md_str_eq(name, MD_STR_LIT("weight")))       { *out = call_weight(x, call); return true; }
     if (md_str_eq(name, MD_STR_LIT("mass")) || md_str_eq(name, MD_STR_LIT("charge")) || md_str_eq(name, MD_STR_LIT("element")) ||
         md_str_eq(name, MD_STR_LIT("name")) || md_str_eq(name, MD_STR_LIT("bfactor")) || md_str_eq(name, MD_STR_LIT("kind")) ||
-        md_str_eq(name, MD_STR_LIT("hybridization")) || md_str_eq(name, MD_STR_LIT("aromatic")) || md_str_eq(name, MD_STR_LIT("metallic")) ||
-        md_str_eq(name, MD_STR_LIT("hydrogens")) || md_str_eq(name, MD_STR_LIT("formal_charge"))) { *out = call_property(x, call, name); return true; }
+        md_str_eq(name, MD_STR_LIT("type")) || md_str_eq(name, MD_STR_LIT("hybridization")) || md_str_eq(name, MD_STR_LIT("aromatic")) ||
+        md_str_eq(name, MD_STR_LIT("metallic")) || md_str_eq(name, MD_STR_LIT("hydrogens")) || md_str_eq(name, MD_STR_LIT("formal_charge"))) { *out = call_property(x, call, name); return true; }
     if (md_str_eq(name, MD_STR_LIT("displacement")))  { *out = call_displacement(x, call); return true; }
     if (md_str_eq(name, MD_STR_LIT("angle")))         { *out = call_angle(x, call, false); return true; }
     if (md_str_eq(name, MD_STR_LIT("dihedral")))      { *out = call_angle(x, call, true); return true; }

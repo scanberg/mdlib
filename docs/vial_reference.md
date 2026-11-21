@@ -291,6 +291,7 @@ Names are singular, as every function's is, whatever the shape of what they give
 |  | `serial` | the serial number in the file; see below | int, `a..b` or a list |
 |  | `element` | the element | string or list |
 |  | `kind` | atom, bead or virtual | string or list |
+|  | `type` | the force field's type, as a topology gives it; see Force-field types | string with `*` and `?`, or a list |
 |  | `resid` | the number of its residue in the file | int, `a..b` or a list |
 |  | `resname` | the name of its residue | string with `*` and `?`, or a list |
 |  | `chain` | the author id of its chain | string or list |
@@ -401,6 +402,16 @@ q_net  = sum(formal_charge(particle))                     # -> 0: the two charge
 sp2    = particle[hybridization(particle) == 'sp2']       # -> set
 aro    = aromatic(particle)                               # -> bool[153]
 h_c    = sum(hydrogens(atom(element='C')))                # -> 60: CA's one and CB's three, of fifteen alanines
+```
+
+### Force-field types
+
+A particle's type is the force field's name for it, as the topology gives it: `CT` or `opls_135` for an atom, a Martini bead type such as `Q5` or `TN0` for a bead, `MW` for TIP4P's virtual site. Only a topology gives types, a .tpr, a .top or a LAMMPS data file, and none is ever inferred, so on data from a PDB, GRO or mmCIF file alone `type=` and `type(s)` are E0208: select by `name=` and `element=` instead, or by the chemistry, which says what an atom type encodes (AMBER's `CT` is an sp3 carbon). A type is no name: AMBER's `CA` is an aromatic carbon, and the atom named CA, the alpha carbon, has type `CT`. Nor is it an element: an atom's type is finer, with its hybridization and surroundings in it, and a bead has no element, so its type is the one identity it has; a Martini nucleotide's beads are named SC1 to SC4 in every base, and their types tell the bases apart. `type=` matches as `name=` does, a glob, so `'C*'` is every type that starts with C, AMBER's `C*` among them; a `*` or `?` in a type cannot be matched alone. `not` is among the particles that have a type. viamd's tooltip shows a particle's type as a script writes it.
+
+```python
+# on T
+ct     = particle(type='CT')                               # error E0208: T gives no force-field types
+t      = type(particle)                                    # error E0208
 ```
 
 The kinds of a part: `polymer` is any polymer strand, `peptide`, `nucleic`, `dna` and `rna` the strands of those kinds (`nucleic` is DNA, RNA or a hybrid), and `glycan` a tree of saccharides or one sugar. A part that is no polymer is a `lipid` when its residues are lipids, an `ion` when it is one ion, a `water`, or else a `ligand`. A molecule has no kind of its own, since a glycoprotein holds a strand and its glycans: select the parts, and `molecule(part(kind='peptide'))` gives the molecules they are in.
@@ -773,8 +784,8 @@ Keywords mean the same wherever they appear. `weights=` takes `'mass'`, `None` o
 | Function | Result | Notes |
 | --- | --- | --- |
 | `s.xyz` | `float[n][3]` Å | frame stage; n is `count(s)`. On coordinates, a float array whose last dimension is 3, itself. On an array of sets that each hold one particle, one position per set; on other arrays of sets E0318, since their positions do not form one array: `particle(res_a).xyz` merges them, and a def with a `points` or `group` parameter maps over them |
-| `mass(s)`, `charge(s)`, `element(s)`, `name(s)`, `bfactor(s)` | `float[n]` u, e, or `str[n]` | per-particle properties of a set; static, except `bfactor` where the file gives one per frame |
-| `kind(s)`, `hybridization(s)`, `aromatic(s)`, `metallic(s)`, `hydrogens(s)`, `formal_charge(s)` | `str[n]`, `bool[n]` or `int[n]` | the value of each particle for the keyword of `particle` of that name, spelt as the keyword takes it; static. Defined for every particle: what has no such property, a bead's hybridization or a hydrogen's, gives `''`, `False` or `0` |
+| `mass(s)`, `charge(s)`, `element(s)`, `name(s)`, `bfactor(s)` | `float[n]` u, e, Å², or `str[n]` | per-particle properties of a set; static. `bfactor` is the file's, a PDB's or an mmCIF's: missing for an atom it gives none (an mmCIF's `?`), and E0208 where it gives no column, or one where every atom has the same value, which is not kept |
+| `kind(s)`, `type(s)`, `hybridization(s)`, `aromatic(s)`, `metallic(s)`, `hydrogens(s)`, `formal_charge(s)` | `str[n]`, `bool[n]` or `int[n]` | the value of each particle for the keyword of `particle` of that name, spelt as the keyword takes it; static. Defined for every particle: what has no such property, a bead's hybridization or a hydrogen's, gives `''`, `False` or `0`; `type` is E0208 where the data gives no types |
 | `particle(x)` on an array | `set` | the particles an array's first particle dimension describes, so `mass(particle(fit(s.xyz, ref)))` works after a fit; an array with no such dimension is E0311 |
 | `s.com`, `com(s, weights='mass')` | `float[3]` Å | the centre of mass, periodic-aware: the mean of the points placed in the images nearest it, seeded from their circular mean, so for a group smaller than half the cell it is the mean of the group made whole, wherever the trajectory wrapped it; takes a set or points, and maps over arrays of sets. `com(s, weights=None)` is the centre of geometry, `centroid(s)`; `weights=` is as everywhere, below |
 | `weight(p, weights='mass')` | `float[n]` | one weight per point of p, as `weights=` means it everywhere: the particles' masses (u) for `'mass'`, ones for None, or the array given. What the prelude's defs weigh with, and a def of your own can |
@@ -812,6 +823,7 @@ near   = within(5.0, of=vlb)                       # -> set, frame: its size cha
 near_r = residue(within(5.0, of=vlb))            # -> set[?], frame
 near_p = within(5.0, vlb)                           # error E0203: of= is always written; within(5.0, of=vlb)
 near_n = within(0.5 nm, of=vlb)                     # -> set, frame: the same as near
+b_gtp  = bfactor(gtp)                             # -> float[32] Å²
 ```
 
 | Kind | On T | Without `between=` | With `between=` | Adds |
@@ -1391,6 +1403,7 @@ Codes are stable: E for errors, W for warnings, R for errors found while evaluat
 | E0205 | A positional value the selector does not take | `chain` takes an id string, not a position | `chain[0]` |
 | E0206 | A keyword value, a pattern or an attribute path the function does not know | 'amino' is not a residue kind; `C(=O` is not a SMILES pattern; the run has no attribute `edr/Kinetic` | kind='amino\_acid' |
 | E0207 | A chain where the data gives no chain ids | P gives no chain ids; chains are labels of the data and never inferred | `part(kind='polymer')` |
+| E0208 | A type or a B-factor where the data gives none | T gives no force-field types; they come from a topology and are never inferred |  |
 | E0301 | Shapes that do not broadcast | `float[433]` and `float[433][3]` do not broadcast | `d[:, None]` |
 | E0302 | Not a point: an int, or a set that may hold several particles | `distance` needs a point; `residue(id=1..4)` holds 4 sets of several particles | `.com` or `between='closest'`; `particle[12]` for an int |
 | E0303 | A condition on an array | `if` needs one bool; this is `bool[442]` | `where(...)` |

@@ -595,7 +595,7 @@ size_t vial_unit_label(char* buf, size_t cap, vial_sys_t* s, uint8_t level, uint
 
 static const struct { const char* word; uint8_t key; } keywords[] = {
     {"name", VIAL_KEY_NAME}, {"serial", VIAL_KEY_SERIAL}, {"element", VIAL_KEY_ELEMENT}, {"kind", VIAL_KEY_KIND},
-    {"resid", VIAL_KEY_RESID}, {"resname", VIAL_KEY_RESNAME}, {"chain", VIAL_KEY_CHAIN}, {"id", VIAL_KEY_ID},
+    {"type", VIAL_KEY_TYPE}, {"resid", VIAL_KEY_RESID}, {"resname", VIAL_KEY_RESNAME}, {"chain", VIAL_KEY_CHAIN}, {"id", VIAL_KEY_ID},
     {"scope", VIAL_KEY_SCOPE}, {"size", VIAL_KEY_SIZE}, {"role", VIAL_KEY_ROLE},
     {"hybridization", VIAL_KEY_HYBRIDIZATION}, {"aromatic", VIAL_KEY_AROMATIC}, {"metallic", VIAL_KEY_METALLIC},
     {"hydrogens", VIAL_KEY_HYDROGENS}, {"formal_charge", VIAL_KEY_FORMAL_CHARGE},
@@ -609,7 +609,7 @@ uint8_t vial_select_key(md_str_t keyword) {
 #define K(k) (1u << (k))
 static uint32_t takes(uint8_t level) {
     switch (level) {
-    case VIAL_LEVEL_PARTICLE: return K(VIAL_KEY_NAME) | K(VIAL_KEY_SERIAL) | K(VIAL_KEY_ELEMENT) | K(VIAL_KEY_KIND) |
+    case VIAL_LEVEL_PARTICLE: return K(VIAL_KEY_NAME) | K(VIAL_KEY_SERIAL) | K(VIAL_KEY_ELEMENT) | K(VIAL_KEY_KIND) | K(VIAL_KEY_TYPE) |
                                      K(VIAL_KEY_RESID) | K(VIAL_KEY_RESNAME) | K(VIAL_KEY_CHAIN) | K(VIAL_KEY_SCOPE) |
                                      K(VIAL_KEY_ROLE) | K(VIAL_KEY_HYBRIDIZATION) | K(VIAL_KEY_AROMATIC) | K(VIAL_KEY_METALLIC) |
                                      K(VIAL_KEY_HYDROGENS) | K(VIAL_KEY_FORMAL_CHARGE);
@@ -630,7 +630,7 @@ bool vial_select_takes(uint8_t level, uint8_t key) { return key < 32 && (takes(l
 
 const char* vial_select_keywords(uint8_t level) {
     switch (level) {
-    case VIAL_LEVEL_PARTICLE: return "name, serial, element, kind, resid, resname, chain, role, hybridization, aromatic, metallic, "
+    case VIAL_LEVEL_PARTICLE: return "name, serial, element, kind, type, resid, resname, chain, role, hybridization, aromatic, metallic, "
                                      "hydrogens, formal_charge and scope";
     case VIAL_LEVEL_RESIDUE:  return "id, name, kind, chain and scope";
     case VIAL_LEVEL_PART:     return "kind, chain and scope";
@@ -788,13 +788,13 @@ static bool residue_passes_for_particles(const vial_sys_t* s, const vial_select_
     return true;
 }
 
-// The particle-level filters, name, element and kind, are properties of a particle's type: decided once per type,
-// so a particle costs one lookup. NULL when no filter looks at the type.
+// The particle-level filters, name, element, kind and type, are properties of a particle's type: decided once per
+// type, so a particle costs one lookup. NULL when no filter looks at the type.
 static uint8_t* type_mask(const vial_sys_t* s, const vial_select_t* q, md_allocator_i* alloc) {
     bool any = q->particle_kind != 0;
     for (size_t i = 0; i < md_array_size(q->filters); ++i) {
         const uint8_t k = q->filters[i].key;
-        any = any || k == VIAL_KEY_NAME || k == VIAL_KEY_ELEMENT || k == VIAL_KEY_KIND;
+        any = any || k == VIAL_KEY_NAME || k == VIAL_KEY_ELEMENT || k == VIAL_KEY_KIND || k == VIAL_KEY_TYPE;
     }
     if (!any) return NULL;
     const md_system_t* sys = s->sys;
@@ -813,6 +813,13 @@ static uint8_t* type_mask(const vial_sys_t* s, const vial_select_t* q, md_alloca
                 break;
             }
             case VIAL_KEY_KIND: pass = kind < MD_COUNTOF(particle_kinds) && match_str(f, md_str_from_cstr(particle_kinds[kind]), false); break;
+            case VIAL_KEY_TYPE: {
+                // The force field's type, of an atom as of a bead; a particle the data gives no type is none of
+                // type='s values, also under not
+                const md_str_t ff = md_particle_type_ff_type(&sys->atom.type, t);
+                pass = !md_str_empty(ff) && match_str(f, ff, true);
+                break;
+            }
             default: break;
             }
         }

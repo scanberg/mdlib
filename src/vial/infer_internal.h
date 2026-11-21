@@ -162,6 +162,9 @@ bool vx_call_math(infer_t* x, vial_node_id call, const vial_builtin_t* b, vial_t
 
 // A call to a built-in: true when it is one infer_sets.c types (selectors, len, count, label), with its type in out
 bool        vx_call_sets(infer_t* x, vial_node_id call, const vial_builtin_t* b, vial_type_t* out);
+// type= and type(s) where the data gives no force-field types, as E0208 has it
+bool        vx_no_ff_types(const infer_t* x);
+void        vx_report_no_ff_types(infer_t* x, vial_node_id at);
 
 // A built-in written bare: a selector means all its units, a predefined set its particles. False for other names.
 bool        vx_name_sets(infer_t* x, vial_node_id id, const vial_builtin_t* b, vial_type_t* out);

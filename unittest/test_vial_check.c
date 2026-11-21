@@ -561,6 +561,16 @@ UTEST_F(vial_check, keyword_logic) {
     EXPECT_TYPE_ON(P, "v = hybridization(particle)\n", 1, "str[153], static");
     EXPECT_TYPE_ON(P, "w = aromatic(residue[0])\n", 1, "bool[12], static");
     EXPECT_DIAGS_ON(P, "k = kind(residue)\n", "E0318 1: `residue` holds sets whose sizes may differ; their particles' kinds do not form one array | kind(particle(residue))\n");
+    // A force field's types come from a topology alone: a PDB has none, so type= and type(s) are E0208 on it rather
+    // than matching nothing, and never fall back to the names
+    EXPECT_DIAGS_ON(P, "t = particle(type='CT')\n", "E0208 1: the data gives no force-field types; they come from a topology (.tpr, .top, "
+        "a LAMMPS data file) and are never inferred: select by name= and element=, or by hybridization=, aromatic= and hydrogens=\n");
+    EXPECT_DIAGS_ON(P, "t = type(particle)\n", "E0208 1: the data gives no force-field types; they come from a topology (.tpr, .top, "
+        "a LAMMPS data file) and are never inferred: select by name= and element=, or by hybridization=, aromatic= and hydrogens=\n");
+    // B-factors, where the file gives them; P's are all zero, a column that says nothing
+    EXPECT_TYPE_ON(T, "b = bfactor(particle(resname='GTP'))\n", 1, u8"float[32] Å², static");
+    EXPECT_DIAGS_ON(P, "b = bfactor(particle)\n", "E0208 1: the data gives no B-factors; they come from a PDB or mmCIF file, and a column where "
+        "every atom has the same value is not kept\n");
 }
 
 UTEST_F(vial_check, selectors_without_a_system) {
@@ -572,6 +582,10 @@ UTEST_F(vial_check, selectors_without_a_system) {
     EXPECT_TYPE("r = residue(within(5.0, of=protein))\n", 1, "set[?], frame");
     EXPECT_DIAGS("w = within(5.0, protein)\n", "E0203 1: `within` takes the radius as its one positional argument; of= is always written, of=protein | of=protein\n");
     EXPECT_DIAGS("w = within(5.0 ns, of=protein)\n", "E0313 1: `within` takes a radius, one length; this is float ns\n");
+    // What the data gives is not known: a type is a string, and a B-factor may be missing
+    EXPECT_TYPE("t = type(particle(name='CA'))\n", 1, "str[n], static");
+    EXPECT_TYPE("b = bfactor(particle(name='CA'))\n", 1, u8"float[n] Å² | missing, static");
+    EXPECT_DIAGS("t = particle(type=1)\n", "E0206 1: `type` takes a string, a list of strings, or and/or/not over strings; this is int\n");
 }
 
 // ### STEP 5: KINDS AND GEOMETRY ###
