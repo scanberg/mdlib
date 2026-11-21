@@ -287,13 +287,13 @@ Names are singular, as every function's is, whatever the shape of what they give
 
 | Selector | Keyword | Matches | Value |
 | --- | --- | --- | --- |
-| `particle` | `name` | the atom or bead name | string with `*` and `?`, or a list |
+| `particle` | `name` | the atom or bead name | a glob (see below), or a list |
 |  | `serial` | the serial number in the file; see below | int, `a..b` or a list |
 |  | `element` | the element | string or list |
 |  | `kind` | atom, bead or virtual | string or list |
-|  | `type` | the force field's type, as a topology gives it; see Force-field types | string with `*` and `?`, or a list |
+|  | `type` | the force field's type, as a topology gives it; see Force-field types | a glob, or a list |
 |  | `resid` | the number of its residue in the file | int, `a..b` or a list |
-|  | `resname` | the name of its residue | string with `*` and `?`, or a list |
+|  | `resname` | the name of its residue | a glob, or a list |
 |  | `chain` | the author id of its chain | string or list |
 |  | `role` | its roles: backbone, main, side, base, sugar, terminus, n\_terminus, c\_terminus, 5\_terminus, 3\_terminus, qm; see Roles | string or list |
 |  | `hybridization` | sp, sp2 or sp3, as perceived from the bonds; a hydrogen or a metal has none | string or list |
@@ -302,7 +302,7 @@ Names are singular, as every function's is, whatever the shape of what they give
 |  | `hydrogens` | the hydrogens attached, explicit and implicit | int, `a..b` or a list |
 |  | `formal_charge` | its formal charge | int, `a..b` or a list |
 | `residue` | `id` | the sequence number in the file | int, `a..b` or a list |
-|  | `name` | the residue name | string with `*` and `?`, or a list |
+|  | `name` | the residue name | a glob, or a list |
 |  | `kind` | amino\_acid, nucleotide, water, ion, lipid, other | string or list |
 |  | `chain` | the author id of its chain | string or list |
 | `part` | `kind` | polymer, peptide, nucleic, dna, rna, glycan, ligand, lipid, ion, water; see below | string or list |
@@ -311,16 +311,29 @@ Names are singular, as every function's is, whatever the shape of what they give
 |  | `chain` | the author id of its chain | string or list |
 | `ring` | `kind` | aromatic (every bond), aliphatic, hetero (an atom other than C), heteroaromatic, sugar (a furanose or pyranose) | string or list |
 |  | `size` | the number of atoms | int, `a..b` or a list |
-| `molecule` | `name` | the name of its molecule type: the topology's, else what its parts are, such as peptide, GTP or water | string with `*` and `?`, or a list |
+| `molecule` | `name` | the name of its molecule type: the topology's, else what its parts are, such as peptide, GTP or water | a glob, or a list |
 |  | `chain` | the author id of its chain | string or list |
 | `chain` | `id` | the author chain id | string or list |
-| `group` | `name` | the group's name | string with `*` and `?`, or a list |
+| `group` | `name` | the group's name | a glob, or a list |
 |  | `role` | what the simulation used it for, by its mdp option: tc (tc-grps), energy (energygrps), acc, freeze, user1, user2, comm (comm-grps), compressed-x, orire-fit, qmmm | string or list |
 | all of them | `scope` | the set to search instead of the default scope | a set, or `system` |
 
 A particle's serial is the number its file gives it. Where the file gives none, the count continues implicitly, one up from the particle before: a file without serials counts 1, 2, 3, and a file that wraps or stops counting past 99,999, as GRO and plain PDB do, goes on 100000, 100001. So serials are unique, and in a file that skips records, such as T, which keeps only the first alternate location, they are still the numbers on its lines. mdlib stores them only where they cannot be derived from the position plus a constant. Selecting by serial is not supported yet, as mdlib keeps no serials: it is E0801, and a particle is selected by its position, `particle[i]`, until it does.
 
 A list means any of its values, and separate keywords must all hold. `element` ignores case, so `'MG'`, `'Mg'` and `'mg'` are magnesium; names and ids do not.
+
+A glob is a pattern as Python's `fnmatch` writes it, and as MDAnalysis matches names: `*` is any run of characters, `?` any one, and brackets one character of a set, `[abc]`, with ranges, `[0-9]`, or of none of it, `[!abc]`. Within brackets `*` and `?` are themselves, so `[*]` is a literal star: `'C*'` is every name that starts with C, and `'C[*]'` only `C*`, an AMBER type and an old PDB's name for a primed atom. A `[` that no `]` closes is itself, and a literal `[` is `[[]`. Case matters.
+
+```python
+# on P
+hb     = count(particle(name='HB[123]'))                   # -> 45: the methyl hydrogens of fifteen alanines
+hb_x   = count(particle(name='HB[!1]'))                    # -> 30
+```
+
+```python
+# on T
+gl     = len(residue(name='GL[NUY]'))                       # -> 159: GLN, GLU and GLY
+```
 
 ### Values with and, or and not
 
@@ -406,7 +419,7 @@ h_c    = sum(hydrogens(atom(element='C')))                # -> 60: CA's one and 
 
 ### Force-field types
 
-A particle's type is the force field's name for it, as the topology gives it: `CT` or `opls_135` for an atom, a Martini bead type such as `Q5` or `TN0` for a bead, `MW` for TIP4P's virtual site. Only a topology gives types, a .tpr, a .top or a LAMMPS data file, and none is ever inferred, so on data from a PDB, GRO or mmCIF file alone `type=` and `type(s)` are E0208: select by `name=` and `element=` instead, or by the chemistry, which says what an atom type encodes (AMBER's `CT` is an sp3 carbon). A type is no name: AMBER's `CA` is an aromatic carbon, and the atom named CA, the alpha carbon, has type `CT`. Nor is it an element: an atom's type is finer, with its hybridization and surroundings in it, and a bead has no element, so its type is the one identity it has; a Martini nucleotide's beads are named SC1 to SC4 in every base, and their types tell the bases apart. `type=` matches as `name=` does, a glob, so `'C*'` is every type that starts with C, AMBER's `C*` among them; a `*` or `?` in a type cannot be matched alone. `not` is among the particles that have a type. viamd's tooltip shows a particle's type as a script writes it.
+A particle's type is the force field's name for it, as the topology gives it: `CT` or `opls_135` for an atom, a Martini bead type such as `Q5` or `TN0` for a bead, `MW` for TIP4P's virtual site. Only a topology gives types, a .tpr, a .top or a LAMMPS data file, and none is ever inferred, so on data from a PDB, GRO or mmCIF file alone `type=` and `type(s)` are E0208: select by `name=` and `element=` instead, or by the chemistry, which says what an atom type encodes (AMBER's `CT` is an sp3 carbon). A type is no name: AMBER's `CA` is an aromatic carbon, and the atom named CA, the alpha carbon, has type `CT`. Nor is it an element: an atom's type is finer, with its hybridization and surroundings in it, and a bead has no element, so its type is the one identity it has; a Martini nucleotide's beads are named SC1 to SC4 in every base, and their types tell the bases apart. `type=` matches as `name=` does, a glob, so `'C*'` is every type that starts with C, AMBER's `C*` among them, and `'C[*]'` that one alone. `not` is among the particles that have a type. viamd's tooltip shows a particle's type as a script writes it.
 
 ```python
 # on T
@@ -1175,6 +1188,17 @@ coul = attr("edr/coul_sr_*")                           # -> float[k] kJ/mol, fra
 lj   = attr("edr/lj_sr_*")                             # -> float[k] kJ/mol, frame
 tot  = sum(coul)                                       # -> float kJ/mol, frame: summed within each frame
 inter = sum(coul) + sum(lj)                            # -> float kJ/mol, frame: coul + lj would pair members by position
+```
+
+`attr(name, of=s)` reads a per-atom attribute of the system at each particle of s: one value per particle, with the attribute's unit, by its name below `atom/`, as a particle's tooltip names it. The set says what the values are of, so the name carries no `atom/` (E0206, with the name as the fix). Components and variants are dimensions after the particles', in that order: a dipole of three components is `float[n][3]`, a charge per electronic state `float[n][k]`. An atom the file gives no value, NaN, is missing. An array of sets is E0318, as for `mass`: `attr(name, of=particle(rs))` reads their particles. A per-frame attribute of the particles in the run is not read yet (E0801). `bfactor(s)` reads the same column as `attr('b_factor', of=s)`.
+
+```python
+# on T
+occ   = attr('occupancy', of=particle(resname='GTP'))     # -> float[32]
+b     = attr('b_factor', of=particle(resname='GTP'))      # -> float[32] Å²: the column bfactor() reads
+occ_p = attr('atom/occupancy', of=protein)                # error E0206: the name below atom/, 'occupancy'
+pol   = attr('polarizability', of=protein)                # error E0206: T's particles have b_factor, formal_charge and occupancy
+occ_r = attr('occupancy', of=residue)                     # error E0318: of=particle(residue) reads their particles
 ```
 
 ### Frames

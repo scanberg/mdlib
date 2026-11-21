@@ -1379,8 +1379,7 @@ static bool draw_attr(draw_out_t* o, const md_vial_draw_desc_t* desc, const vial
     // The members, as the check found them: one path, or every attribute of the run the pattern matches, in path order
     md_array(md_str_t) terms = 0;
     const md_str_t run = desc->run;
-    bool glob = false;
-    for (size_t i = 0; i < pattern.len; ++i) glob = glob || pattern.ptr[i] == '*' || pattern.ptr[i] == '?';
+    const bool glob = vial_is_glob(pattern);
     for (md_attribute_iter_t it = md_attributes_iter(&sys->attributes, run); md_attributes_next(&it);) {
         const md_str_t path = it.attr->path;
         if (path.len <= run.len + 1 || path.ptr[run.len] != '/') continue;

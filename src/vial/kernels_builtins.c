@@ -13,6 +13,7 @@
 #include "accum.h"
 
 #include <md_system.h>
+#include <md_attributes.h>
 #include <md_element.h>
 #include <core/md_geom.h>
 #include <core/md_simd.h>
@@ -24,6 +25,7 @@
 
 #include <float.h>
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 #define DEG_PER_RAD 57.29577951308232
@@ -736,6 +738,56 @@ static bool k_property(vial_kctx_t* k, const char* name, const vial_val_t* s, vi
             break;
         }
         default: ((int32_t*)o.data)[i] = chem ? md_atom_formal_charge(&sys->atom, a) : 0; break;
+        }
+    }
+    o.origin = s->sets;
+    *out = o;
+    return true;
+}
+
+// attr(name, of=s): the system's per-atom attribute atom/<name> at each particle of s, its variants and components after
+// the particle; NAN, an atom it has no value for, is missing
+static bool k_attr_of(vial_kctx_t* k, const vial_val_t* path, const vial_val_t* s, vial_val_t* out) {
+    if (!path || path->dtype != VIAL_DT_STR || !path->data) return vial_rt_fail(k, "R0103", "attr takes a name");
+    const md_system_t* sys = k->in->msys;
+    if (!sys) return vial_rt_fail(k, "R0103", "attr needs a system");
+    if (s->dtype != VIAL_DT_SET) {
+        if (s->origin) return k_attr_of(k, path, &(vial_val_t){.dtype = VIAL_DT_SET, .sets = s->origin}, out);
+        return vial_rt_fail(k, "R0103", "attr of what is not a set");
+    }
+    if (s->ndim) return vial_rt_fail(k, "R0103", "attr of an array of sets");
+    const md_str_t name = *(const md_str_t*)path->data;
+    char full[512];
+    snprintf(full, sizeof(full), "atom/%.*s", (int)name.len, name.ptr);
+    const md_attribute_t* a = md_attributes_find(&sys->attributes, md_str_from_cstr(full));
+    const md_attribute_format_t* f = a ? &a->format : NULL;
+    if (!f || f->rank < 1 || f->rank > 2 || f->shape[f->rank - 1] != sys->atom.count) {
+        return vial_rt_fail(k, "R0103", "the system has no per-atom attribute %s", full);
+    }
+    const uint32_t num_atoms = (uint32_t)sys->atom.count, var = f->rank == 2 ? f->shape[0] : 1, comp = f->components;
+    const size_t cnt = md_attribute_element_count(f);
+    double* all = md_alloc(k->alloc, (cnt ? cnt : 1) * sizeof(double));
+    if (md_attribute_extract_f64(all, cnt, &sys->attributes, a, md_attribute_slice_all(), md_unit_none()) != cnt) {
+        return vial_rt_fail(k, "R0103", "%s could not be read", full);
+    }
+    const uint32_t n = vial_sets_size(s->sets, 0);
+    const uint32_t* idx = vial_sets_items(s->sets, 0);
+    uint32_t dims[3] = {n};
+    uint8_t nd = 1;
+    if (f->rank == 2) dims[nd++] = var;
+    if (comp > 1) dims[nd++] = comp;
+    const bool real = f->type == MD_ATTRIBUTE_TYPE_F32 || f->type == MD_ATTRIBUTE_TYPE_F64;
+    vial_val_t o; if (!vial_k_make(k, real ? VIAL_DT_FLOAT : VIAL_DT_INT, nd, dims, &o)) return false;
+    // Stored [variant][atom][component]; given [particle][variant][component]
+    size_t e = 0;
+    for (uint32_t i = 0; i < n; ++i) {
+        for (uint32_t v = 0; v < var; ++v) {
+            for (uint32_t c = 0; c < comp; ++c, ++e) {
+                const double x = all[((size_t)v * num_atoms + idx[i]) * comp + c];
+                if (real) ((float*)o.data)[e] = (float)x;
+                else ((int32_t*)o.data)[e] = (int32_t)x;
+                if (real && isnan(x)) vial_val_set_missing(&o, e, k->alloc);
+            }
         }
     }
     o.origin = s->sets;
@@ -3207,6 +3259,7 @@ bool vial_k_builtin(vial_kctx_t* k, const char* name, const vial_val_t* const* a
     if (IS("arange")) return k_arange(k, arg(&ba, "lo", 0), arg(&ba, "hi", 1), arg(&ba, "step", 2), out);
     if (IS("eye")) return k_eye(k, arg(&ba, "n", 0), out);
     if (IS("spread")) return k_spread(k, arg(&ba, "values", 0), arg(&ba, "groups", 1), arg(&ba, "combine", 2), out);
+    if (IS("attr") && arg(&ba, "of", 1)) return k_attr_of(k, arg(&ba, "path", 0), arg(&ba, "of", 1), out);
     if (IS("mass") || IS("charge") || IS("bfactor") || IS("name") || IS("element") || IS("kind") || IS("type") || IS("hybridization") ||
         IS("aromatic") || IS("metallic") || IS("hydrogens") || IS("formal_charge")) return k_property(k, name, arg(&ba, "s", 0), out);
     if (IS("norm") || IS("normalize")) return k_norm(k, arg(&ba, "v", 0), IS("normalize"), out);

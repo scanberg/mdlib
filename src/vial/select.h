@@ -230,5 +230,8 @@ vial_sets_t* vial_select_predefined(vial_sys_t* s, md_str_t name, md_allocator_i
 // For W0602: the chains among the residues a resid filter matches within the scope, up to two
 uint32_t vial_select_resid_chains(const vial_sys_t* s, const vial_filter_t* f, const vial_sets_t* scope, int32_t out[2]);
 
-// Glob matching with * and ?, as the name keywords take it
+// Glob matching as the name keywords take it, Python's fnmatch: * any run of characters, ? any one, [abc] one of a set,
+// with ranges [a-z], and [!abc] one of none of it; [*], [?] and [[] are those characters themselves. Case matters.
 bool vial_glob(md_str_t pattern, md_str_t text);
+// Whether a pattern has any of that, so it may match more than one text
+bool vial_is_glob(md_str_t pattern);

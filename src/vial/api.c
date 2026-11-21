@@ -858,12 +858,22 @@ bool md_vial_complete(md_vial_completions_t* out, const md_vial_program_t* prog,
     if (kw.len && !callee.len) kw = (md_str_t){0};
 
     if (in_string) {
-        if (md_str_eq(callee, MD_STR_LIT("attr")) && prog->check.sys && prog->check.run.len) {
-            // attr()'s paths: the run's attributes
+        if (md_str_eq(callee, MD_STR_LIT("attr")) && prog->check.sys) {
+            // attr()'s paths: the run's attributes; and the names of the system's per-atom attributes, below atom/, for
+            // attr(name, of=s)
             const md_attributes_t* at = &prog->check.sys->attributes;
-            for (size_t i = 0; i < md_array_size(at->attr); ++i) {
+            for (size_t i = 0; prog->check.run.len && i < md_array_size(at->attr); ++i) {
                 const md_str_t path = md_vial_attr_path(prog->check.run, at->attr[i].path);
                 cmpl_add(&c, path, path, MD_VIAL_COMPLETION_VALUE);
+            }
+            const size_t num_atoms = prog->check.sys->atom.count;
+            for (size_t i = 0; i < md_array_size(at->attr); ++i) {
+                const md_attribute_t* a = &at->attr[i];
+                const md_attribute_format_t* f = &a->format;
+                if (a->path.len <= 5 || strncmp(a->path.ptr, "atom/", 5) != 0 || (a->flags & MD_ATTRIBUTE_FLAG_TEMPORAL)) continue;
+                if (!md_attribute_type_is_numeric(f->type) || f->rank < 1 || f->rank > 2 || f->shape[f->rank - 1] != num_atoms) continue;
+                const md_str_t name = {a->path.ptr + 5, a->path.len - 5};
+                cmpl_add(&c, name, name, MD_VIAL_COMPLETION_VALUE);
             }
         } else if (callee.len) {
             system_values(&c, prog->check.sys, callee, kw);

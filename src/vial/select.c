@@ -689,17 +689,62 @@ const char* vial_select_kinds(uint8_t level) {
     }
 }
 
+// The class that starts at p.ptr[i], a '[', as Python's fnmatch has it: one character of the set, [abc], with ranges,
+// [a-z], or of none of it, [!abc]; a ']' first is a member, as a '-' first or last is. Whether c is one of it in *hit,
+// and its end, past the ']', in *end. False where no ']' closes it: the '[' is a character like any other.
+static bool glob_class(md_str_t p, size_t i, char c, bool* hit, size_t* end) {
+    size_t k = i + 1;
+    const bool neg = k < p.len && p.ptr[k] == '!';
+    if (neg) ++k;
+    const size_t first = k;
+    const unsigned char u = (unsigned char)c;
+    bool in = false;
+    while (k < p.len && (p.ptr[k] != ']' || k == first)) {
+        if (k + 2 < p.len && p.ptr[k + 1] == '-' && p.ptr[k + 2] != ']') {
+            in = in || ((unsigned char)p.ptr[k] <= u && u <= (unsigned char)p.ptr[k + 2]);
+            k += 3;
+        } else {
+            in = in || p.ptr[k] == c;
+            k += 1;
+        }
+    }
+    if (k >= p.len) return false;
+    *hit = in != neg;
+    *end = k + 1;
+    return true;
+}
+
 bool vial_glob(md_str_t p, md_str_t t) {
-    // Iterative, with one backtrack point for the last *: linear in practice
+    // Iterative, with one backtrack point for the last *: linear in practice. A * is always a wildcard, also where the
+    // text has a * there: [*] is a literal one
     size_t i = 0, j = 0, star = SIZE_MAX, mark = 0;
     while (j < t.len) {
-        if (i < p.len && (p.ptr[i] == '?' || p.ptr[i] == t.ptr[j])) { ++i; ++j; }
-        else if (i < p.len && p.ptr[i] == '*') { star = i++; mark = j; }
-        else if (star != SIZE_MAX) { i = star + 1; j = ++mark; }
-        else return false;
+        if (i < p.len && p.ptr[i] == '*') { star = i++; mark = j; continue; }
+        if (i < p.len) {
+            bool hit = false;
+            size_t end = 0;
+            if (p.ptr[i] == '[' && glob_class(p, i, t.ptr[j], &hit, &end)) {
+                if (hit) { i = end; ++j; continue; }
+            } else if (p.ptr[i] == '?' || p.ptr[i] == t.ptr[j]) {
+                ++i; ++j;
+                continue;
+            }
+        }
+        if (star == SIZE_MAX) return false;
+        i = star + 1;
+        j = ++mark;
     }
     while (i < p.len && p.ptr[i] == '*') ++i;
     return i == p.len;
+}
+
+bool vial_is_glob(md_str_t p) {
+    for (size_t i = 0; i < p.len; ++i) {
+        bool hit;
+        size_t end;
+        if (p.ptr[i] == '*' || p.ptr[i] == '?' || (p.ptr[i] == '[' && glob_class(p, i, 0, &hit, &end))) return true;
+    }
+    return false;
 }
 
 // The node at *i and its operands, *i left past them: every operand is walked, also past the one that decides

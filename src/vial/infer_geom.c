@@ -58,6 +58,10 @@ static bool set_sizes(infer_t* x, vial_node_id node, uint32_t* lo, uint32_t* hi)
 }
 
 // The extent of a set's particles: static when its value is known, ? per frame when it changes
+static vial_extent_t particle_extent(infer_t* x, const T* s, vial_node_id node);
+
+vial_extent_t vx_particle_extent(infer_t* x, const T* s, vial_node_id node) { return particle_extent(x, s, node); }
+
 static vial_extent_t particle_extent(infer_t* x, const T* s, vial_node_id node) {
     const vial_value_t v = vx_value_of(x, node);
     if (s->stage != VIAL_STAGE_STATIC) return (vial_extent_t){.kind = VIAL_EXT_DYNAMIC, .id = s->ident ? s->ident : (uint32_t)node};

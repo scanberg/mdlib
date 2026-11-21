@@ -126,6 +126,7 @@ UTEST_F(vial_check, recursion) {
 }
 
 #include <vial/vial_internal.h>
+#include <vial/select.h>
 
 // The type the checker gives the statement on a line, as "type, stage = value"; compiled against sys, which may be NULL
 static const char* type_on(const char* src, uint32_t line, const struct md_system_t* sys, md_allocator_i* alloc) {
@@ -561,16 +562,61 @@ UTEST_F(vial_check, keyword_logic) {
     EXPECT_TYPE_ON(P, "v = hybridization(particle)\n", 1, "str[153], static");
     EXPECT_TYPE_ON(P, "w = aromatic(residue[0])\n", 1, "bool[12], static");
     EXPECT_DIAGS_ON(P, "k = kind(residue)\n", "E0318 1: `residue` holds sets whose sizes may differ; their particles' kinds do not form one array | kind(particle(residue))\n");
+    // A class of one character in a glob, as Python's fnmatch has it
+    EXPECT_TYPE_ON(P, "h = particle(name='HB[123]')\n", 1, "set, static");
+    EXPECT_TYPE_ON(P, "n = count(particle(name='HB[123]'))\n", 1, "int, static = 45");
+    EXPECT_TYPE_ON(P, "n = count(particle(name='HB[!1]'))\n", 1, "int, static = 30");
+    EXPECT_TYPE_ON(T, "n = len(residue(name='GL[NUY]'))\n", 1, "int, static = 159");
+    EXPECT_TYPE_ON(T, "n = len(residue(name=['GLN', 'GLU', 'GLY']))\n", 1, "int, static = 159");
     // A force field's types come from a topology alone: a PDB has none, so type= and type(s) are E0208 on it rather
     // than matching nothing, and never fall back to the names
     EXPECT_DIAGS_ON(P, "t = particle(type='CT')\n", "E0208 1: the data gives no force-field types; they come from a topology (.tpr, .top, "
         "a LAMMPS data file) and are never inferred: select by name= and element=, or by hybridization=, aromatic= and hydrogens=\n");
     EXPECT_DIAGS_ON(P, "t = type(particle)\n", "E0208 1: the data gives no force-field types; they come from a topology (.tpr, .top, "
         "a LAMMPS data file) and are never inferred: select by name= and element=, or by hybridization=, aromatic= and hydrogens=\n");
+    // attr(name, of=s): the system's per-atom attributes, named as a particle's tooltip names them
+    EXPECT_TYPE_ON(T, "o = attr('occupancy', of=particle(resname='GTP'))\n", 1, "float[32], static");
+    EXPECT_TYPE_ON(T, "b = attr('b_factor', of=particle(resname='GTP'))\n", 1, u8"float[32] Å², static");
+    EXPECT_DIAGS_ON(T, "o = attr('atom/occupancy', of=protein)\n", "E0206 1: `attr` of= takes the name below atom/, as a particle's tooltip writes it | 'occupancy'\n");
+    EXPECT_DIAGS_ON(T, "o = attr('occ*', of=protein)\n", "E0206 1: `attr` of= takes the name of one attribute; `occ*` is a pattern\n");
+    EXPECT_DIAGS_ON(T, "o = attr('polarizability', of=protein)\n",
+        "E0206 1: particles have no attribute `polarizability`; they have b_factor, formal_charge, occupancy\n");
+    EXPECT_DIAGS_ON(T, "o = attr('occupancy', of=residue)\n",
+        "E0318 1: `residue` holds sets whose sizes may differ; their particles' values do not form one array | particle(residue)\n");
+    EXPECT_DIAGS_ON(T, "o = attr('occupancy', of=3)\n", "E0313 1: `attr` of= takes a set; this is int\n");
     // B-factors, where the file gives them; P's are all zero, a column that says nothing
     EXPECT_TYPE_ON(T, "b = bfactor(particle(resname='GTP'))\n", 1, u8"float[32] Å², static");
     EXPECT_DIAGS_ON(P, "b = bfactor(particle)\n", "E0208 1: the data gives no B-factors; they come from a PDB or mmCIF file, and a column where "
         "every atom has the same value is not kept\n");
+}
+
+// Globs as Python's fnmatch: *, ?, and a class of one character, [abc], [a-z] or [!abc]; [*] is a literal *
+UTEST(vial_check, glob) {
+    struct { const char* p; const char* t; bool want; } cases[] = {
+        {"C*", "CA", true}, {"C*", "C", true}, {"C*", "C*", true}, {"C*", "C*X", true}, {"C*", "NC", false},
+        {"C?", "CA", true}, {"C?", "C", false}, {"C?", "CAB", false},
+        {"C[*]", "C*", true}, {"C[*]", "CT", false}, {"C[*]", "C", false},
+        {"HB[123]", "HB2", true}, {"HB[123]", "HB4", false}, {"HB[1-3]", "HB3", true}, {"HB[1-3]", "HB0", false},
+        {"C[AB]", "CA", true}, {"C[AB]", "CB", true}, {"C[AB]", "CG", false},
+        {"C[!A]", "CB", true}, {"C[!A]", "CA", false}, {"C[!A]", "C", false},
+        {"D[AGCT]", "DT", true}, {"D[AGCT]", "DU", false},
+        {"opls_[0-9]*", "opls_135", true}, {"opls_[0-9]*", "opls_x", false},
+        {"C?[*]", "C1*", true}, {"C?[*]", "C1'", false},
+        {"[[]", "[", true}, {"a[]]b", "a]b", true}, {"[!]]", "x", true}, {"[!]]", "]", false},
+        {"[a-]", "-", true}, {"[a-]", "a", true}, {"[a-]", "b", false},
+        // A '[' that nothing closes is itself
+        {"C[", "C[", true}, {"C[A", "C[A", true}, {"C[A", "CA", false},
+        {"*[AB]", "XYZB", true}, {"*[AB]", "XYZC", false}, {"", "", true}, {"*", "", true}, {"?", "", false},
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        const bool got = vial_glob(md_str_from_cstr(cases[i].p), md_str_from_cstr(cases[i].t));
+        if (got != cases[i].want) printf("vial_glob('%s', '%s') is %d\n", cases[i].p, cases[i].t, got);
+        EXPECT_EQ(cases[i].want, got);
+    }
+    EXPECT_TRUE(vial_is_glob(MD_STR_LIT("C[*]")));
+    EXPECT_TRUE(vial_is_glob(MD_STR_LIT("C?")));
+    EXPECT_FALSE(vial_is_glob(MD_STR_LIT("C[")));
+    EXPECT_FALSE(vial_is_glob(MD_STR_LIT("CA")));
 }
 
 UTEST_F(vial_check, selectors_without_a_system) {

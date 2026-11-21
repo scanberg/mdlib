@@ -1286,18 +1286,22 @@ UTEST(vial_ir, draw) {
 }
 
 // Completion at the cursor, written | in the source
-static md_vial_completions_t vial_ir__complete(const char* marked, md_allocator_i* alloc) {
+static md_vial_completions_t vial_ir__complete_on(const char* marked, const md_system_t* sys, md_allocator_i* alloc) {
     const char* bar = strchr(marked, '|');
     char* src = md_alloc(alloc, strlen(marked));
     const size_t at = (size_t)(bar - marked);
     memcpy(src, marked, at);
     strcpy(src + at, bar + 1);
-    md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &(md_vial_compile_desc_t){.sys = vial_test_system('P'), .run = MD_STR_LIT("run")}, alloc);
+    md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = MD_STR_LIT("run")}, alloc);
     md_vial_completions_t c;
     md_vial_complete(&c, prog, (uint32_t)at, alloc);
     // Strings are alloc's: the program may go
     md_vial_program_free(prog);
     return c;
+}
+
+static md_vial_completions_t vial_ir__complete(const char* marked, md_allocator_i* alloc) {
+    return vial_ir__complete_on(marked, vial_test_system('P'), alloc);
 }
 
 static const md_vial_completion_t* vial_ir__find(const md_vial_completions_t* c, const char* label) {
@@ -1404,6 +1408,9 @@ UTEST(vial_ir, editor) {
     EXPECT_TRUE(vial_ir__find(&c, "amino_acid") != NULL);
     c = vial_ir__complete("w = attr('|')\n", alloc);
     EXPECT_TRUE(vial_ir__find(&c, "time") != NULL);
+    // and the names of the per-atom attributes, for attr(name, of=s)
+    c = vial_ir__complete_on("o = attr('|', of=protein)\n", vial_test_system('T'), alloc);
+    EXPECT_TRUE(vial_ir__find(&c, "occupancy") != NULL && vial_ir__find(&c, "b_factor") != NULL);
     md_arena_allocator_destroy(alloc);
 }
 
@@ -1782,6 +1789,21 @@ UTEST(vial_ir, particle_types_and_bfactors) {
         EXPECT_NEAR(bmax, got, 1e-3 * bmax);
         vial_ir__end(&r);
     }
+    // attr(name, of=s) reads the same column as bfactor(s)
+    {
+        vial_ir__run_t r;
+        ASSERT_TRUE(vial_ir__start(&r, "s = particle(chain='A')\nn = count(s)\nm = count(s[attr('b_factor', of=s) == bfactor(s)])\n"
+                                       "o = mean(attr('occupancy', of=s))\n", T));
+        const bool ok = vial_interp_static(&r.in);
+        if (!ok) printf("failed: %s %s\n", r.in.error.code, r.in.error.message);
+        EXPECT_TRUE(ok);
+        char buf[256], buf2[256];
+        EXPECT_STREQ(vial_ir__out(&r, "n", buf, sizeof(buf)), vial_ir__out(&r, "m", buf2, sizeof(buf2)));
+        const float* occ = md_attribute_view(md_attributes_find(&T->attributes, MD_STR_LIT("atom/occupancy")), MD_ATTRIBUTE_TYPE_F32, 1, 1);
+        ASSERT_TRUE(occ);
+        EXPECT_GT(atof(vial_ir__out(&r, "o", buf, sizeof(buf))), 0.0);
+        vial_ir__end(&r);
+    }
     // An atom the file gives no B-factor ('?') is missing, and reductions skip it
     static const char cif[] =
         "data_TEST\n"
@@ -1808,6 +1830,43 @@ UTEST(vial_ir, particle_types_and_bfactors) {
         EXPECT_STREQ("3", vial_ir__out(&r, "n", buf, sizeof(buf)));
         EXPECT_STREQ("20.0", vial_ir__out(&r, "m", buf, sizeof(buf)));
         vial_ir__end(&r);
+    }
+    // A per-atom attribute of components, and one of variants: dimensions after the particles', in that order
+    {
+        const float dip[4 * 3] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};
+        ASSERT_NE(MD_ATTRIBUTE_INVALID, md_attributes_publish_atom_column(&sys.attributes, MD_STR_LIT("atom/dipole"), md_unit_none(), 3, dip, 4));
+        const double q[2 * 4] = {0.1, 0.2, 0.3, 0.4, -0.1, -0.2, -0.3, -0.4};    // [state][atom]
+        const md_attribute_format_t fmt = {.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 2, .shape = {2, 4}};
+        ASSERT_NE(MD_ATTRIBUTE_INVALID, md_attributes_create(&sys.attributes, &(md_attribute_desc_t){.path = MD_STR_LIT("atom/state_charge"),
+            .format = fmt, .unit = md_unit_elementary_charge(), .data = q, .byte_size = sizeof(q)}));
+        vial_ir__run_t r;
+        ASSERT_TRUE(vial_ir__start(&r, "d = attr('dipole', of=particle[1:3])\nq = attr('state_charge', of=particle[2:4])\n", &sys));
+        const bool ok = vial_interp_static(&r.in);
+        if (!ok) printf("failed: %s %s\n", r.in.error.code, r.in.error.message);
+        EXPECT_TRUE(ok);
+        char buf[256];
+        EXPECT_STREQ("[[4.0, 5.0, 6.0], [7.0, 8.0, 9.0]]", vial_ir__out(&r, "d", buf, sizeof(buf)));
+        EXPECT_STREQ("[[0.3, -0.3], [0.4, -0.4]]", vial_ir__out(&r, "q", buf, sizeof(buf)));
+        vial_ir__end(&r);
+    }
+    // A per-frame attribute of the particles in the run is not read yet: E0801, rather than the system's of that name
+    {
+        const double t[2] = {0.0, 1.0};
+        ASSERT_NE(MD_ATTRIBUTE_INVALID, md_attributes_create(&sys.attributes, &(md_attribute_desc_t){.path = MD_STR_LIT("run/time"),
+            .format = {.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = {2}}, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
+            .unit = md_unit_picosecond(), .data = t, .byte_size = sizeof(t)}));
+        const double v[2 * 4 * 3] = {0};
+        ASSERT_NE(MD_ATTRIBUTE_INVALID, md_attributes_create(&sys.attributes, &(md_attribute_desc_t){.path = MD_STR_LIT("run/atom/dipole"),
+            .format = {.type = MD_ATTRIBUTE_TYPE_F64, .components = 3, .rank = 2, .shape = {2, 4}}, .flags = MD_ATTRIBUTE_FLAG_TEMPORAL,
+            .unit = md_unit_none(), .data = v, .byte_size = sizeof(v)}));
+        md_vial_program_t* prog = md_vial_compile(MD_STR_LIT("d = attr('dipole', of=particle)\n"),
+            &(md_vial_compile_desc_t){.sys = &sys, .run = MD_STR_LIT("run")}, alloc);
+        ASSERT_TRUE(prog != NULL);
+        const md_vial_diagnostic_t* dg;
+        const size_t ndg = md_vial_diagnostics(prog, &dg);
+        ASSERT_EQ(1u, ndg);
+        EXPECT_EQ(0, strncmp(dg[0].code, "E0801", 5));
+        md_vial_program_free(prog);
     }
     md_system_free(&sys);
     md_arena_allocator_destroy(alloc);

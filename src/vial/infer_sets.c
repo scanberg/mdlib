@@ -649,7 +649,7 @@ vial_value_t vx_sets_not(infer_t* x, const vial_value_t* a) {
 // ### NAMES ###
 
 bool vx_name_is_glob(md_str_t name) {
-    return name.len && (memchr(name.ptr, '*', name.len) || memchr(name.ptr, '?', name.len));
+    return vial_is_glob(name);
 }
 
 static vial_sets_t* select_named(infer_t* x, uint8_t level, md_str_t name) {
@@ -1602,11 +1602,103 @@ static bool attribute_type(const md_attribute_t* at, T* t) {
     return true;
 }
 
-// attr(path): an attribute of the run, such as an energy term; a path with * gives one member per match
+// A per-atom attribute of the system: under atom/, numeric, not per frame, and one value (of its components, at each
+// variant) per atom, its atom axis last
+static bool atom_attribute(const md_attribute_t* at, uint32_t num_atoms) {
+    const md_attribute_format_t* f = &at->format;
+    return md_attribute_type_is_numeric(f->type) && !(at->flags & MD_ATTRIBUTE_FLAG_TEMPORAL) && f->rank >= 1 && f->rank <= 2 &&
+           f->shape[f->rank - 1] == num_atoms;
+}
+
+// attr(name, of=s): one value per particle of s of the system's per-atom attribute atom/<name>, as the tooltip of a
+// particle names it; its variants and components are dimensions after the particles'. Missing where it holds NAN.
+static T attr_of(infer_t* x, vial_node_id at, md_str_t name, vial_node_id on) {
+    const T s = x->out->types[(on) - x->out->base];
+    if (vial_type_is_error(&s)) return err();
+    char ex[VIAL_EXCERPT_MAX + 4];
+    const md_str_t e = vial_excerpt(ex, sizeof(ex), name);
+    if (s.dtype != VIAL_DT_SET) {
+        vx_diag_fix(x, "E0313", on, NULL, "`attr` of= takes a set; this is %s", vx_tstr(&s));
+        return err();
+    }
+    if (s.ndim) {
+        char so[VIAL_EXCERPT_MAX + 4], fix[VIAL_EXCERPT_MAX + 16];
+        const md_str_t o = vial_excerpt(so, sizeof(so), vx_text(x, on));
+        snprintf(fix, sizeof(fix), "particle(%.*s)", (int)o.len, o.ptr);
+        vx_diag_fix(x, "E0318", on, fix, "`%.*s` holds sets whose sizes may differ; their particles' values do not form one array",
+            (int)o.len, o.ptr);
+        return err();
+    }
+    if (vial_is_glob(name)) {
+        vx_diag_fix(x, "E0206", at, NULL, "`attr` of= takes the name of one attribute; `%.*s` is a pattern", (int)e.len, e.ptr);
+        return err();
+    }
+    if (name.len > 5 && strncmp(name.ptr, "atom/", 5) == 0) {
+        char fix[VIAL_EXCERPT_MAX + 8];
+        snprintf(fix, sizeof(fix), "'%.*s'", (int)(name.len - 5), name.ptr + 5);
+        vx_diag_fix(x, "E0206", at, fix, "`attr` of= takes the name below atom/, as a particle's tooltip writes it");
+        return err();
+    }
+    if (!x->sys) return err();      // nothing to read: typed when there is a system
+    const md_attributes_t* attrs = &x->sys->sys->attributes;
+    char full[512];
+    const md_str_t run = x->c->run;
+    if (!md_str_empty(run)) {
+        // The run's per-frame values of the particles are read when attr() reads the run per frame, not yet
+        snprintf(full, sizeof(full), "%.*s/atom/%.*s", (int)run.len, run.ptr, (int)name.len, name.ptr);
+        const md_attribute_t* rt = md_attributes_find(attrs, md_str_from_cstr(full));
+        if (rt && (rt->flags & MD_ATTRIBUTE_FLAG_TEMPORAL)) {
+            vx_diag_fix(x, "E0801", at, NULL, "`%.*s` changes per frame in the run; per-frame attributes of particles are not "
+                "evaluated yet", (int)e.len, e.ptr);
+            return err();
+        }
+    }
+    snprintf(full, sizeof(full), "atom/%.*s", (int)name.len, name.ptr);
+    const md_attribute_t* a = md_attributes_find(attrs, md_str_from_cstr(full));
+    if (!a || !atom_attribute(a, x->sys->num_atoms)) {
+        // The names there are, as the message's list
+        char have[256] = "";
+        size_t len = 0, num = 0;
+        for (md_attribute_iter_t it = md_attributes_iter(attrs, MD_STR_LIT("atom")); md_attributes_next(&it);) {
+            if (!atom_attribute(it.attr, x->sys->num_atoms)) continue;
+            const md_str_t rel = {it.attr->path.ptr + 5, it.attr->path.len - 5};
+            const int w = snprintf(have + len, sizeof(have) - len, "%s%.*s", num ? ", " : "", (int)rel.len, rel.ptr);
+            if (w < 0 || len + (size_t)w >= sizeof(have) - 8) { snprintf(have + len, sizeof(have) - len, ", ..."); break; }
+            len += (size_t)w;
+            num += 1;
+        }
+        if (num) vx_diag_fix(x, "E0206", at, NULL, "particles have no attribute `%.*s`; they have %s", (int)e.len, e.ptr, have);
+        else vx_diag_fix(x, "E0206", at, NULL, "particles have no attribute `%.*s`; the data gives them none", (int)e.len, e.ptr);
+        return err();
+    }
+    const md_attribute_format_t* f = &a->format;
+    const bool real = f->type == MD_ATTRIBUTE_TYPE_F32 || f->type == MD_ATTRIBUTE_TYPE_F64;
+    T t = vial_type_scalar(real ? VIAL_DT_FLOAT : VIAL_DT_INT);
+    t.unit = a->unit;
+    t.stage = s.stage;
+    vial_type_push_dim(&t, vx_particle_extent(x, &s, on));
+    if (f->rank == 2) vial_type_push_dim(&t, vial_extent_static(f->shape[0]));
+    if (f->components > 1) vial_type_push_dim(&t, vial_extent_static(f->components));
+    if (real) {
+        // NAN marks an atom it has no value for
+        const size_t cnt = md_attribute_element_count(f);
+        md_temp_scope_t temp = md_temp_begin_avoid(x->alloc);
+        float* v = md_temp_alloc_array(temp, float, cnt);
+        bool gaps = !v || md_attribute_extract_f32(v, cnt, attrs, a, md_attribute_slice_all(), md_unit_none()) != cnt;
+        for (size_t i = 0; v && !gaps && i < cnt; ++i) gaps = isnan(v[i]);
+        md_temp_end(temp);
+        if (gaps) t.flags |= VIAL_TYPE_MISSING;
+    }
+    return t;
+}
+
+// attr(path): an attribute of the run, such as an energy term; a path with * gives one member per match. attr(name,
+// of=s): a per-atom attribute of the system, one value per particle of s (attr_of)
 static T call_attr(infer_t* x, vial_node_id call) {
-    static const vx_param_t p[] = {{"path", VX_KIND_WHOLE, true}};
-    vial_node_id a;
-    if (!vx_bind(x, call, "attr", p, 1, &a)) return err();
+    static const vx_param_t p[] = {{"path", VX_KIND_WHOLE, true}, {"of", VX_KIND_WHOLE, false}};
+    vial_node_id args[2] = {0, 0};
+    if (!vx_bind(x, call, "attr", p, 2, args)) return err();
+    const vial_node_id a = args[0];
     const T pt = x->out->types[(a) - x->out->base];
     if (vial_type_is_error(&pt)) return err();
     const vial_value_t pv = vx_value_of(x, a);
@@ -1614,13 +1706,13 @@ static T call_attr(infer_t* x, vial_node_id call) {
         vx_diag_fix(x, "E0313", a, NULL, "`attr` takes a path, a string known when compiling");
         return err();
     }
+    if (args[1]) return attr_of(x, a, pv.s, args[1]);
     const md_str_t run = x->c->run;
     if (!x->sys || md_str_empty(run)) return err();    // no run to read: typed when there is one
     const md_attributes_t* attrs = &x->sys->sys->attributes;
     char full[512];
     snprintf(full, sizeof(full), "%.*s/%.*s", (int)run.len, run.ptr, (int)pv.s.len, pv.s.ptr);
-    bool glob = false;
-    for (size_t i = 0; i < pv.s.len; ++i) glob = glob || pv.s.ptr[i] == '*' || pv.s.ptr[i] == '?';
+    const bool glob = vial_is_glob(pv.s);
     char ex[VIAL_EXCERPT_MAX + 4];
     const md_str_t e = vial_excerpt(ex, sizeof(ex), pv.s);
     if (!glob) {
