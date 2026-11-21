@@ -640,7 +640,7 @@ static bool atom_bonded_outside(const md_system_t* sys, int atom, md_urange_t ra
 // BONDS), and their atoms given their roles:
 //   MD_ATOM_FLAG_BACKBONE      the N, CA and C of an amino acid; the P, O5', C5', C4', C3' and O3' of a nucleotide
 //   MD_ATOM_FLAG_SIDE_CHAIN    what hangs off the CA, from the CB on
-//   MD_ATOM_FLAG_NUCLEOSIDE    the sugar (C1', C2', C3', C4', O4') and the base
+//   MD_ATOM_FLAG_NUCLEOSIDE    the sugar (C1', C2', C3', C4', O4', a ribose's O2', and their hydrogens) and the base
 //   MD_ATOM_FLAG_NUCLEOBASE    the base
 //   MD_ATOM_FLAG_TERMINAL_BEG  a free amino group, a free 5' hydroxyl
 //   MD_ATOM_FLAG_TERMINAL_END  a free carboxyl group, a free 3' hydroxyl
@@ -741,6 +741,16 @@ static bool nucleotide_atoms_of_c4(md_nucleic_acid_atoms_t* out, const md_system
 
 static inline bool atom_in_range(md_atom_idx_t a, md_urange_t range) {
     return a >= 0 && range.beg <= (uint32_t)a && (uint32_t)a < range.end;
+}
+
+// Gives the flag to the hydrogens bonded to atom a within range
+static void flag_hydrogens_of(md_system_t* sys, md_atom_idx_t a, md_atom_flags_t flag, md_urange_t range) {
+    if (a < 0) return;
+    md_bond_iter_t it = md_bond_iter(&sys->bond, (size_t)a);
+    for (; md_bond_iter_has_next(&it); md_bond_iter_next(&it)) {
+        const md_atom_idx_t h = md_bond_iter_atom_index(&it);
+        if (atom_in_range(h, range) && md_atom_atomic_number(&sys->atom, (size_t)h) == MD_Z_H) sys->atom.flags[h] |= flag;
+    }
 }
 
 // The atoms of the one amino acid of a chain the residue (its atoms range) is: false where it holds the backbone of
@@ -886,6 +896,16 @@ static void perceive_polymer_atoms(md_system_t* sys, const md_system_state_t* st
             const md_nucleic_acid_atoms_t* a = &nucl.na[u];
             const bool in_residue = own[u] >= 0;
             const md_urange_t range = in_residue ? md_system_residue_atom_range(sys, (size_t)own[u]) : all;
+            // What hangs off the sugar's ring is the sugar's, as a side chain's hydrogens and a base's are theirs: the
+            // hydrogens of C1' to C4', and a ribose's O2' with its hydrogen. C5' and its hydrogens are the backbone's
+            // alone, as a CA's hydrogen is not of the side chain.
+            const md_atom_idx_t ring[4] = {a->c1, a->c2, a->c3, a->c4};
+            for (int k = 0; k < 4; ++k) flag_hydrogens_of(sys, ring[k], MD_ATOM_FLAG_NUCLEOSIDE, range);
+            const md_atom_idx_t o2 = mdi_bonded_atom_with(sys, a->c2, MD_Z_O, 0, 0, a->c1, a->c3);
+            if (atom_in_range(o2, range)) {
+                sys->atom.flags[o2] |= MD_ATOM_FLAG_NUCLEOSIDE;
+                flag_hydrogens_of(sys, o2, MD_ATOM_FLAG_NUCLEOSIDE, range);
+            }
             // The base, from the atom of it bonded to the C1'
             const md_atom_idx_t base = mdi_bonded_atom_with(sys, a->c1, 0, 0, 0, a->c2, a->o4);
             if (base >= 0) {

@@ -505,8 +505,15 @@ static void frag_analyse(frag_mol_t* c, const md_ring_data_t* rings, const uint3
             frag_assign(c, i, frag_new_unit_role(c, MD_FRAGMENT_BACKBONE, FRAG_ROLE_ALPHA_CARBON), true);
         } else {
             // The ring of the sugar (C1', C2', C3', C4', O4' are of the nucleoside, not of the base) and C5' (a carbon
-            // of the backbone), one fragment per residue
-            const bool ring = (af & MD_ATOM_FLAG_NUCLEOSIDE) && !(af & MD_ATOM_FLAG_NUCLEOBASE);
+            // of the backbone), one fragment per residue. A ribose's O2' is of the nucleoside too but no part of the
+            // ring: its hydroxyl, a group of its own, which tells a ribose from a deoxyribose by its name
+            bool ring = (af & MD_ATOM_FLAG_NUCLEOSIDE) && !(af & MD_ATOM_FLAG_NUCLEOBASE);
+            if (ring && c->z[i] != MD_Z_C) {
+                // O4', between C1' and C4'; an O2' is bonded to the one carbon
+                uint32_t num_c = 0;
+                for (uint32_t k = c->nb_off[i]; k < c->nb_off[i + 1]; ++k) num_c += c->z[c->nb[k]] == MD_Z_C;
+                ring = num_c == 2;
+            }
             const bool c5 = c->z[i] == MD_Z_C && (af & MD_ATOM_FLAG_BACKBONE);
             if (!ring && !c5) continue;
             const int32_t r = frag_res(c, i);
