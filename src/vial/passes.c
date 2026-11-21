@@ -402,9 +402,13 @@ static uint64_t fp_attr(fp_t* f, uint64_t h, const vial_ir_op_t* op) {
     const md_attribute_t* at = md_attributes_find(&f->sys->attributes, md_str_from_cstr(full));
     if (!at) at = md_attributes_find(&f->sys->attributes, path);
     if (op->num_args > 1) {
-        // attr(name, of=s): the system's per-atom attribute
-        snprintf(full, sizeof(full), "atom/%.*s", (int)path.len, path.ptr);
+        // attr(name, of=s): the run's per-atom attribute, else the system's
+        snprintf(full, sizeof(full), "%.*s/atom/%.*s", (int)f->run.len, f->run.ptr, (int)path.len, path.ptr);
         at = md_attributes_find(&f->sys->attributes, md_str_from_cstr(full));
+        if (!at || !(at->flags & MD_ATTRIBUTE_FLAG_TEMPORAL)) {
+            snprintf(full, sizeof(full), "atom/%.*s", (int)path.len, path.ptr);
+            at = md_attributes_find(&f->sys->attributes, md_str_from_cstr(full));
+        }
     }
     return at ? fp_mix(fp_bytes(h, at->path.ptr, at->path.len), at->version) : h;
 }

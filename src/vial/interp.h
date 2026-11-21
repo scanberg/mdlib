@@ -45,6 +45,8 @@ typedef struct vial_interp_t {
     const vial_ir_t*            ir;
     vial_sys_t*                 sys;        // NULL without a system
     const struct md_system_t*   msys;
+    md_str_t                    run;        // the group in msys's attributes of the run whose frames are evaluated, which
+                                            // attr() reads; empty for none
     float*                      masses;     // each particle's mass in msys, made the first time a kernel asks
     md_allocator_i*             alloc;      // what lives as long as the interpreter: static values
     md_allocator_i*             temp;       // what lives for one frame: an arena, reset between frames

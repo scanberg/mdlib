@@ -91,6 +91,7 @@ UTEST(vial_ir, lowers_and_verifies) {
 #include <md_pdb.h>
 #include <md_gro.h>
 #include <md_tpr.h>
+#include <md_trr.h>
 #include <md_mmcif.h>
 #include <md_attributes.h>
 #include <md_infer.h>
@@ -1721,6 +1722,114 @@ UTEST(vial_ir, particle_roles_and_values) {
     md_arena_allocator_destroy(alloc);
 }
 
+static md_attribute_id_t vial_ir__publish_f64(md_attributes_t* t, const char* path, md_attribute_format_t fmt, md_attribute_flags_t flags,
+                                               md_unit_t unit, const double* data) {
+    return md_attributes_create(t, &(md_attribute_desc_t){.path = md_str_from_cstr(path), .format = fmt, .flags = flags, .unit = unit,
+                                                          .data = data, .byte_size = md_attribute_element_count(&fmt) * sizeof(double)});
+}
+
+// attr() reads the run at the frame being evaluated: a series on its own axis at the row the frame's time lands on, a
+// frame it has no sample at missing; a static attribute whole; the particles' per-frame values with of=, the run's
+// before the system's
+UTEST(vial_ir, attr_reads_the_run_per_frame) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(64));
+    md_system_t sys = {.alloc = alloc};
+    md_system_state_t st = {.alloc = alloc};
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.gro"), NULL));
+    ASSERT_TRUE(md_trr_system_publish_run(&sys, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.trr"), MD_STR_LIT("run/t"), MD_RUN_FLAG_DISABLE_CACHE_WRITE));
+    md_attributes_t* t = &sys.attributes;
+    const md_attribute_t* frames = md_attributes_find(t, MD_STR_LIT("run/t/time"));
+    ASSERT_TRUE(frames != NULL);
+    const uint32_t F = frames->format.shape[0];
+    ASSERT_GT(F, 3u);
+    double* ft = md_alloc(alloc, F * sizeof(double));
+    ASSERT_EQ((size_t)F, md_attribute_extract_f64(ft, F, t, frames, md_attribute_slice_all(), md_unit_picosecond()));
+    const uint32_t N = (uint32_t)sys.atom.count;
+
+    // A series at twice the rate of the frames, on an axis of its own: every frame lands on one of its rows
+    const uint32_t R = 2 * F - 1;
+    double* ot = md_alloc(alloc, R * sizeof(double));
+    double* ov = md_alloc(alloc, R * sizeof(double));
+    double* ow = md_alloc(alloc, R * 3 * sizeof(double));
+    for (uint32_t r = 0; r < R; ++r) {
+        ot[r] = r % 2 == 0 ? ft[r / 2] : 0.5 * (ft[r / 2] + ft[r / 2 + 1]);
+        ov[r] = 2.0 * ot[r];
+        for (int c = 0; c < 3; ++c) ow[r * 3 + c] = ot[r] + c;
+    }
+    const md_attribute_format_t f1 = {.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = {R}};
+    const md_attribute_format_t f3 = {.type = MD_ATTRIBUTE_TYPE_F64, .components = 3, .rank = 1, .shape = {R}};
+    ASSERT_NE(MD_ATTRIBUTE_INVALID, vial_ir__publish_f64(t, "run/t/obs/time", f1, MD_ATTRIBUTE_FLAG_TEMPORAL, md_unit_picosecond(), ot));
+    ASSERT_NE(MD_ATTRIBUTE_INVALID, vial_ir__publish_f64(t, "run/t/obs/value", f1, MD_ATTRIBUTE_FLAG_TEMPORAL, md_unit_kelvin(), ov));
+    ASSERT_NE(MD_ATTRIBUTE_INVALID, vial_ir__publish_f64(t, "run/t/obs/vec", f3, MD_ATTRIBUTE_FLAG_TEMPORAL, md_unit_none(), ow));
+    double* ov3 = md_alloc(alloc, R * sizeof(double));
+    for (uint32_t r = 0; r < R; ++r) ov3[r] = 3.0 * ot[r];
+    ASSERT_NE(MD_ATTRIBUTE_INVALID, vial_ir__publish_f64(t, "run/t/obs/value_b", f1, MD_ATTRIBUTE_FLAG_TEMPORAL, md_unit_kelvin(), ov3));
+    // A series at every other frame: the frames between have no sample
+    const uint32_t S = (F + 1) / 2;
+    double* st_ = md_alloc(alloc, S * sizeof(double));
+    for (uint32_t r = 0; r < S; ++r) st_[r] = ft[2 * r];
+    const md_attribute_format_t fs = {.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = {S}};
+    ASSERT_NE(MD_ATTRIBUTE_INVALID, vial_ir__publish_f64(t, "run/t/sparse/time", fs, MD_ATTRIBUTE_FLAG_TEMPORAL, md_unit_picosecond(), st_));
+    ASSERT_NE(MD_ATTRIBUTE_INVALID, vial_ir__publish_f64(t, "run/t/sparse/v", fs, MD_ATTRIBUTE_FLAG_TEMPORAL, md_unit_picosecond(), st_));
+    // A static attribute of the run
+    const double kv[2] = {3.0, 4.0};
+    ASSERT_NE(MD_ATTRIBUTE_INVALID, vial_ir__publish_f64(t, "run/t/k", (md_attribute_format_t){.type = MD_ATTRIBUTE_TYPE_F64, .components = 1,
+        .rank = 1, .shape = {2}}, 0, md_unit_none(), kv));
+    // The particles' values per frame, on the run's axis, and the system's of the same name, which the run's hides
+    double* q = md_alloc(alloc, (size_t)F * N * sizeof(double));
+    for (uint32_t f = 0; f < F; ++f) for (uint32_t a = 0; a < N; ++a) q[(size_t)f * N + a] = 100.0 * f + a;
+    ASSERT_NE(MD_ATTRIBUTE_INVALID, vial_ir__publish_f64(t, "run/t/atom/q", (md_attribute_format_t){.type = MD_ATTRIBUTE_TYPE_F64,
+        .components = 1, .rank = 2, .shape = {F, N}}, MD_ATTRIBUTE_FLAG_TEMPORAL, md_unit_elementary_charge(), q));
+    float* q0 = md_alloc(alloc, N * sizeof(float));
+    for (uint32_t a = 0; a < N; ++a) q0[a] = -1.0f - (float)a;
+    ASSERT_NE(MD_ATTRIBUTE_INVALID, md_attributes_publish_atom_column(t, MD_STR_LIT("atom/q"), md_unit_elementary_charge(), 1, q0, N));
+
+    const char* src = "v = attr('obs/value')\nw = attr('obs/vec')[2]\ns = attr('sparse/v')\nk = attr('k')[1]\n"
+                      "q = attr('q', of=particle[0:3])[2]\nvs = attr('obs/value*')\nvb = vs[1]\n";
+    md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &(md_vial_compile_desc_t){.sys = &sys, .run = MD_STR_LIT("run/t")}, alloc);
+    ASSERT_TRUE(prog != NULL);
+    const md_vial_diagnostic_t* dg;
+    const size_t ndg = md_vial_diagnostics(prog, &dg);
+    for (size_t i = 0; i < ndg; ++i) printf("%.5s %.*s\n", dg[i].code, (int)dg[i].message.len, dg[i].message.ptr);
+    // Only the sparse series may be missing
+    ASSERT_EQ(1u, (unsigned)ndg);
+    EXPECT_EQ(0, strncmp(dg[0].code, "W0405", 5));
+    md_vial_hover_t h;
+    ASSERT_TRUE(md_vial_hover(prog, (uint32_t)(strstr(src, "s = ") - src), &h));
+    EXPECT_TRUE(strstr(h.type, "missing") != NULL);
+    ASSERT_TRUE(md_vial_hover(prog, (uint32_t)(strstr(src, "v = ") - src), &h));
+    EXPECT_TRUE(strstr(h.type, "missing") == NULL);
+    md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = &sys, .run = MD_STR_LIT("run/t"), .executor = test_executor_of_threads(2)}, alloc);
+    ASSERT_TRUE(e != NULL);
+    const bool ran = md_vial_eval_run(e);
+    const md_vial_diagnostic_t* ed;
+    const size_t ned = md_vial_eval_diagnostics(e, &ed);
+    for (size_t i = 0; i < ned; ++i) printf("%.5s %.*s\n", ed[i].code, (int)ed[i].message.len, ed[i].message.ptr);
+    ASSERT_TRUE(ran);
+    const md_attributes_t* out = md_vial_eval_attributes(e);
+    const md_attribute_t* av = md_attributes_find(out, MD_STR_LIT("script/v"));
+    const md_attribute_t* aw = md_attributes_find(out, MD_STR_LIT("script/w"));
+    const md_attribute_t* as = md_attributes_find(out, MD_STR_LIT("script/s"));
+    const md_attribute_t* aq = md_attributes_find(out, MD_STR_LIT("script/q"));
+    const md_attribute_t* ak = md_attributes_find(out, MD_STR_LIT("script/k"));
+    const md_attribute_t* ab = md_attributes_find(out, MD_STR_LIT("script/vb"));
+    ASSERT_TRUE(av && aw && as && aq && ak && ab && av->data && aw->data && as->data && aq->data && ak->data && ab->data);
+    ASSERT_EQ(F, av->format.shape[0]);
+    for (uint32_t f = 0; f < F; ++f) {
+        EXPECT_NEAR(2.0 * ft[f], ((const float*)av->data)[f], 1e-3 * (1.0 + ft[f]));
+        EXPECT_NEAR(ft[f] + 2.0, ((const float*)aw->data)[f], 1e-3 * (1.0 + ft[f]));
+        const float sv = ((const float*)as->data)[f];
+        if (f % 2 == 0) EXPECT_NEAR(ft[f], sv, 1e-3 * (1.0 + ft[f]));
+        else EXPECT_TRUE(sv != sv);     // missing, published as NaN
+        EXPECT_NEAR(100.0 * f + 2.0, ((const float*)aq->data)[f], 1e-3);
+        EXPECT_NEAR(3.0 * ft[f], ((const float*)ab->data)[f], 1e-3 * (1.0 + ft[f]));
+    }
+    EXPECT_NEAR(4.0, ((const float*)ak->data)[0], 1e-6);
+    md_vial_eval_free(e);
+    md_vial_program_free(prog);
+    md_arena_allocator_destroy(alloc);
+}
+
 // Fragments, as when compiling so per frame: a scope that changes per frame takes the selector to evaluation
 UTEST(vial_ir, fragments) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
@@ -1870,7 +1979,8 @@ UTEST(vial_ir, particle_types_and_bfactors) {
         EXPECT_STREQ("[[0.3, -0.3], [0.4, -0.4]]", vial_ir__out(&r, "q", buf, sizeof(buf)));
         vial_ir__end(&r);
     }
-    // A per-frame attribute of the particles in the run is not read yet: E0801, rather than the system's of that name
+    // A per-frame attribute of the particles in the run comes before the system's of that name: per frame, its variants
+    // and components after the particles' as the system's
     {
         const double t[2] = {0.0, 1.0};
         ASSERT_NE(MD_ATTRIBUTE_INVALID, md_attributes_create(&sys.attributes, &(md_attribute_desc_t){.path = MD_STR_LIT("run/time"),
@@ -1885,8 +1995,12 @@ UTEST(vial_ir, particle_types_and_bfactors) {
         ASSERT_TRUE(prog != NULL);
         const md_vial_diagnostic_t* dg;
         const size_t ndg = md_vial_diagnostics(prog, &dg);
-        ASSERT_EQ(1u, ndg);
-        EXPECT_EQ(0, strncmp(dg[0].code, "E0801", 5));
+        for (size_t i = 0; i < ndg; ++i) printf("%.5s %.*s\n", dg[i].code, (int)dg[i].message.len, dg[i].message.ptr);
+        EXPECT_EQ(0u, ndg);
+        md_vial_hover_t h;
+        ASSERT_TRUE(md_vial_hover(prog, 0, &h));
+        EXPECT_STREQ("float[4][3]", h.type);
+        EXPECT_EQ((int)MD_VIAL_STAGE_FRAME, (int)h.stage);
         md_vial_program_free(prog);
     }
     md_system_free(&sys);

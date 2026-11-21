@@ -745,8 +745,105 @@ static bool k_property(vial_kctx_t* k, const char* name, const vial_val_t* s, vi
     return true;
 }
 
-// attr(name, of=s): the system's per-atom attribute atom/<name> at each particle of s, its variants and components after
-// the particle; NAN, an atom it has no value for, is missing
+// The row of a per-frame attribute at the frame being evaluated: where the frame's time on the run's axis, <run>/time,
+// lands on the attribute's own axis (an energy file's has its own rate), or the frame's index where it has none. False
+// where there is no frame or the attribute has no sample at it.
+static bool attr_row(const vial_kctx_t* k, const md_attribute_t* a, size_t* row) {
+    const vial_frame_t* fr = k->in->frame;
+    if (!fr || fr->index < 0) return false;
+    const md_attributes_t* attrs = &k->in->msys->attributes;
+    const md_str_t run = k->in->run;
+    char p[512];
+    snprintf(p, sizeof(p), "%.*s/time", (int)run.len, run.ptr);
+    const md_attribute_t* frames = md_attributes_find(attrs, md_str_from_cstr(p));
+    const md_attribute_t* axis = md_attributes_axis(attrs, a);
+    if (!frames || !axis || axis->id == frames->id) {
+        if ((uint64_t)fr->index >= a->format.shape[0]) return false;
+        *row = (size_t)fr->index;
+        return true;
+    }
+    return md_attribute_axis_map(row, attrs, frames, (size_t)fr->index, attrs, axis);
+}
+
+// An attribute's elements at the frame being evaluated, cnt of them into dst, as stored: a static attribute whole, a
+// per-frame one at its row (attr_row). False where it has no value at the frame, as a per-frame one with no sample.
+static bool attr_at_frame(const vial_kctx_t* k, const md_attribute_t* a, double* dst, size_t cnt) {
+    const md_attributes_t* attrs = &k->in->msys->attributes;
+    if (!(a->flags & MD_ATTRIBUTE_FLAG_TEMPORAL)) {
+        return md_attribute_extract_f64(dst, cnt, attrs, a, md_attribute_slice_all(), md_unit_none()) == cnt;
+    }
+    size_t row;
+    if (!attr_row(k, a, &row)) return false;
+    return md_attribute_extract_f64(dst, cnt, attrs, a, md_attribute_slice_1((uint32_t)row), md_unit_none()) == cnt;
+}
+
+// Elements of an attribute at one frame: of one row of a per-frame one
+static size_t attr_frame_count(const md_attribute_t* a) {
+    const size_t all = md_attribute_element_count(&a->format);
+    return (a->flags & MD_ATTRIBUTE_FLAG_TEMPORAL) && a->format.shape[0] ? all / a->format.shape[0] : all;
+}
+
+static bool attr_real(const md_attribute_t* a) {
+    return a->format.type == MD_ATTRIBUTE_TYPE_F32 || a->format.type == MD_ATTRIBUTE_TYPE_F64;
+}
+
+// attr(path): an attribute of the run, <run>/<path>, at the frame being evaluated, with its shape less the frame axis
+// and its components; a path with * or ? gives one member per match, in the order the check found them. Missing where
+// a per-frame one has no sample at the frame.
+static bool k_attr(vial_kctx_t* k, const vial_val_t* path, vial_val_t* out) {
+    if (!path || path->dtype != VIAL_DT_STR || !path->data) return vial_rt_fail(k, "R0103", "attr takes a path");
+    const md_system_t* sys = k->in->msys;
+    const md_str_t run = k->in->run;
+    if (!sys || md_str_empty(run)) return vial_rt_fail(k, "R0103", "attr needs a run");
+    const md_attributes_t* attrs = &sys->attributes;
+    const md_str_t pattern = *(const md_str_t*)path->data;
+    // The members: one path, or what the pattern matches among the run's numeric attributes
+    md_array(const md_attribute_t*) members = 0;
+    const bool glob = vial_is_glob(pattern);
+    if (!glob) {
+        char full[512];
+        snprintf(full, sizeof(full), "%.*s/%.*s", (int)run.len, run.ptr, (int)pattern.len, pattern.ptr);
+        const md_attribute_t* a = md_attributes_find(attrs, md_str_from_cstr(full));
+        if (a && md_attribute_type_is_numeric(a->format.type)) md_array_push(members, a, k->alloc);
+    } else {
+        for (md_attribute_iter_t it = md_attributes_iter(attrs, run); md_attributes_next(&it);) {
+            const md_str_t p = it.attr->path;
+            if (p.len <= run.len + 1 || p.ptr[run.len] != '/' || !md_attribute_type_is_numeric(it.attr->format.type)) continue;
+            if (vial_glob(pattern, (md_str_t){p.ptr + run.len + 1, p.len - run.len - 1})) md_array_push(members, it.attr, k->alloc);
+        }
+    }
+    const uint32_t nm = (uint32_t)md_array_size(members);
+    if (!nm) return vial_rt_fail(k, "R0103", "the run has no attribute %.*s", (int)pattern.len, pattern.ptr);
+    // The first member's shape, less its frame axis, and components: what the check typed for each
+    const md_attribute_t* a0 = members[0];
+    const md_attribute_format_t* f = &a0->format;
+    const bool temporal = a0->flags & MD_ATTRIBUTE_FLAG_TEMPORAL;
+    uint32_t dims[VIAL_MAX_DIMS];
+    uint8_t nd = 0;
+    if (glob) dims[nd++] = nm;
+    for (uint32_t r = temporal ? 1 : 0; r < f->rank && nd < VIAL_MAX_DIMS; ++r) dims[nd++] = f->shape[r];
+    if (f->components > 1 && nd < VIAL_MAX_DIMS) dims[nd++] = f->components;
+    const bool real = attr_real(a0);
+    vial_val_t o; if (!vial_k_make(k, real ? VIAL_DT_FLOAT : VIAL_DT_INT, nd, dims, &o)) return false;
+    const size_t per = attr_frame_count(a0);
+    double* v = md_alloc(k->alloc, (per ? per : 1) * sizeof(double));
+    for (uint32_t m = 0; m < nm; ++m) {
+        const size_t base = (size_t)m * per;
+        const bool has = attr_frame_count(members[m]) == per && attr_at_frame(k, members[m], v, per);
+        for (size_t e = 0; e < per; ++e) {
+            const double x = has ? v[e] : 0.0;
+            if (real) ((float*)o.data)[base + e] = (float)x;
+            else ((int32_t*)o.data)[base + e] = (int32_t)x;
+            if (!has) vial_val_set_missing(&o, base + e, k->alloc);
+        }
+    }
+    *out = o;
+    return true;
+}
+
+// attr(name, of=s): the per-atom attribute <name> at each particle of s: the run's at the frame being evaluated
+// (<run>/atom/<name>) where it has one, else the system's (atom/<name>). Its variants and components follow the
+// particle. Missing where the run's has no sample at the frame, and where the system's is NAN.
 static bool k_attr_of(vial_kctx_t* k, const vial_val_t* path, const vial_val_t* s, vial_val_t* out) {
     if (!path || path->dtype != VIAL_DT_STR || !path->data) return vial_rt_fail(k, "R0103", "attr takes a name");
     const md_system_t* sys = k->in->msys;
@@ -757,36 +854,49 @@ static bool k_attr_of(vial_kctx_t* k, const vial_val_t* path, const vial_val_t* 
     }
     if (s->ndim) return vial_rt_fail(k, "R0103", "attr of an array of sets");
     const md_str_t name = *(const md_str_t*)path->data;
+    const uint32_t num_atoms = (uint32_t)sys->atom.count;
+    const md_str_t run = k->in->run;
     char full[512];
-    snprintf(full, sizeof(full), "atom/%.*s", (int)name.len, name.ptr);
-    const md_attribute_t* a = md_attributes_find(&sys->attributes, md_str_from_cstr(full));
-    const md_attribute_format_t* f = a ? &a->format : NULL;
-    if (!f || f->rank < 1 || f->rank > 2 || f->shape[f->rank - 1] != sys->atom.count) {
-        return vial_rt_fail(k, "R0103", "the system has no per-atom attribute %s", full);
+    const md_attribute_t* a = NULL;
+    if (!md_str_empty(run)) {
+        snprintf(full, sizeof(full), "%.*s/atom/%.*s", (int)run.len, run.ptr, (int)name.len, name.ptr);
+        a = md_attributes_find(&sys->attributes, md_str_from_cstr(full));
+        const md_attribute_format_t* f = a ? &a->format : NULL;
+        if (a && (!(a->flags & MD_ATTRIBUTE_FLAG_TEMPORAL) || !md_attribute_type_is_numeric(f->type) || f->rank < 2 || f->rank > 3 ||
+                  f->shape[f->rank - 1] != num_atoms)) a = NULL;
     }
-    const uint32_t num_atoms = (uint32_t)sys->atom.count, var = f->rank == 2 ? f->shape[0] : 1, comp = f->components;
-    const size_t cnt = md_attribute_element_count(f);
-    double* all = md_alloc(k->alloc, (cnt ? cnt : 1) * sizeof(double));
-    if (md_attribute_extract_f64(all, cnt, &sys->attributes, a, md_attribute_slice_all(), md_unit_none()) != cnt) {
-        return vial_rt_fail(k, "R0103", "%s could not be read", full);
+    if (!a) {
+        snprintf(full, sizeof(full), "atom/%.*s", (int)name.len, name.ptr);
+        a = md_attributes_find(&sys->attributes, md_str_from_cstr(full));
+        const md_attribute_format_t* f = a ? &a->format : NULL;
+        if (a && ((a->flags & MD_ATTRIBUTE_FLAG_TEMPORAL) || !md_attribute_type_is_numeric(f->type) || f->rank < 1 || f->rank > 2 ||
+                  f->shape[f->rank - 1] != num_atoms)) a = NULL;
     }
+    if (!a) return vial_rt_fail(k, "R0103", "the particles have no attribute %.*s", (int)name.len, name.ptr);
+    const md_attribute_format_t* f = &a->format;
+    const bool temporal = a->flags & MD_ATTRIBUTE_FLAG_TEMPORAL;
+    const uint32_t var = f->rank == (temporal ? 3u : 2u) ? f->shape[temporal ? 1 : 0] : 1, comp = f->components;
+    const size_t per = attr_frame_count(a);
+    double* all = md_alloc(k->alloc, (per ? per : 1) * sizeof(double));
+    const bool has = attr_at_frame(k, a, all, per);
+    if (!has && !temporal) return vial_rt_fail(k, "R0103", "%s could not be read", full);
     const uint32_t n = vial_sets_size(s->sets, 0);
     const uint32_t* idx = vial_sets_items(s->sets, 0);
     uint32_t dims[3] = {n};
     uint8_t nd = 1;
-    if (f->rank == 2) dims[nd++] = var;
+    if (var > 1 || f->rank == (temporal ? 3u : 2u)) dims[nd++] = var;
     if (comp > 1) dims[nd++] = comp;
-    const bool real = f->type == MD_ATTRIBUTE_TYPE_F32 || f->type == MD_ATTRIBUTE_TYPE_F64;
+    const bool real = attr_real(a);
     vial_val_t o; if (!vial_k_make(k, real ? VIAL_DT_FLOAT : VIAL_DT_INT, nd, dims, &o)) return false;
-    // Stored [variant][atom][component]; given [particle][variant][component]
+    // Stored [variant][atom][component] at a frame; given [particle][variant][component]
     size_t e = 0;
     for (uint32_t i = 0; i < n; ++i) {
         for (uint32_t v = 0; v < var; ++v) {
             for (uint32_t c = 0; c < comp; ++c, ++e) {
-                const double x = all[((size_t)v * num_atoms + idx[i]) * comp + c];
+                const double x = has ? all[((size_t)v * num_atoms + idx[i]) * comp + c] : 0.0;
                 if (real) ((float*)o.data)[e] = (float)x;
                 else ((int32_t*)o.data)[e] = (int32_t)x;
-                if (real && isnan(x)) vial_val_set_missing(&o, e, k->alloc);
+                if (!has || (real && !temporal && isnan(x))) vial_val_set_missing(&o, e, k->alloc);
             }
         }
     }
@@ -3263,7 +3373,10 @@ bool vial_k_builtin(vial_kctx_t* k, const char* name, const vial_val_t* const* a
     if (IS("arange")) return k_arange(k, arg(&ba, "lo", 0), arg(&ba, "hi", 1), arg(&ba, "step", 2), out);
     if (IS("eye")) return k_eye(k, arg(&ba, "n", 0), out);
     if (IS("spread")) return k_spread(k, arg(&ba, "values", 0), arg(&ba, "groups", 1), arg(&ba, "combine", 2), out);
-    if (IS("attr") && arg(&ba, "of", 1)) return k_attr_of(k, arg(&ba, "path", 0), arg(&ba, "of", 1), out);
+    if (IS("attr")) {
+        const vial_val_t* of = arg(&ba, "of", 1);
+        return of ? k_attr_of(k, arg(&ba, "path", 0), of, out) : k_attr(k, arg(&ba, "path", 0), out);
+    }
     if (IS("mass") || IS("charge") || IS("bfactor") || IS("name") || IS("element") || IS("kind") || IS("type") || IS("hybridization") ||
         IS("aromatic") || IS("metallic") || IS("hydrogens") || IS("formal_charge")) return k_property(k, name, arg(&ba, "s", 0), out);
     if (IS("norm") || IS("normalize")) return k_norm(k, arg(&ba, "v", 0), IS("normalize"), out);

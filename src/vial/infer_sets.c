@@ -1603,6 +1603,35 @@ static bool attribute_type(const md_attribute_t* at, T* t) {
     return true;
 }
 
+// Whether a per-frame attribute has a value at every frame of the run: on the run's own axis, or on one of its own (an
+// energy file's, sampled at its own rate) that every frame of the run lands on, as evaluation finds its row
+// (md_attribute_axis_map). One that does not may be missing at a frame.
+static bool every_frame_sampled(infer_t* x, const md_attribute_t* at) {
+    if (!(at->flags & MD_ATTRIBUTE_FLAG_TEMPORAL)) return true;
+    const md_attributes_t* attrs = &x->sys->sys->attributes;
+    const md_str_t run = x->c->run;
+    char p[512];
+    snprintf(p, sizeof(p), "%.*s/time", (int)run.len, run.ptr);
+    const md_attribute_t* frames = md_attributes_find(attrs, md_str_from_cstr(p));
+    if (!frames || frames->format.rank < 1) return true;    // no frames to miss
+    const size_t num = frames->format.shape[0];
+    const md_attribute_t* axis = md_attributes_axis(attrs, at);
+    if (!axis) return at->format.rank >= 1 && at->format.shape[0] >= num;     // by the frame's index
+    if (axis->id == frames->id) return true;
+    for (size_t i = 0; i < num; ++i) {
+        size_t row;
+        if (!md_attribute_axis_map(&row, attrs, frames, i, attrs, axis)) return false;
+    }
+    return true;
+}
+
+// attribute_type, and optional where a frame may have no value
+static bool run_attribute_type(infer_t* x, const md_attribute_t* at, T* t) {
+    if (!attribute_type(at, t)) return false;
+    if (!every_frame_sampled(x, at)) t->flags |= VIAL_TYPE_MISSING;
+    return true;
+}
+
 // A per-atom attribute of the system: under atom/, numeric, not per frame, and one value (of its components, at each
 // variant) per atom, its atom axis last
 static bool atom_attribute(const md_attribute_t* at, uint32_t num_atoms) {
@@ -1611,8 +1640,17 @@ static bool atom_attribute(const md_attribute_t* at, uint32_t num_atoms) {
            f->shape[f->rank - 1] == num_atoms;
 }
 
-// attr(name, of=s): one value per particle of s of the system's per-atom attribute atom/<name>, as the tooltip of a
-// particle names it; its variants and components are dimensions after the particles'. Missing where it holds NAN.
+// A per-atom attribute of the run: under <run>/atom/, numeric, per frame, and one value per atom at each frame (of its
+// components, at each variant), its atom axis last
+static bool run_atom_attribute(const md_attribute_t* at, uint32_t num_atoms) {
+    const md_attribute_format_t* f = &at->format;
+    return md_attribute_type_is_numeric(f->type) && (at->flags & MD_ATTRIBUTE_FLAG_TEMPORAL) && f->rank >= 2 && f->rank <= 3 &&
+           f->shape[f->rank - 1] == num_atoms;
+}
+
+// attr(name, of=s): one value per particle of s of the per-atom attribute <name>, as the tooltip of a particle names it:
+// the run's per frame (<run>/atom/<name>) where it has one, else the system's (atom/<name>). Its variants and
+// components are dimensions after the particles'. The system's is missing where it holds NAN.
 static T attr_of(infer_t* x, vial_node_id at, md_str_t name, vial_node_id on) {
     const T s = x->out->types[(on) - x->out->base];
     if (vial_type_is_error(&s)) return err();
@@ -1642,46 +1680,56 @@ static T attr_of(infer_t* x, vial_node_id at, md_str_t name, vial_node_id on) {
     }
     if (!x->sys) return err();      // nothing to read: typed when there is a system
     const md_attributes_t* attrs = &x->sys->sys->attributes;
-    char full[512];
+    const uint32_t num_atoms = x->sys->num_atoms;
     const md_str_t run = x->c->run;
+    char full[512];
+    // The run's per-frame values of the particles, where it has them; else the system's
+    const md_attribute_t* a = NULL;
     if (!md_str_empty(run)) {
-        // The run's per-frame values of the particles are read when attr() reads the run per frame, not yet
         snprintf(full, sizeof(full), "%.*s/atom/%.*s", (int)run.len, run.ptr, (int)name.len, name.ptr);
-        const md_attribute_t* rt = md_attributes_find(attrs, md_str_from_cstr(full));
-        if (rt && (rt->flags & MD_ATTRIBUTE_FLAG_TEMPORAL)) {
-            vx_diag_fix(x, "E0801", at, NULL, "`%.*s` changes per frame in the run; per-frame attributes of particles are not "
-                "evaluated yet", (int)e.len, e.ptr);
-            return err();
-        }
+        a = md_attributes_find(attrs, md_str_from_cstr(full));
+        if (a && !run_atom_attribute(a, num_atoms)) a = NULL;
     }
-    snprintf(full, sizeof(full), "atom/%.*s", (int)name.len, name.ptr);
-    const md_attribute_t* a = md_attributes_find(attrs, md_str_from_cstr(full));
-    if (!a || !atom_attribute(a, x->sys->num_atoms)) {
-        // The names there are, as the message's list
+    if (!a) {
+        snprintf(full, sizeof(full), "atom/%.*s", (int)name.len, name.ptr);
+        a = md_attributes_find(attrs, md_str_from_cstr(full));
+        if (a && !atom_attribute(a, num_atoms)) a = NULL;
+    }
+    if (!a) {
+        // The names there are, the run's and the system's, as the message's list
         char have[256] = "";
         size_t len = 0, num = 0;
-        for (md_attribute_iter_t it = md_attributes_iter(attrs, MD_STR_LIT("atom")); md_attributes_next(&it);) {
-            if (!atom_attribute(it.attr, x->sys->num_atoms)) continue;
-            const md_str_t rel = {it.attr->path.ptr + 5, it.attr->path.len - 5};
-            const int w = snprintf(have + len, sizeof(have) - len, "%s%.*s", num ? ", " : "", (int)rel.len, rel.ptr);
-            if (w < 0 || len + (size_t)w >= sizeof(have) - 8) { snprintf(have + len, sizeof(have) - len, ", ..."); break; }
-            len += (size_t)w;
-            num += 1;
+        char group[512];
+        snprintf(group, sizeof(group), "%.*s/atom", (int)run.len, run.ptr);
+        for (int g = md_str_empty(run) ? 1 : 0; g < 2; ++g) {
+            const md_str_t gs = g == 0 ? md_str_from_cstr(group) : MD_STR_LIT("atom");
+            for (md_attribute_iter_t it = md_attributes_iter(attrs, gs); md_attributes_next(&it) && len < sizeof(have) - 8;) {
+                if (g == 0 ? !run_atom_attribute(it.attr, num_atoms) : !atom_attribute(it.attr, num_atoms)) continue;
+                const md_str_t rel = {it.attr->path.ptr + gs.len + 1, it.attr->path.len - gs.len - 1};
+                const int w = snprintf(have + len, sizeof(have) - len, "%s%.*s", num ? ", " : "", (int)rel.len, rel.ptr);
+                if (w < 0 || len + (size_t)w >= sizeof(have) - 8) { snprintf(have + len, sizeof(have) - len, ", ..."); len = sizeof(have); break; }
+                len += (size_t)w;
+                num += 1;
+            }
         }
         if (num) vx_diag_fix(x, "E0206", at, NULL, "particles have no attribute `%.*s`; they have %s", (int)e.len, e.ptr, have);
         else vx_diag_fix(x, "E0206", at, NULL, "particles have no attribute `%.*s`; the data gives them none", (int)e.len, e.ptr);
         return err();
     }
     const md_attribute_format_t* f = &a->format;
+    const bool temporal = a->flags & MD_ATTRIBUTE_FLAG_TEMPORAL;
     const bool real = f->type == MD_ATTRIBUTE_TYPE_F32 || f->type == MD_ATTRIBUTE_TYPE_F64;
     T t = vial_type_scalar(real ? VIAL_DT_FLOAT : VIAL_DT_INT);
     t.unit = a->unit;
-    t.stage = s.stage;
+    t.stage = temporal && s.stage < VIAL_STAGE_FRAME ? VIAL_STAGE_FRAME : s.stage;
     vial_type_push_dim(&t, vx_particle_extent(x, &s, on));
-    if (f->rank == 2) vial_type_push_dim(&t, vial_extent_static(f->shape[0]));
+    if (f->rank == (temporal ? 3 : 2)) vial_type_push_dim(&t, vial_extent_static(f->shape[temporal ? 1 : 0]));
     if (f->components > 1) vial_type_push_dim(&t, vial_extent_static(f->components));
-    if (real) {
-        // NAN marks an atom it has no value for
+    if (temporal) {
+        // Per frame: missing at a frame its axis has no sample at; a NaN in it is a value, as from arithmetic
+        if (!every_frame_sampled(x, a)) t.flags |= VIAL_TYPE_MISSING;
+    } else if (real) {
+        // NAN marks an atom the system's attribute has no value for
         const size_t cnt = md_attribute_element_count(f);
         md_temp_scope_t temp = md_temp_begin_avoid(x->alloc);
         float* v = md_temp_alloc_array(temp, float, cnt);
@@ -1719,7 +1767,7 @@ static T call_attr(infer_t* x, vial_node_id call) {
     if (!glob) {
         const md_attribute_t* at = md_attributes_find(attrs, md_str_from_cstr(full));
         T t;
-        if (!at || !attribute_type(at, &t)) {
+        if (!at || !run_attribute_type(x, at, &t)) {
             vx_diag_fix(x, "E0206", a, NULL, "the run has no numeric attribute `%.*s`", (int)e.len, e.ptr);
             return err();
         }
@@ -1737,9 +1785,10 @@ static T call_attr(infer_t* x, vial_node_id call) {
         const md_str_t rel = {path.ptr + strlen(prefix), path.len - strlen(prefix)};
         if (!vial_glob(pv.s, rel)) continue;
         T t;
-        if (!attribute_type(it.attr, &t)) continue;
+        if (!run_attribute_type(x, it.attr, &t)) continue;
         if (n == 0) first = t;
-        else if (t.dtype != first.dtype || t.ndim != first.ndim || !md_unit_equal(t.unit, first.unit) || t.stage != first.stage) {
+        else first.flags |= t.flags & VIAL_TYPE_MISSING;
+        if (n > 0 && (t.dtype != first.dtype || t.ndim != first.ndim || !md_unit_equal(t.unit, first.unit) || t.stage != first.stage)) {
             vx_diag_fix(x, "E0206", a, NULL, "the attributes `%.*s` matches differ in type, unit or shape", (int)e.len, e.ptr);
             return err();
         }

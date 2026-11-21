@@ -183,6 +183,7 @@ md_vial_eval_t* md_vial_eval_create_from(const md_vial_eval_t* prev, const md_vi
     md_system_state_init(&e->state, desc->sys->atom.count);
     vial_sys_init(&e->vs, desc->sys, arena);
     if (!vial_interp_init(&e->in, ir, &e->vs, desc->sys, alloc)) { md_arena_allocator_destroy(arena); return NULL; }
+    e->in.run = e->run;
     // What an earlier evaluation of the same run holds: those outputs are published as it published them, and only
     // the others are computed
     if (prev && prev->num_frames == e->num_frames && md_str_eq(prev->run, e->run)) {
@@ -266,6 +267,7 @@ md_vial_eval_t* md_vial_eval_create_from(const md_vial_eval_t* prev, const md_vi
             md_system_state_init(&r->state, desc->sys->atom.count);
             vial_sys_init(&r->vs, desc->sys, r->arena);
             if (!vial_interp_init(&e->workers[w], ir, &r->vs, desc->sys, md_get_heap_allocator())) { md_vial_eval_free(e); return NULL; }
+            e->workers[w].run = e->run;
             e->workers[w].load_frame = worker_load_frame;
             e->workers[w].load_user = r;
             e->workers[w].load_release = worker_release;
@@ -789,6 +791,7 @@ static const vial_val_t* point_eval(point_t* pt, const md_vial_program_t* prog, 
     md_system_state_init(&pt->h.state, sys->atom.count);
     vial_sys_init(&pt->vs, sys, pt->arena);
     if (!vial_interp_init(&pt->in, ir, &pt->vs, sys, md_get_heap_allocator())) return NULL;
+    pt->in.run = run;
     pt->have_in = true;
     vial_interp_t* in = &pt->in;
     vial_interp_only(in, &v, 1);
@@ -1292,6 +1295,7 @@ static bool draw_sdf(draw_out_t* o, const md_vial_draw_desc_t* desc, const vial_
     md_system_state_init(&pt.h.state, desc->sys->atom.count);
     vial_sys_init(&pt.vs, desc->sys, pt.arena);
     bool ok = vial_interp_init(&pt.in, ir, &pt.vs, desc->sys, md_get_heap_allocator());
+    pt.in.run = desc->run;
     pt.have_in = ok;
     vial_interp_t* in = &pt.in;
     // Its static arguments alone: the target and the weights are what frames add

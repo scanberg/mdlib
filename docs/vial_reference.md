@@ -1202,7 +1202,7 @@ long = cov[bl > 1.6]                                   # -> set[?][2], frame
 
 ### Attributes
 
-`attr(path)` reads an attribute of the run, such as an energy term, with its unit: `<run>/<path>` in the system's attributes, where viamd names the run. A path with `*` matches several and gives one member each, labelled by name; they must agree in type, unit and shape. A path the run does not have is E0206.
+`attr(path)` reads an attribute of the run, such as an energy term, with its unit: `<run>/<path>` in the system's attributes, where viamd names the run. A path with a glob matches several and gives one member each, labelled by name; they must agree in type, unit and shape. A path the run does not have is E0206. A per-frame attribute is read at each frame where the frame's time lands on its own time axis, as md_attribute_axis_map finds it: an energy file written at its own rate has its own axis. A frame it has no sample at is missing, and the type is optional where some frame of the run has none.
 
 ```python
 # on a run with an energy file
@@ -1213,7 +1213,7 @@ tot  = sum(coul)                                       # -> float kJ/mol, frame:
 inter = sum(coul) + sum(lj)                            # -> float kJ/mol, frame: coul + lj would pair members by position
 ```
 
-`attr(name, of=s)` reads a per-atom attribute of the system at each particle of s: one value per particle, with the attribute's unit, by its name below `atom/`, as a particle's tooltip names it. The set says what the values are of, so the name carries no `atom/` (E0206, with the name as the fix). Components and variants are dimensions after the particles', in that order: a dipole of three components is `float[n][3]`, a charge per electronic state `float[n][k]`. An atom the file gives no value, NaN, is missing. An array of sets is E0318, as for `mass`: `attr(name, of=particle(rs))` reads their particles. A per-frame attribute of the particles in the run is not read yet (E0801). `bfactor(s)` reads the same column as `attr('b_factor', of=s)`.
+`attr(name, of=s)` reads a per-atom attribute at each particle of s: one value per particle, with the attribute's unit, by its name below `atom/`, as a particle's tooltip names it. The run's per-frame values, `<run>/atom/<name>`, come first where it has them, read at each frame as `attr(path)` reads a series; else the system's, `atom/<name>`, static. The set says what the values are of, so the name carries no `atom/` (E0206, with the name as the fix). Components and variants are dimensions after the particles', in that order: a dipole of three components is `float[n][3]`, a charge per electronic state `float[n][k]`. An atom the system's attribute gives no value, NaN, is missing; in the run's values a NaN is a value, as from arithmetic. An array of sets is E0318, as for `mass`: `attr(name, of=particle(rs))` reads their particles. `bfactor(s)` reads the same column as `attr('b_factor', of=s)`.
 
 ```python
 # on T

@@ -170,6 +170,7 @@ static bool eval_at(vial_interp_t* in, uint32_t opi) {
     if (!in->load_frame(in->load_user, index, &fr)) return vial_rt_fail(&k, "R0104", "at() reads frame %lld, which the run does not have", (long long)index);
     vial_interp_t child;
     if (!vial_interp_init(&child, ir, in->sys, in->msys, md_get_heap_allocator())) return vial_rt_fail(&k, "R0103", "out of memory");
+    child.run = in->run;
     // The child computes only what the value needs: the live ops are those of x
     vial_interp_only(&child, &xv, 1);
     child.load_frame = in->load_frame;
@@ -1505,6 +1506,7 @@ bool vial_interp_over_frames(const vial_interp_t* in, vial_ssa_t v, const uint8_
     if (!v || v >= md_array_size(ir->values) || ir->values[v].op == VIAL_IR_NO_OP) return false;
     vial_interp_t child;
     if (!vial_interp_init(&child, ir, in->sys, in->msys, md_get_heap_allocator())) return false;
+    child.run = in->run;
     // What the run computed that is not per frame: static values, and once values of earlier sweeps
     const size_t nv = md_array_size(in->state);
     for (size_t i = 0; i < nv; ++i) if (in->state[i] >= 2) { child.vals[i] = in->vals[i]; child.state[i] = in->state[i]; }
@@ -1546,6 +1548,7 @@ bool vial_interp_accum_over(const vial_interp_t* in, vial_ssa_t v, const uint8_t
     if (op->num_args > 16) return false;
     vial_interp_t child;
     if (!vial_interp_init(&child, ir, in->sys, in->msys, md_get_heap_allocator())) return false;
+    child.run = in->run;
     const size_t nv = md_array_size(in->state);
     for (size_t i = 0; i < nv; ++i) if (in->state[i] >= 2) { child.vals[i] = in->vals[i]; child.state[i] = in->state[i]; }
     child.max_elements = in->max_elements;
