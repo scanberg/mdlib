@@ -21,14 +21,30 @@ const char* md_bond_origin_name(md_bond_origin_t origin) {
     }
 }
 
+const char* md_bond_kind_name(md_bond_kind_t kind) {
+    switch (kind) {
+    case MD_BOND_KIND_COVALENT:     return "covalent";
+    case MD_BOND_KIND_COORDINATE:   return "coordinate";
+    case MD_BOND_KIND_ELASTIC:      return "elastic";
+    case MD_BOND_KIND_METALLIC:     return "metallic";
+    case MD_BOND_KIND_CONTACT:      return "contact";
+    case MD_BOND_KIND_HYDROGEN:     return "hydrogen";
+    case MD_BOND_KIND_IONIC:        return "ionic";
+    case MD_BOND_KIND_HALOGEN:      return "halogen";
+    default:                        return "";
+    }
+}
+
 static const md_bond_kind_name_t bond_kind_names[] = {
     {"covalent",    MD_BOND_FLAG_KIND_MASK,     (md_bond_flags_t)MD_BOND_KIND_COVALENT},
     {"coordinate",  MD_BOND_FLAG_KIND_MASK,     (md_bond_flags_t)MD_BOND_KIND_COORDINATE},
     {"elastic",     MD_BOND_FLAG_KIND_MASK,     (md_bond_flags_t)MD_BOND_KIND_ELASTIC},
     {"metallic",    MD_BOND_FLAG_KIND_MASK,     (md_bond_flags_t)MD_BOND_KIND_METALLIC},
-    {"noncovalent", (md_bond_flags_t)0xC0,      (md_bond_flags_t)0xC0},     // md_bond_is_noncovalent
-    {"interaction", MD_BOND_FLAG_KIND_MASK,     (md_bond_flags_t)MD_BOND_KIND_INTERACTION},
+    {"interaction", (md_bond_flags_t)0x80,      (md_bond_flags_t)0x80},     // md_bond_is_noncovalent: the four below
+    {"contact",     MD_BOND_FLAG_KIND_MASK,     (md_bond_flags_t)MD_BOND_KIND_CONTACT},
     {"hydrogen",    MD_BOND_FLAG_KIND_MASK,     (md_bond_flags_t)MD_BOND_KIND_HYDROGEN},
+    {"ionic",       MD_BOND_FLAG_KIND_MASK,     (md_bond_flags_t)MD_BOND_KIND_IONIC},
+    {"halogen",     MD_BOND_FLAG_KIND_MASK,     (md_bond_flags_t)MD_BOND_KIND_HALOGEN},
 };
 
 const md_bond_kind_name_t* md_bond_kind_names(size_t* count) {

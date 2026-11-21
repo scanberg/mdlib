@@ -637,9 +637,18 @@ UTEST_F(vial_check, bond_keywords) {
     ASSERT_TRUE(T != NULL && P != NULL);
     EXPECT_TYPE_ON(T, "n = len(bond())\n", 1, "int, static = 7085");
     EXPECT_TYPE_ON(T, "n = len(bond(kind='covalent' or 'coordinate'))\n", 1, "int, static = 7085");
+    // Covalent and coordinate by default, the bonds shown; a kind written is that kind alone
     EXPECT_TYPE_ON(T, "n = len(bond(kind='covalent'))\n", 1, "int, static = 7078");
+    EXPECT_TYPE_ON(T, "n = len(bond(kind=['covalent', 'coordinate']))\n", 1, "int, static = 7085");
     EXPECT_TYPE_ON(T, "n = len(bond(kind='coordinate'))\n", 1, "int, static = 7");     // MG and its ligands
-    EXPECT_TYPE_ON(T, "n = len(bond(kind='noncovalent'))\n", 1, "int, frame");   // hydrogen bonds are found per frame
+    EXPECT_TYPE_ON(T, "n = len(bond(kind='interaction'))\n", 1, "int, frame");   // hydrogen bonds are found per frame
+    EXPECT_TYPE_ON(T, "n = len(bond(kind=['contact', 'ionic', 'halogen']))\n", 1, "int, static = 0");
+    // A bond is of one kind: and between two kinds holds for none, whatever the system
+    EXPECT_DIAGS_ON(T, "b = bond(kind='hydrogen' and 'ionic')\n", "W0601 1: no bond is of the kind `'hydrogen' and 'ionic'`: a bond is of one kind, "
+        "so and between two kinds holds for none\n");
+    EXPECT_DIAGS("b = bond(kind='coordinate' and 'elastic')\n", "W0601 1: no bond is of the kind `'coordinate' and 'elastic'`: a bond is of one kind, "
+        "so and between two kinds holds for none\n");
+    EXPECT_DIAGS_ON(T, "b = bond(kind='interaction' and 'ionic')\n", "W0601 1: `bond(kind='interaction' and 'ion…` matches nothing in its scope\n");
     // An order is one value per bond: a resonance's word, else 1 to 3; the coordinate bonds have none
     EXPECT_TYPE_ON(T, "n = len(bond(order=1))\n", 1, "int, static = 5078");
     EXPECT_TYPE_ON(T, "n = len(bond(order=2))\n", 1, "int, static = 946");
@@ -657,7 +666,9 @@ UTEST_F(vial_check, bond_keywords) {
     EXPECT_DIAGS_ON(T, "b = bond(order='double')\n", "E0206 1: 'double' is no order of a bond; the orders are 1, 2, 3, 4, 'aromatic' or 'delocalized'\n");
     EXPECT_DIAGS_ON(T, "n = len(bond(order=4))\n", "W0601 1: `bond(order=4)` matches nothing in its scope\n");
     EXPECT_DIAGS_ON(T, "b = bond(kind='strong')\n", "E0206 1: 'strong' is no kind of bond; the kinds are covalent, coordinate, elastic, metallic, "
-        "noncovalent, interaction and hydrogen\n");
+        "interaction, contact, hydrogen, ionic and halogen\n");
+    EXPECT_DIAGS_ON(T, "b = bond(kind='noncovalent')\n", "E0206 1: 'noncovalent' is no kind of bond; the kinds are covalent, coordinate, elastic, "
+        "metallic, interaction, contact, hydrogen, ionic and halogen\n");
     EXPECT_DIAGS_ON(T, "b = bond(origin='pdb')\n", "E0206 1: 'pdb' is no origin of a bond; the origins are file, topology, user and inferred\n");
     EXPECT_DIAGS_ON(T, "b = bond(color='red')\n", "E0202 1: `bond` takes no keyword `color`; it takes s, kind, order and origin\n");
     EXPECT_DIAGS_ON(T, "b = bond(origin=1)\n", "E0206 1: `origin` takes a string, a list of strings, or and/or/not over strings; this is int\n");
@@ -674,6 +685,9 @@ UTEST_F(vial_check, bond_keywords) {
     EXPECT_TYPE_ON(P, "h = bond(kind='hydrogen', origin='user')\n", 1, "set[0][2], static");
     EXPECT_DIAGS_ON(P, "h = bond(kind='hydrogen' or 'covalent')\n", "E0801 1: and/or/not in a keyword's value is resolved when compiling; hydrogen bonds, "
         "found per frame, do not take it yet: a list takes its place\n");
+    EXPECT_DIAGS_ON(P, "h = bond(kind='interaction' and not 'contact')\n", "E0801 1: and/or/not in a keyword's value is resolved when compiling; hydrogen bonds, "
+        "found per frame, do not take it yet: a list takes its place\n");
+    EXPECT_TYPE_ON(P, "h = bond(kind=['hydrogen', 'ionic', 'halogen'])\n", 1, "set[?][2], frame");
     // The bonds of each frame against the system's, with an atom in s
     EXPECT_TYPE_ON(T, "f = formed(particle(resname='GTP'))\n", 1, "set[?][2], frame");
     EXPECT_TYPE_ON(T, "f = broken(tolerance=0.2, breakable=['file', 'inferred', 'topology'])\n", 1, "set[?][2], frame");

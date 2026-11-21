@@ -1361,6 +1361,7 @@ static T call_bonds(infer_t* x, vial_node_id call) {
     vial_select_t q = {0};      // its filters, as a selector's
     bool failed = false, known = true;
     vial_node_id logic_at = 0;
+    bool no_kind = false;       // kind= lets no kind through, said (W0601)
     const uint32_t nc = vx_num_children(x, call);
     uint32_t num_pos = 0;
     for (uint32_t i = 1; i < nc; ++i) {
@@ -1393,6 +1394,13 @@ static T call_bonds(infer_t* x, vial_node_id call) {
         const int r = bond_filter_of(x, key, vn, &f);
         if (r < 0) { failed = true; continue; }
         if (r == 0) known = false;
+        if (r == 1 && key == VIAL_KEY_KIND && !vial_select_bond_kind_possible(&f) && !no_kind) {
+            // Of no system: a bond is of one kind, so and between two kinds holds for none
+            char ex[VIAL_EXCERPT_MAX + 4];
+            const md_str_t e = vial_excerpt(ex, sizeof(ex), vx_text(x, vn));
+            vx_diag_fix(x, "W0601", vn, NULL, "no bond is of the kind `%.*s`: a bond is of one kind, so and between two kinds holds for none", (int)e.len, e.ptr);
+            no_kind = true;
+        }
         md_array_push(q.filters, f, x->alloc);
     }
     if (failed) return err();
@@ -1446,7 +1454,7 @@ static T call_bonds(infer_t* x, vial_node_id call) {
         return t;
     }
     vial_sets_t* r = vial_select_bonds(x->sys, all ? NULL : sv.sets, q.filters, md_array_size(q.filters), x->alloc);
-    if (r->count == 0 && md_array_size(q.filters)) {
+    if (r->count == 0 && md_array_size(q.filters) && !no_kind) {
         // Keywords that match no bond, as a selector's that match nothing; a set without bonds, an ion's, is none
         char ex[VIAL_EXCERPT_MAX + 4];
         const md_str_t e = vial_excerpt(ex, sizeof(ex), vx_text(x, call));

@@ -8408,8 +8408,10 @@ static bool bond_filter_parse(bond_filter_t* f, const data_t arg[], bool report,
         const md_bond_kind_name_t* table = md_bond_kind_names(&count);
         const md_str_t* names = as_string_arr(arg[2]);
         for (size_t i = 0; i < element_count(arg[2]); ++i) {
+            // 'noncovalent' is what the interactions were called before they had a word, kept for the scripts which use it
+            const md_str_t name = md_str_eq_cstr(names[i], "noncovalent") ? MD_STR_LIT("interaction") : names[i];
             size_t k = 0;
-            while (k < count && !md_str_eq_cstr(names[i], table[k].name)) ++k;
+            while (k < count && !md_str_eq_cstr(name, table[k].name)) ++k;
             if (k == count) {
                 if (report) {
                     match_name_t valid[16];
@@ -8496,8 +8498,8 @@ static void bond_collect_atom(md_bitmask_t* b, uint32_t atom, const md_bitset_t*
 //   a, b       Without either: all bonds. With a: the bonds with both atoms in a, one set per element of a (bond(residue(:))
 //              is the bonds within each residue). With b as well: the bonds with one atom in the element of a and the other
 //              in b. With b alone: the bonds with an atom in b.
-//   kind       Any of md_bond_kind_names: 'covalent', 'coordinate', 'elastic', 'metallic', 'noncovalent', 'interaction',
-//              'hydrogen'.
+//   kind       Any of md_bond_kind_names: 'covalent', 'coordinate', 'elastic', 'metallic', 'interaction' (the four
+//              below), 'contact', 'hydrogen', 'ionic', 'halogen'; 'noncovalent' as 'interaction'.
 //   order      The order (an int or a range, 0 for unknown) of a bond of the graph: non-covalent bonds have none.
 //   resonance  Any of 'aromatic', 'delocalized', 'localized' (neither), of a bond of the graph.
 //   origin     Any of 'file', 'topology', 'user', 'inferred'.

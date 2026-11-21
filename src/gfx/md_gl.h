@@ -290,11 +290,13 @@ void        md_gl_rep_set_atom_colors(md_gl_rep_t rep, uint32_t offset, uint32_t
 // dashes. Given relative to the radius r of the sticks of the representation, so the look holds at any scale:
 //                  radius    dash    gap     covered   dash / diameter
 //   COORDINATE     0.70 r    2.0 r   0.8 r   71 %      1.4     long dashes, narrow gaps: nearly a stick
+//   IONIC          0.55 r    1.4 r   0.85 r  62 %      1.3
 //   HYDROGEN       0.45 r    0.9 r   0.9 r   50 %      1.0     even dashes
-//   INTERACTION    0.35 r    0.5 r   1.1 r   31 %      0.7     short dashes, wide gaps: dotted
+//   HALOGEN        0.40 r    0.7 r   1.0 r   41 %      0.9
+//   CONTACT        0.35 r    0.5 r   1.1 r   31 %      0.7     short dashes, wide gaps: dotted
 //   other kinds    1.00 r    2.4 r   0.6 r   80 %      1.2     only where every bond is dashed (MD_GL_DASHES_ALL)
-// Under minification the dashes blend into lines whose weight (radius times coverage) halves from one kind to the
-// next, so the order holds where they are too small to be seen as dashes. Other dashed lines of md_gl keep styles of
+// Under minification the dashes blend into lines whose weight (radius times coverage) falls by about a third from one
+// kind to the next (0.50, 0.34, 0.23, 0.17, 0.11), so the order holds where they are too small to be seen as dashes. Other dashed lines of md_gl keep styles of
 // their own apart from these: the partners of delocalized bonds (thin, beside a stick) and the gaps of chains (long
 // dashes, long gaps). The dashes run between the surfaces of the spheres at the atoms (the joints of a licorice, the
 // balls of a ball and stick), not from the centers of the atoms, so that none is hidden or cut by a sphere.
@@ -377,7 +379,7 @@ typedef enum {
 // Which of the weak bonds of a representation are dashed (MD_GL_REP_WEAK_BONDS), each in the style of its kind (BOND
 // DASHES). Solid ones are plain cylinders with flat ends, of the radius of the sticks.
 typedef enum {
-    MD_GL_DASHES_BY_KIND,   // Those which are not covalent: coordinate, hydrogen bonds and interactions
+    MD_GL_DASHES_BY_KIND,   // Those which are not covalent: coordinate bonds and the interactions
     MD_GL_DASHES_NONE,      // None
     MD_GL_DASHES_ALL,       // All, covalent ones too (and elastic and metallic), in a style of their own
 } md_gl_dashes_t;

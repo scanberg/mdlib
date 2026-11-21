@@ -248,11 +248,13 @@ vial_sets_t* vial_select(vial_sys_t* s, const vial_select_t* q, md_allocator_i* 
 
 // ### BONDS ###
 
-// Whether a value is a kind of bond (md_bond_kind_names: covalent, coordinate, elastic, metallic, noncovalent,
-// interaction, hydrogen), an order's word (aromatic, delocalized), or an origin (file, topology, user, inferred); the
+// Whether a value is a kind of bond (md_bond_kind_names: covalent, coordinate, elastic, metallic, interaction, contact,
+// hydrogen, ionic, halogen), an order's word (aromatic, delocalized), or an origin (file, topology, user, inferred); the
 // kinds for E0206's message
 bool        vial_select_bond_kind_known(md_str_t kind);
 const char* vial_select_bond_kinds(void);
+// Whether a filter of kind= lets any kind of bond through: a bond is of one kind, so 'hydrogen' and 'ionic' lets none
+bool        vial_select_bond_kind_possible(const vial_filter_t* f);
 bool        vial_select_bond_order_known(md_str_t word);
 bool        vial_select_bond_origin_known(md_str_t origin);
 

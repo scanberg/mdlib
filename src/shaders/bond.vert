@@ -91,14 +91,21 @@
 #define KIND_ELASTIC    3u
 #define KIND_METALLIC   4u      // Never drawn here: a Bonds representation draws them
 #define KIND_COORDINATE 5u      // Dashed, or a plain stick
-#define KIND_HYDROGEN   6u      // Weak bonds only
-#define KIND_INTERACTION 7u     // Weak bonds only
+#define KIND_HYDROGEN   6u      // The interactions: weak bonds only
+#define KIND_CONTACT    7u
+#define KIND_IONIC      8u
+#define KIND_HALOGEN    9u
+#define KIND_BITS       4u      // The kind in the low bits of u_buf_bond_order, the entry of a double or triple bond above
+#define KIND_MASK       15u
 
 // The styles of u_dash_style (DASH_STYLE_* in md_gl.c)
 #define DASH_STYLE_OTHER       0
 #define DASH_STYLE_COORDINATE  1
 #define DASH_STYLE_HYDROGEN    2
-#define DASH_STYLE_INTERACTION 3
+#define DASH_STYLE_CONTACT     3
+#define DASH_STYLE_IONIC       4
+#define DASH_STYLE_HALOGEN     5
+#define DASH_STYLE_COUNT       6
 
 // Relative to the radius of the stick (r) and to the envelope of the thinner sticks (u_spread * r)
 #define DOUBLE_RADIUS   0.42    // * envelope
@@ -138,7 +145,7 @@ layout (std140) uniform ubo {
     float u_end_radius_scale; // radius of the atom times this, whichever is larger
     uint  u_weak_index_base; // WEAK_BONDS: the picking base of the weak bonds, PICKING_NONE for none
     float u_pad0;
-    vec4  u_dash_style[4];  // Per DASH_STYLE_*: radius, dash and gap relative to u_radius (dash 0: solid)
+    vec4  u_dash_style[DASH_STYLE_COUNT]; // Per DASH_STYLE_*: radius, dash and gap relative to u_radius (dash 0: solid)
 };
 
 #pragma INSTANCES
@@ -344,7 +351,9 @@ float inset_factor(vec3 u, vec3 c, bool has) {
 int dash_style(uint kind) {
     if (kind == KIND_COORDINATE)  return DASH_STYLE_COORDINATE;
     if (kind == KIND_HYDROGEN)    return DASH_STYLE_HYDROGEN;
-    if (kind == KIND_INTERACTION) return DASH_STYLE_INTERACTION;
+    if (kind == KIND_CONTACT)     return DASH_STYLE_CONTACT;
+    if (kind == KIND_IONIC)       return DASH_STYLE_IONIC;
+    if (kind == KIND_HALOGEN)     return DASH_STYLE_HALOGEN;
     return DASH_STYLE_OTHER;
 }
 
@@ -394,7 +403,7 @@ void main() {
     // ELASTIC BONDS (MD_BOND_KIND_ELASTIC): springs of the force field, not bonds of the molecule, drawn only where the
     // representation shows them
     uint order = u_bond_kinds != 0u ? texelFetch(u_buf_bond_order, int(bond)).x : KIND_PLAIN;
-    if (((order & 7u) == KIND_ELASTIC && u_elastic_bonds == 0u) || (order & 7u) == KIND_METALLIC) {
+    if (((order & KIND_MASK) == KIND_ELASTIC && u_elastic_bonds == 0u) || (order & KIND_MASK) == KIND_METALLIC) {
         cull();
         return;
     }
@@ -420,7 +429,7 @@ void main() {
     float r = u_radius;
 #if WEAK_BONDS
     // The style of its kind: its radius relative to that of the sticks, scaled by the weight of the bond
-    vec4 style = u_dash_style[dash_style(texelFetch(u_buf_bond_order, int(bond)).x & 7u)];
+    vec4 style = u_dash_style[dash_style(texelFetch(u_buf_bond_order, int(bond)).x & KIND_MASK)];
     r *= style.x * texelFetch(u_buf_bond_weight, int(bond)).x;
 #endif
 
@@ -518,19 +527,19 @@ void main() {
 
     // Without the orders shown every bond is a single stick, and so is an elastic one where it is shown. A coordinate
     // bond is dashed whether the orders are shown or not, unless the representation has it solid.
-    uint kind = u_bond_orders != 0u ? (order & 7u) : KIND_PLAIN;
+    uint kind = u_bond_orders != 0u ? (order & KIND_MASK) : KIND_PLAIN;
     vec3 side = vec3(0.0);
     vec2 sub  = vec2(0.0);
     out_frag.dash_count = 0u;
     out_frag.dash = vec4(0.0);
     vec4 coord_style = u_dash_style[DASH_STYLE_COORDINATE];
-    if ((order & 7u) == KIND_COORDINATE && coord_style.y > 0.0) {
+    if ((order & KIND_MASK) == KIND_COORDINATE && coord_style.y > 0.0) {
         kind = KIND_COORDINATE;
         float rd = coord_style.x * r;
         set_dashes(sqrt(d2), rd, coord_style.y * r, coord_style.z * r, dash_inset(atom.x, rd), dash_inset(atom.y, rd));
     } else if (kind == KIND_DOUBLE || kind == KIND_TRIPLE) {
         vec3 ax = d * inversesqrt(d2);
-        side = bond_side(ax, pa, pb, texelFetch(u_buf_bond_ref, int(order >> 3u)));
+        side = bond_side(ax, pa, pb, texelFetch(u_buf_bond_ref, int(order >> KIND_BITS)));
         float envelope = u_spread * r;
         float rs = (kind == KIND_DOUBLE ? DOUBLE_RADIUS : TRIPLE_RADIUS) * envelope;
         sub = vec2(envelope - rs, rs);

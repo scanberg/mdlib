@@ -270,7 +270,7 @@ UTEST(bonds, noncovalent_range) {
 
     const md_bond_flags_t user = md_bond_flags_set_origin(MD_BOND_FLAG_KIND_GIVEN, MD_BOND_ORIGIN_USER);
     const md_bond_flags_t hbond = md_bond_flags_set_kind(user, MD_BOND_KIND_HYDROGEN);
-    const md_bond_flags_t inter = md_bond_flags_set_kind(user, MD_BOND_KIND_INTERACTION);
+    const md_bond_flags_t inter = md_bond_flags_set_kind(user, MD_BOND_KIND_IONIC);
     ASSERT_FALSE(has_bond(&sys, 0, n - 1, NULL));
     ASSERT_FALSE(has_bond(&sys, 1, n - 2, NULL));
     EXPECT_TRUE(md_system_bond_insert(&sys, 0, n - 1, hbond));
@@ -359,7 +359,7 @@ UTEST(bonds, kind_given_stays) {
 UTEST(bonds, kind_names) {
     size_t count = 0;
     const md_bond_kind_name_t* names = md_bond_kind_names(&count);
-    ASSERT_EQ(7, (int)count);
+    ASSERT_EQ(9, (int)count);
     const md_bond_flags_t given = md_bond_flags_set_origin(MD_BOND_FLAG_KIND_GIVEN | MD_BOND_FLAG_ORDER_PERCEIVED, MD_BOND_ORIGIN_INFERRED);
     const struct { md_bond_flags_t flags; const char* kinds; } cases[] = {
         { MD_BOND_FLAG_NONE,                                                    "covalent" },
@@ -368,12 +368,14 @@ UTEST(bonds, kind_names) {
         // A spring is of no other kind
         { (md_bond_flags_t)MD_BOND_KIND_ELASTIC,                                "elastic" },
         { (md_bond_flags_t)MD_BOND_KIND_METALLIC,                               "metallic" },
-        { (md_bond_flags_t)MD_BOND_KIND_INTERACTION,                            "noncovalent interaction" },
-        { (md_bond_flags_t)MD_BOND_KIND_HYDROGEN,                               "noncovalent hydrogen" },
+        { (md_bond_flags_t)MD_BOND_KIND_CONTACT,                                "interaction contact" },
+        { (md_bond_flags_t)MD_BOND_KIND_HYDROGEN,                               "interaction hydrogen" },
+        { (md_bond_flags_t)MD_BOND_KIND_IONIC,                                  "interaction ionic" },
+        { (md_bond_flags_t)MD_BOND_KIND_HALOGEN,                                "interaction halogen" },
         // The fields around the kind take no part in it
         { md_bond_flags_set_kind(given | MD_BOND_FLAG_DELOCALIZED | 4, MD_BOND_KIND_COVALENT), "covalent" },
         { md_bond_flags_set_kind(given, MD_BOND_KIND_ELASTIC),                  "elastic" },
-        { md_bond_flags_set_kind(given, MD_BOND_KIND_HYDROGEN),                 "noncovalent hydrogen" },
+        { md_bond_flags_set_kind(given, MD_BOND_KIND_HYDROGEN),                 "interaction hydrogen" },
     };
     for (size_t c = 0; c < MD_COUNTOF(cases); ++c) {
         char buf[128] = "";
@@ -385,13 +387,23 @@ UTEST(bonds, kind_names) {
         }
         EXPECT_STREQ(cases[c].kinds, buf);
     }
+    // Each kind has a word of its own (md_bond_kind_name), which selects it
+    for (unsigned int v = 0; v <= (unsigned int)MD_BOND_FLAG_KIND_MASK; v += 0x20u) {
+        const char* word = md_bond_kind_name((md_bond_kind_t)v);
+        ASSERT_TRUE(word[0] != '\0');
+        size_t i = 0;
+        while (i < count && strcmp(names[i].name, word) != 0) ++i;
+        ASSERT_LT(i, count);
+        EXPECT_EQ(names[i].value, (md_bond_flags_t)v & names[i].mask);
+    }
 }
 
 // The kind is one value of its own: setting it keeps every other field, and its bits say where the bond belongs
 UTEST(bonds, kind_code) {
-    const md_bond_kind_t kinds[] = { MD_BOND_KIND_COVALENT, MD_BOND_KIND_COORDINATE, MD_BOND_KIND_ELASTIC, MD_BOND_KIND_METALLIC, MD_BOND_KIND_INTERACTION, MD_BOND_KIND_HYDROGEN };
-    const bool graph[]       = { true,  true,  false, false, false, false };
-    const bool noncovalent[] = { false, false, false, false, true,  true  };
+    const md_bond_kind_t kinds[] = { MD_BOND_KIND_COVALENT, MD_BOND_KIND_COORDINATE, MD_BOND_KIND_ELASTIC, MD_BOND_KIND_METALLIC,
+                                     MD_BOND_KIND_CONTACT, MD_BOND_KIND_HYDROGEN, MD_BOND_KIND_IONIC, MD_BOND_KIND_HALOGEN };
+    const bool graph[]       = { true,  true,  false, false, false, false, false, false };
+    const bool noncovalent[] = { false, false, false, false, true,  true,  true,  true  };
     const md_bond_flags_t rest = md_bond_flags_set_origin(md_bond_flags_set_order(MD_BOND_FLAG_AROMATIC | MD_BOND_FLAG_ORDER_PERCEIVED | MD_BOND_FLAG_KIND_GIVEN, 2), MD_BOND_ORIGIN_USER);
     for (size_t i = 0; i < MD_COUNTOF(kinds); ++i) {
         // Over a bond of another kind, so every bit of the old one goes

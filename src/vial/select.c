@@ -1419,7 +1419,7 @@ bool vial_select_bond_kind_known(md_str_t kind) {
     return false;
 }
 
-const char* vial_select_bond_kinds(void) { return "covalent, coordinate, elastic, metallic, noncovalent, interaction and hydrogen"; }
+const char* vial_select_bond_kinds(void) { return "covalent, coordinate, elastic, metallic, interaction, contact, hydrogen, ionic and halogen"; }
 
 static const char* bond_order_words[] = {"aromatic", "delocalized"};    // the resonance, MD_BOND_FLAG_AROMATIC, _DELOCALIZED
 
@@ -1430,13 +1430,21 @@ bool vial_select_bond_origin_known(md_str_t origin) {
     return false;
 }
 
-// A bond's kind, by md_bond_kind_names: 'noncovalent' is the two non-covalent kinds
+// A bond's kind, by md_bond_kind_names: 'interaction' is the four interactions
 static bool test_bond_kind(const vial_match_t* m, const void* user) {
     if (m->kind != VIAL_MATCH_STR) return false;
     const md_bond_flags_t f = *(const md_bond_flags_t*)user;
     size_t n = 0;
     const md_bond_kind_name_t* k = md_bond_kind_names(&n);
     for (size_t i = 0; i < n; ++i) if (md_str_eq(m->s, md_str_from_cstr(k[i].name))) return (f & k[i].mask) == k[i].value;
+    return false;
+}
+
+bool vial_select_bond_kind_possible(const vial_filter_t* f) {
+    for (unsigned int v = 0; v <= (unsigned int)MD_BOND_FLAG_KIND_MASK; v += 0x20u) {
+        const md_bond_flags_t kind = (md_bond_flags_t)v;
+        if (vial_filter_holds(f, test_bond_kind, &kind)) return true;
+    }
     return false;
 }
 

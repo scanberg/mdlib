@@ -81,7 +81,7 @@ layout (std140) uniform ubo {
     float u_end_radius_scale;
     uint  u_weak_index_base; // WEAK_BONDS: the picking base of the weak bonds, PICKING_NONE for none
     float u_pad0;
-    vec4  u_dash_style[4];
+    vec4  u_dash_style[6];  // DASH_STYLE_COUNT of bond.vert
 };
 
 in Fragment {

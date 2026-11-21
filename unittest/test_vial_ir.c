@@ -1945,7 +1945,7 @@ UTEST(vial_ir, hydrogen_bonds_per_frame) {
     ASSERT_EQ(2u, f.num_sets);
     EXPECT_EQ(1u, f.atoms[f.offsets[0]]);
     EXPECT_EQ(3u, f.atoms[f.offsets[1]]);
-    ASSERT_TRUE(md_vial_filter(&f, MD_STR_LIT("bond(kind='noncovalent', origin='inferred')"), &at0, alloc));
+    ASSERT_TRUE(md_vial_filter(&f, MD_STR_LIT("bond(kind='interaction', origin='inferred')"), &at0, alloc));
     EXPECT_EQ(2u, f.num_sets);
     // Both ends in the set
     ASSERT_TRUE(md_vial_filter(&f, MD_STR_LIT("bond(residue[1], kind='hydrogen')"), &at0, alloc));

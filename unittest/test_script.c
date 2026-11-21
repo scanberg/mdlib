@@ -7130,6 +7130,7 @@ UTEST(script, bondsets) {
         "hb      = bond(kind='hydrogen');"
         "nc      = bond(kind='noncovalent');"
         "inter_b = bond(kind='interaction');"
+        "contact = bond(kind={'contact', 'ionic', 'halogen'});"
         "graph   = bond(kind={'covalent', 'coordinate'});"
         "user    = bond(origin='user');"
         "ordered = bond(order=0:4);"
@@ -7157,11 +7158,13 @@ UTEST(script, bondsets) {
     ASSERT_TRUE(md_script_ir_valid(ir));
 
     EXPECT_EQ(8, bondset_count_of(ir, "all_b", &sys, &st, alloc));
+    // 'interaction' is every non-covalent bond, as 'noncovalent' was
     EXPECT_EQ(6, bondset_count_of(ir, "cov", &sys, &st, alloc));
     EXPECT_EQ(1, bondset_count_of(ir, "coord_b", &sys, &st, alloc));
     EXPECT_EQ(1, bondset_count_of(ir, "hb", &sys, &st, alloc));
     EXPECT_EQ(1, bondset_count_of(ir, "nc", &sys, &st, alloc));
-    EXPECT_EQ(0, bondset_count_of(ir, "inter_b", &sys, &st, alloc));
+    EXPECT_EQ(1, bondset_count_of(ir, "inter_b", &sys, &st, alloc));
+    EXPECT_EQ(0, bondset_count_of(ir, "contact", &sys, &st, alloc));
     EXPECT_EQ(7, bondset_count_of(ir, "graph", &sys, &st, alloc));
     EXPECT_EQ(1, bondset_count_of(ir, "user", &sys, &st, alloc));
     // The order is of the bonds of the graph: the hydrogen bond has none
@@ -7347,7 +7350,7 @@ UTEST(script, bond_delta) {
 
     EXPECT_TRUE(contacts_compile_fails_with(&sys, alloc, "d = bond_delta(tolerance=0.5);", "tolerance"));
     EXPECT_TRUE(contacts_compile_fails_with(&sys, alloc, "d = bond_delta(breakable='hand');", "Unknown bond origin 'hand'"));
-    EXPECT_TRUE(contacts_compile_fails_with(&sys, alloc, "e = bond(bond_delta(), kind='ionic');", "Unknown bond kind 'ionic'"));
+    EXPECT_TRUE(contacts_compile_fails_with(&sys, alloc, "e = bond(bond_delta(), kind='strong');", "Unknown bond kind 'strong'"));
     md_vm_arena_destroy(alloc);
 }
 

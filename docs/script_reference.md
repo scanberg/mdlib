@@ -1194,7 +1194,7 @@ n_in_box = count(within_xyz(20:25, 20:25, 20:25));
 Bonds are values of their own, a `bondset`: a set of atoms cannot say which bonds are meant, as the atoms of a bond
 bring in every other bond among them. A bond is one of the system's persistent bonds, which the bond graph holds
 (covalent and coordination bonds, from which the rings, structures and chemistry are derived) together with the
-non-covalent bonds a file gives or a user marks (hydrogen bonds, interactions), or a bond computed for a frame (one
+interactions a file gives or a user marks (hydrogen, ionic and halogen bonds, contacts), or a bond computed for a frame (one
 [`formed`](#formed) in it). Bond sets combine with `and`, `or`, `xor` and `not` like selections, and give atoms with
 [`atom`](#atom), numbers with [`count`](#count) and [`length`](#length).
 
@@ -1206,9 +1206,11 @@ The kinds, and what they select:
 | `"coordinate"` | Metal-ligand bonds |
 | `"elastic"` | Springs of the force field which hold a coarse grained molecule in shape (an elastic network), or restraints: kept with the bonds, but no bonds of the molecule |
 | `"metallic"` | Between the atoms of a metal in bulk, at a surface or in a particle, to every neighbour of the first coordination shell: kept with the bonds, but no bonds of a molecule. What touches the metal has no bonds to it but those formed in a frame (`bond_delta`) |
-| `"noncovalent"` | Every non-covalent bond: `"interaction"` and `"hydrogen"` |
-| `"interaction"` | Non-covalent bonds of no particular kind: one a user marks between two atoms, a salt bridge, a halogen bond |
-| `"hydrogen"` | Hydrogen bonds |
+| `"interaction"` | Every non-covalent bond: `"contact"`, `"hydrogen"`, `"ionic"` and `"halogen"` (`"noncovalent"` is the same) |
+| `"contact"` | Non-covalent bonds of no particular kind: one a user marks between two atoms |
+| `"hydrogen"` | Hydrogen bonds, D-H…A |
+| `"ionic"` | Between two ions or charged groups: a salt bridge, an ion pair |
+| `"halogen"` | Halogen bonds, C-X…A |
 
 A bond is of one kind, so a charge-assisted hydrogen bond is a `"hydrogen"` bond.
 

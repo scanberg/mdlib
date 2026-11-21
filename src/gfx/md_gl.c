@@ -111,7 +111,9 @@ enum {
     DASH_STYLE_OTHER       = 0,     // Covalent, elastic and metallic: only where every bond is dashed (MD_GL_DASHES_ALL)
     DASH_STYLE_COORDINATE  = 1,
     DASH_STYLE_HYDROGEN    = 2,
-    DASH_STYLE_INTERACTION = 3,
+    DASH_STYLE_CONTACT     = 3,
+    DASH_STYLE_IONIC       = 4,
+    DASH_STYLE_HALOGEN     = 5,
     DASH_STYLE_COUNT
 };
 static const float bond_dash_styles[DASH_STYLE_COUNT][3] = {
@@ -119,6 +121,8 @@ static const float bond_dash_styles[DASH_STYLE_COUNT][3] = {
     {0.70f, 2.0f, 0.8f},
     {0.45f, 0.9f, 0.9f},
     {0.35f, 0.5f, 1.1f},
+    {0.55f, 1.4f, 0.85f},
+    {0.40f, 0.7f, 1.0f},
 };
 
 #define UBO_SIZE (1 << 10)
@@ -229,7 +233,7 @@ enum {
     GL_BUFFER_ATOM_VELOCITY,                   // vec3
     GL_BUFFER_ATOM_FLAGS,                      // u8
     GL_BUFFER_BOND_ATOM_INDICES,               // u32[2]
-    GL_BUFFER_BOND_ORDER,                      // u32 per bond: kind (plain, double, triple, elastic) | index into GL_BUFFER_BOND_ORDER_REF << 3 (md_gl_mol_set_bond_orders)
+    GL_BUFFER_BOND_ORDER,                      // u32 per bond: kind (BOND_KIND_*) | index into GL_BUFFER_BOND_ORDER_REF << 4 (md_gl_mol_set_bond_orders)
     GL_BUFFER_BOND_ORDER_REF,                  // u32[4] per double or triple bond: two atoms bonded to its first atom, two to its second
     GL_BUFFER_BOND_PARTNER,                    // u32[4] per dashed partner of a delocalized bond, or of an aromatic bond in no circle: bond, atoms bonded to its first and its second atom, 0
     GL_BUFFER_AROMATIC_RING,                   // u32[8] per aromatic ring drawn as a circle: ring index | dashed << 28 | atom count << 29, its atoms in order around it (RING_ATOM_NONE past the count)
@@ -1800,12 +1804,12 @@ void md_gl_shaders_destroy(md_gl_shaders_t handle) {
 //
 // BEGIN BOND ORDER DERIVATION (plain arrays in, the contents of the buffers out; tested on its own)
 
-// Kinds of bonds in GL_BUFFER_BOND_ORDER (bond.vert), three bits. An elastic bond (MD_BOND_KIND_ELASTIC) is drawn as a
+// Kinds of bonds in GL_BUFFER_BOND_ORDER (bond.vert), four bits. An elastic bond (MD_BOND_KIND_ELASTIC) is drawn as a
 // plain one where the representation shows the elastic bonds, and not at all elsewhere. A metallic bond
 // (MD_BOND_KIND_METALLIC) is never drawn by licorice and ball and stick: a Bonds representation draws it. A coordinate
 // bond (MD_BOND_KIND_COORDINATE) is drawn dashed (BOND DASHES), or plain where the representation has them solid. The
 // weak bonds of a representation have a kind each too (md_gl_rep_set_weak_bonds), which gives their dashes: plain
-// (covalent), elastic, metallic, coordinate, hydrogen or interaction.
+// (covalent), elastic, metallic, coordinate, or one of the interactions: contact, hydrogen, ionic or halogen.
 enum {
     BOND_KIND_PLAIN       = 0,
     BOND_KIND_DOUBLE      = 1,
@@ -1814,8 +1818,11 @@ enum {
     BOND_KIND_METALLIC    = 4,
     BOND_KIND_COORDINATE  = 5,
     BOND_KIND_HYDROGEN    = 6,
-    BOND_KIND_INTERACTION = 7,
+    BOND_KIND_CONTACT     = 7,
+    BOND_KIND_IONIC       = 8,
+    BOND_KIND_HALOGEN     = 9,
 };
+#define BOND_KIND_BITS 4u
 
 // The kind of a bond in the buffers of md_gl, from its flags: what a bond is, before its order makes a plain one double or
 // triple
@@ -1825,7 +1832,9 @@ static inline uint32_t bond_kind_of(uint32_t flags) {
     case MD_BOND_KIND_METALLIC:    return BOND_KIND_METALLIC;
     case MD_BOND_KIND_COORDINATE:  return BOND_KIND_COORDINATE;
     case MD_BOND_KIND_HYDROGEN:    return BOND_KIND_HYDROGEN;
-    case MD_BOND_KIND_INTERACTION: return BOND_KIND_INTERACTION;
+    case MD_BOND_KIND_CONTACT:     return BOND_KIND_CONTACT;
+    case MD_BOND_KIND_IONIC:       return BOND_KIND_IONIC;
+    case MD_BOND_KIND_HALOGEN:     return BOND_KIND_HALOGEN;
     default:                       return BOND_KIND_PLAIN;
     }
 }
@@ -2018,7 +2027,7 @@ static uint32_t compute_aromatic_rings(uint32_t* out_ring, uint8_t* out_covered,
     return count;
 }
 
-// Double and triple bonds. out_order [bond_count]: kind | entry << 3, where entry indexes out_ref for double and triple
+// Double and triple bonds. out_order [bond_count]: kind | entry << BOND_KIND_BITS, where entry indexes out_ref for double and triple
 // bonds. out_ref [4 * bond_count]: per such bond the atoms bonded to its first atom which give its plane, then those
 // bonded to its second atom, two each (bo_plane_refs), BOND_REF_NONE where there are fewer. Returns the number of
 // entries of out_ref. Aromatic and delocalized bonds are plain here: they keep their stick (compute_bond_partners).
@@ -2038,12 +2047,12 @@ static uint32_t compute_bond_orders(uint32_t* out_order, uint32_t* out_ref, cons
         if (order == 2) {
             bo_plane_refs(in, a, b, ref + 0);
             bo_plane_refs(in, b, a, ref + 2);
-            out_order[i] = BOND_KIND_DOUBLE | (entries << 3);
+            out_order[i] = BOND_KIND_DOUBLE | (entries << BOND_KIND_BITS);
             ++entries;
         } else if (order >= 3) {
             // No plane, perpendicular to the view
             ref[0] = ref[1] = ref[2] = ref[3] = BOND_REF_NONE;
-            out_order[i] = BOND_KIND_TRIPLE | (entries << 3);
+            out_order[i] = BOND_KIND_TRIPLE | (entries << BOND_KIND_BITS);
             ++entries;
         }
     }
