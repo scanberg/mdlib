@@ -1165,22 +1165,24 @@ static bool md_vk_probe_device(VkPhysicalDevice pd, struct md_allocator_i* alloc
        with first_instance carries per-draw records, and per-target blend
        needs independentBlend. Dynamic rendering and the dynamic depth/cull
        state are core 1.3 and need no feature bit beyond dynamicRendering. */
-    {
-        VkPhysicalDeviceVulkan11Features f11 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
-        VkPhysicalDeviceFeatures2        g2  = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &f11};
-        vkGetPhysicalDeviceFeatures2(pd, &g2);
-        uint32_t qn = 0;
-        vkGetPhysicalDeviceQueueFamilyProperties(pd, &qn, NULL);
-        VkQueueFamilyProperties qp[16];
-        if (qn > 16) qn = 16;
-        vkGetPhysicalDeviceQueueFamilyProperties(pd, &qn, qp);
-        bool has_gfx = false;
-        for (uint32_t i = 0; i < qn; ++i) if (qp[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) has_gfx = true;
-        out_caps->graphics = has_gfx && f13.dynamicRendering && f11.shaderDrawParameters &&
-                             g2.features.multiDrawIndirect && g2.features.drawIndirectFirstInstance &&
-                             g2.features.independentBlend;
-        out_caps->depth_bias_clamp = g2.features.depthBiasClamp;
+    VkPhysicalDeviceFeatures2        g2  = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &f11};
+    vkGetPhysicalDeviceFeatures2(pd, &g2);
+    uint32_t qn = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(pd, &qn, NULL);
+    VkQueueFamilyProperties qp[16];
+    qn = MD_MIN(qn, 16);
+    vkGetPhysicalDeviceQueueFamilyProperties(pd, &qn, qp);
+    bool has_gfx = false;
+    for (uint32_t i = 0; i < qn; ++i) {
+        if (qp[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+            has_gfx = true;
+            break;
+        }
     }
+    out_caps->graphics = has_gfx && f13.dynamicRendering && f11.shaderDrawParameters &&
+                            g2.features.multiDrawIndirect && g2.features.drawIndirectFirstInstance &&
+                            g2.features.independentBlend;
+    out_caps->depth_bias_clamp = g2.features.depthBiasClamp;
 
     out_caps->maintenance4                = f13.maintenance4;
     out_caps->update_unused_while_pending = f12.descriptorBindingUpdateUnusedWhilePending;
@@ -5172,7 +5174,7 @@ typedef struct md_vk_snapshot_t {
 } md_vk_snapshot_t;
 MD_ARRAY_RAW_DEFINE_TYPE(md_vk_snapshot_array_t, md_vk_snapshot_t);
 
-static bool md_vk_snapshot_complete(md_gpu_device_t dev, md_vk_snapshot_array_t* snap, md_gpu_sync_t sync) {
+static bool md_vk_snapshot_complete(md_vk_snapshot_array_t* snap, md_gpu_sync_t sync) {
     if (!md_gpu_sync_is_valid(sync)) return true;
     for (size_t i = 0; i < snap->size; ++i) {
         md_vk_snapshot_t* e = &snap->data[i];
@@ -5196,12 +5198,12 @@ uint32_t md_gpu_device_poll(md_gpu_device_t dev) {
        Each may register new callbacks or free memory; those are seen by the
        loop but judged against the same snapshot. */
     for (;;) {
-        md_vk_hostfn_t ready;
+        md_vk_hostfn_t ready = {0};
         bool have = false;
         md_mutex_lock(&dev->device_mutex);
         for (size_t i = 0; i < dev->hostfns.size; ++i) {
             md_vk_hostfn_t* h = &dev->hostfns.data[i];
-            if (!md_vk_snapshot_complete(dev, &snap, h->sync)) continue;
+            if (!md_vk_snapshot_complete(&snap, h->sync)) continue;
             ready = *h;
             MD_ARRAY_REMOVE(dev->hostfns, i);
             have = true;

@@ -96,7 +96,7 @@ static void md_gpu_heap_registry_remove_locked(md_gpu_heap_t* h, md_gpu_heap_ran
 bool md_gpu_heap_resolve(md_gpu_heap_t* h, md_gpu_addr_t addr, uint64_t size, md_gpu_heap_span_t* out, const char* what) {
     md_mutex_lock(&h->mutex);
     const md_gpu_heap_range_t* r = md_gpu_heap_registry_find_locked(h, addr);
-    md_gpu_heap_range_t copy;
+    md_gpu_heap_range_t copy = {0};
     if (r) copy = *r;
     md_mutex_unlock(&h->mutex);
     if (!r) return md_gpu_fail("%s: 0x%llx is not a live md_gpu allocation", what, (unsigned long long)addr);
