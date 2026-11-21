@@ -1900,6 +1900,27 @@ UTEST(vial_ir, at_time) {
     md_arena_allocator_destroy(alloc);
 }
 
+// bond() of a set that changes per frame is evaluated per frame, and gives what it would when compiling
+UTEST(vial_ir, bonds_per_frame) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
+    const md_system_t* T = vial_test_system('T');
+    const md_system_state_t* Ts = vial_test_state('T');
+    ASSERT_TRUE(T && Ts);
+    uint32_t n = 0;
+    const char* near = "within(1000.0, of=particle(resname='GTP'))";
+    char b[256];
+    snprintf(b, sizeof(b), "bond(particle(resname='GTP') and %s)", near);
+    EXPECT_TRUE(vial_ir__same_sets("bond(particle(resname='GTP'))", b, T, Ts, alloc, &n));
+    EXPECT_GT(n, 0u);
+    snprintf(b, sizeof(b), "bond(residue('PHE')[0] and %s, order=['aromatic'])", near);
+    EXPECT_TRUE(vial_ir__same_sets("bond(residue('PHE')[0], order='aromatic')", b, T, Ts, alloc, &n));
+    EXPECT_EQ(12u, n);      // 6 bonds of two particles
+    snprintf(b, sizeof(b), "bond(%s, kind=['coordinate'])", near);
+    EXPECT_TRUE(vial_ir__same_sets("bond(kind='coordinate')", b, T, Ts, alloc, &n));
+    EXPECT_EQ(14u, n);
+    md_arena_allocator_destroy(alloc);
+}
+
 // Fragments, as when compiling so per frame: a scope that changes per frame takes the selector to evaluation
 UTEST(vial_ir, fragments) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));

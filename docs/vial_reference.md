@@ -1187,10 +1187,18 @@ phi  = dihedral(smiles_atoms("[C:1](=O)[N:2][C:3][C:4]=O"))   # -> float[14] °,
 
 | Function | Result |
 | --- | --- |
-| `bond(s=None, kind=None)` | `set[n][2]`: per bond, its two particles as one-particle sets, for the bonds with both ends in s, filtered by kind. There is no `bond` dtype |
-| `formed(b, ref)`, `broken(b, ref)` | `set[?][2]`: the bonds present now and absent in ref, or the reverse; a set difference by identity |
+| `bond(s=None, kind=, order=, origin=)` | `set[n][2]`: per bond, its two particles as one-particle sets, for the bonds with both ends in s, of the kinds, orders and origins given. Without `kind=`, the strong bonds. There is no `bond` dtype |
+| `formed(b, ref)`, `broken(b, ref)` | not supported yet (E0801): `bond()` gives the system's bonds, and their changes from frame to frame are not tracked yet |
 
-Where bonds change between frames, as in a reactive run, these are frame stage.
+Its keywords take and/or/not, as a selector's do:
+
+| Keyword | Matches | Values |
+| --- | --- | --- |
+| `kind` | what holds the two particles: `covalent`; `coordinate`, a metal and its ligand; `metallic`, two atoms of a metallic phase; `elastic`, a spring of a force field's elastic network, which connects nothing; `hydrogen`, a hydrogen bond; `interaction`, another non-covalent bond, such as a salt bridge a user marks; `noncovalent`, either of the last two | a string or list |
+| `order` | 1, 2, 3 or 4 (a quadruple bond, of two metals), or for a bond of resonance its word, `aromatic` in an aromatic ring, `delocalized` outside of rings, as a carboxylate's two C–O: as SDF (4) and MOL2 (`ar`) write an aromatic bond, and RDKit's types have it. The order mdlib holds beneath a resonance is one Kekulé structure, and is no order of the bond. A bond of unknown order, as a coordinate one, has none: `order=not 1` is the bonds of another order | an int, `a..b`, a word, or a list |
+| `origin` | where it comes from: `file`, `topology` (a force field's), `user` (added by hand), `inferred` (from the distances) | a string or list |
+
+The strong bonds, covalent and coordinate, are the bond graph that mdlib builds the molecules, rings and chemistry from; the others are kept apart and come with `kind=`. A set that changes per frame, as `bond(within(5.0, of=x))`, gives the bonds of the system among its particles at each frame; as for a selector, and/or/not in a keyword's value is then E0801, and a list takes its place.
 
 ```python
 # on T
@@ -1198,6 +1206,14 @@ cov  = bond(particle(resname='VLB'))                 # -> set[n][2]: per bond, i
 nb   = len(cov)                                        # -> int: the number of bonds
 bl   = distance(cov[:, 0], cov[:, 1])                  # -> float[n] Å, frame: every bond length
 long = cov[bl > 1.6]                                   # -> set[?][2], frame
+strong = len(bond())                                   # -> 7085: covalent and coordinate
+mg     = len(bond(kind='coordinate'))                  # -> 7: MG and its ligands
+aro    = len(bond(order='aromatic'))                   # -> 681
+asp    = len(bond(particle(resname='ASP'), order='delocalized'))   # -> 102: the two C–O of 51 carboxylates
+multi  = len(bond(order=not 1))                        # -> 2000: 946 double, 681 aromatic and 373 delocalized
+given  = len(bond(origin='file'))                      # -> 151: the file's CONECT records
+near   = bond(within(5.0, of=particle(resname='GTP')), order=['aromatic', 'delocalized'])   # -> set[?][2], frame
+bad_o  = bond(order='double')                          # error E0206: the orders are 1, 2, 3, 4, 'aromatic' or 'delocalized'
 ```
 
 ### Attributes

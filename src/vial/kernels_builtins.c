@@ -3129,6 +3129,54 @@ static uint8_t level_of(const char* name, uint8_t* pkind) {
     return VIAL_LEVEL_NONE;
 }
 
+// A keyword's value as evaluation has it, a value or a list of them, as a filter: an or of its values
+static bool keyword_filter(vial_kctx_t* k, uint8_t key, const vial_val_t* v, vial_filter_t* f) {
+    *f = (vial_filter_t){.key = key};
+    const size_t cnt = vial_val_count(v);
+    md_array_push(f->expr, ((vial_match_t){.kind = VIAL_MATCH_OR, .num = (uint32_t)cnt}), k->alloc);
+    for (size_t e = 0; e < cnt; ++e) {
+        vial_match_t m = {0};
+        if (v->dtype == VIAL_DT_STR) { m.kind = VIAL_MATCH_STR; m.s = ((const md_str_t*)v->data)[e]; }
+        else if (v->dtype == VIAL_DT_RANGE) { m.kind = VIAL_MATCH_RANGE; m.lo = (int64_t)((const double*)v->data)[0]; m.hi = (int64_t)((const double*)v->data)[1]; }
+        else if (v->dtype == VIAL_DT_INT) { m.kind = VIAL_MATCH_INT; m.lo = ((const int32_t*)v->data)[e]; }
+        else if (v->dtype == VIAL_DT_BOOL) { m.kind = VIAL_MATCH_BOOL; m.lo = ((const uint8_t*)v->data)[e]; }
+        else return vial_rt_fail(k, "R0103", "a keyword's value here is a string, an int, a range or a bool");
+        md_array_push(f->expr, m, k->alloc);
+    }
+    return true;
+}
+
+// bond(s, kind=, order=, origin=) where the check could not give it: of a set that changes per frame, the bonds with both
+// ends in it of the kinds, orders and origins given (vial_select_bonds), its particles as one-particle sets [n][2]
+static bool k_bond(vial_kctx_t* k, const bargs_t* ba, vial_val_t* out) {
+    if (!k->in->sys) return vial_rt_fail(k, "R0103", "bond needs a system");
+    const vial_sets_t* within = NULL;
+    vial_filter_t filters[3];
+    size_t nf = 0;
+    for (uint32_t i = 0; i < ba->n; ++i) {
+        const vial_val_t* v = ba->v[i];
+        if (!v) continue;
+        const md_str_t kw = ba->names[i];
+        if (!kw.len || md_str_eq(kw, MD_STR_LIT("s"))) {
+            if (v->dtype == VIAL_DT_SET) within = v->sets;
+            else if (v->dtype != VIAL_DT_NONE) return vial_rt_fail(k, "R0103", "bond takes a set");
+            continue;
+        }
+        const uint8_t key = vial_select_key(kw);
+        if ((key != VIAL_KEY_KIND && key != VIAL_KEY_ORDER && key != VIAL_KEY_ORIGIN) || nf == MD_COUNTOF(filters)) {
+            return vial_rt_fail(k, "R0103", "bond takes no keyword %.*s", (int)kw.len, kw.ptr);
+        }
+        if (!keyword_filter(k, key, v, &filters[nf])) return false;
+        nf += 1;
+    }
+    vial_sets_t* r = vial_select_bonds(k->in->sys, within, filters, nf, k->alloc);
+    vial_val_t o = {.dtype = VIAL_DT_SET, .sets = r, .ndim = 2};
+    o.dims[0] = r->count / 2;
+    o.dims[1] = 2;
+    *out = o;
+    return true;
+}
+
 static bool k_select(vial_kctx_t* k, const char* name, const bargs_t* ba, vial_val_t* out) {
     if (!k->in->sys) return vial_rt_fail(k, "R0103", "%s needs a system", name);
     uint8_t pkind;
@@ -3158,19 +3206,8 @@ static bool k_select(vial_kctx_t* k, const char* name, const bargs_t* ba, vial_v
             continue;
         }
         if (key == VIAL_KEY_NONE) return vial_rt_fail(k, "R0103", "%s takes no keyword %.*s", name, (int)ba->names[i].len, ba->names[i].ptr);
-        // Any of its values: an or of them
-        vial_filter_t f = {.key = key};
-        const size_t cnt = vial_val_count(v);
-        md_array_push(f.expr, ((vial_match_t){.kind = VIAL_MATCH_OR, .num = (uint32_t)cnt}), k->alloc);
-        for (size_t e = 0; e < cnt; ++e) {
-            vial_match_t m = {0};
-            if (v->dtype == VIAL_DT_STR) { m.kind = VIAL_MATCH_STR; m.s = ((const md_str_t*)v->data)[e]; }
-            else if (v->dtype == VIAL_DT_RANGE) { m.kind = VIAL_MATCH_RANGE; m.lo = (int64_t)((const double*)v->data)[0]; m.hi = (int64_t)((const double*)v->data)[1]; }
-            else if (v->dtype == VIAL_DT_INT) { m.kind = VIAL_MATCH_INT; m.lo = ((const int32_t*)v->data)[e]; }
-            else if (v->dtype == VIAL_DT_BOOL) { m.kind = VIAL_MATCH_BOOL; m.lo = ((const uint8_t*)v->data)[e]; }
-            else return vial_rt_fail(k, "R0103", "a keyword's value here is a string, an int, a range or a bool");
-            md_array_push(f.expr, m, k->alloc);
-        }
+        vial_filter_t f;
+        if (!keyword_filter(k, key, v, &f)) return false;
         md_array_push(q.filters, f, k->alloc);
     }
     vial_sets_t* s = vial_select(k->in->sys, &q, k->alloc);
@@ -3373,6 +3410,7 @@ bool vial_k_builtin(vial_kctx_t* k, const char* name, const vial_val_t* const* a
     if (IS("arange")) return k_arange(k, arg(&ba, "lo", 0), arg(&ba, "hi", 1), arg(&ba, "step", 2), out);
     if (IS("eye")) return k_eye(k, arg(&ba, "n", 0), out);
     if (IS("spread")) return k_spread(k, arg(&ba, "values", 0), arg(&ba, "groups", 1), arg(&ba, "combine", 2), out);
+    if (IS("bond")) return k_bond(k, &ba, out);
     if (IS("attr")) {
         const vial_val_t* of = arg(&ba, "of", 1);
         return of ? k_attr_of(k, arg(&ba, "path", 0), of, out) : k_attr(k, arg(&ba, "path", 0), out);

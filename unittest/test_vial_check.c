@@ -630,6 +630,48 @@ UTEST(vial_check, glob) {
     EXPECT_FALSE(vial_is_glob(MD_STR_LIT("CA")));
 }
 
+// bond(): kind=, order= and origin= with and/or/not; the strong bonds, covalent and coordinate, by default
+UTEST_F(vial_check, bond_keywords) {
+    const md_system_t* T = vial_test_system('T');
+    const md_system_t* P = vial_test_system('P');
+    ASSERT_TRUE(T != NULL && P != NULL);
+    EXPECT_TYPE_ON(T, "n = len(bond())\n", 1, "int, static = 7085");
+    EXPECT_TYPE_ON(T, "n = len(bond(kind='covalent' or 'coordinate'))\n", 1, "int, static = 7085");
+    EXPECT_TYPE_ON(T, "n = len(bond(kind='covalent'))\n", 1, "int, static = 7078");
+    EXPECT_TYPE_ON(T, "n = len(bond(kind='coordinate'))\n", 1, "int, static = 7");     // MG and its ligands
+    EXPECT_TYPE_ON(T, "n = len(bond(kind='noncovalent'))\n", 1, "int, static = 0");
+    // An order is one value per bond: a resonance's word, else 1 to 3; the coordinate bonds have none
+    EXPECT_TYPE_ON(T, "n = len(bond(order=1))\n", 1, "int, static = 5078");
+    EXPECT_TYPE_ON(T, "n = len(bond(order=2))\n", 1, "int, static = 946");
+    EXPECT_TYPE_ON(T, "n = len(bond(order='aromatic'))\n", 1, "int, static = 681");
+    EXPECT_TYPE_ON(T, "n = len(bond(order='delocalized'))\n", 1, "int, static = 373");
+    EXPECT_TYPE_ON(T, "n = len(bond(order=not 1))\n", 1, "int, static = 2000");     // 946 + 681 + 373
+    EXPECT_TYPE_ON(T, "n = len(bond(order=1..2))\n", 1, "int, static = 6024");
+    EXPECT_TYPE_ON(T, "n = len(bond(order=2 or 'aromatic'))\n", 1, "int, static = 1627");
+    EXPECT_TYPE_ON(T, "n = len(bond(residue('PHE')[0], order='aromatic'))\n", 1, "int, static = 6");
+    EXPECT_TYPE_ON(T, "n = len(bond(particle(resname='ASP'), order='delocalized'))\n", 1, "int, static = 102");   // 51 carboxylates
+    EXPECT_TYPE_ON(T, "n = len(bond(origin='file'))\n", 1, "int, static = 151");
+    EXPECT_TYPE_ON(T, "n = len(bond(origin='inferred'))\n", 1, "int, static = 6934");
+    EXPECT_TYPE_ON(P, "n = len(bond(order='delocalized'))\n", 1, "int, static = 2");
+    EXPECT_DIAGS_ON(T, "b = bond(order=5)\n", "E0206 1: 5 is no order of a bond; the orders are 1, 2, 3, 4, 'aromatic' or 'delocalized'\n");
+    EXPECT_DIAGS_ON(T, "b = bond(order='double')\n", "E0206 1: 'double' is no order of a bond; the orders are 1, 2, 3, 4, 'aromatic' or 'delocalized'\n");
+    EXPECT_DIAGS_ON(T, "n = len(bond(order=4))\n", "W0601 1: `bond(order=4)` matches nothing in its scope\n");
+    EXPECT_DIAGS_ON(T, "b = bond(kind='strong')\n", "E0206 1: 'strong' is no kind of bond; the kinds are covalent, coordinate, elastic, metallic, "
+        "noncovalent, interaction and hydrogen\n");
+    EXPECT_DIAGS_ON(T, "b = bond(origin='pdb')\n", "E0206 1: 'pdb' is no origin of a bond; the origins are file, topology, user and inferred\n");
+    EXPECT_DIAGS_ON(T, "b = bond(color='red')\n", "E0202 1: `bond` takes no keyword `color`; it takes s, kind, order and origin\n");
+    EXPECT_DIAGS_ON(T, "b = bond(origin=1)\n", "E0206 1: `origin` takes a string, a list of strings, or and/or/not over strings; this is int\n");
+    EXPECT_DIAGS_ON(T, "b = particle(order=1)\n", "E0202 1: `particle` takes no keyword `order`; it takes name, serial, element, kind, type, resid, "
+        "resname, chain, role, hybridization, aromatic, metallic, hydrogens, formal_charge and scope\n");
+    // A set per frame takes a keyword's values when evaluating, and and/or/not over them is none
+    EXPECT_DIAGS_ON(T, "b = bond(within(5.0, of=particle(resname='GTP')), order=not 1)\n",
+        "E0801 1: and/or/not in a keyword's value is resolved when compiling; a selection that changes per frame does not take it yet\n");
+    EXPECT_TYPE_ON(T, "b = bond(within(5.0, of=particle(resname='GTP')), order=['aromatic', 'delocalized'])\n", 1, "set[?][2], frame");
+    // The bonds of a frame against the system's are not tracked yet
+    EXPECT_DIAGS_ON(T, "f = formed(bond(), bond())\n", "E0801 1: `formed` is not supported yet: bond() gives the system's bonds, and their changes "
+        "from frame to frame are not tracked yet\n");
+}
+
 UTEST_F(vial_check, selectors_without_a_system) {
     EXPECT_TYPE("r = residue(id=1..4)\n", 1, "set[n], static");
     EXPECT_TYPE("p = particle(name='CA')\n", 1, "set, static");

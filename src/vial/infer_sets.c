@@ -123,7 +123,7 @@ static uint8_t key_dtype(uint8_t level, uint8_t key) {
 
 static const char* key_word(uint8_t key) {
     static const char* words[] = {"", "name", "serial", "element", "kind", "type", "resid", "resname", "chain", "id", "scope", "size",
-                                  "role", "hybridization", "aromatic", "metallic", "hydrogens", "formal_charge"};
+                                  "role", "hybridization", "aromatic", "metallic", "hydrogens", "formal_charge", "order", "origin"};
     return key < MD_COUNTOF(words) ? words[key] : "";
 }
 
@@ -135,10 +135,14 @@ static bool int_of(const vial_value_t* v, int64_t* out) {
 
 // One value of a keyword, from a node already typed: a string, an int or a range. 1 when known, 0 when not known
 // when compiling, -1 when it is a value the keyword does not take.
+// A want of match_of and expr_of besides a dtype: an int, a range or a string, as a bond's order= takes
+#define WANT_INT_OR_STR 0xF0
+
 static int match_of(infer_t* x, vial_node_id node, uint8_t want, vial_match_t* m) {
     const T t = x->out->types[(node) - x->out->base];
     const vial_value_t v = vx_value_of(x, node);
     memset(m, 0, sizeof(*m));
+    if (want == WANT_INT_OR_STR) want = t.dtype == VIAL_DT_STR ? VIAL_DT_STR : VIAL_DT_INT;
     if (want == VIAL_DT_BOOL) {
         if (t.dtype != VIAL_DT_BOOL || t.ndim) return -1;
         if (v.kind != VIAL_VAL_BOOL) return 0;
@@ -227,7 +231,9 @@ static int expr_of(infer_t* x, vial_node_id node, uint8_t want, vial_match_t** e
         }
         return known;
     }
-    if (t.ndim == 1 && t.dtype == want) return 0;   // a list from elsewhere: typed, not evaluated here
+    if (t.ndim == 1 && (t.dtype == want || (want == WANT_INT_OR_STR && (t.dtype == VIAL_DT_STR || t.dtype == VIAL_DT_INT)))) {
+        return 0;   // a list from elsewhere: typed, not evaluated here
+    }
     vial_match_t m;
     const int r = match_of(x, node, want, &m);
     if (r < 0) { *bad = node; return -1; }
@@ -1307,62 +1313,121 @@ static T call_within(infer_t* x, vial_node_id call) {
     return t;
 }
 
-// bond(s=None): per bond with both ends in s, its two particles as one-particle sets, set[n][2]
+// A bond keyword's value (kind=, order=, origin=) as its expression, as filter_of has a selector's: order= takes ints and
+// words alike, 1 to 4 (MD_BOND_ORDER_QUADRUPLE), 'aromatic' or 'delocalized'; kind= and origin= words of mdlib's names. 1 known, 0 not known,
+// -1 refused (reported).
+static int bond_filter_of(infer_t* x, uint8_t key, vial_node_id node, vial_filter_t* f) {
+    const uint8_t want = key == VIAL_KEY_ORDER ? WANT_INT_OR_STR : VIAL_DT_STR;
+    f->key = key;
+    f->expr = NULL;
+    vial_node_id bad = node;
+    const int known = expr_of(x, node, want, &f->expr, &bad);
+    static const char* orders = "1, 2, 3, 4, 'aromatic' or 'delocalized'";
+    if (known < 0) {
+        const T bt = x->out->types[(bad) - x->out->base];
+        if (key == VIAL_KEY_ORDER) vx_diag_fix(x, "E0206", bad, NULL, "`order` takes %s, a list of them, or and/or/not over them; this is %s", orders, vx_tstr(&bt));
+        else vx_diag_fix(x, "E0206", bad, NULL, "`%s` takes a string, a list of strings, or and/or/not over strings; this is %s", key_word(key), vx_tstr(&bt));
+        return -1;
+    }
+    for (size_t i = 0; known == 1 && i < md_array_size(f->expr); ++i) {
+        const vial_match_t* m = &f->expr[i];
+        char ex[VIAL_EXCERPT_MAX + 4];
+        const md_str_t e = vial_excerpt(ex, sizeof(ex), m->s);
+        if (key == VIAL_KEY_ORDER && ((m->kind == VIAL_MATCH_STR && !vial_select_bond_order_known(m->s)) ||
+                                      (m->kind == VIAL_MATCH_INT && (m->lo < 1 || m->lo > 4)))) {
+            if (m->kind == VIAL_MATCH_STR) vx_diag_fix(x, "E0206", node, NULL, "'%.*s' is no order of a bond; the orders are %s", (int)e.len, e.ptr, orders);
+            else vx_diag_fix(x, "E0206", node, NULL, "%lld is no order of a bond; the orders are %s", (long long)m->lo, orders);
+            return -1;
+        }
+        if (m->kind != VIAL_MATCH_STR) continue;
+        if (key == VIAL_KEY_KIND && !vial_select_bond_kind_known(m->s)) {
+            vx_diag_fix(x, "E0206", node, NULL, "'%.*s' is no kind of bond; the kinds are %s", (int)e.len, e.ptr, vial_select_bond_kinds());
+            return -1;
+        }
+        if (key == VIAL_KEY_ORIGIN && !vial_select_bond_origin_known(m->s)) {
+            vx_diag_fix(x, "E0206", node, NULL, "'%.*s' is no origin of a bond; the origins are file, topology, user and inferred", (int)e.len, e.ptr);
+            return -1;
+        }
+    }
+    return known;
+}
+
+// bond(s=None, kind=, order=, origin=): per bond with both ends in s, its two particles as one-particle sets, set[n][2],
+// of the kinds, orders and origins given (vial_select_bonds); without kind=, the strong bonds, covalent or coordinate.
+// Known when compiling for a set known then; per frame for one that changes per frame.
 static T call_bonds(infer_t* x, vial_node_id call) {
-    static const vx_param_t p[] = {{"s", VX_KIND_WHOLE, false}, {"kind", VX_KIND_WHOLE, false}};
-    vial_node_id a[2];
-    if (!vx_bind(x, call, "bond", p, 2, a)) return err();
-    T st = a[0] ? x->out->types[(a[0]) - x->out->base] : vial_type_scalar(VIAL_DT_NONE);
+    vial_node_id sn = 0;
+    vial_select_t q = {0};      // its filters, as a selector's
+    bool failed = false, known = true;
+    vial_node_id logic_at = 0;
+    const uint32_t nc = vx_num_children(x, call);
+    uint32_t num_pos = 0;
+    for (uint32_t i = 1; i < nc; ++i) {
+        const vial_node_id arg = vx_child(x, call, i);
+        if (!arg) continue;
+        if (vx_kind(x, arg) != VIAL_N_KWARG) {
+            if (++num_pos > 1) {
+                vx_diag_fix(x, "E0203", arg, NULL, "`bond` takes one positional argument, the set");
+                failed = true;
+            } else {
+                sn = arg;
+            }
+            continue;
+        }
+        const vial_node_id kn = vx_child(x, arg, 0), vn = vx_child(x, arg, 1);
+        if (!kn || !vn) { failed = true; continue; }
+        const md_str_t kw = vx_text(x, kn);
+        if (md_str_eq(kw, MD_STR_LIT("s"))) { sn = vn; continue; }
+        const uint8_t key = vial_select_key(kw);
+        if (key != VIAL_KEY_KIND && key != VIAL_KEY_ORDER && key != VIAL_KEY_ORIGIN) {
+            vx_diag_fix(x, "E0202", arg, NULL, "`bond` takes no keyword `%.*s`; it takes s, kind, order and origin", (int)kw.len, kw.ptr);
+            failed = true;
+            continue;
+        }
+        T vt;
+        if (value_logic(x, vn, &vt)) { if (!logic_at) logic_at = vn; }
+        else vt = vx_infer(x, vn);
+        if (vial_type_is_error(&vt)) { failed = true; continue; }
+        vial_filter_t f;
+        const int r = bond_filter_of(x, key, vn, &f);
+        if (r < 0) { failed = true; continue; }
+        if (r == 0) known = false;
+        md_array_push(q.filters, f, x->alloc);
+    }
+    if (failed) return err();
+    T st = sn ? vx_infer(x, sn) : vial_type_scalar(VIAL_DT_NONE);
     if (vial_type_is_error(&st)) return err();
     if (st.dtype != VIAL_DT_SET && st.dtype != VIAL_DT_NONE) {
-        vx_diag_fix(x, "E0313", a[0], NULL, "`bond` takes a set; this is %s", vx_tstr(&st));
+        vx_diag_fix(x, "E0313", sn, NULL, "`bond` takes a set; this is %s", vx_tstr(&st));
         return err();
     }
     if (st.dtype == VIAL_DT_SET && st.ndim) {
-        vx_diag_fix(x, "E0313", a[0], NULL, "`bond` takes one set; particle(...) merges an array of them");
+        vx_diag_fix(x, "E0313", sn, NULL, "`bond` takes one set; particle(...) merges an array of them");
         return err();
     }
     T t = vial_type_scalar(VIAL_DT_SET);
     t.flags |= VIAL_TYPE_ONE_PARTICLE;
     t.stage = st.stage;
-    const vial_value_t sv = a[0] ? vx_value_of(x, a[0]) : (vial_value_t){0};
-    const bool all = !a[0] || st.dtype == VIAL_DT_NONE;
-    if (a[1] || !x->sys || st.stage != VIAL_STAGE_STATIC || (!all && sv.kind != VIAL_VAL_SETS)) {
-        // kind= arrives with md_bond's kinds; a set per frame, or no system, gives a count not known here
+    const vial_value_t sv = sn ? vx_value_of(x, sn) : (vial_value_t){0};
+    const bool all = !sn || st.dtype == VIAL_DT_NONE;
+    if (!x->sys || st.stage != VIAL_STAGE_STATIC || (!all && sv.kind != VIAL_VAL_SETS) || !known) {
+        // and/or/not is resolved when compiling, as for a selector
+        if (logic_at && x->sys && st.stage != VIAL_STAGE_STATIC) {
+            vx_diag_fix(x, "E0801", logic_at, NULL, "and/or/not in a keyword's value is resolved when compiling; a selection that changes per frame does not take it yet");
+            return err();
+        }
         vial_type_push_dim(&t, (vial_extent_t){.kind = st.stage == VIAL_STAGE_STATIC ? VIAL_EXT_UNKNOWN : VIAL_EXT_DYNAMIC, .id = (uint32_t)call});
         vial_type_push_dim(&t, vial_extent_static(2));
         return t;
     }
-    const md_system_t* sys = x->sys->sys;
-    const size_t nb = sys->bond.count;
-    const uint32_t* in = all ? NULL : vial_sets_items(sv.sets, 0);
-    const uint32_t nin = all ? 0 : vial_sets_size(sv.sets, 0);
-    uint32_t* idx = NULL;
-    for (size_t i = 0; i < nb; ++i) {
-        const md_atom_pair_t pr = sys->bond.pairs[i];
-        if (pr.idx[0] < 0 || pr.idx[1] < 0) continue;
-        if (!all) {
-            // Both ends in s, by binary search in its ascending list
-            bool both = true;
-            for (int e = 0; e < 2 && both; ++e) {
-                uint32_t lo = 0, hi = nin;
-                const uint32_t want = (uint32_t)pr.idx[e];
-                while (lo < hi) { const uint32_t mid = (lo + hi) / 2; if (in[mid] < want) lo = mid + 1; else hi = mid; }
-                both = lo < nin && in[lo] == want;
-            }
-            if (!both) continue;
-        }
-        md_array_push(idx, (uint32_t)pr.idx[0], x->alloc);
-        md_array_push(idx, (uint32_t)pr.idx[1], x->alloc);
+    vial_sets_t* r = vial_select_bonds(x->sys, all ? NULL : sv.sets, q.filters, md_array_size(q.filters), x->alloc);
+    if (r->count == 0 && md_array_size(q.filters)) {
+        // Keywords that match no bond, as a selector's that match nothing; a set without bonds, an ion's, is none
+        char ex[VIAL_EXCERPT_MAX + 4];
+        const md_str_t e = vial_excerpt(ex, sizeof(ex), vx_text(x, call));
+        vx_diag_fix(x, "W0601", call, NULL, "`%.*s` matches nothing in its scope", (int)e.len, e.ptr);
     }
-    const uint32_t n2 = (uint32_t)md_array_size(idx);
-    vial_sets_t* r = md_alloc(x->alloc, sizeof(vial_sets_t));
-    memset(r, 0, sizeof(*r));
-    r->count = n2;
-    r->idx = idx ? idx : md_alloc(x->alloc, sizeof(uint32_t));
-    r->offset = md_alloc(x->alloc, (n2 + 1) * sizeof(uint32_t));
-    for (uint32_t k = 0; k <= n2; ++k) r->offset[k] = k;
-    vial_type_push_dim(&t, vial_extent_static(n2 / 2));
+    vial_type_push_dim(&t, vial_extent_static(r->count / 2));
     vial_type_push_dim(&t, vial_extent_static(2));
     vx_set_value(x, call, sets_value(r));
     return t;
@@ -1813,6 +1878,13 @@ bool vx_call_sets(infer_t* x, vial_node_id call, const vial_builtin_t* b, T* out
     if (md_str_eq(name, MD_STR_LIT("label"))) { *out = call_labels(x, call); return true; }
     if (md_str_eq(name, MD_STR_LIT("within"))) { *out = call_within(x, call); return true; }
     if (md_str_eq(name, MD_STR_LIT("bond")))  { *out = call_bonds(x, call); return true; }
+    if (md_str_eq(name, MD_STR_LIT("formed")) || md_str_eq(name, MD_STR_LIT("broken"))) {
+        // The bonds of a frame against the system's (md_bond_delta) are not tracked yet: bond() gives the system's
+        vx_diag_fix(x, "E0801", call, NULL, "`%.*s` is not supported yet: bond() gives the system's bonds, and their changes from frame "
+            "to frame are not tracked yet", (int)name.len, name.ptr);
+        *out = err();
+        return true;
+    }
     if (md_str_eq(name, MD_STR_LIT("spread"))) { *out = call_spread(x, call); return true; }
     if (md_str_eq(name, MD_STR_LIT("smiles")))       { *out = call_smiles(x, call, false); return true; }
     if (md_str_eq(name, MD_STR_LIT("attr")))         { *out = call_attr(x, call); return true; }

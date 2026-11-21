@@ -180,6 +180,9 @@ typedef enum vial_key_t {
     VIAL_KEY_METALLIC,          // of a metallic phase: an atom of a metallic bond
     VIAL_KEY_HYDROGENS,         // the hydrogens attached, explicit and implicit
     VIAL_KEY_FORMAL_CHARGE,
+    // A bond's, which bond() takes, with kind: what holds it (md_bond_kind_names)
+    VIAL_KEY_ORDER,             // 1 to 4, 'aromatic' or 'delocalized'
+    VIAL_KEY_ORIGIN,            // where it comes from: file, topology, user or inferred (md_bond_origin_name)
     VIAL_KEY_COUNT
 } vial_key_t;
 
@@ -242,6 +245,23 @@ bool        vial_select_hybridization_known(md_str_t hyb);
 
 // Evaluates a selector: one set for particles, one set per unit otherwise, in the system's order
 vial_sets_t* vial_select(vial_sys_t* s, const vial_select_t* q, md_allocator_i* alloc);
+
+// ### BONDS ###
+
+// Whether a value is a kind of bond (md_bond_kind_names: covalent, coordinate, elastic, metallic, noncovalent,
+// interaction, hydrogen), an order's word (aromatic, delocalized), or an origin (file, topology, user, inferred); the
+// kinds for E0206's message
+bool        vial_select_bond_kind_known(md_str_t kind);
+const char* vial_select_bond_kinds(void);
+bool        vial_select_bond_order_known(md_str_t word);
+bool        vial_select_bond_origin_known(md_str_t origin);
+
+// The bonds of the system with both ends in the set within (NULL for every particle) that pass the filters, of kind=,
+// order= and origin=; without a kind=, the strong bonds, covalent or coordinate, the bond graph. Each bond is two
+// one-particle sets, its particles as the system stores them, in the system's order of its bonds: an array [n][2]
+// flattened, as bond() gives it.
+vial_sets_t* vial_select_bonds(const vial_sys_t* s, const vial_sets_t* within, const vial_filter_t* filters, size_t num_filters,
+                               md_allocator_i* alloc);
 
 // The predefined sets: protein, nucleic, water, ion, lipid, backbone, sidechain, system; NULL for another name
 vial_sets_t* vial_select_predefined(vial_sys_t* s, md_str_t name, md_allocator_i* alloc);

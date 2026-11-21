@@ -3,6 +3,7 @@
 #include "select.h"
 
 #include <md_system.h>
+#include <md_bond.h>
 #include <md_attributes.h>
 #include <md_fragment.h>
 #include <md_element.h>
@@ -698,7 +699,7 @@ static const struct { const char* word; uint8_t key; } keywords[] = {
     {"type", VIAL_KEY_TYPE}, {"resid", VIAL_KEY_RESID}, {"resname", VIAL_KEY_RESNAME}, {"chain", VIAL_KEY_CHAIN}, {"id", VIAL_KEY_ID},
     {"scope", VIAL_KEY_SCOPE}, {"size", VIAL_KEY_SIZE}, {"role", VIAL_KEY_ROLE},
     {"hybridization", VIAL_KEY_HYBRIDIZATION}, {"aromatic", VIAL_KEY_AROMATIC}, {"metallic", VIAL_KEY_METALLIC},
-    {"hydrogens", VIAL_KEY_HYDROGENS}, {"formal_charge", VIAL_KEY_FORMAL_CHARGE},
+    {"hydrogens", VIAL_KEY_HYDROGENS}, {"formal_charge", VIAL_KEY_FORMAL_CHARGE}, {"order", VIAL_KEY_ORDER}, {"origin", VIAL_KEY_ORIGIN},
 };
 
 uint8_t vial_select_key(md_str_t keyword) {
@@ -1407,6 +1408,107 @@ vial_sets_t* vial_select(vial_sys_t* s, const vial_select_t* q, md_allocator_i* 
     #undef IN_SCOPE
     out->count = n;
     return out;
+}
+
+// ### BONDS ###
+
+bool vial_select_bond_kind_known(md_str_t kind) {
+    size_t n = 0;
+    const md_bond_kind_name_t* k = md_bond_kind_names(&n);
+    for (size_t i = 0; i < n; ++i) if (md_str_eq(kind, md_str_from_cstr(k[i].name))) return true;
+    return false;
+}
+
+const char* vial_select_bond_kinds(void) { return "covalent, coordinate, elastic, metallic, noncovalent, interaction and hydrogen"; }
+
+static const char* bond_order_words[] = {"aromatic", "delocalized"};    // the resonance, MD_BOND_FLAG_AROMATIC, _DELOCALIZED
+
+bool vial_select_bond_order_known(md_str_t word) { return in_list(bond_order_words, MD_COUNTOF(bond_order_words), word); }
+
+bool vial_select_bond_origin_known(md_str_t origin) {
+    for (int o = MD_BOND_ORIGIN_FILE; o <= MD_BOND_ORIGIN_INFERRED; ++o) if (md_str_eq(origin, md_str_from_cstr(md_bond_origin_name((md_bond_origin_t)o)))) return true;
+    return false;
+}
+
+// A bond's kind, by md_bond_kind_names: 'noncovalent' is the two non-covalent kinds
+static bool test_bond_kind(const vial_match_t* m, const void* user) {
+    if (m->kind != VIAL_MATCH_STR) return false;
+    const md_bond_flags_t f = *(const md_bond_flags_t*)user;
+    size_t n = 0;
+    const md_bond_kind_name_t* k = md_bond_kind_names(&n);
+    for (size_t i = 0; i < n; ++i) if (md_str_eq(m->s, md_str_from_cstr(k[i].name))) return (f & k[i].mask) == k[i].value;
+    return false;
+}
+
+// A bond's order: a word for one of resonance, as a file writes an aromatic bond's order (SDF's 4, MOL2's ar) and
+// RDKit's types have it, else its order, 1 to 4. The order mdlib holds beneath the resonance is one Kekule structure,
+// and no order of the bond.
+static bool test_bond_order(const vial_match_t* m, const void* user) {
+    const md_bond_flags_t f = *(const md_bond_flags_t*)user;
+    const md_bond_flags_t res = f & MD_BOND_FLAG_RESONANCE_MASK;
+    if (m->kind == VIAL_MATCH_STR) {
+        return (res == MD_BOND_FLAG_AROMATIC && md_str_eq(m->s, MD_STR_LIT("aromatic"))) ||
+               (res == MD_BOND_FLAG_DELOCALIZED && md_str_eq(m->s, MD_STR_LIT("delocalized")));
+    }
+    if (res) return false;
+    const int64_t o = md_bond_order(f);
+    return (m->kind == VIAL_MATCH_INT && m->lo == o) || (m->kind == VIAL_MATCH_RANGE && m->lo <= o && o <= m->hi);
+}
+
+static bool test_bond_origin(const vial_match_t* m, const void* user) {
+    const md_bond_flags_t f = *(const md_bond_flags_t*)user;
+    return m->kind == VIAL_MATCH_STR && md_str_eq(m->s, md_str_from_cstr(md_bond_origin_name(md_bond_origin(f))));
+}
+
+// Whether a bond passes the filters. not takes the complement among the bonds with the property: every bond has a kind
+// and an origin, and a bond of unknown order, as a non-covalent one, has none, so order=not 1 is never one of those.
+static bool bond_passes(md_bond_flags_t f, const vial_filter_t* filters, size_t num_filters) {
+    bool kind_given = false;
+    for (size_t i = 0; i < num_filters; ++i) {
+        const vial_filter_t* fl = &filters[i];
+        switch (fl->key) {
+        case VIAL_KEY_KIND:   kind_given = true; if (!vial_filter_holds(fl, test_bond_kind, &f)) return false; break;
+        case VIAL_KEY_ORDER:  if ((!(f & MD_BOND_FLAG_RESONANCE_MASK) && md_bond_order(f) == 0) || !vial_filter_holds(fl, test_bond_order, &f)) return false; break;
+        case VIAL_KEY_ORIGIN: if (!vial_filter_holds(fl, test_bond_origin, &f)) return false; break;
+        default: break;
+        }
+    }
+    // The strong bonds by default: the bond graph, which the molecules, rings and chemistry are made of
+    return kind_given || md_bond_is_graph(f);
+}
+
+vial_sets_t* vial_select_bonds(const vial_sys_t* s, const vial_sets_t* within, const vial_filter_t* filters, size_t num_filters,
+                               md_allocator_i* alloc) {
+    const md_system_t* sys = s->sys;
+    const md_bond_data_t* bd = &sys->bond;
+    const size_t total = bd->count + bd->noncovalent_count;
+    // Both ends in the set: by a mark per particle
+    uint8_t* in = NULL;
+    if (within) {
+        in = md_alloc(alloc, s->num_atoms + 1);
+        memset(in, 0, s->num_atoms + 1);
+        for (uint32_t u = 0; u < within->count; ++u) {
+            const uint32_t* it = vial_sets_items(within, u);
+            for (uint32_t k = 0, n = vial_sets_size(within, u); k < n; ++k) if (it[k] < s->num_atoms) in[it[k]] = 1;
+        }
+    }
+    md_array(uint32_t) idx = 0;
+    for (size_t i = 0; i < total; ++i) {
+        const md_atom_pair_t pr = bd->pairs[i];
+        if (pr.idx[0] < 0 || pr.idx[1] < 0 || (uint32_t)pr.idx[0] >= s->num_atoms || (uint32_t)pr.idx[1] >= s->num_atoms) continue;
+        if (in && (!in[pr.idx[0]] || !in[pr.idx[1]])) continue;
+        if (!bond_passes(bd->flags ? bd->flags[i] : 0, filters, num_filters)) continue;
+        md_array_push(idx, (uint32_t)pr.idx[0], alloc);
+        md_array_push(idx, (uint32_t)pr.idx[1], alloc);
+    }
+    const uint32_t n2 = (uint32_t)md_array_size(idx);
+    vial_sets_t* r = md_alloc(alloc, sizeof(vial_sets_t));
+    memset(r, 0, sizeof(*r));
+    r->count = n2;
+    r->idx = idx ? idx : md_alloc(alloc, sizeof(uint32_t));
+    r->offset = md_alloc(alloc, (n2 + 1) * sizeof(uint32_t));
+    for (uint32_t k = 0; k <= n2; ++k) r->offset[k] = k;
+    return r;
 }
 
 vial_sets_t* vial_select_predefined(vial_sys_t* s, md_str_t name, md_allocator_i* alloc) {
