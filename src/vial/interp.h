@@ -50,6 +50,13 @@ typedef struct vial_interp_t {
     float*                      masses;     // each particle's mass in msys, made the first time a kernel asks
     md_allocator_i*             alloc;      // what lives as long as the interpreter: static values
     md_allocator_i*             temp;       // what lives for one frame: an arena, reset between frames
+    uint64_t                    frame_epoch;    // counts the resets of temp: what was kept of a frame is good while it holds
+    // The bonds formed and broken of the frame (md_bond_delta_compute) for one scope and its settings, in temp:
+    // formed() and broken() alike of them read one computation
+    struct {
+        uint64_t                epoch, key;
+        struct md_bond_delta_t* delta;
+    } bond_delta;
     size_t                      max_elements;   // the most elements one value may have (R0105); 0 for the default
     vial_val_t*                 vals;       // md_array by ssa
     uint8_t*                    state;      // md_array by ssa: 0 not computed, 1 computed for this frame, 2 static

@@ -1433,6 +1433,63 @@ static T call_bonds(infer_t* x, vial_node_id call) {
     return t;
 }
 
+// formed(s=None, tolerance=0.1, breakable=['file', 'inferred']), broken(...): per frame, the bonds formed in it that the
+// system does not have, or the system's broken in it, with an atom in s (md_bond_delta_compute), as bond() gives bonds,
+// set[?][2]. A bond breaks beyond (1 + tolerance) times its cutoff and forms within (1 - tolerance) times it, and only
+// the bonds of the origins breakable break.
+static T call_bond_changes(infer_t* x, vial_node_id call, const char* fname) {
+    static const vx_param_t p[] = {{"s", VX_KIND_WHOLE, false}, {"tolerance", VX_KIND_WHOLE, false}, {"breakable", VX_KIND_WHOLE, false}};
+    vial_node_id a[3] = {0, 0, 0};
+    if (!vx_bind(x, call, fname, p, 3, a)) return err();
+    T stage = vial_type_scalar(VIAL_DT_SET);
+    stage.stage = VIAL_STAGE_FRAME;
+    if (a[0]) {
+        const T st = x->out->types[(a[0]) - x->out->base];
+        if (vial_type_is_error(&st)) return err();
+        if (st.dtype != VIAL_DT_SET && st.dtype != VIAL_DT_NONE) {
+            vx_diag_fix(x, "E0313", a[0], NULL, "`%s` takes a set, the atoms whose bonds are looked at; this is %s", fname, vx_tstr(&st));
+            return err();
+        }
+        if (st.dtype == VIAL_DT_SET && st.ndim) {
+            vx_diag_fix(x, "E0313", a[0], NULL, "`%s` takes one set; particle(...) merges an array of them", fname);
+            return err();
+        }
+    }
+    if (a[1]) {
+        const vial_value_t v = vx_value_of(x, a[1]);
+        const double tol = v.kind == VIAL_VAL_FLOAT ? v.f : v.kind == VIAL_VAL_INT ? (double)v.i : -1.0;
+        if (!(tol >= 0.0 && tol < 0.5)) {
+            vx_diag_fix(x, "E0313", a[1], NULL, "tolerance= is a fraction of a bond's cutoff, at least 0 and less than 0.5, known when compiling");
+            return err();
+        }
+    }
+    if (a[2]) {
+        // Origins, one or a list of them
+        const T bt = x->out->types[(a[2]) - x->out->base];
+        if (vial_type_is_error(&bt)) return err();
+        vial_match_t* e = NULL;
+        vial_node_id bad = a[2];
+        const int known = bt.dtype == VIAL_DT_STR && bt.ndim <= 1 ? expr_of(x, a[2], VIAL_DT_STR, &e, &bad) : -1;
+        if (known < 0) {
+            vx_diag_fix(x, "E0313", a[2], NULL, "breakable= is an origin or a list of them, file, topology, user and inferred; this is %s", vx_tstr(&bt));
+            return err();
+        }
+        for (size_t i = 0; known == 1 && i < md_array_size(e); ++i) {
+            if (e[i].kind != VIAL_MATCH_STR || vial_select_bond_origin_known(e[i].s)) continue;
+            char ex[VIAL_EXCERPT_MAX + 4];
+            const md_str_t es = vial_excerpt(ex, sizeof(ex), e[i].s);
+            vx_diag_fix(x, "E0206", a[2], NULL, "'%.*s' is no origin of a bond; the origins are file, topology, user and inferred", (int)es.len, es.ptr);
+            return err();
+        }
+    }
+    T t = vial_type_scalar(VIAL_DT_SET);
+    t.flags |= VIAL_TYPE_ONE_PARTICLE;
+    t.stage = VIAL_STAGE_FRAME;
+    vial_type_push_dim(&t, (vial_extent_t){.kind = VIAL_EXT_DYNAMIC, .id = (uint32_t)call});
+    vial_type_push_dim(&t, vial_extent_static(2));
+    return t;
+}
+
 // spread(values, groups, combine=None): each particle of a group gets that group's value, the reverse of by=
 static T call_spread(infer_t* x, vial_node_id call) {
     static const vx_param_t p[] = {{"values", VX_KIND_WHOLE, true}, {"groups", VX_KIND_WHOLE, true}, {"combine", VX_KIND_WHOLE, false}};
@@ -1878,13 +1935,7 @@ bool vx_call_sets(infer_t* x, vial_node_id call, const vial_builtin_t* b, T* out
     if (md_str_eq(name, MD_STR_LIT("label"))) { *out = call_labels(x, call); return true; }
     if (md_str_eq(name, MD_STR_LIT("within"))) { *out = call_within(x, call); return true; }
     if (md_str_eq(name, MD_STR_LIT("bond")))  { *out = call_bonds(x, call); return true; }
-    if (md_str_eq(name, MD_STR_LIT("formed")) || md_str_eq(name, MD_STR_LIT("broken"))) {
-        // The bonds of a frame against the system's (md_bond_delta) are not tracked yet: bond() gives the system's
-        vx_diag_fix(x, "E0801", call, NULL, "`%.*s` is not supported yet: bond() gives the system's bonds, and their changes from frame "
-            "to frame are not tracked yet", (int)name.len, name.ptr);
-        *out = err();
-        return true;
-    }
+    if (md_str_eq(name, MD_STR_LIT("formed")) || md_str_eq(name, MD_STR_LIT("broken"))) { *out = call_bond_changes(x, call, b->name); return true; }
     if (md_str_eq(name, MD_STR_LIT("spread"))) { *out = call_spread(x, call); return true; }
     if (md_str_eq(name, MD_STR_LIT("smiles")))       { *out = call_smiles(x, call, false); return true; }
     if (md_str_eq(name, MD_STR_LIT("attr")))         { *out = call_attr(x, call); return true; }

@@ -1921,6 +1921,86 @@ UTEST(vial_ir, bonds_per_frame) {
     md_arena_allocator_destroy(alloc);
 }
 
+// formed() and broken() per frame: a proton moves from one water to the other, in the second of two models
+UTEST(vial_ir, bonds_formed_and_broken) {
+    static const char pdb[] =
+        "MODEL        1\n"
+        "HETATM    1  O   HOH A   1       0.000   0.000   0.000  1.00  0.00           O\n"
+        "HETATM    2  H1  HOH A   1       0.960   0.000   0.000  1.00  0.00           H\n"
+        "HETATM    3  H2  HOH A   1      -0.240   0.930   0.000  1.00  0.00           H\n"
+        "HETATM    4  O   HOH A   2       2.800   0.000   0.000  1.00  0.00           O\n"
+        "HETATM    5  H1  HOH A   2       3.040   0.930   0.000  1.00  0.00           H\n"
+        "HETATM    6  H2  HOH A   2       3.040  -0.930   0.000  1.00  0.00           H\n"
+        "ENDMDL\n"
+        "MODEL        2\n"
+        "HETATM    1  O   HOH A   1       0.000   0.000   0.000  1.00  0.00           O\n"
+        "HETATM    2  H1  HOH A   1       1.800   0.000   0.000  1.00  0.00           H\n"
+        "HETATM    3  H2  HOH A   1      -0.240   0.930   0.000  1.00  0.00           H\n"
+        "HETATM    4  O   HOH A   2       2.800   0.000   0.000  1.00  0.00           O\n"
+        "HETATM    5  H1  HOH A   2       3.040   0.930   0.000  1.00  0.00           H\n"
+        "HETATM    6  H2  HOH A   2       3.040  -0.930   0.000  1.00  0.00           H\n"
+        "ENDMDL\n"
+        "END\n";
+    const char* path = "vial_ir_proton_transfer.pdb";
+    FILE* fp = fopen(path, "wb");
+    ASSERT_TRUE(fp != NULL);
+    fwrite(pdb, 1, sizeof(pdb) - 1, fp);
+    fclose(fp);
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
+    md_system_t sys = {.alloc = alloc};
+    md_system_state_t st = {.alloc = alloc};
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, md_str_from_cstr(path), NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
+    ASSERT_TRUE(md_pdb_system_publish_run(&sys, md_str_from_cstr(path), MD_STR_LIT("run"), MD_RUN_FLAG_DISABLE_CACHE_WRITE));
+    const char* src =
+        "f = len(formed())\nb = len(broken())\n"
+        "f2 = len(formed(particle[3:6]))\nb2 = len(broken(particle[3:6]))\n"
+        "b3 = len(broken(breakable='topology'))\n"
+        "fh = formed()[0, 0]\n";
+    md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &(md_vial_compile_desc_t){.sys = &sys, .run = MD_STR_LIT("run")}, alloc);
+    ASSERT_TRUE(prog != NULL);
+    const md_vial_diagnostic_t* dg;
+    const size_t ndg = md_vial_diagnostics(prog, &dg);
+    for (size_t i = 0; i < ndg; ++i) printf("%.5s %.*s\n", dg[i].code, (int)dg[i].message.len, dg[i].message.ptr);
+    md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = &sys, .run = MD_STR_LIT("run")}, alloc);
+    ASSERT_TRUE(e != NULL);
+    const bool ran = md_vial_eval_run(e);
+    const md_vial_diagnostic_t* ed;
+    const size_t ned = md_vial_eval_diagnostics(e, &ed);
+    for (size_t i = 0; i < ned; ++i) printf("%.5s %.*s\n", ed[i].code, (int)ed[i].message.len, ed[i].message.ptr);
+    ASSERT_TRUE(ran);
+    const md_attributes_t* out = md_vial_eval_attributes(e);
+    // Per frame: none in the first, the transfer in the second; within the second water only the bond it forms; and
+    // nothing breaks where only a topology's bonds may
+    static const struct { const char* name; int32_t f0, f1; } want[] = {{"script/f", 0, 1}, {"script/b", 0, 1}, {"script/f2", 0, 1},
+                                                                       {"script/b2", 0, 0}, {"script/b3", 0, 0}};
+    for (size_t i = 0; i < MD_COUNTOF(want); ++i) {
+        const md_attribute_t* a = md_attributes_find(out, md_str_from_cstr(want[i].name));
+        ASSERT_TRUE(a && a->data);
+        ASSERT_EQ(2u, a->format.shape[0]);
+        const int32_t* v = (const int32_t*)a->data;
+        EXPECT_EQ(want[i].f0, v[0]);
+        EXPECT_EQ(want[i].f1, v[1]);
+    }
+    md_vial_eval_free(e);
+    md_vial_program_free(prog);
+    // Values formed() and broken() refuse
+    const char* bad[3] = {"f = formed(tolerance=0.7)\n", "f = broken(breakable='pdb')\n", "f = formed(particle, color=1)\n"};
+    const char* code[3] = {"E0313", "E0206", "E0202"};
+    for (int i = 0; i < 3; ++i) {
+        md_vial_program_t* p = md_vial_compile(md_str_from_cstr(bad[i]), &(md_vial_compile_desc_t){.sys = &sys, .run = MD_STR_LIT("run")}, alloc);
+        ASSERT_TRUE(p != NULL);
+        const size_t n = md_vial_diagnostics(p, &dg);
+        if (n) printf("%.5s %.*s\n", dg[0].code, (int)dg[0].message.len, dg[0].message.ptr);
+        ASSERT_GE(n, 1u);
+        EXPECT_EQ(0, strncmp(dg[0].code, code[i], 5));
+        md_vial_program_free(p);
+    }
+    md_system_free(&sys);
+    md_arena_allocator_destroy(alloc);
+    remove(path);
+}
+
 // Fragments, as when compiling so per frame: a scope that changes per frame takes the selector to evaluation
 UTEST(vial_ir, fragments) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));

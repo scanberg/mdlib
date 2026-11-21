@@ -863,6 +863,7 @@ bool vial_interp_frame(vial_interp_t* in, const vial_frame_t* frame) {
     const size_t nv = md_array_size(in->state);
     for (size_t i = 0; i < nv; ++i) if (in->state[i] == 1) in->state[i] = 0;
     md_vm_arena_reset(in->temp);
+    in->frame_epoch += 1;
     const bool st = eval_top(in, true);
     in->frame = frame;
     return eval_top(in, false) && st;
@@ -1211,6 +1212,7 @@ static int run_frame(vial_interp_t* in, vial_interp_t* main, uint8_t sweep, int6
     in->frame = &fr;
     for (size_t v = 0; v < nv; ++v) if (in->state[v] == 1) in->state[v] = 0;
     md_vm_arena_reset(in->temp);
+    in->frame_epoch += 1;
     int result = FRAME_OK;
     for (size_t i = 0; i < md_array_size(top->ops); ++i) {
         const uint32_t opi = top->ops[i];

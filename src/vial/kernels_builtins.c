@@ -13,6 +13,10 @@
 #include "accum.h"
 
 #include <md_system.h>
+#include <md_system_state.h>
+#include <core/md_bitset.h>
+#include <core/md_hash.h>
+#include <md_bond.h>
 #include <md_attributes.h>
 #include <md_element.h>
 #include <core/md_geom.h>
@@ -3177,6 +3181,84 @@ static bool k_bond(vial_kctx_t* k, const bargs_t* ba, vial_val_t* out) {
     return true;
 }
 
+// formed(s, tolerance=, breakable=), broken(...): the bonds of the frame against the system's, with an atom in s
+// (md_bond_delta_compute): those formed that the system lacks, lower particle first, sorted; or the system's broken,
+// in its order. As one-particle sets [n][2], as bond() gives bonds.
+static bool k_bond_changes(vial_kctx_t* k, const bargs_t* ba, bool formed, vial_val_t* out) {
+    const char* fname = formed ? "formed" : "broken";
+    const md_system_t* sys = k->in->msys;
+    const vial_frame_t* fr = k->in->frame;
+    if (!sys || !fr) return vial_rt_fail(k, "R0103", "%s reads a frame of the system", fname);
+    const vial_val_t* s = arg(ba, "s", 0);
+    const vial_val_t* tol = arg(ba, "tolerance", 1);
+    const vial_val_t* brk = arg(ba, "breakable", 2);
+    md_bond_delta_desc_t desc = {.tolerance = MD_BOND_DELTA_TOLERANCE, .breakable = MD_BOND_DELTA_BREAKABLE};
+    md_bitset_t scope = {0};
+    if (s && s->dtype == VIAL_DT_SET) {
+        md_array(uint32_t) idx = 0;
+        for (uint32_t u = 0; u < s->sets->count; ++u) {
+            const uint32_t* it = vial_sets_items(s->sets, u);
+            for (uint32_t q = 0, n = vial_sets_size(s->sets, u); q < n; ++q) md_array_push(idx, it[q], k->alloc);
+        }
+        scope = md_bitset_from_indices(idx, md_array_size(idx), k->alloc);
+        desc.scope = &scope;
+    }
+    if (tol && tol->data) desc.tolerance = (float)num_at(tol, 0);
+    if (brk && brk->dtype == VIAL_DT_STR && brk->data) {
+        desc.breakable = 0;
+        for (size_t i = 0, n = vial_val_count(brk); i < n; ++i) {
+            const md_str_t o = ((const md_str_t*)brk->data)[i];
+            for (int b = MD_BOND_ORIGIN_FILE; b <= MD_BOND_ORIGIN_INFERRED; ++b) {
+                if (md_str_eq(o, md_str_from_cstr(md_bond_origin_name((md_bond_origin_t)b)))) desc.breakable |= 1u << b;
+            }
+        }
+    }
+    // One delta per frame for a scope and its settings: formed() and broken() of them read the same (frame_epoch)
+    vial_interp_t* in = k->in;
+    uint64_t key = md_hash64(&desc.tolerance, sizeof(desc.tolerance), desc.breakable);
+    if (desc.scope) {
+        md_bitset_iter_t it = md_bitset_iter(scope);
+        while (md_bitset_iter_next(&it)) key = md_hash64(&it.idx, sizeof(it.idx), key);
+    } else {
+        key = md_hash64("all", 3, key);
+    }
+    if (!in->bond_delta.delta || in->bond_delta.epoch != in->frame_epoch || in->bond_delta.key != key) {
+        md_system_state_t state = {.num_atoms = fr->num_atoms, .xyz = (md_float3_t*)fr->xyz, .unitcell = fr->cell, .alloc = in->temp};
+        md_bond_delta_t* nd = md_alloc(in->temp, sizeof(md_bond_delta_t));
+        memset(nd, 0, sizeof(*nd));
+        md_bond_delta_compute(nd, sys, &state, &desc, in->temp);  // an empty delta where there is none, as of a coarse grained system
+        in->bond_delta.delta = nd;
+        in->bond_delta.epoch = in->frame_epoch;
+        in->bond_delta.key = key;
+    }
+    const md_bond_delta_t d = *in->bond_delta.delta;
+    md_array(uint32_t) pairs = 0;
+    if (formed) {
+        for (size_t i = 0; i < d.num_formed; ++i) {
+            md_array_push(pairs, (uint32_t)d.formed_pair[i].idx[0], k->alloc);
+            md_array_push(pairs, (uint32_t)d.formed_pair[i].idx[1], k->alloc);
+        }
+    } else {
+        for (md_bitset_iter_t it = md_bitset_iter(d.broken); md_bitset_iter_next(&it);) {
+            if (it.idx >= sys->bond.count) break;
+            md_array_push(pairs, (uint32_t)sys->bond.pairs[it.idx].idx[0], k->alloc);
+            md_array_push(pairs, (uint32_t)sys->bond.pairs[it.idx].idx[1], k->alloc);
+        }
+    }
+    const uint32_t n2 = (uint32_t)md_array_size(pairs);
+    vial_sets_t* r = md_alloc(k->alloc, sizeof(vial_sets_t));
+    memset(r, 0, sizeof(*r));
+    r->count = n2;
+    r->idx = pairs ? pairs : md_alloc(k->alloc, sizeof(uint32_t));
+    r->offset = md_alloc(k->alloc, (n2 + 1) * sizeof(uint32_t));
+    for (uint32_t q = 0; q <= n2; ++q) r->offset[q] = q;
+    vial_val_t o = {.dtype = VIAL_DT_SET, .sets = r, .ndim = 2};
+    o.dims[0] = n2 / 2;
+    o.dims[1] = 2;
+    *out = o;
+    return true;
+}
+
 static bool k_select(vial_kctx_t* k, const char* name, const bargs_t* ba, vial_val_t* out) {
     if (!k->in->sys) return vial_rt_fail(k, "R0103", "%s needs a system", name);
     uint8_t pkind;
@@ -3411,6 +3493,7 @@ bool vial_k_builtin(vial_kctx_t* k, const char* name, const vial_val_t* const* a
     if (IS("eye")) return k_eye(k, arg(&ba, "n", 0), out);
     if (IS("spread")) return k_spread(k, arg(&ba, "values", 0), arg(&ba, "groups", 1), arg(&ba, "combine", 2), out);
     if (IS("bond")) return k_bond(k, &ba, out);
+    if (IS("formed") || IS("broken")) return k_bond_changes(k, &ba, IS("formed"), out);
     if (IS("attr")) {
         const vial_val_t* of = arg(&ba, "of", 1);
         return of ? k_attr_of(k, arg(&ba, "path", 0), of, out) : k_attr(k, arg(&ba, "path", 0), out);

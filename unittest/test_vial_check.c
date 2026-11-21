@@ -667,9 +667,10 @@ UTEST_F(vial_check, bond_keywords) {
     EXPECT_DIAGS_ON(T, "b = bond(within(5.0, of=particle(resname='GTP')), order=not 1)\n",
         "E0801 1: and/or/not in a keyword's value is resolved when compiling; a selection that changes per frame does not take it yet\n");
     EXPECT_TYPE_ON(T, "b = bond(within(5.0, of=particle(resname='GTP')), order=['aromatic', 'delocalized'])\n", 1, "set[?][2], frame");
-    // The bonds of a frame against the system's are not tracked yet
-    EXPECT_DIAGS_ON(T, "f = formed(bond(), bond())\n", "E0801 1: `formed` is not supported yet: bond() gives the system's bonds, and their changes "
-        "from frame to frame are not tracked yet\n");
+    // The bonds of each frame against the system's, with an atom in s
+    EXPECT_TYPE_ON(T, "f = formed(particle(resname='GTP'))\n", 1, "set[?][2], frame");
+    EXPECT_TYPE_ON(T, "f = broken(tolerance=0.2, breakable=['file', 'inferred', 'topology'])\n", 1, "set[?][2], frame");
+    EXPECT_DIAGS_ON(T, "f = formed(bond())\n", "E0313 1: `formed` takes one set; particle(...) merges an array of them\n");
 }
 
 UTEST_F(vial_check, selectors_without_a_system) {

@@ -797,6 +797,21 @@ bool vial_k_index(vial_kctx_t* k, const vial_val_t* a, const vial_index_item_t* 
         if (a->ndim == 0 && a->sets->single) {
             return vial_rt_fail(k, "R0103", "positions in a set are taken on its particles");
         }
+        if (missing_all) {
+            // A position past the end of an empty dimension picks nothing: empty sets, missing throughout, as for values
+            const uint32_t n = total ? (uint32_t)total : 1;
+            vial_sets_t* s = md_alloc(k->alloc, sizeof(vial_sets_t));
+            memset(s, 0, sizeof(*s));
+            s->count = n;
+            s->single = o.ndim == 0;
+            s->offset = md_alloc(k->alloc, (n + 1) * sizeof(uint32_t));
+            memset(s->offset, 0, (n + 1) * sizeof(uint32_t));
+            s->idx = md_alloc(k->alloc, sizeof(uint32_t));
+            o.sets = s;
+            for (uint32_t q = 0; q < n; ++q) vial_val_set_missing(&o, q, k->alloc);
+            *out = o;
+            return true;
+        }
         for (size_t q = 0; q < total; ++q) {
             if (pos[q] >= a->sets->count) return vial_rt_fail(k, "R0103", "a position past the %u sets of an array", a->sets->count);
         }

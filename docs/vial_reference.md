@@ -1188,7 +1188,7 @@ phi  = dihedral(smiles_atoms("[C:1](=O)[N:2][C:3][C:4]=O"))   # -> float[14] °,
 | Function | Result |
 | --- | --- |
 | `bond(s=None, kind=, order=, origin=)` | `set[n][2]`: per bond, its two particles as one-particle sets, for the bonds with both ends in s, of the kinds, orders and origins given. Without `kind=`, the strong bonds. There is no `bond` dtype |
-| `formed(b, ref)`, `broken(b, ref)` | not supported yet (E0801): `bond()` gives the system's bonds, and their changes from frame to frame are not tracked yet |
+| `formed(s=None, tolerance=0.1, breakable=['file', 'inferred'])`, `broken(...)` | `set[?][2]`, frame: the bonds of each frame against the system's, with an atom in s: those formed that the system does not have, or the system's broken. A bond breaks beyond (1 + tolerance) times its cutoff and forms within (1 − tolerance) times it, so it does not flicker as it vibrates near one; only the bonds of the breakable origins break, so a force field topology's hold, as they do in a classical run. A coarse grained system has none. `formed()` and `broken()` of one scope and settings share one computation per frame. As viamd's Track bond changes finds them, and draws them |
 
 Its keywords take and/or/not, as a selector's do:
 
@@ -1198,7 +1198,7 @@ Its keywords take and/or/not, as a selector's do:
 | `order` | 1, 2, 3 or 4 (a quadruple bond, of two metals), or for a bond of resonance its word, `aromatic` in an aromatic ring, `delocalized` outside of rings, as a carboxylate's two C–O: as SDF (4) and MOL2 (`ar`) write an aromatic bond, and RDKit's types have it. The order mdlib holds beneath a resonance is one Kekulé structure, and is no order of the bond. A bond of unknown order, as a coordinate one, has none: `order=not 1` is the bonds of another order | an int, `a..b`, a word, or a list |
 | `origin` | where it comes from: `file`, `topology` (a force field's), `user` (added by hand), `inferred` (from the distances) | a string or list |
 
-The strong bonds, covalent and coordinate, are the bond graph that mdlib builds the molecules, rings and chemistry from; the others are kept apart and come with `kind=`. A set that changes per frame, as `bond(within(5.0, of=x))`, gives the bonds of the system among its particles at each frame; as for a selector, and/or/not in a keyword's value is then E0801, and a list takes its place.
+The strong bonds, covalent and coordinate, are the bond graph that mdlib builds the molecules, rings and chemistry from; the others are kept apart and come with `kind=`. A set that changes per frame, as `bond(within(5.0, of=x))`, gives the bonds of the system among its particles at each frame; as for a selector, and/or/not in a keyword's value is then E0801, and a list takes its place. `bond()` is always the system's bonds; what a frame changes of them, in a reaction, is asked for with `formed()` and `broken()`, which look at the bonds with an atom in s rather than both, as a reaction at the edge of s is still one: `len(formed(particle(resname='LIG')))` is the number of bonds the ligand forms at each frame.
 
 ```python
 # on T
