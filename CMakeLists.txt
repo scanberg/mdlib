@@ -737,7 +737,6 @@ target_include_directories(mdlib
   PRIVATE
   ${GEN_DIR}
   gen/
-  ext/fastlz/
   ext/dcd/
   ext/xtc/
   ext/svd3/

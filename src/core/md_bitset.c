@@ -7,8 +7,6 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_log.h>
 
-#include <fastlz.h>
-#include <string.h>
 
 MD_STATIC_ASSERT(sizeof(md_bitset_gpu_t) == 16, "GPU descriptor must be 16 bytes");
 
@@ -377,7 +375,7 @@ bool md_bitset_equal(md_bitset_t a, md_bitset_t b) {
         return md_bitset_count(bits) == (uint64_t)(bits.end - bits.beg);
     }
     if (a.words == b.words) return true;
-    return memcmp(a.words, b.words, md_bitset_num_words(a) * sizeof(uint64_t)) == 0;
+    return md_memcmp(a.words, b.words, md_bitset_num_words(a) * sizeof(uint64_t)) == 0;
 }
 
 uint64_t md_bitset_hash64(md_bitset_t s, uint64_t seed) {
@@ -466,8 +464,8 @@ void md_bitset_pack(md_bitset_gpu_t* out_sets, uint64_t* out_words, const md_bit
 //   u8 magic[4] = "MBS2", u32 raw_size, FastLZ( u32 entry_count, entries, u8 block_data[64][#blocks not all set] )
 // An entry is a u32 block index; with the top bit set it is followed by a u32 count, of consecutive blocks with
 // every bit set from that one on (so a range of 100M indices is one entry, not 200k).
-// A FastLZ stream starts with a byte below 0x40 (its level in the top 3 bits, 1 or 2), so 'M' (0x4D) tells the
-// formats apart.
+// A FastLZ stream starts with a byte below 0x40 (its level, 2, in the top 3 bits), so 'M' (0x4D) tells the formats
+// apart.
 
 #define BLOCK_BITS             512u
 #define BLOCK_WORDS            8u
@@ -483,9 +481,197 @@ void md_bitset_pack(md_bitset_gpu_t* out_sets, uint64_t* out_words, const md_bit
 #define V2_HEADER_SIZE         (V2_MAGIC_SIZE + sizeof(uint32_t))
 static const uint8_t v2_magic[V2_MAGIC_SIZE] = {'M', 'B', 'S', '2'};
 
-static inline size_t fastlz_bound(size_t input_size) {
+// FastLZ level 2, the compression of both formats: byte-aligned LZ77, in instructions of which the first has the
+// level (2, as 1 << 5) in its top 3 bits:
+//   000nnnnn                          n + 1 literal bytes follow
+//   LLLhhhhh [ext] llllllll           match of length L + 2 (L < 7) at distance (h << 8 | l) + 1; for L = 7 the
+//                                     length is 9 + the sum of the ext bytes, which end at the first below 255
+//   LLL11111 [ext] 11111111 HHHHHHHH llllllll   the same at distance 8192 + (H << 8 | l)
+// The encoder takes the steps of fastlz_compress_level(2) of FastLZ 0.5.0, which wrote these formats before, so the
+// same input gives the same bytes. The encoder and the decoder are derived from FastLZ, under its license:
+//
+//   FastLZ - Byte-aligned LZ77 compression library
+//   Copyright (C) 2005-2020 Ariya Hidayat <ariya.hidayat@gmail.com>
+//
+//   Permission is hereby granted, free of charge, to any person obtaining a copy
+//   of this software and associated documentation files (the "Software"), to deal
+//   in the Software without restriction, including without limitation the rights
+//   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+//   copies of the Software, and to permit persons to whom the Software is
+//   furnished to do so, subject to the following conditions:
+//
+//   The above copyright notice and this permission notice shall be included in
+//   all copies or substantial portions of the Software.
+//
+//   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+//   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+//   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+//   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+//   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+//   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+//   THE SOFTWARE.
+
+#define LZ_MAX_COPY     32u
+#define LZ_MAX_DISTANCE 8191u
+#define LZ_MAX_FAR      (65535u + LZ_MAX_DISTANCE - 1)
+#define LZ_HASH_LOG     13u
+
+static inline size_t lz_bound(size_t input_size) {
     size_t b = input_size + (input_size + 19) / 20 + 16;
     return b > 66 ? b : 66;
+}
+
+static inline uint32_t lz_read24(const uint8_t* p) {
+    return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16;
+}
+
+static inline uint32_t lz_hash(uint32_t v) {
+    return (uint32_t)(v * 2654435769u) >> (32 - LZ_HASH_LOG);
+}
+
+static uint8_t* lz_literals(uint8_t* op, const uint8_t* src, size_t len) {
+    while (len > 0) {
+        const size_t n = len < LZ_MAX_COPY ? len : LZ_MAX_COPY;
+        *op++ = (uint8_t)(n - 1);
+        md_memcpy(op, src, n);
+        op += n;
+        src += n;
+        len -= n;
+    }
+    return op;
+}
+
+// How far the bytes at q agree with those at p, as FastLZ counts it: one more than the bytes which agree, unless they
+// agree up to bound. Then the match is that + 2 bytes long.
+static inline size_t lz_match_len(const uint8_t* src, size_t p, size_t q, size_t bound) {
+    const size_t q0 = q;
+    for (; q + 8 <= bound; p += 8, q += 8) {
+        uint64_t a, b;
+        md_memcpy(&a, src + p, sizeof(a));
+        md_memcpy(&b, src + q, sizeof(b));
+        if (a != b) return q - q0 + (md_ctz64(a ^ b) >> 3) + 1;  // the first byte which differs (little endian)
+    }
+    for (; q < bound; ++p, ++q) {
+        if (src[p] != src[q]) return q - q0 + 1;
+    }
+    return q - q0;
+}
+
+// len: the length of the match - 2
+static uint8_t* lz_match(uint8_t* op, size_t len, size_t distance) {
+    distance -= 1;
+    const bool is_far = distance >= LZ_MAX_DISTANCE;
+    if (is_far) distance -= LZ_MAX_DISTANCE;
+    const uint8_t hi = is_far ? 31 : (uint8_t)(distance >> 8);
+    if (len < 7) {
+        *op++ = (uint8_t)(len << 5 | hi);
+    } else {
+        *op++ = (uint8_t)(7 << 5 | hi);
+        for (len -= 7; len >= 255; len -= 255) *op++ = 255;
+        *op++ = (uint8_t)len;
+    }
+    if (is_far) {
+        *op++ = 255;
+        *op++ = (uint8_t)(distance >> 8);
+    }
+    *op++ = (uint8_t)distance;
+    return op;
+}
+
+// Compresses size > 0 bytes of src to dst, which holds lz_bound(size) bytes. Returns the bytes written.
+static size_t lz_compress(uint8_t* dst, const uint8_t* src, size_t size) {
+    MD_ASSERT(size > 0 && size <= UINT32_MAX);
+    uint32_t htab[1u << LZ_HASH_LOG] = {0};
+    const size_t limit = size > 13 ? size - 13 : 0;  // where matches stop being looked for
+    const size_t bound = size > 4  ? size - 4  : 0;  // where a match stops being extended
+    uint8_t* op = dst;
+    size_t anchor = 0, ip = 2;
+
+    while (ip < limit) {
+        size_t ref, distance;
+        uint32_t seq, cmp;
+        do {
+            seq = lz_read24(src + ip);
+            const uint32_t h = lz_hash(seq);
+            ref = htab[h];
+            htab[h] = (uint32_t)ip;
+            distance = ip - ref;
+            cmp = distance < LZ_MAX_FAR ? lz_read24(src + ref) : 0x1000000;
+            if (ip >= limit) break;
+            ++ip;
+        } while (seq != cmp);
+        if (ip >= limit) break;
+        --ip;
+
+        // A far match has to reach 5 bytes
+        if (distance >= LZ_MAX_DISTANCE && (src[ref + 3] != src[ip + 3] || src[ref + 4] != src[ip + 4])) {
+            ++ip;
+            continue;
+        }
+
+        if (ip > anchor) op = lz_literals(op, src + anchor, ip - anchor);
+
+        const size_t len = lz_match_len(src, ref + 3, ip + 3, bound);
+        op = lz_match(op, len, distance);
+
+        ip += len;
+        htab[lz_hash(lz_read24(src + ip))] = (uint32_t)ip;
+        ip += 1;
+        htab[lz_hash(lz_read24(src + ip))] = (uint32_t)ip;
+        ip += 1;
+        anchor = ip;
+    }
+
+    op = lz_literals(op, src + anchor, size - anchor);
+    dst[0] |= 1 << 5;
+    return (size_t)(op - dst);
+}
+
+// Decompresses the size bytes of src to dst, which holds cap bytes; without dst it only measures. Returns the
+// decompressed size: 0 for a stream which is malformed, or which decompresses to more than cap bytes.
+static size_t lz_decompress(uint8_t* dst, size_t cap, const uint8_t* src, size_t size) {
+    if (size == 0 || src[0] >> 5 != 1) return 0;
+    size_t ip = 1, op = 0;
+    uint32_t ctrl = src[0] & 31;
+    for (;;) {
+        size_t len;
+        if (ctrl < 32) {
+            len = ctrl + 1;
+            if (len > size - ip || len > cap - op) return 0;
+            if (dst) md_memcpy(dst + op, src + ip, len);
+            ip += len;
+        } else {
+            len = (ctrl >> 5) + 2;
+            if (len == 9) {
+                uint8_t ext;
+                do {
+                    if (ip == size) return 0;
+                    ext = src[ip++];
+                    len += ext;
+                } while (ext == 255);
+            }
+            if (ip == size) return 0;
+            size_t dist = (size_t)(ctrl & 31) << 8 | src[ip++];  // the distance - 1
+            if (dist == LZ_MAX_DISTANCE) {
+                if (size - ip < 2) return 0;
+                dist += (size_t)src[ip] << 8 | src[ip + 1];
+                ip += 2;
+            }
+            if (dist >= op || len > cap - op) return 0;
+            if (dst) {
+                uint8_t* d = dst + op;
+                const uint8_t* s = d - dist - 1;
+                if (dist + 1 >= len) {
+                    md_memcpy(d, s, len);
+                } else {
+                    for (size_t i = 0; i < len; ++i) d[i] = s[i];  // overlaps: repeats what it copies
+                }
+            }
+        }
+        op += len;
+        if (ip == size) return op;
+        ctrl = src[ip++];
+    }
 }
 
 // The layout of the blocks in V1
@@ -732,10 +918,10 @@ size_t md_bitset_serialize_size_in_bytes(md_bitset_t s) {
     if (fits_v1(s)) {
         serial_info_t info;
         serial_info(&info, s);
-        return info.block_count ? fastlz_bound(info.input_size) : 0;
+        return info.block_count ? lz_bound(info.input_size) : 0;
     }
     const size_t raw_size = v2_blocks(NULL, s);
-    return raw_size ? V2_HEADER_SIZE + fastlz_bound(raw_size) : 0;
+    return raw_size ? V2_HEADER_SIZE + lz_bound(raw_size) : 0;
 }
 
 size_t md_bitset_serialize(void* dst, md_bitset_t s) {
@@ -769,8 +955,7 @@ size_t md_bitset_serialize(void* dst, md_bitset_t s) {
             md_memcpy(out + V2_MAGIC_SIZE, &raw_size32, sizeof(raw_size32));
             out += V2_HEADER_SIZE;
         }
-        const int lz_bytes = fastlz_compress_level(2, raw, (int)raw_size, out);
-        result = lz_bytes > 0 ? (v1 ? 0 : V2_HEADER_SIZE) + (size_t)lz_bytes : 0;
+        result = (v1 ? 0 : V2_HEADER_SIZE) + lz_compress(out, raw, raw_size);
     }
     md_temp_end(temp);
     return result;
@@ -785,38 +970,24 @@ static bool deserialize_v2(md_bitset_t* dst, const uint8_t* src, size_t num_byte
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
     bool result = false;
     uint8_t* raw = (uint8_t*)md_temp_alloc(temp, raw_size);
-    if (raw && fastlz_decompress(src + V2_HEADER_SIZE, (int)(num_bytes - V2_HEADER_SIZE), raw, (int)raw_size) == (int)raw_size) {
+    if (raw && lz_decompress(raw, raw_size, src + V2_HEADER_SIZE, num_bytes - V2_HEADER_SIZE) == raw_size) {
         result = v2_read(dst, raw, raw_size, alloc);
     }
     md_temp_end(temp);
     return result;
 }
 
-static bool deserialize(md_bitset_t* dst, const void* src, size_t num_bytes, md_allocator_i* alloc) {
-    if (num_bytes >= V2_MAGIC_SIZE && memcmp(src, v2_magic, V2_MAGIC_SIZE) == 0) {
-        return deserialize_v2(dst, (const uint8_t*)src, num_bytes, alloc);
+static bool deserialize(md_bitset_t* dst, const uint8_t* src, size_t num_bytes, md_allocator_i* alloc) {
+    if (num_bytes >= V2_MAGIC_SIZE && md_memcmp(src, v2_magic, V2_MAGIC_SIZE) == 0) {
+        return deserialize_v2(dst, src, num_bytes, alloc);
     }
 
-    // V1 does not store its raw size: decompress into a buffer which grows until it fits
+    // V1 does not store its raw size: measure it first
+    const size_t raw_size = lz_decompress(NULL, V1_MAX_RAW_SIZE, src, num_bytes);
+    if (raw_size == 0) return false;
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
-    md_allocator_i* temp_alloc = md_temp_allocator(temp);
-    bool result = false;
-    size_t cap = num_bytes * 4;
-    if (cap < SERIAL_MIN_INPUT_SIZE) cap = SERIAL_MIN_INPUT_SIZE;
-    if (cap > V1_MAX_RAW_SIZE)       cap = V1_MAX_RAW_SIZE;
-
-    while (cap <= V1_MAX_RAW_SIZE) {
-        md_vm_arena_set_pos_back(temp_alloc, temp.pos);
-        uint8_t* mem = (uint8_t*)md_temp_alloc(temp, cap);
-        if (!mem) break;
-        int size = fastlz_decompress(src, (int)num_bytes, mem, (int)cap);
-        if (size > 0) {
-            result = read_blocks(dst, mem, (size_t)size, alloc);
-            break;
-        }
-        if (cap == V1_MAX_RAW_SIZE) break;
-        cap = cap * 2 < V1_MAX_RAW_SIZE ? cap * 2 : V1_MAX_RAW_SIZE;
-    }
+    uint8_t* raw = (uint8_t*)md_temp_alloc(temp, raw_size);
+    const bool result = raw && lz_decompress(raw, raw_size, src, num_bytes) == raw_size && read_blocks(dst, raw, raw_size, alloc);
     md_temp_end(temp);
     return result;
 }
@@ -825,16 +996,7 @@ bool md_bitset_deserialize(md_bitset_t* dst, const void* src, size_t num_bytes, 
     MD_ASSERT(dst);
     if (!dst || !src || num_bytes == 0 || num_bytes > INT32_MAX) return false;
 
-    // FastLZ may read a byte past the end of a malformed stream: decompress from a copy which has zeroed padding
-    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
-    bool result = false;
-    uint8_t* in = (uint8_t*)md_temp_alloc_zero(temp, num_bytes + 8);
-    if (in) {
-        md_memcpy(in, src, num_bytes);
-        result = deserialize(dst, in, num_bytes, alloc);
-    }
-    md_temp_end(temp);
-
+    const bool result = deserialize(dst, (const uint8_t*)src, num_bytes, alloc);
     if (!result) {
         MD_LOG_ERROR("Failed to deserialize bitset");
     }
