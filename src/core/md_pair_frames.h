@@ -17,6 +17,10 @@
 
 struct md_allocator_i;
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef struct md_pair_frames_t md_pair_frames_t;
 
 // NULL when rows * cols is 0 or 2^32 or more, or num_frames is 0. Its memory from alloc, which must free.
@@ -47,3 +51,7 @@ size_t md_pair_frames_occupancy(float* out, const md_pair_frames_t* pf, md_bitse
 
 // The frames entry (i, j) is true in, with its words from alloc; empty when it never is
 md_bitset_t md_pair_frames_entry(const md_pair_frames_t* pf, uint32_t i, uint32_t j, struct md_allocator_i* alloc);
+
+#ifdef __cplusplus
+}
+#endif
