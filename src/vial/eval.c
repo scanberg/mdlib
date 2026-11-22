@@ -64,7 +64,11 @@ struct md_vial_eval_t {
     volatile uint64_t           done;       // md_vial_eval_run finished every frame: its values may be read
     eval_held_t*                held;       // md_array: outputs taken over, published as they were
     md_attribute_id_t*          streamed;   // md_array: outputs written as frames finish (decided 31 October)
-    eval_pairs_t*               pairs;      // md_array: matrices of truths per frame, by output name
+    // Matrices of truths per frame, by output name: an md_array with room for every output from the start, so that it
+    // never moves, and num_pairs of it published, each after it is whole. Looked up from any thread (md_vial_eval_pairs),
+    // also while a run adds to it.
+    eval_pairs_t*               pairs;
+    volatile uint64_t           num_pairs;
     // Frames on several threads: one interpreter and one reader each
     vial_interp_t*              workers;
     eval_worker_t*              readers;
@@ -75,8 +79,18 @@ struct md_vial_eval_t {
 
 // The matrix of truths per frame kept for output name, or NULL
 static eval_pairs_t* eval_pairs_of(const md_vial_eval_t* e, md_str_t name) {
-    for (size_t i = 0; i < md_array_size(e->pairs); ++i) if (md_str_eq(e->pairs[i].name, name)) return &e->pairs[i];
+    const size_t n = (size_t)md_atomic_load64(&e->num_pairs);
+    for (size_t i = 0; i < n; ++i) if (md_str_eq(e->pairs[i].name, name)) return &e->pairs[i];
     return NULL;
+}
+
+// One more, published once whole
+static eval_pairs_t* add_pairs(md_vial_eval_t* e, eval_pairs_t np) {
+    const size_t n = md_array_size(e->pairs);
+    if (n >= md_array_capacity(e->pairs)) return NULL;
+    md_array_push_no_grow(e->pairs, np);
+    md_atomic_store64(&e->num_pairs, n + 1);
+    return &e->pairs[n];
 }
 
 const md_pair_frames_t* md_vial_eval_pairs(const md_vial_eval_t* e, md_str_t name) {
@@ -196,6 +210,7 @@ md_vial_eval_t* md_vial_eval_create_from(const md_vial_eval_t* prev, const md_vi
     e->arena = arena;
     e->prog = prog;
     e->ir = ir;
+    md_array_ensure(e->pairs, md_array_size(ir->outputs) + 1, arena);
     e->sys = desc->sys;
     e->run = md_alloc_str(arena, desc->run);
     e->attributes.alloc = arena;
@@ -219,7 +234,7 @@ md_vial_eval_t* md_vial_eval_create_from(const md_vial_eval_t* prev, const md_vi
             md_pair_frames_t* pf = pp ? md_pair_frames_copy(pp->pf, md_get_heap_allocator()) : NULL;
             if (pf) {
                 const eval_pairs_t np = {.name = md_alloc_str(arena, o[i].name), .pf = pf, .held = true};
-                md_array_push(e->pairs, np, arena);
+                if (!add_pairs(e, np)) md_pair_frames_free(pf);
                 continue;
             }
             const md_attribute_t* at = NULL;
@@ -431,8 +446,8 @@ static void prepare(md_vial_eval_t* e) {
                 md_pair_frames_t* pf = md_pair_frames_create(t->dims[0].n, t->dims[1].n, (uint32_t)nf, md_get_heap_allocator());
                 if (!pf) continue;
                 const eval_pairs_t np = {.name = md_alloc_str(e->arena, o->name), .pf = pf};
-                md_array_push(e->pairs, np, e->arena);
-                ep = &e->pairs[md_array_size(e->pairs) - 1];
+                ep = add_pairs(e, np);
+                if (!ep) { md_pair_frames_free(pf); continue; }
             }
             in->stream_pairs[o->value] = ep->pf;
             continue;

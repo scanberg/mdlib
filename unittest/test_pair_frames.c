@@ -79,37 +79,44 @@ static void pf_check(int* utest_result, const md_pair_frames_t* pf, md_allocator
     // Past the frames: none, and NaN
     EXPECT_EQ(0u, md_pair_frames_occupancy(occ, pf, md_bitset_range(PF_FRAMES, PF_FRAMES + 100)));
     EXPECT_TRUE(isnan(occ[0]));
-    // The same as counts of the entries true in some: over the run, and at a frame
+    // The index: every entry ever true, ascending, in a slot of its own; the slots' counts over the run and at a frame,
+    // and their frames, as the matrices have them
     uint32_t* entries = NULL;
-    uint32_t* counts = NULL;
-    ASSERT_EQ(907u, md_pair_frames_counts(&entries, &counts, pf, run, alloc));
+    uint32_t* slots = NULL;
+    ASSERT_EQ(ever, md_pair_frames_index(&entries, &slots, pf, alloc));
+    ASSERT_EQ(ever, md_array_size(entries));
+    ASSERT_EQ(ever, md_array_size(slots));
     size_t k = 0;
     for (uint32_t e = 0; e < PF_ROWS * PF_COLS; ++e) {
-        uint32_t c = 0;
-        for (uint32_t f = 70; f < 977; ++f) c += pf_truth(f, e);
-        if (!c) continue;
-        ASSERT_LT(k, md_array_size(entries));
+        bool any = false;
+        for (uint32_t f = 0; f < PF_FRAMES && !any; ++f) any = pf_truth(f, e);
+        if (!any) continue;
+        ASSERT_LT(k, ever);
         EXPECT_EQ(e, entries[k]);
-        EXPECT_EQ(c, counts[k]);
+        EXPECT_LT(slots[k], (uint32_t)ever);
+        for (size_t q = 0; q < k; ++q) EXPECT_NE(slots[q], slots[k]);
         ++k;
     }
-    EXPECT_EQ(k, md_array_size(entries));
-    EXPECT_EQ(k, md_array_size(counts));
-    for (uint32_t f = 0; f < PF_FRAMES; f += 101) {
-        ASSERT_EQ(1u, md_pair_frames_counts(&entries, &counts, pf, md_bitset_range(f, f + 1), alloc));
-        k = 0;
-        for (uint32_t e = 0; e < PF_ROWS * PF_COLS; ++e) {
-            if (!pf_truth(f, e)) continue;
-            ASSERT_LT(k, md_array_size(entries));
-            EXPECT_EQ(e, entries[k]);
-            EXPECT_EQ(1u, counts[k]);
-            ++k;
-        }
-        EXPECT_EQ(k, md_array_size(entries));
+    uint32_t counts[PF_ROWS * PF_COLS];
+    ASSERT_EQ(907u, md_pair_frames_slot_counts(counts, pf, slots, ever, run));
+    for (k = 0; k < ever; ++k) {
+        uint32_t c = 0;
+        for (uint32_t f = 70; f < 977; ++f) c += pf_truth(f, entries[k]);
+        EXPECT_EQ(c, counts[k]);
     }
-    EXPECT_EQ(0u, md_pair_frames_counts(&entries, &counts, pf, md_bitset_range(PF_FRAMES, PF_FRAMES + 100), alloc));
-    EXPECT_EQ(0u, md_array_size(entries));
-    EXPECT_EQ(0u, md_array_size(counts));
+    for (uint32_t f = 0; f < PF_FRAMES; f += 101) {
+        ASSERT_EQ(1u, md_pair_frames_slot_counts(counts, pf, slots, ever, md_bitset_range(f, f + 1)));
+        for (k = 0; k < ever; ++k) EXPECT_EQ(pf_truth(f, entries[k]) ? 1u : 0u, counts[k]);
+    }
+    EXPECT_EQ(0u, md_pair_frames_slot_counts(counts, pf, slots, ever, md_bitset_range(PF_FRAMES, PF_FRAMES + 100)));
+    EXPECT_EQ(0u, counts[0]);
+    for (k = 0; k < ever; k += 3) {
+        const md_bitset_t a = md_pair_frames_slot_frames(pf, slots[k], alloc);
+        const md_bitset_t b = md_pair_frames_entry(pf, entries[k] / PF_COLS, entries[k] % PF_COLS, alloc);
+        EXPECT_EQ(md_bitset_count(b), md_bitset_count(a));
+        EXPECT_EQ(md_bitset_count(b), md_bitset_count(md_bitset_and(a, b, alloc)));
+    }
+    EXPECT_TRUE(md_bitset_empty(md_pair_frames_slot_frames(pf, (uint32_t)ever, alloc)));
     // An entry's frames
     for (uint32_t e = 0; e < PF_ROWS * PF_COLS; ++e) {
         const md_bitset_t s = md_pair_frames_entry(pf, e / PF_COLS, e % PF_COLS, alloc);
@@ -178,17 +185,19 @@ UTEST(pair_frames, many_rows) {
     for (uint32_t i = 0; i < 9000000u; ++i) { ever += occ[i] > 0.0f; sum += occ[i]; }
     EXPECT_EQ(ever, md_pair_frames_count(pf));
     EXPECT_NEAR((double)N, sum, 1e-2);
-    // As counts: every entry ever true, ascending, as the fractions have them
+    // The index and its counts: every entry ever true, ascending, as the fractions have them
     uint32_t* entries_of = NULL;
-    uint32_t* counts = NULL;
-    ASSERT_EQ(100u, md_pair_frames_counts(&entries_of, &counts, pf, md_bitset_range(0, 100), heap));
-    ASSERT_EQ(ever, md_array_size(entries_of));
+    uint32_t* slots = NULL;
+    ASSERT_EQ(ever, md_pair_frames_index(&entries_of, &slots, pf, heap));
+    uint32_t* counts = malloc(ever * sizeof(uint32_t));
+    ASSERT_EQ(100u, md_pair_frames_slot_counts(counts, pf, slots, ever, md_bitset_range(0, 100)));
     for (size_t i = 0; i < ever; ++i) {
         if (i) EXPECT_LT(entries_of[i - 1], entries_of[i]);
         EXPECT_NEAR(occ[entries_of[i]], (float)counts[i] / 100.0f, 1e-6f);
     }
+    free(counts);
     md_array_free(entries_of, heap);
-    md_array_free(counts, heap);
+    md_array_free(slots, heap);
     free(occ);
     free(entries);
     md_pair_frames_free(pf);
@@ -204,6 +213,20 @@ static void pf_job(void* arg, uint32_t beg, uint32_t end, uint32_t thread_idx) {
         float occ[PF_ROWS * PF_COLS];
         md_pair_frames_occupancy(occ, j->pf, md_bitset_range(0, PF_FRAMES));
         for (int e = 0; e < PF_ROWS * PF_COLS; ++e) if (!(occ[e] >= 0.0f && occ[e] <= 1.0f)) md_pair_frames_add(j->pf, 0, NULL, 0);
+        // An index while frames are added: ascending, and no slot true in more frames than are counted
+        if (f % 5 == 0) {
+            md_allocator_i* heap = md_get_heap_allocator();
+            uint32_t* entries = NULL;
+            uint32_t* slots = NULL;
+            const size_t n = md_pair_frames_index(&entries, &slots, j->pf, heap);
+            uint32_t counts[PF_ROWS * PF_COLS];
+            const size_t nf = md_pair_frames_slot_counts(counts, j->pf, slots, n, md_bitset_range(0, PF_FRAMES));
+            bool ok = n <= PF_ROWS * PF_COLS;
+            for (size_t k = 0; k < n && ok; ++k) ok = (k == 0 || entries[k - 1] < entries[k]) && counts[k] <= nf;
+            if (!ok) md_pair_frames_add(j->pf, 0, NULL, 0);
+            md_array_free(entries, heap);
+            md_array_free(slots, heap);
+        }
     }
 }
 
