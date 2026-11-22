@@ -761,6 +761,170 @@ done:
     return success;
 }
 
+// ### STRUCT_CONN ###
+// The connections of _struct_conn between two atoms are bonds the file gives (md_system_t::given_bond), of origin
+// MD_BOND_ORIGIN_FILE and of the kind it says (MD_BOND_FLAG_KIND_GIVEN): a covalent bond, a disulfide or a modified
+// residue's bond covalent (with its order where the file gives one), a metal coordination coordinate, a hydrogen bond
+// (of a base pair, matched or not) hydrogen, an ionic interaction ionic. Their atoms are named by the labels _atom_site
+// gives them. A connection to a symmetry mate (of a symmetry other than 1_555), or to an atom not loaded (of an
+// alternate location other than the first), is none.
+typedef struct {
+    md_bond_flags_t flags;
+    char asym[2][8];    // As the entries of _atom_site have them: zero past their characters
+    char comp[2][8];
+    char atom[2][8];
+    int  seq[2];        // label_seq_id, or auth_seq_id where there is none (a non-polymer), as the residues have it
+} mmcif_conn_t;
+
+// The kind of a connection by its type (_struct_conn_type.id, of any case); false for a type the loader takes no bond of
+static bool mmcif_conn_kind(md_bond_kind_t* out, md_str_t type) {
+    static const struct { const char* type; md_bond_kind_t kind; } kinds[] = {
+        {"covale",              MD_BOND_KIND_COVALENT},
+        {"covale_base",         MD_BOND_KIND_COVALENT},
+        {"covale_phosphate",    MD_BOND_KIND_COVALENT},
+        {"covale_sugar",        MD_BOND_KIND_COVALENT},
+        {"disulf",              MD_BOND_KIND_COVALENT},
+        {"modres",              MD_BOND_KIND_COVALENT},
+        {"metalc",              MD_BOND_KIND_COORDINATE},
+        {"hydrog",              MD_BOND_KIND_HYDROGEN},
+        {"mismat",              MD_BOND_KIND_HYDROGEN},     // Of a mismatched base pair
+        {"saltbr",              MD_BOND_KIND_IONIC},
+    };
+    for (size_t i = 0; i < MD_COUNTOF(kinds); ++i) {
+        if (md_str_eq_cstr_ignore_case(type, kinds[i].type)) {
+            *out = kinds[i].kind;
+            return true;
+        }
+    }
+    return false;
+}
+
+// A value which is none: '?' (unknown) or '.' (inapplicable)
+static inline bool mmcif_value_none(md_str_t v) {
+    return md_str_empty(v) || md_str_eq(v, MD_STR_LIT("?")) || md_str_eq(v, MD_STR_LIT("."));
+}
+
+static bool mmcif_parse_struct_conn(md_array(mmcif_conn_t)* conns, mmcif_parse_state_t* state, md_allocator_i* alloc) {
+    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
+    bool success = false;
+
+    mmcif_section_t sec = {0};
+    if (!mmcif_parse_section(&sec, state, temp_alloc)) {
+        goto done;
+    }
+    const int type_col  = mmcif_section_find_col_idx(&sec, MD_STR_LIT("_struct_conn.conn_type_id"));
+    const int order_col = mmcif_section_find_col_idx(&sec, MD_STR_LIT("_struct_conn.pdbx_value_order"));
+    int asym_col[2], comp_col[2], seq_col[2], atom_col[2], alt_col[2], auth_seq_col[2], sym_col[2];
+    for (int p = 0; p < 2; ++p) {
+        char name[64];
+        int len;
+        len = snprintf(name, sizeof(name), "_struct_conn.ptnr%d_label_asym_id", p + 1);       asym_col[p]     = mmcif_section_find_col_idx(&sec, (md_str_t){name, (size_t)len});
+        len = snprintf(name, sizeof(name), "_struct_conn.ptnr%d_label_comp_id", p + 1);       comp_col[p]     = mmcif_section_find_col_idx(&sec, (md_str_t){name, (size_t)len});
+        len = snprintf(name, sizeof(name), "_struct_conn.ptnr%d_label_seq_id", p + 1);        seq_col[p]      = mmcif_section_find_col_idx(&sec, (md_str_t){name, (size_t)len});
+        len = snprintf(name, sizeof(name), "_struct_conn.ptnr%d_label_atom_id", p + 1);       atom_col[p]     = mmcif_section_find_col_idx(&sec, (md_str_t){name, (size_t)len});
+        len = snprintf(name, sizeof(name), "_struct_conn.pdbx_ptnr%d_label_alt_id", p + 1);   alt_col[p]      = mmcif_section_find_col_idx(&sec, (md_str_t){name, (size_t)len});
+        len = snprintf(name, sizeof(name), "_struct_conn.ptnr%d_auth_seq_id", p + 1);         auth_seq_col[p] = mmcif_section_find_col_idx(&sec, (md_str_t){name, (size_t)len});
+        len = snprintf(name, sizeof(name), "_struct_conn.ptnr%d_symmetry", p + 1);            sym_col[p]      = mmcif_section_find_col_idx(&sec, (md_str_t){name, (size_t)len});
+    }
+    if (type_col == -1 || asym_col[0] == -1 || asym_col[1] == -1 || comp_col[0] == -1 || comp_col[1] == -1 ||
+        seq_col[0] == -1 || seq_col[1] == -1 || atom_col[0] == -1 || atom_col[1] == -1) {
+        MD_LOG_ERROR("_struct_conn lacks conn_type_id or the labels of its partners");
+        goto done;
+    }
+    for (size_t i = 0; i < sec.num_rows; ++i) {
+        md_bond_kind_t kind;
+        if (!mmcif_conn_kind(&kind, mmcif_section_value(&sec, i, type_col))) continue;
+        mmcif_conn_t c = {0};
+        bool loaded = true;
+        for (int p = 0; p < 2 && loaded; ++p) {
+            const md_str_t sym = sym_col[p] != -1 ? mmcif_section_value(&sec, i, sym_col[p]) : (md_str_t){0};
+            const md_str_t alt = alt_col[p] != -1 ? mmcif_section_value(&sec, i, alt_col[p]) : (md_str_t){0};
+            // Of a symmetry mate, or of an alternate location other than the first, which the loader leaves out
+            if ((!mmcif_value_none(sym) && !md_str_eq(sym, MD_STR_LIT("1_555"))) || (!mmcif_value_none(alt) && !md_str_eq(alt, MD_STR_LIT("A")))) {
+                loaded = false;
+                break;
+            }
+            md_str_copy_to_char_buf(c.asym[p], sizeof(c.asym[p]), mmcif_section_value(&sec, i, asym_col[p]));
+            md_str_copy_to_char_buf(c.comp[p], sizeof(c.comp[p]), mmcif_section_value(&sec, i, comp_col[p]));
+            md_str_copy_to_char_buf(c.atom[p], sizeof(c.atom[p]), mmcif_section_value(&sec, i, atom_col[p]));
+            c.seq[p] = parse_int_with_default(mmcif_section_value(&sec, i, seq_col[p]), INT32_MIN);
+            if (c.seq[p] == INT32_MIN && auth_seq_col[p] != -1) {
+                c.seq[p] = parse_int_with_default(mmcif_section_value(&sec, i, auth_seq_col[p]), INT32_MIN);
+            }
+        }
+        if (!loaded) continue;
+        md_bond_flags_t flags = md_bond_flags_set_origin(md_bond_flags_set_kind(MD_BOND_FLAG_KIND_GIVEN, kind), MD_BOND_ORIGIN_FILE);
+        if (kind == MD_BOND_KIND_COVALENT && order_col != -1) {
+            // The order of a covalent bond, where the file gives it
+            static const char* orders[] = {"sing", "doub", "trip", "quad"};
+            const md_str_t order = mmcif_section_value(&sec, i, order_col);
+            for (int o = 0; o < 4; ++o) {
+                if (md_str_eq_cstr_ignore_case(order, orders[o])) flags = md_bond_flags_set_order(flags, o + 1);
+            }
+        }
+        c.flags = flags;
+        md_array_push(*conns, c, alloc);
+    }
+    success = true;
+done:
+    md_temp_end(temp);
+    return success;
+}
+
+// The key of an atom by the labels _atom_site and _struct_conn name it by
+static inline uint64_t mmcif_atom_key(const char asym[8], const char comp[8], const char atom[8], int seq) {
+    uint64_t w[4];
+    md_memcpy(&w[0], asym, 8);
+    md_memcpy(&w[1], comp, 8);
+    md_memcpy(&w[2], atom, 8);
+    w[3] = (uint32_t)seq;
+    return md_hash64(w, sizeof(w), 0);
+}
+
+// The seq id of the residue of an entry, as the residues have it
+static inline int mmcif_entry_seq(const mmcif_atom_site_entry_t* e) {
+    return e->label_seq_id != INT32_MIN ? e->label_seq_id : e->auth_seq_id;
+}
+
+// The bonds of the connections, given (md_system_t::given_bond), between the atoms loaded: entry_of[a] is the entry of
+// _atom_site of atom a. A pair has one bond, the first the file gives.
+static void mmcif_conn_bonds(md_system_t* sys, const mmcif_conn_t* conns, size_t num_conns, const mmcif_atom_site_entry_t* entries, const uint32_t* entry_of, md_allocator_i* temp_arena) {
+    if (num_conns == 0 || !entry_of) return;
+    md_hashmap32_t atom_map = { .allocator = temp_arena };
+    for (size_t a = 0; a < sys->atom.count; ++a) {
+        const mmcif_atom_site_entry_t* e = &entries[entry_of[a]];
+        const uint64_t key = mmcif_atom_key(e->label_asym_id, e->label_comp_id, e->label_atom_id, mmcif_entry_seq(e));
+        if (!md_hashmap_get(&atom_map, key)) md_hashmap_add(&atom_map, key, (uint32_t)a);
+    }
+    md_hashmap32_t pair_map = { .allocator = temp_arena };
+    size_t missing = 0;
+    for (size_t i = 0; i < num_conns; ++i) {
+        const mmcif_conn_t* c = &conns[i];
+        uint32_t idx[2] = {0};
+        bool found = true;
+        for (int p = 0; p < 2 && found; ++p) {
+            const uint32_t* a = md_hashmap_get(&atom_map, mmcif_atom_key(c->asym[p], c->comp[p], c->atom[p], c->seq[p]));
+            const mmcif_atom_site_entry_t* e = a ? &entries[entry_of[*a]] : NULL;
+            found = e && mmcif_entry_seq(e) == c->seq[p] && md_memcmp(e->label_asym_id, c->asym[p], 8) == 0 &&
+                md_memcmp(e->label_comp_id, c->comp[p], 8) == 0 && md_memcmp(e->label_atom_id, c->atom[p], 8) == 0;
+            if (found) idx[p] = *a;
+        }
+        if (!found) {
+            missing += 1;
+            continue;
+        }
+        if (idx[0] == idx[1]) continue;
+        const uint64_t pair = ((uint64_t)MD_MIN(idx[0], idx[1]) << 32) | MD_MAX(idx[0], idx[1]);
+        if (md_hashmap_get(&pair_map, pair)) continue;
+        md_hashmap_add(&pair_map, pair, 1u);
+        md_bond_list_push(&sys->given_bond, (md_atom_idx_t)idx[0], (md_atom_idx_t)idx[1], c->flags, sys->alloc);
+    }
+    if (missing) {
+        MD_LOG_DEBUG("%zu of the connections of _struct_conn name atoms which are not loaded", missing);
+    }
+}
+
 // The operators of an oper_expression, indices of opers: "1", "1,2,5", "1-4", "(1-4)" or a product of such groups
 // "(X0)(1-60)", "(1-60)(61-88)": an operator for each combination of one of each group, the transform of the product
 // in the order written (that of the last group applied first, as Mol* reads it), appended to opers. ids are numbers
@@ -1394,6 +1558,8 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
     md_array(mmcif_entity_t) entities = 0;
     md_array(mmcif_assembly_gen_t) assembly_gen = 0;
     md_array(mmcif_oper_t) opers = 0;
+    md_array(mmcif_conn_t) conns = 0;
+    const uint32_t* entry_of = NULL;    // Of each atom loaded, its entry of _atom_site
 
     md_array_ensure(atom_entries, 1024, temp_arena);
     md_array_ensure(entities, 4, temp_arena);
@@ -1452,10 +1618,17 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
                 MD_LOG_ERROR("Failed to parse _pdbx_struct_oper_list section");
             }
             oper_list_parsed = true;
+        } else if (md_str_begins_with(tok, MD_STR_LIT("_struct_conn."))) {
+            // The bonds the file gives, read as far as they can be: without them inference finds the covalent ones
+            if (!mmcif_parse_struct_conn(&conns, &state, temp_arena)) {
+                MD_LOG_ERROR("Failed to parse _struct_conn section");
+            }
         } else {
             mmcif_next_token(&tok, &state);
         }
 
+        // What follows is not read once these are: _struct_conn is read where it comes before them, as the wwPDB writes it
+        // before _atom_site
         if (atom_site_parsed && cell_parsed && entity_parsed && entity_poly_parsed && assembly_gen_parsed && oper_list_parsed) {
             break;
         }
@@ -1488,6 +1661,8 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
         float* occupancy      = (float*)md_alloc(temp_arena, sizeof(float) * reserve_size);
         float* b_iso          = (float*)md_alloc(temp_arena, sizeof(float) * reserve_size);
         float* formal_charge  = (float*)md_alloc(temp_arena, sizeof(float) * reserve_size);
+        uint32_t* atom_entry  = (uint32_t*)md_alloc(temp_arena, sizeof(uint32_t) * reserve_size);
+        entry_of = atom_entry;
 
         // Of the atom before: the fields of its residue and its instance as words (the entries' fields are zero past
         // their characters, so the same characters are the same words), and its entity. A residue begins where the
@@ -1595,6 +1770,7 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
  
             md_array_push_no_grow(out_state->xyz, md_float3_set(atom_entries[i].x, atom_entries[i].y, atom_entries[i].z));
             md_array_push_no_grow(sys->atom.type_idx, particle_type_idx);
+            if (atom_entry) atom_entry[sys->atom.count] = (uint32_t)i;
             if (occupancy && b_iso && formal_charge) {
                 occupancy[sys->atom.count]     = atom_entries[i].occupancy;
                 b_iso[sys->atom.count]         = atom_entries[i].b_iso_or_equiv;
@@ -1630,7 +1806,11 @@ static bool mmcif_parse(md_system_t* sys, md_system_state_t* out_state, md_reade
         out_state->unitcell = md_unitcell_from_extent_and_angles(cell.a, cell.b, cell.c, cell.alpha, cell.beta, cell.gamma);
     }
 
-    // The bonds, what the residues are by them and the chains are md_system_infer's: the loader gives what the file says.
+    // The bonds, what the residues are by them and the chains are md_system_infer's: the loader gives what the file says,
+    // the bonds of _struct_conn (md_system_t::given_bond), and inference keeps them and adds those they leave out
+    if (atom_site_parsed) {
+        mmcif_conn_bonds(sys, conns, md_array_size(conns), atom_entries, entry_of, temp_arena);
+    }
 
     // The assemblies name the instances by their asym ids
     mmcif_assemblies(sys, assembly_gen, opers, temp_arena);

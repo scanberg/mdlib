@@ -60,7 +60,8 @@ struct md_executor_t;
 //                        "metallic")). Inferred only (METALLIC PHASES in md_bond.c).
 //     CONTACT      0x80  An interaction of no particular kind: one a user marks between two atoms.
 //     HYDROGEN     0xA0  A hydrogen bond, D-H...A. Stored with the hydrogen (or the donor without one) as the first
-//                        atom.
+//                        atom; one a file gives is of the atoms it names, in its order (mmCIF's struct_conn: the donor
+//                        and the acceptor, of a base pair, either first).
 //     IONIC        0xC0  Between two ions or charged groups: a salt bridge, an ion pair (mmCIF's saltbr).
 //     HALOGEN      0xE0  A halogen bond, C-X...A: a halogen and the acceptor of its sigma hole, the halogen first.
 //              COVALENT and COORDINATE bonds make up the bond graph, from which the connectivity, the rings, the

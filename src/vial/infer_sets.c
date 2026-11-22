@@ -1474,8 +1474,6 @@ static T call_bond_changes(infer_t* x, vial_node_id call, const char* fname) {
     static const vx_param_t p[] = {{"s", VX_KIND_WHOLE, false}, {"tolerance", VX_KIND_WHOLE, false}, {"breakable", VX_KIND_WHOLE, false}};
     vial_node_id a[3] = {0, 0, 0};
     if (!vx_bind(x, call, fname, p, 3, a)) return err();
-    T stage = vial_type_scalar(VIAL_DT_SET);
-    stage.stage = VIAL_STAGE_FRAME;
     if (a[0]) {
         const T st = x->out->types[(a[0]) - x->out->base];
         if (vial_type_is_error(&st)) return err();

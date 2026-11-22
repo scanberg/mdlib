@@ -11,6 +11,34 @@
 
 #define MAX_VALIDATION_SAMPLES 100
 
+// The atom of an instance (by its label asym id), a residue of it (by its seq id) and a name, or -1
+static int conn_atom(const md_system_t* sys, const char* asym, int seq, const char* name) {
+    for (size_t i = 0; i < sys->instance.count; ++i) {
+        if (!md_str_eq_cstr(MD_LABEL_STR(sys->instance.id[i]), asym)) continue;
+        for (uint32_t r = sys->instance.res_offset[i]; r < sys->instance.res_offset[i + 1]; ++r) {
+            if (sys->residue.seq_id[r] != seq) continue;
+            for (uint32_t a = sys->residue.atom_offset[r]; a < sys->residue.atom_offset[r + 1]; ++a) {
+                if (md_str_eq_cstr(md_atom_name(&sys->atom, a), name)) return (int)a;
+            }
+        }
+    }
+    return -1;
+}
+
+// The flags of the bond between two atoms, of the graph or an interaction; 0xFFFF for none
+static uint32_t conn_bond(const md_system_t* sys, int a, int b) {
+    if (a < 0 || b < 0) return 0xFFFF;
+    md_bond_idx_t idx = md_system_bond_find(sys, a, b);
+    if (idx < 0) idx = md_bond_find_interaction(&sys->bond, a, b);
+    return idx < 0 ? 0xFFFF : (uint32_t)md_system_bond_flags(sys, idx);
+}
+
+// The kind and the origin of a bond, of its flags, as the file gives one
+static uint32_t conn_given(md_bond_kind_t kind) {
+    return (uint32_t)md_bond_flags_set_origin(md_bond_flags_set_kind(MD_BOND_FLAG_KIND_GIVEN, kind), MD_BOND_ORIGIN_FILE);
+}
+#define CONN_FIELDS ((uint32_t)(MD_BOND_FLAG_KIND_MASK | MD_BOND_FLAG_ORIGIN_MASK | MD_BOND_FLAG_KIND_GIVEN))
+
 UTEST(mmcif, 1fez) {
     md_str_t path = MD_STR_INIT(MD_UNITTEST_DATA_DIR"/1fez.cif");
 
@@ -83,12 +111,101 @@ UTEST(mmcif, 8g7u) {
         EXPECT_NEAR(77.862,  sys_state.xyz[0].x, 0.001);
         EXPECT_NEAR(105.453, sys_state.xyz[0].y, 0.001);
         EXPECT_NEAR(80.951,  sys_state.xyz[0].z, 0.001);
+
+        // The bonds of _struct_conn, of the kinds it says: two disulfides, two covalent links of the RNA, five zinc
+        // coordinations and 46 hydrogen bonds of its base pairs
+        EXPECT_EQ(55, (int)md_bond_list_count(&sys.given_bond));
+        EXPECT_EQ(46, (int)sys.bond.interaction_count);
+        EXPECT_EQ(conn_given(MD_BOND_KIND_COVALENT),   CONN_FIELDS & conn_bond(&sys, conn_atom(&sys, "B", 347, "SG"), conn_atom(&sys, "B", 402, "SG")));
+        EXPECT_EQ(conn_given(MD_BOND_KIND_COVALENT),   CONN_FIELDS & conn_bond(&sys, conn_atom(&sys, "E", 1, "O3'"), conn_atom(&sys, "E", 2, "P")));
+        EXPECT_EQ(conn_given(MD_BOND_KIND_COORDINATE), CONN_FIELDS & conn_bond(&sys, conn_atom(&sys, "A", 813, "SG"), conn_atom(&sys, "G", 1001, "ZN")));
+        EXPECT_EQ(conn_given(MD_BOND_KIND_HYDROGEN),   CONN_FIELDS & conn_bond(&sys, conn_atom(&sys, "E", 1, "O6"), conn_atom(&sys, "F", 24, "N4")));
     }
 
     md_system_free(&sys);
     md_system_state_free(&sys_state);
 }
 
+
+// STRUCT_CONN. A lysine and an aspartate of chain A, whose OD2 has two alternate locations, a ligand of a C=O and a zinc.
+// The connections: a salt bridge, the same to a symmetry mate, a double bond of the ligand, a coordination of the second
+// alternate location, a hydrogen bond of a mismatched pair, and a connection of a type of no bond.
+static const char conn_cif[] =
+"data_CONN\n"
+"loop_\n"
+"_struct_conn.id\n"
+"_struct_conn.conn_type_id\n"
+"_struct_conn.ptnr1_label_asym_id\n"
+"_struct_conn.ptnr1_label_comp_id\n"
+"_struct_conn.ptnr1_label_seq_id\n"
+"_struct_conn.ptnr1_label_atom_id\n"
+"_struct_conn.pdbx_ptnr1_label_alt_id\n"
+"_struct_conn.ptnr1_auth_seq_id\n"
+"_struct_conn.ptnr1_symmetry\n"
+"_struct_conn.ptnr2_label_asym_id\n"
+"_struct_conn.ptnr2_label_comp_id\n"
+"_struct_conn.ptnr2_label_seq_id\n"
+"_struct_conn.ptnr2_label_atom_id\n"
+"_struct_conn.pdbx_ptnr2_label_alt_id\n"
+"_struct_conn.ptnr2_auth_seq_id\n"
+"_struct_conn.ptnr2_symmetry\n"
+"_struct_conn.pdbx_value_order\n"
+"saltbr1 saltbr A LYS 1 NZ ? 1 1_555 A ASP 2 OD1 ? 2 1_555 ?\n"
+"saltbr2 saltbr A LYS 1 NZ ? 1 1_555 A ASP 2 OD2 ? 2 2_555 ?\n"
+"covale1 covale B LIG . C1 ? 101 1_555 B LIG . O1 ? 101 1_555 doub\n"
+"metalc1 metalc C ZN . ZN ? 201 1_555 A ASP 2 OD2 B 2 1_555 ?\n"
+"mismat1 MISMAT A LYS 1 N ? 1 1_555 A ASP 2 O ? 2 1_555 ?\n"
+"other1 unknown A LYS 1 N ? 1 1_555 A ASP 2 OD1 ? 2 1_555 ?\n"
+"#\n"
+"loop_\n"
+"_atom_site.group_PDB\n"
+"_atom_site.id\n"
+"_atom_site.type_symbol\n"
+"_atom_site.label_atom_id\n"
+"_atom_site.label_alt_id\n"
+"_atom_site.label_comp_id\n"
+"_atom_site.label_asym_id\n"
+"_atom_site.label_entity_id\n"
+"_atom_site.label_seq_id\n"
+"_atom_site.Cartn_x\n"
+"_atom_site.Cartn_y\n"
+"_atom_site.Cartn_z\n"
+"_atom_site.auth_seq_id\n"
+"ATOM 1 N N . LYS A 1 1 0.000 0.000 0.000 1\n"
+"ATOM 2 N NZ . LYS A 1 1 5.000 0.000 0.000 1\n"
+"ATOM 3 O O . ASP A 1 2 0.000 2.900 0.000 2\n"
+"ATOM 4 O OD1 . ASP A 1 2 7.900 0.000 0.000 2\n"
+"ATOM 5 O OD2 A ASP A 1 2 5.000 2.900 0.000 2\n"
+"ATOM 6 O OD2 B ASP A 1 2 5.000 -2.900 0.000 2\n"
+"HETATM 7 C C1 . LIG B 2 . 20.000 0.000 0.000 101\n"
+"HETATM 8 O O1 . LIG B 2 . 21.220 0.000 0.000 101\n"
+"HETATM 9 ZN ZN . ZN C 3 . 30.000 0.000 0.000 201\n"
+"#\n";
+
+UTEST(mmcif, struct_conn) {
+    md_system_t sys = { .alloc = md_get_heap_allocator() };
+    md_system_state_t state = { .alloc = md_get_heap_allocator() };
+    ASSERT_TRUE(md_mmcif_system_init_from_str(&sys, &state, md_str_from_cstr(conn_cif), NULL));
+    ASSERT_EQ(8, (int)sys.atom.count);     // The first alternate location of OD2
+    // The salt bridge, the double bond and the hydrogen bond; not to a symmetry mate, nor to an atom not loaded, nor of
+    // a type of no bond
+    EXPECT_EQ(3, (int)md_bond_list_count(&sys.given_bond));
+    ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
+
+    const int nz = conn_atom(&sys, "A", 1, "NZ"), od1 = conn_atom(&sys, "A", 2, "OD1"), od2 = conn_atom(&sys, "A", 2, "OD2");
+    EXPECT_EQ(conn_given(MD_BOND_KIND_IONIC), CONN_FIELDS & conn_bond(&sys, nz, od1));
+    EXPECT_EQ(0xFFFFu, conn_bond(&sys, nz, od2));
+    EXPECT_EQ(0xFFFFu, conn_bond(&sys, conn_atom(&sys, "C", 201, "ZN"), od2));
+    EXPECT_EQ(conn_given(MD_BOND_KIND_HYDROGEN), CONN_FIELDS & conn_bond(&sys, conn_atom(&sys, "A", 1, "N"), conn_atom(&sys, "A", 2, "O")));
+    EXPECT_EQ(2, (int)sys.bond.interaction_count);
+    // The ligand's bond as the file gives it, of its order: inference finds it too, and keeps the file's
+    const uint32_t c_o = conn_bond(&sys, conn_atom(&sys, "B", 101, "C1"), conn_atom(&sys, "B", 101, "O1"));
+    EXPECT_EQ(conn_given(MD_BOND_KIND_COVALENT), CONN_FIELDS & c_o);
+    EXPECT_EQ(2, md_bond_order((md_bond_flags_t)c_o));
+
+    md_system_free(&sys);
+    md_system_state_free(&state);
+}
 
 // ASSEMBLIES. A chain A of two alanines, a chain B of one and two waters in asym C, and assemblies which take them by
 // rows of their own, by a product of operators and by ranges.
