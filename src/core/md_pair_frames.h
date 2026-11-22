@@ -49,6 +49,13 @@ bool md_pair_frames_frame(uint8_t* out, const md_pair_frames_t* pf, uint32_t fra
 // that is; when none, out is NaN.
 size_t md_pair_frames_occupancy(float* out, const md_pair_frames_t* pf, md_bitset_t frames);
 
+// Of the frames added among frames, the entries true in at least one, ascending, i * cols + j each, into entries, and
+// how many of those frames each is true in, into counts: md_arrays from alloc, of the same length, cleared first.
+// Returns how many frames that is, and when none, the arrays are left empty. A frame added meanwhile is in neither.
+// Its size is what is true, not rows * cols: a contact map shown where it is in view, at the frame shown (frames of one)
+// or over a period.
+size_t md_pair_frames_counts(uint32_t** entries, uint32_t** counts, const md_pair_frames_t* pf, md_bitset_t frames, struct md_allocator_i* alloc);
+
 // The frames entry (i, j) is true in, with its words from alloc; empty when it never is
 md_bitset_t md_pair_frames_entry(const md_pair_frames_t* pf, uint32_t i, uint32_t j, struct md_allocator_i* alloc);
 

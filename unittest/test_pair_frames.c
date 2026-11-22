@@ -4,6 +4,7 @@
 #include <core/md_pair_frames.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
+#include <core/md_array.h>
 #include <core/md_bitset.h>
 #include <core/md_common.h>
 
@@ -78,6 +79,37 @@ static void pf_check(int* utest_result, const md_pair_frames_t* pf, md_allocator
     // Past the frames: none, and NaN
     EXPECT_EQ(0u, md_pair_frames_occupancy(occ, pf, md_bitset_range(PF_FRAMES, PF_FRAMES + 100)));
     EXPECT_TRUE(isnan(occ[0]));
+    // The same as counts of the entries true in some: over the run, and at a frame
+    uint32_t* entries = NULL;
+    uint32_t* counts = NULL;
+    ASSERT_EQ(907u, md_pair_frames_counts(&entries, &counts, pf, run, alloc));
+    size_t k = 0;
+    for (uint32_t e = 0; e < PF_ROWS * PF_COLS; ++e) {
+        uint32_t c = 0;
+        for (uint32_t f = 70; f < 977; ++f) c += pf_truth(f, e);
+        if (!c) continue;
+        ASSERT_LT(k, md_array_size(entries));
+        EXPECT_EQ(e, entries[k]);
+        EXPECT_EQ(c, counts[k]);
+        ++k;
+    }
+    EXPECT_EQ(k, md_array_size(entries));
+    EXPECT_EQ(k, md_array_size(counts));
+    for (uint32_t f = 0; f < PF_FRAMES; f += 101) {
+        ASSERT_EQ(1u, md_pair_frames_counts(&entries, &counts, pf, md_bitset_range(f, f + 1), alloc));
+        k = 0;
+        for (uint32_t e = 0; e < PF_ROWS * PF_COLS; ++e) {
+            if (!pf_truth(f, e)) continue;
+            ASSERT_LT(k, md_array_size(entries));
+            EXPECT_EQ(e, entries[k]);
+            EXPECT_EQ(1u, counts[k]);
+            ++k;
+        }
+        EXPECT_EQ(k, md_array_size(entries));
+    }
+    EXPECT_EQ(0u, md_pair_frames_counts(&entries, &counts, pf, md_bitset_range(PF_FRAMES, PF_FRAMES + 100), alloc));
+    EXPECT_EQ(0u, md_array_size(entries));
+    EXPECT_EQ(0u, md_array_size(counts));
     // An entry's frames
     for (uint32_t e = 0; e < PF_ROWS * PF_COLS; ++e) {
         const md_bitset_t s = md_pair_frames_entry(pf, e / PF_COLS, e % PF_COLS, alloc);
@@ -146,6 +178,17 @@ UTEST(pair_frames, many_rows) {
     for (uint32_t i = 0; i < 9000000u; ++i) { ever += occ[i] > 0.0f; sum += occ[i]; }
     EXPECT_EQ(ever, md_pair_frames_count(pf));
     EXPECT_NEAR((double)N, sum, 1e-2);
+    // As counts: every entry ever true, ascending, as the fractions have them
+    uint32_t* entries_of = NULL;
+    uint32_t* counts = NULL;
+    ASSERT_EQ(100u, md_pair_frames_counts(&entries_of, &counts, pf, md_bitset_range(0, 100), heap));
+    ASSERT_EQ(ever, md_array_size(entries_of));
+    for (size_t i = 0; i < ever; ++i) {
+        if (i) EXPECT_LT(entries_of[i - 1], entries_of[i]);
+        EXPECT_NEAR(occ[entries_of[i]], (float)counts[i] / 100.0f, 1e-6f);
+    }
+    md_array_free(entries_of, heap);
+    md_array_free(counts, heap);
     free(occ);
     free(entries);
     md_pair_frames_free(pf);

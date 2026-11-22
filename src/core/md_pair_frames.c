@@ -1,8 +1,10 @@
 #include <core/md_pair_frames.h>
 
 #include <core/md_allocator.h>
+#include <core/md_array.h>
 #include <core/md_common.h>
 #include <core/md_os.h>
+#include <core/md_sort.h>
 
 #include <math.h>
 
@@ -234,22 +236,37 @@ bool md_pair_frames_frame(uint8_t* out, const md_pair_frames_t* pf, uint32_t fra
     return true;
 }
 
-size_t md_pair_frames_occupancy(float* out, const md_pair_frames_t* pf, md_bitset_t frames) {
-    if (!out || !pf) return 0;
-    const size_t total = (size_t)pf->rows * pf->cols;
-    // The frames counted: those added among those asked, as they are now. A row's bits are read through them, so a
-    // frame added meanwhile is in neither the counts nor what they are divided by.
-    uint64_t* sel = md_alloc(pf->alloc, (size_t)pf->words * sizeof(uint64_t));
-    if (!sel) return 0;
+// The frames counted, into sel[words]: those added among frames, as they are now. A row's bits are read through them,
+// so a frame added meanwhile is in neither the counts nor what they are divided by. Returns how many, with the words
+// holding them in [lo, hi).
+static size_t select_frames(uint64_t* sel, uint32_t* lo, uint32_t* hi, const md_pair_frames_t* pf, md_bitset_t frames) {
     size_t num = 0;
-    uint32_t lo = pf->words, hi = 0;
+    *lo = pf->words;
+    *hi = 0;
     for (uint32_t w = 0; w < pf->words; ++w) {
         sel[w] = md_atomic_load64((const volatile uint64_t*)&pf->added[w]) & md_bitset_word(frames, w * 64);
         if (!sel[w]) continue;
         num += md_popcnt64(sel[w]);
-        if (w < lo) lo = w;
-        hi = w + 1;
+        if (w < *lo) *lo = w;
+        *hi = w + 1;
     }
+    return num;
+}
+
+static inline uint32_t row_count(const md_pair_frames_t* pf, uint64_t row, const uint64_t* sel, uint32_t lo, uint32_t hi) {
+    const volatile uint64_t* bits = row_bits(pf, row);
+    uint64_t c = 0;
+    for (uint32_t w = lo; w < hi; ++w) c += md_popcnt64(md_atomic_load64(bits + w) & sel[w]);
+    return (uint32_t)c;
+}
+
+size_t md_pair_frames_occupancy(float* out, const md_pair_frames_t* pf, md_bitset_t frames) {
+    if (!out || !pf) return 0;
+    const size_t total = (size_t)pf->rows * pf->cols;
+    uint64_t* sel = md_alloc(pf->alloc, (size_t)pf->words * sizeof(uint64_t));
+    if (!sel) return 0;
+    uint32_t lo, hi;
+    const size_t num = select_frames(sel, &lo, &hi, pf, frames);
     if (num == 0) {
         for (size_t i = 0; i < total; ++i) out[i] = NAN;
         md_free(pf->alloc, sel, (size_t)pf->words * sizeof(uint64_t));
@@ -259,12 +276,40 @@ size_t md_pair_frames_occupancy(float* out, const md_pair_frames_t* pf, md_bitse
     const uint64_t n = md_atomic_load64(&pf->count);
     const float scale = 1.0f / (float)num;
     for (uint64_t r = 0; r < n; ++r) {
-        const volatile uint64_t* bits = row_bits(pf, r);
-        uint64_t c = 0;
-        for (uint32_t w = lo; w < hi; ++w) c += md_popcnt64(md_atomic_load64(bits + w) & sel[w]);
-        out[block_of(pf, r)->entry[r % BLOCK_ROWS]] = (float)c * scale;
+        out[block_of(pf, r)->entry[r % BLOCK_ROWS]] = (float)row_count(pf, r, sel, lo, hi) * scale;
     }
     md_free(pf->alloc, sel, (size_t)pf->words * sizeof(uint64_t));
+    return num;
+}
+
+size_t md_pair_frames_counts(uint32_t** entries, uint32_t** counts, const md_pair_frames_t* pf, md_bitset_t frames, struct md_allocator_i* alloc) {
+    if (!entries || !counts || !alloc) return 0;
+    md_array_shrink(*entries, 0);
+    md_array_shrink(*counts, 0);
+    if (!pf) return 0;
+    uint64_t* sel = md_alloc(alloc, (size_t)pf->words * sizeof(uint64_t));
+    if (!sel) return 0;
+    uint32_t lo, hi;
+    const size_t num = select_frames(sel, &lo, &hi, pf, frames);
+    if (num) {
+        // Each true in some, as entry << 32 | count: sorted, the entries ascending, each once
+        const uint64_t n = md_atomic_load64(&pf->count);
+        uint64_t* keys = NULL;
+        for (uint64_t r = 0; r < n; ++r) {
+            const uint32_t c = row_count(pf, r, sel, lo, hi);
+            if (c) md_array_push(keys, (uint64_t)block_of(pf, r)->entry[r % BLOCK_ROWS] << 32 | c, alloc);
+        }
+        const size_t k = md_array_size(keys);
+        md_sort_radix_u64(keys, k);
+        md_array_resize(*entries, k, alloc);
+        md_array_resize(*counts, k, alloc);
+        for (size_t i = 0; i < k; ++i) {
+            (*entries)[i] = (uint32_t)(keys[i] >> 32);
+            (*counts)[i] = (uint32_t)keys[i];
+        }
+        md_array_free(keys, alloc);
+    }
+    md_free(alloc, sel, (size_t)pf->words * sizeof(uint64_t));
     return num;
 }
 
