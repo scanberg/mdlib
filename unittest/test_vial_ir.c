@@ -1838,8 +1838,9 @@ UTEST(vial_ir, ring_pucker) {
     vial_ir__end(&r);
 }
 
-// contacts() on each frame of P's run, as a brute force over every pair of particles of two residues finds them: within
-// the cutoff, and the residues at least min_separation apart along the strand; and between two arrays, every pair
+// contacts() on each frame of P's run, as a brute force over every pair of particles of two residues finds them: their van
+// der Waals surfaces within 1 Å by default, or their centres within cutoff=, and the residues at least min_separation
+// apart along the strand; and between two arrays, every pair
 UTEST(vial_ir, contacts) {
     int64_t nf = 0;
     const md_system_t* sys = vial_ir__run_p(&nf);
@@ -1867,24 +1868,27 @@ UTEST(vial_ir, contacts) {
         ASSERT_TRUE(c3 && c0 && ab && c3->dtype == VIAL_DT_BOOL && ab->ndim == 2 && ab->dims[0] == 5 && ab->dims[1] == 7);
         for (uint32_t i = 0; i < nr; ++i) {
             for (uint32_t j = 0; j < nr; ++j) {
-                // The shortest distance between the two residues' particles, two of them
+                // The shortest distance between the two residues' particles, two of them: between centres, and between
+                // their van der Waals surfaces
                 const md_urange_t ri = md_system_residue_atom_range(sys, i), rj = md_system_residue_atom_range(sys, j);
-                float dmin = 1e9f;
+                float dmin = 1e9f, gmin = 1e9f;
                 for (uint32_t p = ri.beg; p < ri.end; ++p) {
                     for (uint32_t q = rj.beg; q < rj.end; ++q) {
                         if (p == q) continue;
                         md_float3_t d = md_float3_sub(state.xyz[q], state.xyz[p]);
                         md_geom_min_image(d.elem, 0, 1, &state.unitcell);
-                        dmin = MD_MIN(dmin, md_float3_length(d));
+                        const float r = md_float3_length(d);
+                        dmin = MD_MIN(dmin, r);
+                        gmin = MD_MIN(gmin, r - md_atom_radius(&sys->atom, p) - md_atom_radius(&sys->atom, q));
                     }
                 }
                 const uint32_t sep = i > j ? i - j : j - i;
-                const bool want3 = i != j && sep >= 3 && dmin < 4.5f;
+                const bool want3 = i != j && sep >= 3 && gmin < 1.0f;
                 const bool want0 = i != j && dmin < 3.0f;
                 EXPECT_EQ(want3, ((const uint8_t*)c3->data)[i * nr + j] != 0);
                 EXPECT_EQ(want0, ((const uint8_t*)c0->data)[i * nr + j] != 0);
                 // Between two arrays every pair of sets, a residue in both with itself too: two of its particles within
-                if (i < 5 && j >= 3 && j < 10) EXPECT_EQ(dmin < 4.5f, ((const uint8_t*)ab->data)[i * 7 + (j - 3)] != 0);
+                if (i < 5 && j >= 3 && j < 10) EXPECT_EQ(gmin < 1.0f, ((const uint8_t*)ab->data)[i * 7 + (j - 3)] != 0);
                 total += want3;
                 total0 += want0;
             }

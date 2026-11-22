@@ -3656,21 +3656,25 @@ static bool k_pucker(vial_kctx_t* k, const vial_val_t* r, bool pseudo, vial_val_
     return true;
 }
 
-// contacts(a, b, cutoff, min_separation): per frame, of each set of a and each of b, whether two of their particles are
-// within cutoff (md_contact_query_eval), with the dimensions of a then of b; of a with itself without b, a set of a
+// contacts(a, b, surface_distance, cutoff, min_separation): per frame, of each set of a and each of b, whether two of
+// their particles touch (md_contact_query_eval): their van der Waals surfaces within surface_distance, 1 Å by default, or
+// their centres within cutoff; with the dimensions of a then of b; of a with itself without b, a set of a
 // strand none with the sets of its strand fewer than min_separation from it in a. The queries are kept by their sets.
 static bool k_contacts(vial_kctx_t* k, const bargs_t* ba, vial_val_t* out) {
     const vial_val_t* a = arg(ba, "a", 0);
     const vial_val_t* b = arg(ba, "b", 1);
-    const vial_val_t* cut = arg(ba, "cutoff", 2);
-    const vial_val_t* sep = arg(ba, "min_separation", 3);
+    const vial_val_t* surf = arg(ba, "surface_distance", 2);
+    const vial_val_t* cut = arg(ba, "cutoff", 3);
+    const vial_val_t* sep = arg(ba, "min_separation", 4);
     const md_system_t* sys = k->in->msys;
     const vial_frame_t* fr = k->in->frame;
     if (!sys || !fr) return vial_rt_fail(k, "R0103", "contacts reads a frame of the system");
     if (!a || a->dtype != VIAL_DT_SET || !a->sets) return vial_rt_fail(k, "R0103", "contacts takes sets");
     const bool self = !b || b->dtype == VIAL_DT_NONE;
     if (!self && (b->dtype != VIAL_DT_SET || !b->sets)) return vial_rt_fail(k, "R0103", "contacts takes sets");
-    const float cutoff = cut && cut->data ? (float)num_at(cut, 0) : 4.5f;
+    // Between the van der Waals surfaces of the particles by default, 1 Å apart; between their centres with cutoff=
+    const bool centres = cut && cut->data;
+    const float cutoff = centres ? (float)num_at(cut, 0) : surf && surf->data ? (float)num_at(surf, 0) : 1.0f;
     const uint32_t min_sep = self ? (sep && sep->data ? (uint32_t)MD_MAX(0.0, num_at(sep, 0)) : 3u) : 0u;
     const vial_sets_t* sa = a->sets;
     const vial_sets_t* sb = self ? a->sets : b->sets;
@@ -3683,7 +3687,7 @@ static bool k_contacts(vial_kctx_t* k, const bargs_t* ba, vial_val_t* out) {
         key = md_hash64(sb->offset, ((size_t)nb + 1) * sizeof(uint32_t), key ^ 1);
         key = md_hash64(sb->idx, (size_t)sb->offset[nb] * sizeof(uint32_t), key);
     }
-    key = md_hash64(&cutoff, sizeof(cutoff), key ^ ((uint64_t)min_sep << 32) ^ (uint64_t)self);
+    key = md_hash64(&cutoff, sizeof(cutoff), key ^ ((uint64_t)min_sep << 32) ^ (uint64_t)self ^ ((uint64_t)centres << 1));
     vial_interp_t* in = k->in;
     md_contact_query_t* q = NULL;
     for (size_t i = 0; i < md_array_size(in->contacts.keys) && !q; ++i) if (in->contacts.keys[i] == key) q = in->contacts.queries[i];
@@ -3704,7 +3708,7 @@ static bool k_contacts(vial_kctx_t* k, const bargs_t* ba, vial_val_t* out) {
         }
         const md_contact_desc_t desc = {
             .group_a = ga, .num_a = na, .group_b = gb, .num_b = self ? 0 : nb,
-            .criterion = MD_CONTACT_CRITERION_DISTANCE, .cutoff = cutoff,
+            .criterion = centres ? MD_CONTACT_CRITERION_DISTANCE : MD_CONTACT_CRITERION_RADII, .cutoff = cutoff,
             .min_separation = min_sep, .group_parent = parent,
         };
         q = md_alloc(heap, sizeof(md_contact_query_t));

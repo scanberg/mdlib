@@ -12,6 +12,7 @@
 
 #include <md_attributes.h>
 #include <md_system.h>
+#include <md_element.h>
 
 #include <math.h>
 #include <stdio.h>
@@ -673,12 +674,30 @@ static T call_pucker(infer_t* x, vial_node_id call, bool pseudo) {
 // contacts(a, b=None, cutoff=4.5, min_separation=3): per frame, of each set of a and each of b, whether two of their
 // particles are within cutoff (md_contact_query), bool with the dimensions of a then of b; without b, of a with itself,
 // where two sets of one strand fewer than min_separation apart in a are none, and a set is none with itself
+// The particles of the sets of node whose van der Waals radius is no element's: atoms of no known element, which have
+// the placeholder radius of element 0, where contacts by surface distance cannot know how near they come. A bead has a
+// radius of its own, and a virtual site, the M of a 4 site water, none, and touches nothing as it should.
+static uint32_t count_no_radius(infer_t* x, vial_node_id node, uint32_t* total) {
+    const vial_value_t v = vx_value_of(x, node);
+    if (v.kind != VIAL_VAL_SETS || !x->sys || !x->sys->sys) return 0;
+    const md_atom_data_t* atom = &x->sys->sys->atom;
+    uint32_t none = 0;
+    for (uint32_t i = 0; i < (v.sets->single ? 1u : v.sets->count); ++i) {
+        const uint32_t* it = vial_sets_items(v.sets, i);
+        const uint32_t n = vial_sets_size(v.sets, i);
+        for (uint32_t j = 0; j < n; ++j) none += md_atom_particle_kind(atom, it[j]) == MD_PARTICLE_ATOM && md_atom_atomic_number(atom, it[j]) == 0;
+        *total += n;
+    }
+    return none;
+}
+
 static T call_contacts(infer_t* x, vial_node_id call) {
-    static const param_t params[] = {{"a", VK_WHOLE, true}, {"b", VK_WHOLE, false}, {"cutoff", VK_WHOLE, false}, {"min_separation", VK_WHOLE, false}};
-    vial_node_id args[4];
-    if (!bind(x, call, "contacts", params, 4, args)) return err();
-    T ts[4];
-    for (int i = 0; i < 4; ++i) {
+    static const param_t params[] = {{"a", VK_WHOLE, true}, {"b", VK_WHOLE, false}, {"surface_distance", VK_WHOLE, false}, {"cutoff", VK_WHOLE, false},
+                                     {"min_separation", VK_WHOLE, false}};
+    vial_node_id args[5];
+    if (!bind(x, call, "contacts", params, 5, args)) return err();
+    T ts[5];
+    for (int i = 0; i < 5; ++i) {
         ts[i] = args[i] ? x->out->types[(args[i]) - x->out->base] : vial_type_scalar(VIAL_DT_NONE);
         if (vial_type_is_error(&ts[i])) return err();
     }
@@ -691,23 +710,41 @@ static T call_contacts(infer_t* x, vial_node_id call) {
             return err();
         }
     }
-    if (args[2] && (!is_number(&ts[2]) || ts[2].dtype == VIAL_DT_BOOL || ts[2].ndim ||
-                    (ts[2].unit_kind == VIAL_UNIT_KNOWN && !md_unit_base_equal(ts[2].unit, unit_named("angstrom"))))) {
-        vx_diag_fix(x, "E0313", args[2], NULL, "`cutoff` is one length; this is %s", vx_tstr(&ts[2]));
+    for (int i = 2; i <= 3; ++i) {
+        if (args[i] && (!is_number(&ts[i]) || ts[i].dtype == VIAL_DT_BOOL || ts[i].ndim ||
+                        (ts[i].unit_kind == VIAL_UNIT_KNOWN && !md_unit_base_equal(ts[i].unit, unit_named("angstrom"))))) {
+            vx_diag_fix(x, "E0313", args[i], NULL, "`%s` is one length; this is %s", params[i].name, vx_tstr(&ts[i]));
+            return err();
+        }
+    }
+    if (args[2] && args[3]) {
+        vx_diag_fix(x, "E0313", args[3], NULL, "`surface_distance` and `cutoff` are two ways of saying when sets touch, between the van der Waals "
+                                               "surfaces of their particles or between their centres: give one");
         return err();
     }
-    if (args[3]) {
-        const vial_value_t v = value(x, args[3]);
-        if (ts[3].dtype != VIAL_DT_INT || ts[3].ndim || v.kind != VIAL_VAL_INT || v.i < 0) {
+    if (args[4]) {
+        const vial_value_t v = value(x, args[4]);
+        if (ts[4].dtype != VIAL_DT_INT || ts[4].ndim || v.kind != VIAL_VAL_INT || v.i < 0) {
             char what[32];
             if (v.kind == VIAL_VAL_INT) snprintf(what, sizeof(what), "%lld", (long long)v.i);
-            vx_diag_fix(x, "E0313", args[3], NULL, "`min_separation` is a count of sets, 0 or more, known when compiling; this is %s",
-                v.kind == VIAL_VAL_INT ? what : vx_tstr(&ts[3]));
+            vx_diag_fix(x, "E0313", args[4], NULL, "`min_separation` is a count of sets, 0 or more, known when compiling; this is %s",
+                v.kind == VIAL_VAL_INT ? what : vx_tstr(&ts[4]));
             return err();
         }
         if (!self) {
-            vx_diag_fix(x, "E0313", args[3], NULL, "`min_separation` is of a with itself: contacts between a and b take none");
+            vx_diag_fix(x, "E0313", args[4], NULL, "`min_separation` is of a with itself: contacts between a and b take none");
             return err();
+        }
+    }
+    // By surface distance, a particle needs a radius of its own
+    if (!args[3]) {
+        uint32_t total = 0;
+        uint32_t none = count_no_radius(x, args[0], &total);
+        if (!self) none += count_no_radius(x, args[1], &total);
+        if (none) {
+            vx_diag_fix(x, "W0610", call, NULL, "%u of the %u particles are of no element known, so their van der Waals radius is a "
+                                               "placeholder of %.1f Å; `cutoff=` counts a contact between particle centres", none, total,
+                                               (double)md_atomic_number_vdw_radius(0));
         }
     }
     T t = vial_type_scalar(VIAL_DT_BOOL);
@@ -715,7 +752,7 @@ static T call_contacts(infer_t* x, vial_node_id call) {
     const T* tb = self ? &ts[0] : &ts[1];
     for (uint8_t k = 0; k < tb->ndim; ++k) vial_type_push_dim(&t, tb->dims[k]);
     t.stage = VIAL_STAGE_FRAME;
-    for (int i = 0; i < 3; ++i) if (ts[i].stage > t.stage) t.stage = ts[i].stage;
+    for (int i = 0; i < 4; ++i) if (ts[i].stage > t.stage) t.stage = ts[i].stage;
     return t;
 }
 

@@ -11,6 +11,8 @@
 #include <string.h>
 
 #include <md_vial.h>
+#include <md_pdb.h>
+#include <md_system.h>
 
 struct md_system_t;
 
@@ -1347,6 +1349,30 @@ UTEST_F(vial_check, contacts) {
     EXPECT_DIAGS_ON(P, "c = contacts(residue, cutoff='near')\n", "E0313 1: `cutoff` is one length; this is str\n");
     EXPECT_DIAGS_ON(P, "c = contacts(residue, min_separation=-1)\n",
         "E0313 1: `min_separation` is a count of sets, 0 or more, known when compiling; this is -1\n");
+    // Between surfaces by default, between centres with cutoff=; not both
+    EXPECT_TYPE_ON(P, "c = contacts(residue, surface_distance=0.4)\n", 1, "bool[15][15], frame");
+    EXPECT_TYPE_ON(P, "c = contacts(residue, surface_distance=0.05 nm)\n", 1, "bool[15][15], frame");
+    EXPECT_DIAGS_ON(P, "c = contacts(residue, surface_distance=1.0, cutoff=4.5)\n",
+        "E0313 1: `surface_distance` and `cutoff` are two ways of saying when sets touch, between the van der Waals surfaces of their particles or "
+        "between their centres: give one\n");
+    EXPECT_DIAGS_ON(P, "c = contacts(residue, surface_distance='near')\n", "E0313 1: `surface_distance` is one length; this is str\n");
+    // Atoms of no element known have a placeholder radius: by surface distance W0610, and not by cutoff=
+    {
+        static const char pdb[] =
+            "ATOM      1  XX  DUM A   1       0.000   0.000   0.000  1.00  0.00          XX\n"
+            "ATOM      2  XX  DUM A   2       1.000   0.000   0.000  1.00  0.00          XX\n"
+            "ATOM      3  XX  DUM A   3       2.000   0.000   0.000  1.00  0.00          XX\n"
+            "ATOM      4  C1  CAR A   4       3.000   0.000   0.000  1.00  0.00           C\n"
+            "END\n";
+        md_system_t sys = {.alloc = utest_fixture->alloc};
+        md_system_state_t st = {.alloc = utest_fixture->alloc};
+        ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, (md_str_t){pdb, sizeof(pdb) - 1}, NULL));
+        md_system_infer(&sys, &st, NULL);
+        EXPECT_DIAGS_ON(&sys, "c = contacts(residue)\n",
+            "W0610 1: 3 of the 4 particles are of no element known, so their van der Waals radius is a placeholder of 1.0 Å; `cutoff=` counts a "
+            "contact between particle centres\n");
+        EXPECT_DIAGS_ON(&sys, "c = contacts(residue, cutoff=4.5)\n", "");
+    }
 }
 
 // A ring's pucker, Cremer and Pople's, and a furanose's pseudorotation: a tuple of arrays per frame; and ring(pucker=),

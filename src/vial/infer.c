@@ -1865,7 +1865,9 @@ static void check_published(infer_t* x, vial_node_id target, const T* t) {
         return;
     }
     const bool per_frame = t->stage == VIAL_STAGE_FRAME || (t->flags & VIAL_TYPE_PER_FRAME);
-    if (per_frame && x->c->num_frames && t->ndim < 3 && n * x->c->num_frames > 16u * 1024u * 1024u) {
+    // A matrix of truths is kept as the frames each entry is true in, at the size of its entries ever true
+    const bool pairs = t->dtype == VIAL_DT_BOOL && t->ndim == 2;
+    if (per_frame && !pairs && x->c->num_frames && t->ndim < 3 && n * x->c->num_frames > 16u * 1024u * 1024u) {
         const double mb = (double)(n * x->c->num_frames) * 4.0 / (1024.0 * 1024.0);
         diag_fix(x, "W0404", target, fix, "`%.*s` takes %.0f MB over %llu frames; published values are kept for the whole run",
             (int)name.len, name.ptr, mb, (unsigned long long)x->c->num_frames);
