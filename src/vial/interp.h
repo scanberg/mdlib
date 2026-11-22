@@ -147,6 +147,9 @@ typedef struct vial_interp_t {
     // A streamed population's summary over its members, written beside its row at each frame: by ssa, NULL or where
     // it goes (vial_summarize)
     struct vial_summary_t**     stream_summary;
+    // Matrices of truths written out as each frame computes them, as the frames each entry is true in: by ssa, NULL
+    // or what they are added to (md_pair_frames.h), from any thread. Neither streamed nor kept as series otherwise.
+    struct md_pair_frames_t**   stream_pairs;
     // Frames done, per sweep: done[sweep][f] is set once the frame's values of that sweep are computed
     uint8_t*                    frame_done[8];
     uint32_t                    err_seq;    // errors so far at this frame

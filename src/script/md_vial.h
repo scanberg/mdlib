@@ -149,6 +149,9 @@ enum {
     // times structures for an sdf)
     MD_VIAL_OUTPUT_VOLUME       = 1 << 3,
     MD_VIAL_OUTPUT_SDF          = 1 << 4,   // a volume in the frame of its structures, which drawing it places (md_vial_pose_t)
+    // A matrix: two dimensions, its rows' labels <path>/labels and its columns' <path>/column_labels where they are
+    // known. Truths per frame are kept as the frames each entry is true in (md_vial_eval_pairs), and have no <path>.
+    MD_VIAL_OUTPUT_MATRIX       = 1 << 5,
 };
 
 typedef struct md_vial_output_t {
@@ -320,8 +323,14 @@ size_t          md_vial_eval_diagnostics(const md_vial_eval_t* eval, const md_vi
 
 // The published values. A value per frame whose shape the type knows is there from the start of md_vial_eval_run, NaN
 // (0 for ints) at the frames not computed yet, and written as frames finish, from the evaluation's threads; its
-// version changes when the run ends. Everything else is there once md_vial_eval_run has finished.
+// version changes when the run ends. A matrix of truths per frame is not: md_vial_eval_pairs. Everything else is there
+// once md_vial_eval_run has finished.
 const struct md_attributes_t* md_vial_eval_attributes(const md_vial_eval_t* eval);
+
+// A matrix of truths per frame (MD_VIAL_OUTPUT_MATRIX), such as contacts(residue), as the frames each entry is true
+// in (md_pair_frames.h): written as frames finish, from the evaluation's threads, and read from any thread while they
+// are; a frame added stays over runs. NULL for any other output. The evaluation's, valid until it is freed.
+const struct md_pair_frames_t* md_vial_eval_pairs(const md_vial_eval_t* eval, md_str_t name);
 
 // Which frames an output holds, from any thread while md_vial_eval_run runs: out[f] is 1 where it is computed. Every
 // frame once the run has finished, and for an output taken over. Returns the number of frames; writes nothing when cap

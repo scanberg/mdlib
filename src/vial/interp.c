@@ -14,6 +14,7 @@
 #include <md_hbond.h>
 #include <md_interaction.h>
 #include <md_contact.h>
+#include <core/md_pair_frames.h>
 
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
@@ -1049,7 +1050,8 @@ static bool eval_fold(vial_interp_t* in, uint32_t opi) {
 
 static bool needs_series(const vial_interp_t* in, vial_ssa_t v) {
     const vial_ir_t* ir = in->ir;
-    // Outputs, and what a once op or a later sweep reads
+    // Outputs, but for matrices kept as pairs; what a once op or a later sweep reads is kept apart
+    if (in->stream_pairs && in->stream_pairs[v]) return false;
     for (size_t i = 0; i < md_array_size(ir->outputs); ++i) if (ir->outputs[i].value == v) return true;
     return false;
 }
@@ -1073,6 +1075,22 @@ static void stream_out(vial_interp_t* main, vial_ssa_t v, int64_t f, const vial_
         }
     }
     if (main->stream_summary && main->stream_summary[v] && dt == VIAL_DT_FLOAT) vial_summarize(main->stream_summary[v], f, (const float*)row, n);
+}
+
+// A matrix of truths at frame f, as the entries true in it; missing ones are not. Nothing when it has another shape.
+static void pairs_out(vial_interp_t* main, vial_ssa_t v, int64_t f, const vial_val_t* val, md_allocator_i* temp) {
+    md_pair_frames_t* pf = main->stream_pairs[v];
+    if (val->dtype != VIAL_DT_BOOL || val->ndim != 2 || !val->data || f < 0) return;
+    if (val->dims[0] != md_pair_frames_rows(pf) || val->dims[1] != md_pair_frames_cols(pf)) return;
+    const size_t n = (size_t)val->dims[0] * val->dims[1];
+    const uint8_t* m = val->data;
+    size_t count = 0;
+    for (size_t i = 0; i < n; ++i) count += m[i] && !vial_val_is_missing(val, i);
+    uint32_t* entries = count ? md_alloc(temp, count * sizeof(uint32_t)) : NULL;
+    if (count && !entries) return;
+    size_t k = 0;
+    for (size_t i = 0; i < n; ++i) if (m[i] && !vial_val_is_missing(val, i)) entries[k++] = (uint32_t)i;
+    md_pair_frames_add(pf, (uint32_t)f, entries, count);
 }
 
 static int cmp_float(const void* a, const void* b) {
@@ -1283,6 +1301,7 @@ static int run_frame(vial_interp_t* in, vial_interp_t* main, uint8_t sweep, int6
         in->state[op->result] = 1;
         if (in->series[op->result]) in->series[op->result][f] = vial_val_copy(&in->vals[op->result], in->alloc);
         if (main->stream && main->stream[op->result]) stream_out(main, op->result, f, &in->vals[op->result]);
+        if (main->stream_pairs && main->stream_pairs[op->result]) pairs_out(main, op->result, f, &in->vals[op->result], in->temp);
     }
     if (sweep < 8 && main->frame_done[sweep]) main->frame_done[sweep][f] = 1;
     in->frame = NULL;

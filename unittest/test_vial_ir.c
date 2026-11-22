@@ -19,6 +19,7 @@
 #include <stdlib.h>
 
 #include "vial_test_systems.h"
+#include <core/md_pair_frames.h>
 
 // Phase 3: the array IR. Lowering, the passes and the interpreter are tested here; the reference's examples are in
 // test_vial_spec.c.
@@ -2043,6 +2044,117 @@ UTEST(vial_ir, hover_values) {
     }
     #undef AT
     md_vial_eval_free(eval);
+    md_vial_program_free(prog);
+    md_arena_allocator_destroy(alloc);
+}
+
+// A matrix of truths per frame published as the frames each entry is true in, not as an attribute of every frame: each
+// frame as the interpreter gives it, from frames evaluated on several threads, and taken over by a later evaluation
+UTEST(vial_ir, matrix_pairs) {
+    int64_t nf = 0;
+    const md_system_t* sys = vial_ir__run_p(&nf);
+    ASSERT_TRUE(sys != NULL && nf > 4);
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
+    const char* src =
+        "m  = contacts(residue)\n"
+        "ab = contacts(residue[0:5], residue[3:10], cutoff=6.0)\n"
+        "n  = sum(contacts(residue))\n";
+    const md_vial_compile_desc_t cd = {.sys = sys, .run = MD_STR_LIT("run")};
+    md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &cd, alloc);
+    ASSERT_TRUE(prog != NULL);
+    {
+        const md_vial_output_t* o;
+        const size_t no = md_vial_outputs(prog, &o);
+        ASSERT_EQ(3u, no);
+        EXPECT_TRUE(o[0].flags & MD_VIAL_OUTPUT_MATRIX);
+        EXPECT_TRUE(o[0].flags & MD_VIAL_OUTPUT_TEMPORAL);
+        EXPECT_FALSE(o[2].flags & MD_VIAL_OUTPUT_MATRIX);
+    }
+    const md_vial_eval_desc_t ed = {.sys = sys, .run = MD_STR_LIT("run"), .executor = test_executor_of_threads(4)};
+    md_vial_eval_t* eval = md_vial_eval_create(prog, &ed, alloc);
+    ASSERT_TRUE(eval != NULL);
+    ASSERT_TRUE(md_vial_eval_run(eval));
+    const md_attributes_t* attrs = md_vial_eval_attributes(eval);
+    EXPECT_TRUE(md_attributes_find(attrs, MD_STR_LIT("script/m")) == NULL);
+    EXPECT_TRUE(md_attributes_find(attrs, MD_STR_LIT("script/n")) != NULL);
+    EXPECT_TRUE(md_attributes_find(attrs, MD_STR_LIT("script/m/labels")) != NULL);
+    EXPECT_TRUE(md_attributes_find(attrs, MD_STR_LIT("script/ab/column_labels")) != NULL);
+    const md_pair_frames_t* pm = md_vial_eval_pairs(eval, MD_STR_LIT("m"));
+    const md_pair_frames_t* pab = md_vial_eval_pairs(eval, MD_STR_LIT("ab"));
+    ASSERT_TRUE(pm != NULL && pab != NULL);
+    EXPECT_TRUE(md_vial_eval_pairs(eval, MD_STR_LIT("n")) == NULL);
+    EXPECT_EQ(15u, md_pair_frames_rows(pm));
+    EXPECT_EQ(15u, md_pair_frames_cols(pm));
+    EXPECT_EQ(5u, md_pair_frames_rows(pab));
+    EXPECT_EQ(7u, md_pair_frames_cols(pab));
+    EXPECT_EQ((uint64_t)nf, md_bitset_count(md_pair_frames_added(pm, alloc)));
+    uint8_t held[64];
+    ASSERT_EQ((size_t)nf, md_vial_eval_output_frames(eval, MD_STR_LIT("m"), held, sizeof(held)));
+    for (int64_t f = 0; f < nf; ++f) EXPECT_EQ(1, held[f]);
+
+    // Frame by frame as the interpreter gives them; the number of contacts is the count of the pairs
+    vial_ir__run_t r;
+    ASSERT_TRUE(vial_ir__start(&r, src, sys));
+    md_system_state_t state = {.alloc = r.alloc};
+    md_system_state_init(&state, sys->atom.count);
+    const md_str_t paths[] = {MD_STR_LIT("atom/position"), MD_STR_LIT("unitcell")};
+    md_system_extract_t* ex = md_system_extract_begin(sys, MD_STR_LIT("run"), paths, 2, r.alloc);
+    const md_attribute_t* an = md_attributes_find(attrs, MD_STR_LIT("script/n"));
+    uint32_t* count = calloc(15 * 15, sizeof(uint32_t));
+    for (int64_t f = 0; f < nf; ++f) {
+        ASSERT_TRUE(md_system_extract_frame(ex, f, &state));
+        const vial_frame_t fr = {.xyz = (const float*)state.xyz, .num_atoms = state.num_atoms, .cell = state.unitcell, .index = f, .time = (double)f};
+        ASSERT_TRUE(vial_interp_frame(&r.in, &fr));
+        const vial_val_t* vm = vial_ir__value(&r, "m");
+        const vial_val_t* vab = vial_ir__value(&r, "ab");
+        ASSERT_TRUE(vm && vab);
+        uint8_t got[15 * 15];
+        ASSERT_TRUE(md_pair_frames_frame(got, pm, (uint32_t)f));
+        size_t ones = 0;
+        for (int i = 0; i < 15 * 15; ++i) {
+            EXPECT_EQ(((const uint8_t*)vm->data)[i] != 0, got[i] != 0);
+            ones += got[i];
+            count[i] += got[i];
+        }
+        EXPECT_EQ((double)ones, an->format.type == MD_ATTRIBUTE_TYPE_I32 ? (double)((const int32_t*)an->data)[f] : ((const float*)an->data)[f]);
+        ASSERT_TRUE(md_pair_frames_frame(got, pab, (uint32_t)f));
+        for (int i = 0; i < 5 * 7; ++i) EXPECT_EQ(((const uint8_t*)vab->data)[i] != 0, got[i] != 0);
+    }
+    md_system_extract_end(ex);
+    vial_ir__end(&r);
+    float occ[15 * 15];
+    ASSERT_EQ((size_t)nf, md_pair_frames_occupancy(occ, pm, md_bitset_range(0, (uint32_t)nf)));
+    for (int i = 0; i < 15 * 15; ++i) EXPECT_NEAR((float)count[i] / (float)nf, occ[i], 1e-6f);
+    free(count);
+
+    // Run again: the same pairs, the same frames
+    ASSERT_TRUE(md_vial_eval_run(eval));
+    EXPECT_TRUE(md_vial_eval_pairs(eval, MD_STR_LIT("m")) == pm);
+    float occ2[15 * 15];
+    ASSERT_EQ((size_t)nf, md_pair_frames_occupancy(occ2, pm, md_bitset_range(0, (uint32_t)nf)));
+    for (int i = 0; i < 15 * 15; ++i) EXPECT_EQ(occ[i], occ2[i]);
+
+    // Taken over, renamed: a copy, every frame there without a run, its labels too
+    const char* src2 =
+        "mm = contacts(residue)\n"
+        "ab = contacts(residue[0:5], residue[3:10], cutoff=6.0)\n";
+    md_vial_program_t* prog2 = md_vial_compile(md_str_from_cstr(src2), &cd, alloc);
+    ASSERT_TRUE(prog2 != NULL);
+    md_vial_eval_t* e2 = md_vial_eval_create_from(eval, prog2, &ed, alloc);
+    ASSERT_TRUE(e2 != NULL);
+    const md_pair_frames_t* p2 = md_vial_eval_pairs(e2, MD_STR_LIT("mm"));
+    ASSERT_TRUE(p2 != NULL && p2 != pm);
+    md_vial_eval_free(eval);
+    ASSERT_EQ((size_t)nf, md_pair_frames_occupancy(occ2, p2, md_bitset_range(0, (uint32_t)nf)));
+    for (int i = 0; i < 15 * 15; ++i) EXPECT_EQ(occ[i], occ2[i]);
+    ASSERT_EQ((size_t)nf, md_vial_eval_output_frames(e2, MD_STR_LIT("mm"), held, sizeof(held)));
+    for (int64_t f = 0; f < nf; ++f) EXPECT_EQ(1, held[f]);
+    EXPECT_TRUE(md_attributes_find(md_vial_eval_attributes(e2), MD_STR_LIT("script/mm/labels")) != NULL);
+    md_vial_plan_t plan[2];
+    ASSERT_TRUE(md_vial_eval_plan(plan, 2, e2, prog2, (size_t)nf));
+    EXPECT_EQ(MD_VIAL_PLAN_HELD, plan[0].status);
+    md_vial_eval_free(e2);
+    md_vial_program_free(prog2);
     md_vial_program_free(prog);
     md_arena_allocator_destroy(alloc);
 }

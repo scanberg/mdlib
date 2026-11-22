@@ -16,6 +16,7 @@
 #include <core/md_common.h>
 #include <core/md_executor.h>
 #include <core/md_hash.h>
+#include <core/md_pair_frames.h>
 
 #include <math.h>
 #include <stdarg.h>
@@ -37,6 +38,14 @@ typedef struct eval_held_t {
     char                path[192];
 } eval_held_t;
 
+// A matrix of truths per frame, kept as the frames each entry is true in rather than as an attribute: its own, or one
+// taken over, a copy of the earlier evaluation's
+typedef struct eval_pairs_t {
+    md_str_t            name;       // in the arena
+    md_pair_frames_t*   pf;         // from the heap
+    bool                held;
+} eval_pairs_t;
+
 struct md_vial_eval_t {
     md_allocator_i*             arena;
     const md_vial_program_t*    prog;
@@ -55,6 +64,7 @@ struct md_vial_eval_t {
     volatile uint64_t           done;       // md_vial_eval_run finished every frame: its values may be read
     eval_held_t*                held;       // md_array: outputs taken over, published as they were
     md_attribute_id_t*          streamed;   // md_array: outputs written as frames finish (decided 31 October)
+    eval_pairs_t*               pairs;      // md_array: matrices of truths per frame, by output name
     // Frames on several threads: one interpreter and one reader each
     vial_interp_t*              workers;
     eval_worker_t*              readers;
@@ -62,6 +72,17 @@ struct md_vial_eval_t {
     size_t                      num_workers;
     const md_executor_t*        executor;
 };
+
+// The matrix of truths per frame kept for output name, or NULL
+static eval_pairs_t* eval_pairs_of(const md_vial_eval_t* e, md_str_t name) {
+    for (size_t i = 0; i < md_array_size(e->pairs); ++i) if (md_str_eq(e->pairs[i].name, name)) return &e->pairs[i];
+    return NULL;
+}
+
+const md_pair_frames_t* md_vial_eval_pairs(const md_vial_eval_t* e, md_str_t name) {
+    const eval_pairs_t* ep = e ? eval_pairs_of(e, name) : NULL;
+    return ep ? ep->pf : NULL;
+}
 
 // The run's time axis, <run>/time, in ps where it has a unit, and its number of frames; NULL and 0 when it has none
 static double* run_times(const md_system_t* sys, md_str_t run, md_allocator_i* alloc, int64_t* num_frames) {
@@ -193,6 +214,14 @@ md_vial_eval_t* md_vial_eval_create_from(const md_vial_eval_t* prev, const md_vi
         vial_ssa_t* roots = NULL;
         for (size_t i = 0; i < n; ++i) {
             const md_vial_output_t* h = held_from(prev, &o[i]);
+            // A matrix of truths per frame: a copy of the frames prev kept of each entry
+            const eval_pairs_t* pp = h ? eval_pairs_of(prev, h->name) : NULL;
+            md_pair_frames_t* pf = pp ? md_pair_frames_copy(pp->pf, md_get_heap_allocator()) : NULL;
+            if (pf) {
+                const eval_pairs_t np = {.name = md_alloc_str(arena, o[i].name), .pf = pf, .held = true};
+                md_array_push(e->pairs, np, arena);
+                continue;
+            }
             const md_attribute_t* at = NULL;
             char from[160] = "";
             if (h) {
@@ -231,17 +260,18 @@ md_vial_eval_t* md_vial_eval_create_from(const md_vial_eval_t* prev, const md_vi
         // the evaluation's: it publishes none (attr_type), and a filter reads it from the program. Left live, a
         // script with a selection was never done when everything else was taken over, and had no frames to run to
         // become so
-        for (size_t k = 0; md_array_size(e->held) && k < md_array_size(ir->outputs); ++k) {
+        const size_t num_held = md_array_size(e->held) + md_array_size(e->pairs);
+        for (size_t k = 0; num_held && k < md_array_size(ir->outputs); ++k) {
             const md_str_t nm = ir->outputs[k].name;
             if (ir->outputs[k].hidden || ir->values[ir->outputs[k].value].type.dtype == VIAL_DT_SET) continue;
-            bool held = false;
+            bool held = eval_pairs_of(e, nm) != NULL;
             for (size_t h = 0; h < md_array_size(e->held) && !held; ++h) held = md_str_eq(e->held[h].desc.label, nm);
             if (!held) md_array_push(roots, ir->outputs[k].value, arena);
         }
-        if (md_array_size(e->held)) vial_interp_only(&e->in, roots, md_array_size(roots));
+        if (num_held) vial_interp_only(&e->in, roots, md_array_size(roots));
         // Everything taken over: nothing is left to compute, and nothing would run to say it is done. A script moved
         // or renamed is this, and it is up to date as it is made
-        if (md_array_size(e->held) && md_array_size(roots) == 0) md_atomic_fetch_add64(&e->done, 1);
+        if (num_held && md_array_size(roots) == 0) md_atomic_fetch_add64(&e->done, 1);
     }
     e->in.max_elements = desc->max_elements;
     e->in.frame_budget = desc->frame_budget ? desc->frame_budget : VIAL_RDF_FRAME_BUDGET;
@@ -292,6 +322,7 @@ void md_vial_eval_free(md_vial_eval_t* e) {
     }
     for (size_t w = 0; w < e->num_readers; ++w) md_arena_allocator_destroy(e->readers[w].arena);
     if (e->ex) md_system_extract_end(e->ex);
+    for (size_t i = 0; i < md_array_size(e->pairs); ++i) md_pair_frames_free(e->pairs[i].pf);
     vial_interp_free(&e->in);
     md_arena_allocator_destroy(e->arena);
 }
@@ -371,9 +402,11 @@ static void prepare(md_vial_eval_t* e) {
         in->stream = md_alloc(e->arena, (nv ? nv : 1) * sizeof(uint8_t*));
         in->stream_count = md_alloc(e->arena, (nv ? nv : 1) * sizeof(uint32_t));
         in->stream_summary = md_alloc(e->arena, (nv ? nv : 1) * sizeof(vial_summary_t*));
+        in->stream_pairs = md_alloc(e->arena, (nv ? nv : 1) * sizeof(md_pair_frames_t*));
     }
     memset(in->stream, 0, (nv ? nv : 1) * sizeof(uint8_t*));
     memset(in->stream_summary, 0, (nv ? nv : 1) * sizeof(vial_summary_t*));
+    memset(in->stream_pairs, 0, (nv ? nv : 1) * sizeof(md_pair_frames_t*));
     md_array_shrink(e->streamed, 0);
     if (nf <= 0) return;
     for (size_t k = 0; k < md_array_size(ir->outputs); ++k) {
@@ -388,6 +421,21 @@ static void prepare(md_vial_eval_t* e) {
         uint32_t inner = 1;
         for (uint8_t d = 0; d < t->ndim; ++d) { known = known && t->dims[d].kind == VIAL_EXT_STATIC; inner *= t->dims[d].n; }
         if (!known) continue;
+        if (t->dtype == VIAL_DT_BOOL && t->ndim == 2) {
+            // A matrix of truths: the frames each entry is true in. Kept over runs, so that what a reader holds stays,
+            // and so do the frames an interrupted run added: a frame computed again is the same, and added once
+            eval_pairs_t* ep = eval_pairs_of(e, o->name);
+            if (ep && ep->held) continue;
+            if (!ep) {
+                md_pair_frames_t* pf = md_pair_frames_create(t->dims[0].n, t->dims[1].n, (uint32_t)nf, md_get_heap_allocator());
+                if (!pf) continue;
+                const eval_pairs_t np = {.name = md_alloc_str(e->arena, o->name), .pf = pf};
+                md_array_push(e->pairs, np, e->arena);
+                ep = &e->pairs[md_array_size(e->pairs) - 1];
+            }
+            in->stream_pairs[o->value] = ep->pf;
+            continue;
+        }
         char path[160];
         snprintf(path, sizeof(path), "script/%.*s", (int)o->name.len, o->name.ptr);
         md_attribute_desc_t desc = {.path = md_str_from_cstr(path), .unit = t->unit_kind == VIAL_UNIT_KNOWN ? t->unit : md_unit_none(),
@@ -470,6 +518,7 @@ static void publish(md_vial_eval_t* e) {
         const md_attribute_type_t at = attr_type(t->dtype);
         const vial_volume_t* vol = vial_interp_volume(&e->in, o->value);
         if (at == MD_ATTRIBUTE_TYPE_NONE || (t->ndim > 2 && !vol)) continue;
+        if (eval_pairs_of(e, o->name)) continue;                          // kept as the frames each entry is true in
         const uint32_t op = ir->values[o->value].op;
         const bool per_frame = op != VIAL_IR_NO_OP && e->in.op_class && e->in.op_class[op] == VIAL_OP_PER_FRAME;
         const vial_val_t* first = vial_interp_at(&e->in, o->value, 0);
@@ -725,6 +774,8 @@ size_t md_vial_eval_output_frames(const md_vial_eval_t* e, md_str_t name, uint8_
     for (size_t h = 0; h < md_array_size(e->held); ++h) {
         if (md_str_eq(md_str_from_cstr(e->held[h].path), md_str_from_cstr(path))) { memset(out, 1, nf); return nf; }
     }
+    const eval_pairs_t* ep = eval_pairs_of(e, name);
+    if (ep && ep->held) { memset(out, 1, nf); return nf; }
     const vial_ir_t* ir = e->ir;
     for (size_t k = 0; k < md_array_size(ir->outputs); ++k) {
         if (!md_str_eq(ir->outputs[k].name, name)) continue;

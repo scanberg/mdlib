@@ -112,6 +112,8 @@ set(MD_CORE_FILES
   src/core/md_lru_cache.inl
   src/core/md_os.c
   src/core/md_os.h
+  src/core/md_pair_frames.c
+  src/core/md_pair_frames.h
   src/core/md_parse.c
   src/core/md_parse.h
   src/core/md_parse_simd.h

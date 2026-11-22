@@ -13,6 +13,7 @@ set (SRC_FILES
     test_atomic.c
     test_grid.c
     test_bitset.c
+    test_pair_frames.c
     test_bonds.c
     test_chem.c
     test_contact.c
