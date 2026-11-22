@@ -747,6 +747,18 @@ static T call_contacts(infer_t* x, vial_node_id call) {
                                                (double)md_atomic_number_vdw_radius(0));
         }
     }
+    // Hover says what touching is: between surfaces or centres, and within what, when it is known in Å
+    {
+        const int i = args[3] ? 3 : 2;
+        const char* what = i == 3 ? "particle centres" : "van der Waals surfaces";
+        vial_note_t note = {.node = call};
+        const vial_value_t v = args[i] ? value(x, args[i]) : (vial_value_t){.kind = VIAL_VAL_FLOAT, .f = 1.0};
+        const bool in_a = !args[i] || ts[i].unit_kind != VIAL_UNIT_KNOWN || md_unit_equal(ts[i].unit, unit_named("angstrom"));
+        const double d = v.kind == VIAL_VAL_INT ? (double)v.i : v.f;
+        if ((v.kind == VIAL_VAL_FLOAT || v.kind == VIAL_VAL_INT) && in_a) snprintf(note.text, sizeof(note.text), "%s within %g Å", what, d);
+        else snprintf(note.text, sizeof(note.text), "between %s", what);
+        md_array_push(x->out->notes, note, x->alloc);
+    }
     T t = vial_type_scalar(VIAL_DT_BOOL);
     for (uint8_t k = 0; k < ts[0].ndim; ++k) vial_type_push_dim(&t, ts[0].dims[k]);
     const T* tb = self ? &ts[0] : &ts[1];

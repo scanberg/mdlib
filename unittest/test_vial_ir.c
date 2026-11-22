@@ -1919,10 +1919,22 @@ UTEST(vial_ir, hover_values) {
         "m    = contacts(rs)\n"
         "ends = distance(ca[0], ca[14])\n"
         "h    = histogram(ends, axis='frame', bins=8, range=(0.0, 50.0))\n"
-        "g    = rdf(ca, ca, 2.0..8.0, bins=60)\n";
+        "g    = rdf(ca, ca, 2.0..8.0, bins=60)\n"
+        "cc   = contacts(rs, cutoff=4.5)\n"
+        "cn   = contacts(rs, surface_distance=0.05 nm)\n";
     md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = MD_STR_LIT("run")}, alloc);
     ASSERT_TRUE(prog != NULL);
     #define AT(text, plus) md_vial_expr_at(prog, (uint32_t)(strstr(src, text) - src) + (plus))
+    // What touching is, as hover says it beside the type
+    {
+        md_vial_hover_t h;
+        ASSERT_TRUE(md_vial_expr_info(prog, AT("contacts(rs)", 1), &h));
+        EXPECT_STREQ(u8"van der Waals surfaces within 1 Å", h.note);
+        ASSERT_TRUE(md_vial_expr_info(prog, AT("contacts(rs, cutoff", 1), &h));
+        EXPECT_STREQ(u8"particle centres within 4.5 Å", h.note);
+        ASSERT_TRUE(md_vial_expr_info(prog, AT("contacts(rs, surface", 1), &h));
+        EXPECT_STREQ("between van der Waals surfaces", h.note);
+    }
     md_vial_draw_desc_t desc = {.prog = prog, .sys = sys, .run = MD_STR_LIT("run"), .frame = 3, .element = -1};
     md_vial_value_t v;
 
