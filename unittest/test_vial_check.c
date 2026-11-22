@@ -561,9 +561,12 @@ UTEST_F(vial_check, keyword_logic) {
     EXPECT_DIAGS_ON(T, "a = atom(hybridization='sp' or 'sp4')\n", "E0206 1: 'sp4' is not a hybridization; the hybridizations are sp, sp2 and sp3\n");
     // Strings have no and/or of their own: outside a keyword's value it stays E0319
     EXPECT_DIAGS_ON(T, "h = 'sp' or 'sp3'\n", "E0319 1: `or` takes bools or sets; this is str\n");
-    // A selection made per frame takes a keyword's values when evaluating, and and/or/not over strings is none
-    EXPECT_DIAGS_ON(T, "r = residue(scope=water[water.z > 40.0], name=not 'SO4')\n",
-        "E0801 1: and/or/not in a keyword's value is resolved when compiling; a selection that changes per frame does not take it yet\n");
+    // A selection made per frame takes and/or/not as the check resolved it
+    EXPECT_TYPE_ON(T, "r = residue(scope=water[water.z > 40.0], name=not 'SO4')\n", 1, "set[?], frame");
+    EXPECT_TYPE_ON(T, "r = residue(within(5.0, of=particle(resname='GTP')), role='terminus' and not 'n_terminus')\n", 1, "set[?], frame");
+    EXPECT_TYPE_ON(T, "r = residue('ALA' or 'GLY', scope=within(5.0, of=particle(resname='GTP')))\n", 1, "set[?], frame");
+    EXPECT_DIAGS_ON(T, "r = residue(within(5.0, of=particle(resname='GTP')), role='terminus' and not 'backbone')\n",
+        "E0206 1: 'backbone' is not a role of residues; the roles are terminus, n_terminus, c_terminus, 5_terminus and 3_terminus\n");
     // Chemistry: not is among the atoms that have the property, so never a hydrogen for a hybridization
     EXPECT_TYPE_ON(P, "a = atom(hybridization=not 'sp3')\nr = residue(a)\n", 2, "set[15], static");
     EXPECT_DIAGS_ON(P, "n = count(atom(element='H', hybridization=not 'sp3'))\n",
@@ -693,19 +696,17 @@ UTEST_F(vial_check, bond_keywords) {
     EXPECT_DIAGS_ON(T, "b = bond(origin=1)\n", "E0206 1: `origin` takes a string, a list of strings, or and/or/not over strings; this is int\n");
     EXPECT_DIAGS_ON(T, "b = particle(order=1)\n", "E0202 1: `particle` takes no keyword `order`; it takes name, serial, element, kind, type, resid, "
         "resname, chain, role, hybridization, aromatic, metallic, hydrogens, formal_charge and scope\n");
-    // A set per frame takes a keyword's values when evaluating, and and/or/not over them is none
-    EXPECT_DIAGS_ON(T, "b = bond(within(5.0, of=particle(resname='GTP')), order=not 1)\n",
-        "E0801 1: and/or/not in a keyword's value is resolved when compiling; a selection that changes per frame does not take it yet\n");
+    // A set per frame takes and/or/not as the check resolved it, as a selector does
+    EXPECT_TYPE_ON(T, "b = bond(within(5.0, of=particle(resname='GTP')), order=not 1)\n", 1, "set[?][2], frame");
     EXPECT_TYPE_ON(T, "b = bond(within(5.0, of=particle(resname='GTP')), order=['aromatic', 'delocalized'])\n", 1, "set[?][2], frame");
     // Hydrogen bonds are found at each frame; T has no hydrogens on its N and O to find them with
     EXPECT_TYPE_ON(P, "h = bond(kind='hydrogen')\n", 1, "set[?][2], frame");
     EXPECT_DIAGS_ON(P, "h = bond(kind='hydrogen')\n", "");
     EXPECT_DIAGS_ON(T, "h = bond(kind='hydrogen')\n", "W0601 1: `bond(kind='hydrogen')` finds no hydrogen bonds: the system's N and O carry no hydrogens\n");
     EXPECT_TYPE_ON(P, "h = bond(kind='hydrogen', origin='user')\n", 1, "set[0][2], static");
-    EXPECT_DIAGS_ON(P, "h = bond(kind='hydrogen' or 'covalent')\n", "E0801 1: and/or/not in a keyword's value is resolved when compiling; hydrogen bonds, "
-        "found per frame, do not take it yet: a list takes its place\n");
-    EXPECT_DIAGS_ON(P, "h = bond(kind='interaction' and not 'contact')\n", "E0801 1: and/or/not in a keyword's value is resolved when compiling; hydrogen bonds, "
-        "found per frame, do not take it yet: a list takes its place\n");
+    EXPECT_TYPE_ON(P, "h = bond(kind='hydrogen' or 'covalent')\n", 1, "set[?][2], frame");
+    EXPECT_TYPE_ON(P, "h = bond(kind='interaction' and not 'contact')\n", 1, "set[?][2], frame");
+    EXPECT_DIAGS_ON(P, "h = bond(kind='interaction' and not 'contact')\n", "");
     EXPECT_TYPE_ON(P, "h = bond(kind=['hydrogen', 'ionic', 'halogen'])\n", 1, "set[?][2], frame");
     // The bonds of each frame against the system's, with an atom in s
     EXPECT_TYPE_ON(T, "f = formed(particle(resname='GTP'))\n", 1, "set[?][2], frame");

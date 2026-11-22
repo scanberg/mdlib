@@ -350,6 +350,7 @@ static uint64_t fp_type(uint64_t h, const vial_type_t* t) {
 
 static uint64_t fp_val(uint64_t h, const vial_val_t* v) {
     h = fp_mix(h, v->dtype);
+    h = fp_mix(h, v->flags);        // a filter's matches are no list of strings (VIAL_VAL_FILTER)
     h = fp_mix(h, v->ndim);
     for (uint8_t d = 0; d < v->ndim; ++d) h = fp_mix(h, v->dims[d]);
     const size_t n = vial_val_count(v);

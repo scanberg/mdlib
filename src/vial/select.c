@@ -10,6 +10,8 @@
 #include <md_element.h>
 #include <core/md_common.h>
 #include <core/md_array.h>
+#include <core/md_allocator.h>
+#include <core/md_parse.h>
 
 #include <math.h>
 #include <stdio.h>
@@ -708,6 +710,43 @@ static const struct { const char* word; uint8_t key; } keywords[] = {
 uint8_t vial_select_key(md_str_t keyword) {
     for (size_t i = 0; i < MD_COUNTOF(keywords); ++i) if (md_str_eq(keyword, md_str_from_cstr(keywords[i].word))) return keywords[i].key;
     return VIAL_KEY_NONE;
+}
+
+md_str_t vial_match_encode(const vial_match_t* m, md_allocator_i* alloc) {
+    switch (m->kind) {
+    case VIAL_MATCH_STR:   return md_alloc_printf(alloc, "s%.*s", (int)m->s.len, m->s.ptr);
+    case VIAL_MATCH_INT:   return md_alloc_printf(alloc, "i%lld", (long long)m->lo);
+    case VIAL_MATCH_RANGE: return md_alloc_printf(alloc, "r%lld:%lld", (long long)m->lo, (long long)m->hi);
+    case VIAL_MATCH_BOOL:  return md_alloc_printf(alloc, "b%d", m->lo ? 1 : 0);
+    case VIAL_MATCH_AND:   return md_alloc_printf(alloc, "&%u", m->num);
+    case VIAL_MATCH_OR:    return md_alloc_printf(alloc, "|%u", m->num);
+    case VIAL_MATCH_NOT:   return md_alloc_printf(alloc, "!");
+    default:               return (md_str_t){0};
+    }
+}
+
+bool vial_match_decode(md_str_t s, vial_match_t* m) {
+    *m = (vial_match_t){0};
+    if (!s.len) return false;
+    const md_str_t rest = {s.ptr + 1, s.len - 1};
+    switch (s.ptr[0]) {
+    case 's': m->kind = VIAL_MATCH_STR; m->s = rest; return true;
+    case 'i': m->kind = VIAL_MATCH_INT; m->lo = md_parse_int(rest); return md_parse_is_int(rest);
+    case 'b': m->kind = VIAL_MATCH_BOOL; m->lo = md_parse_int(rest); return md_parse_is_int(rest);
+    case '&': m->kind = VIAL_MATCH_AND; m->num = (uint32_t)md_parse_int(rest); return md_parse_is_int(rest);
+    case '|': m->kind = VIAL_MATCH_OR; m->num = (uint32_t)md_parse_int(rest); return md_parse_is_int(rest);
+    case '!': m->kind = VIAL_MATCH_NOT; m->num = 1; return rest.len == 0;
+    case 'r': {
+        size_t c = 0;
+        while (c < rest.len && rest.ptr[c] != ':') ++c;
+        const md_str_t lo = {rest.ptr, c}, hi = {rest.ptr + MD_MIN(c + 1, rest.len), rest.len - MD_MIN(c + 1, rest.len)};
+        m->kind = VIAL_MATCH_RANGE;
+        m->lo = md_parse_int(lo);
+        m->hi = md_parse_int(hi);
+        return c < rest.len && md_parse_is_int(lo) && md_parse_is_int(hi);
+    }
+    default: return false;
+    }
 }
 
 const char* vial_select_key_word(uint8_t key) {

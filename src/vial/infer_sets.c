@@ -7,6 +7,7 @@
 // spatial set or a scope that changes per frame, is frame stage, its length known only per frame.
 
 #include "infer_internal.h"
+#include "ir.h"
 
 #include <md_system.h>
 #include <md_match.h>
@@ -338,6 +339,43 @@ static const vial_filter_t* find_filter(const vial_select_t* q, uint8_t key) {
     return NULL;
 }
 
+// The keyword values with and/or/not of a call: the node of each and its filter's position among the call's
+#define MAX_LOGIC 16
+typedef struct logic_args_t {
+    vial_node_id node[MAX_LOGIC];
+    uint32_t     filter[MAX_LOGIC];
+    uint32_t     count;
+    bool         unknown;       // one of them holds a value not known when compiling
+} logic_args_t;
+
+static void logic_add(logic_args_t* l, vial_node_id node, uint32_t filter, int known) {
+    if (known == 0) l->unknown = true;
+    if (l->count < MAX_LOGIC) { l->node[l->count] = node; l->filter[l->count] = filter; l->count += 1; }
+    else l->unknown = true;
+}
+
+// A selection made per frame takes and/or/not as the check resolved it: the keyword's value is the constant of its
+// filter's matches (VIAL_VAL_FILTER), which evaluation reads back and matches by as the check does
+static void lower_logic(infer_t* x, const logic_args_t* l, const vial_filter_t* filters) {
+    if (!x->ir) return;
+    vial_ir_t* ir = x->ir;
+    for (uint32_t i = 0; i < l->count; ++i) {
+        const vial_filter_t* f = &filters[l->filter[i]];
+        const size_t n = md_array_size(f->expr);
+        md_str_t* s = md_alloc(ir->alloc, n * sizeof(md_str_t));
+        for (size_t j = 0; j < n; ++j) s[j] = vial_match_encode(&f->expr[j], ir->alloc);
+        vial_val_t v = {.dtype = VIAL_DT_STR, .ndim = 1, .data = s, .flags = VIAL_VAL_FILTER};
+        v.dims[0] = (uint32_t)n;
+        T t = vial_type_scalar(VIAL_DT_STR);
+        vial_type_push_dim(&t, vial_extent_static((uint32_t)n));
+        vx_set_ssa(x, l->node[i], vial_ir_const(ir, &v, &t, vx_text(x, l->node[i]), vx_span(x, l->node[i])));
+    }
+}
+
+static void report_logic_unknown(infer_t* x, vial_node_id at) {
+    vx_diag_fix(x, "E0801", at, NULL, "and/or/not over values not known when compiling is not supported yet; a list takes values of any stage");
+}
+
 static T selector_call(infer_t* x, vial_node_id call, md_str_t name) {
     uint8_t pkind = 0;
     const uint8_t level = selector_level(name, &pkind);
@@ -348,7 +386,8 @@ static T selector_call(infer_t* x, vial_node_id call, md_str_t name) {
     bool failed = false, known = x->sys != NULL;
     uint32_t num_pos = 0;
     vial_node_id resid_arg = 0;
-    vial_node_id logic_at = 0;      // the first keyword value of and/or/not, which only a selection made when compiling takes
+    vial_node_id logic_at = 0;      // the first keyword value of and/or/not
+    logic_args_t logic = {0};
     const uint32_t n = vx_num_children(x, call);
 
     if (level == VIAL_LEVEL_CHAIN && no_chains(x)) { report_no_chains(x, call); failed = true; }
@@ -359,7 +398,8 @@ static T selector_call(infer_t* x, vial_node_id call, md_str_t name) {
         if (vx_kind(x, arg) == VIAL_N_KWARG) {
             const vial_node_id kn = vx_child(x, arg, 0), vn = vx_child(x, arg, 1);
             T vt;
-            if (vn && value_logic(x, vn, &vt)) { if (!logic_at) logic_at = vn; }
+            const bool is_logic_value = vn && value_logic(x, vn, &vt);
+            if (is_logic_value) { if (!logic_at) logic_at = vn; }
             else vt = vn ? vx_infer(x, vn) : err();
             if (!kn || !vn || vial_type_is_error(&vt)) { failed = true; continue; }
             const md_str_t kw = vx_text(x, kn);
@@ -397,12 +437,14 @@ static T selector_call(infer_t* x, vial_node_id call, md_str_t name) {
             if (r < 0) { failed = true; continue; }
             if (r == 0) known = false;
             if (key == VIAL_KEY_RESID) resid_arg = arg;
+            if (is_logic_value) logic_add(&logic, vn, (uint32_t)md_array_size(q.filters), r);
             md_array_push(q.filters, f, x->alloc);
             continue;
         }
         // A positional argument: at most one
         T vt;
-        if (value_logic(x, arg, &vt)) { if (!logic_at) logic_at = arg; }
+        const bool is_logic_value = value_logic(x, arg, &vt);
+        if (is_logic_value) { if (!logic_at) logic_at = arg; }
         else vt = vx_infer(x, arg);
         num_pos += 1;
         if (num_pos > 1) {
@@ -488,6 +530,7 @@ static T selector_call(infer_t* x, vial_node_id call, md_str_t name) {
         const int r = filter_of(x, level, key, arg, &f);
         if (r < 0) { failed = true; continue; }
         if (r == 0) known = false;
+        if (is_logic_value) logic_add(&logic, arg, (uint32_t)md_array_size(q.filters), r);
         md_array_push(q.filters, f, x->alloc);
     }
     // The kinds of a strand: polymer(kind='ligand') would pick nothing by construction
@@ -508,10 +551,9 @@ static T selector_call(infer_t* x, vial_node_id call, md_str_t name) {
     }
     if (failed) return err();
     if (logic_at && (stage.stage != VIAL_STAGE_STATIC || !known)) {
-        // Evaluation takes a keyword's values, and and/or/not over strings is no value
-        vx_diag_fix(x, "E0801", logic_at, NULL, "and/or/not in a keyword's value is resolved when compiling; a selection %s does not take it yet",
-            stage.stage != VIAL_STAGE_STATIC ? "that changes per frame" : "of values not known when compiling");
-        return err();
+        // Made when evaluated: the filters as the check resolved them go with the call
+        if (logic.unknown) { report_logic_unknown(x, logic_at); return err(); }
+        lower_logic(x, &logic, q.filters);
     }
     if (stage.stage != VIAL_STAGE_STATIC) return selector_unknown(level, stage.stage, call);
     if (!known) return selector_unknown(level, VIAL_STAGE_STATIC, call);
@@ -1373,6 +1415,7 @@ static T call_bonds(infer_t* x, vial_node_id call) {
     vial_select_t q = {0};      // its filters, as a selector's
     bool failed = false, known = true;
     vial_node_id logic_at = 0;
+    logic_args_t logic = {0};
     bool no_kind = false;       // kind= lets no kind through, said (W0601)
     const uint32_t nc = vx_num_children(x, call);
     uint32_t num_pos = 0;
@@ -1399,13 +1442,15 @@ static T call_bonds(infer_t* x, vial_node_id call) {
             continue;
         }
         T vt;
-        if (value_logic(x, vn, &vt)) { if (!logic_at) logic_at = vn; }
+        const bool is_logic_value = value_logic(x, vn, &vt);
+        if (is_logic_value) { if (!logic_at) logic_at = vn; }
         else vt = vx_infer(x, vn);
         if (vial_type_is_error(&vt)) { failed = true; continue; }
         vial_filter_t f;
         const int r = bond_filter_of(x, key, vn, &f);
         if (r < 0) { failed = true; continue; }
         if (r == 0) known = false;
+        if (is_logic_value) logic_add(&logic, vn, (uint32_t)md_array_size(q.filters), r);
         if (r == 1 && key == VIAL_KEY_KIND && !vial_select_bond_kind_possible(&f) && !no_kind) {
             // Of no system: a bond is of one kind, so and between two kinds holds for none
             char ex[VIAL_EXCERPT_MAX + 4];
@@ -1435,9 +1480,8 @@ static T call_bonds(infer_t* x, vial_node_id call) {
     // kind='hydrogen' with no origin= or order= to keep them out: the bonds are then per frame
     if (vial_select_bonds_hydrogen(q.filters, md_array_size(q.filters))) {
         if (logic_at) {
-            vx_diag_fix(x, "E0801", logic_at, NULL, "and/or/not in a keyword's value is resolved when compiling; hydrogen bonds, found per frame, "
-                "do not take it yet: a list takes its place");
-            return err();
+            if (logic.unknown) { report_logic_unknown(x, logic_at); return err(); }
+            lower_logic(x, &logic, q.filters);
         }
         if (x->sys) {
             md_hbond_query_t hq = {0};
@@ -1456,10 +1500,10 @@ static T call_bonds(infer_t* x, vial_node_id call) {
         return t;
     }
     if (!x->sys || st.stage != VIAL_STAGE_STATIC || (!all && sv.kind != VIAL_VAL_SETS) || !known) {
-        // and/or/not is resolved when compiling, as for a selector
-        if (logic_at && x->sys && st.stage != VIAL_STAGE_STATIC) {
-            vx_diag_fix(x, "E0801", logic_at, NULL, "and/or/not in a keyword's value is resolved when compiling; a selection that changes per frame does not take it yet");
-            return err();
+        // Made when evaluated, with the filters as the check resolved them, as for a selector
+        if (logic_at) {
+            if (logic.unknown) { report_logic_unknown(x, logic_at); return err(); }
+            lower_logic(x, &logic, q.filters);
         }
         vial_type_push_dim(&t, (vial_extent_t){.kind = st.stage == VIAL_STAGE_STATIC ? VIAL_EXT_UNKNOWN : VIAL_EXT_DYNAMIC, .id = (uint32_t)call});
         vial_type_push_dim(&t, vial_extent_static(2));

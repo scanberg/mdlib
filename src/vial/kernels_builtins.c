@@ -3134,9 +3134,20 @@ static uint8_t level_of(const char* name, uint8_t* pkind) {
     return VIAL_LEVEL_NONE;
 }
 
-// A keyword's value as evaluation has it, a value or a list of them, as a filter: an or of its values
+// A keyword's value as evaluation has it, a value or a list of them, as a filter: an or of its values; with and/or/not,
+// the filter as the check resolved it (VIAL_VAL_FILTER)
 static bool keyword_filter(vial_kctx_t* k, uint8_t key, const vial_val_t* v, vial_filter_t* f) {
     *f = (vial_filter_t){.key = key};
+    if (v->flags & VIAL_VAL_FILTER) {
+        const size_t n = v->dtype == VIAL_DT_STR && v->data ? vial_val_count(v) : 0;
+        for (size_t i = 0; i < n; ++i) {
+            vial_match_t m;
+            if (!vial_match_decode(((const md_str_t*)v->data)[i], &m)) break;
+            md_array_push(f->expr, m, k->alloc);
+        }
+        if (!n || md_array_size(f->expr) != n) return vial_rt_fail(k, "R0103", "a keyword's and/or/not the check did not resolve");
+        return true;
+    }
     const size_t cnt = vial_val_count(v);
     md_array_push(f->expr, ((vial_match_t){.kind = VIAL_MATCH_OR, .num = (uint32_t)cnt}), k->alloc);
     for (size_t e = 0; e < cnt; ++e) {
@@ -3330,7 +3341,7 @@ static bool k_select(vial_kctx_t* k, const char* name, const bargs_t* ba, vial_v
         if (!ba->names[i].len) {
             // A set is what the units contain; a string the name, a chain's id, as the check reads it
             if (v->dtype == VIAL_DT_SET) { q.within = v->sets; continue; }
-            if (v->dtype != VIAL_DT_STR) return vial_rt_fail(k, "R0103", "%s takes a set or a name as its positional argument", name);
+            if (v->dtype != VIAL_DT_STR && !(v->flags & VIAL_VAL_FILTER)) return vial_rt_fail(k, "R0103", "%s takes a set or a name as its positional argument", name);
             key = level == VIAL_LEVEL_CHAIN ? VIAL_KEY_ID : VIAL_KEY_NAME;
         } else {
             key = vial_select_key(ba->names[i]);

@@ -215,6 +215,11 @@ typedef struct vial_filter_t {
     vial_match_t*   expr;       // md_array, prefix order
 } vial_filter_t;
 
+// A match as one string and back, for a filter carried as a constant (VIAL_VAL_FILTER): its kind's letter, then what it
+// holds: "sCA", "i5", "r1:10", "b1", "&2", "|3", "!". Decoded, a string's match refers into s.
+md_str_t vial_match_encode(const vial_match_t* m, struct md_allocator_i* alloc);
+bool     vial_match_decode(md_str_t s, vial_match_t* m);
+
 // Whether a value satisfies a filter's expression: test says whether one value node holds for it
 bool vial_filter_holds(const vial_filter_t* f, bool (*test)(const vial_match_t* m, const void* user), const void* user);
 

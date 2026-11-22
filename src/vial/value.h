@@ -58,6 +58,8 @@ typedef struct vial_drawing_t {
 // vial_val_t.flags
 enum {
     VIAL_VAL_FRAMES = 1 << 0,   // the first dimension is the run's frames: a series, as trajectory operations take them
+    VIAL_VAL_FILTER = 1 << 1,   // a str[]: a keyword's value with and/or/not as the check resolved it, its matches in
+                                // prefix order one to a string (vial_match_encode), for a selection made per frame
 };
 
 typedef struct vial_val_t {

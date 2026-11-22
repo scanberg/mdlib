@@ -1623,6 +1623,64 @@ static bool vial_ir__same_sets(const char* a, const char* b, const md_system_t* 
     return true;
 }
 
+// and/or/not in a keyword's value, known when compiling and evaluated per frame: the same sets, as the check's filter
+// goes with a selection made per frame (VIAL_VAL_FILTER)
+UTEST(vial_ir, selector_logic_per_frame) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(64));
+    const md_system_t* sys = vial_test_system('T');
+    const md_system_state_t* st = vial_test_state('T');
+    ASSERT_TRUE(sys && st);
+    // Per frame: every particle within 1000 Å of GTP, which is all of it but GTP
+    static const struct { const char* sel; const char* args; uint32_t n; } cases[] = {
+        {"residue", "role='terminus' and not 'n_terminus'", 2},                // the two C-terminal residues
+        {"residue", "id=1..50 and not 10..20, chain='A'", 32},          // A has no 39 to 45
+        {"residue", "gap='before' or 'after'", 2},
+        {"ring", "kind='aromatic' and not 'fused'", 98},
+        {"atom", "name='C*' and not 'CA', resname='PHE'", 1},                   // one set
+        {"atom", "hybridization=not 'sp3', resname='TRP'", 1},
+        {"residue", "'ALA' or 'GLY'", 123},
+    };
+    for (size_t i = 0; i < MD_COUNTOF(cases); ++i) {
+        char a[256], b[256];
+        snprintf(a, sizeof(a), "%s(%s)", cases[i].sel, cases[i].args);
+        snprintf(b, sizeof(b), "%s(%s, scope=within(1000.0, of=particle(resname='GTP')))", cases[i].sel, cases[i].args);
+        uint32_t n = 0;
+        EXPECT_TRUE(vial_ir__same_sets(a, b, sys, st, alloc, &n));
+        EXPECT_EQ(cases[i].n, n);
+    }
+    md_arena_allocator_destroy(alloc);
+}
+
+// bond()'s hydrogen bonds, found per frame, with and/or/not as with the list it stands for
+UTEST(vial_ir, bond_logic_per_frame) {
+    int64_t nf = 0;
+    const md_system_t* sys = vial_ir__run_p(&nf);
+    ASSERT_TRUE(sys != NULL);
+    vial_ir__run_t r;
+    const char* src =
+        "a = len(bond(kind='interaction' and not 'contact'))\n"
+        "b = len(bond(kind=['hydrogen', 'ionic', 'halogen']))\n"
+        "c = len(bond(kind='hydrogen' or 'covalent'))\n"
+        "d = len(bond(kind=['hydrogen', 'covalent']))\n";
+    ASSERT_TRUE(vial_ir__start(&r, src, sys));
+    double* v[4];
+    for (int i = 0; i < 4; ++i) v[i] = malloc(nf * sizeof(double));
+    ASSERT_TRUE(vial_ir__frames(&r, sys, nf, "a", v[0]));
+    ASSERT_TRUE(vial_ir__frames(&r, sys, nf, "b", v[1]));
+    ASSERT_TRUE(vial_ir__frames(&r, sys, nf, "c", v[2]));
+    ASSERT_TRUE(vial_ir__frames(&r, sys, nf, "d", v[3]));
+    double sum = 0.0;
+    for (int64_t f = 0; f < nf; ++f) {
+        EXPECT_EQ(v[1][f], v[0][f]);
+        EXPECT_EQ(v[3][f], v[2][f]);
+        EXPECT_GT(v[2][f], v[0][f]);
+        sum += v[0][f];
+    }
+    EXPECT_GT(sum, 0.0);    // P's peptide has hydrogen bonds
+    for (int i = 0; i < 4; ++i) free(v[i]);
+    vial_ir__end(&r);
+}
+
 // s.residue[i] and the like, known when compiling and evaluated per frame: the same sets
 UTEST(vial_ir, selector_views) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(64));
