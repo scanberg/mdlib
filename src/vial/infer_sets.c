@@ -115,17 +115,11 @@ static void report_no_serials(infer_t* x, vial_node_id at) {
 static uint8_t key_dtype(uint8_t level, uint8_t key) {
     switch (key) {
     case VIAL_KEY_NAME: case VIAL_KEY_ELEMENT: case VIAL_KEY_KIND: case VIAL_KEY_TYPE: case VIAL_KEY_RESNAME: case VIAL_KEY_CHAIN:
-    case VIAL_KEY_ROLE: case VIAL_KEY_HYBRIDIZATION: return VIAL_DT_STR;
-    case VIAL_KEY_AROMATIC: case VIAL_KEY_METALLIC: return VIAL_DT_BOOL;
+    case VIAL_KEY_ROLE: case VIAL_KEY_HYBRIDIZATION: case VIAL_KEY_GAP: return VIAL_DT_STR;
+    case VIAL_KEY_AROMATIC: case VIAL_KEY_METALLIC: case VIAL_KEY_RESOLVED: return VIAL_DT_BOOL;
     case VIAL_KEY_ID: return level == VIAL_LEVEL_CHAIN ? VIAL_DT_STR : VIAL_DT_INT;
     default: return VIAL_DT_INT;
     }
-}
-
-static const char* key_word(uint8_t key) {
-    static const char* words[] = {"", "name", "serial", "element", "kind", "type", "resid", "resname", "chain", "id", "scope", "size",
-                                  "role", "hybridization", "aromatic", "metallic", "hydrogens", "formal_charge", "order", "origin"};
-    return key < MD_COUNTOF(words) ? words[key] : "";
 }
 
 static bool int_of(const vial_value_t* v, int64_t* out) {
@@ -252,7 +246,7 @@ static int filter_of(infer_t* x, uint8_t level, uint8_t key, vial_node_id node, 
     const int known = expr_of(x, node, want, &f->expr, &bad);
     if (known < 0) {
         const T bt = x->out->types[(bad) - x->out->base];
-        vx_diag_fix(x, "E0206", bad, NULL, "`%s` takes %s; this is %s", key_word(key),
+        vx_diag_fix(x, "E0206", bad, NULL, "`%s` takes %s; this is %s", vial_select_key_word(key),
             want == VIAL_DT_STR ? "a string, a list of strings, or and/or/not over strings" :
             want == VIAL_DT_BOOL ? "True or False" : "an int, a range a..b, a list of ints, or and/or/not over them",
             vx_tstr(&bt));
@@ -295,6 +289,25 @@ static int filter_of(infer_t* x, uint8_t level, uint8_t key, vial_node_id node, 
             const md_str_t e = vial_excerpt(ex, sizeof(ex), f->expr[i].s);
             vx_diag_fix(x, "E0206", node, NULL, "'%.*s' is not a role of particles; the roles are backbone, main, side, base, sugar, "
                 "terminus, n_terminus, c_terminus, 5_terminus, 3_terminus and qm", (int)e.len, e.ptr);
+            return -1;
+        }
+    }
+    if (key == VIAL_KEY_ROLE && level == VIAL_LEVEL_RESIDUE && known == 1) {
+        for (size_t i = 0; i < md_array_size(f->expr); ++i) {
+            if (f->expr[i].kind != VIAL_MATCH_STR || vial_select_residue_role_known(f->expr[i].s)) continue;
+            char ex[VIAL_EXCERPT_MAX + 4];
+            const md_str_t e = vial_excerpt(ex, sizeof(ex), f->expr[i].s);
+            vx_diag_fix(x, "E0206", node, NULL, "'%.*s' is not a role of residues; the roles are terminus, n_terminus, c_terminus, 5_terminus "
+                "and 3_terminus", (int)e.len, e.ptr);
+            return -1;
+        }
+    }
+    if (key == VIAL_KEY_GAP && known == 1) {
+        for (size_t i = 0; i < md_array_size(f->expr); ++i) {
+            if (f->expr[i].kind != VIAL_MATCH_STR || vial_select_gap_known(f->expr[i].s)) continue;
+            char ex[VIAL_EXCERPT_MAX + 4];
+            const md_str_t e = vial_excerpt(ex, sizeof(ex), f->expr[i].s);
+            vx_diag_fix(x, "E0206", node, NULL, "'%.*s' is no gap of a residue; a gap is before or after it", (int)e.len, e.ptr);
             return -1;
         }
     }
@@ -357,7 +370,7 @@ static T selector_call(infer_t* x, vial_node_id call, md_str_t name) {
                 if (instead) {
                     char ex[VIAL_EXCERPT_MAX + 4];
                     const md_str_t e = vial_excerpt(ex, sizeof(ex), vx_text(x, vn));
-                    snprintf(fix, sizeof(fix), "%s=%.*s", key_word(instead), (int)e.len, e.ptr);
+                    snprintf(fix, sizeof(fix), "%s=%.*s", vial_select_key_word(instead), (int)e.len, e.ptr);
                 }
                 vx_diag_fix(x, "E0202", arg, fix[0] ? fix : NULL, "`%s` takes no keyword `%.*s`; it takes %s", sel, (int)kw.len, kw.ptr,
                     vial_select_keywords(level));
@@ -458,9 +471,8 @@ static T selector_call(infer_t* x, vial_node_id call, md_str_t name) {
         }
         if (!key) {
             char fix[96] = "";
-            const char* what = level == VIAL_LEVEL_CHAIN ? "an id string" : polymers ? "a set; strands have no name or id" :
-                               level == VIAL_LEVEL_PART ? "a set; parts have no name or id" :
-                               level == VIAL_LEVEL_MOLECULE ? "a set or a name" : "a set, a name or an id";
+            const char* what = level == VIAL_LEVEL_CHAIN ? "an id string" :
+                               level == VIAL_LEVEL_PART || level == VIAL_LEVEL_MOLECULE ? "a set or a name" : "a set, a name or an id";
             if (is_int && vt.dtype == VIAL_DT_INT && vx_num_children(x, call) == 2) {
                 char ex[VIAL_EXCERPT_MAX + 4];
                 const md_str_t e = vial_excerpt(ex, sizeof(ex), vx_text(x, arg));
@@ -1327,7 +1339,7 @@ static int bond_filter_of(infer_t* x, uint8_t key, vial_node_id node, vial_filte
     if (known < 0) {
         const T bt = x->out->types[(bad) - x->out->base];
         if (key == VIAL_KEY_ORDER) vx_diag_fix(x, "E0206", bad, NULL, "`order` takes %s, a list of them, or and/or/not over them; this is %s", orders, vx_tstr(&bt));
-        else vx_diag_fix(x, "E0206", bad, NULL, "`%s` takes a string, a list of strings, or and/or/not over strings; this is %s", key_word(key), vx_tstr(&bt));
+        else vx_diag_fix(x, "E0206", bad, NULL, "`%s` takes a string, a list of strings, or and/or/not over strings; this is %s", vial_select_key_word(key), vx_tstr(&bt));
         return -1;
     }
     for (size_t i = 0; known == 1 && i < md_array_size(f->expr); ++i) {

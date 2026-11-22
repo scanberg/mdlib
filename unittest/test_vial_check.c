@@ -478,7 +478,7 @@ UTEST_F(vial_check, selector_diagnostics) {
     const md_system_t* P = vial_test_system('P');
     ASSERT_TRUE(T != NULL && P != NULL);
     EXPECT_DIAGS_ON(T, "b = chain(name='A')\n", "E0202 1: `chain` takes no keyword `name`; it takes id and scope | id='A'\n");
-    EXPECT_DIAGS_ON(T, "b = residue(resname='ALA')\n", "E0202 1: `residue` takes no keyword `resname`; it takes id, name, kind, chain and scope | name='ALA'\n");
+    EXPECT_DIAGS_ON(T, "b = residue(resname='ALA')\n", "E0202 1: `residue` takes no keyword `resname`; it takes id, name, kind, chain, role, gap, resolved and scope | name='ALA'\n");
     // A bare number: the file's or a position, and v1's from 1; neither is taken without saying
     EXPECT_DIAGS_ON(T, "r = residue(5)\n", "E0205 1: `residue` takes a set or a name; a number is the file's, residue(id=5), or a position, "
         "residue[4], counted from 0, which is v1's residue(5)\n");
@@ -487,7 +487,23 @@ UTEST_F(vial_check, selector_diagnostics) {
     EXPECT_TYPE_ON(T, "r = residue(id=5, chain='A')\n", 1, "set[1], static");
     EXPECT_DIAGS_ON(T, "t = residue(protein, 'LYS')\n", "E0203 1: `residue` takes one positional argument; `'LYS'` is the second | name='LYS'\n");
     EXPECT_DIAGS_ON(T, "n = chain(0)\n", "E0205 1: `chain` takes an id string, not int; positions are subscripts | chain[0]\n");
-    EXPECT_DIAGS_ON(T, "p = part('GTP')\n", "E0205 1: `part` takes a set; parts have no name or id, not str\n");
+    // A residue's roles are the ends of its strand, its gaps the breaks of its chain beside it, and resolved that its
+    // backbone was found from its bonds
+    EXPECT_TYPE_ON(T, "n = len(residue(role='terminus'))\n", 1, "int, static = 4");
+    EXPECT_TYPE_ON(T, "n = len(residue(role='n_terminus'))\n", 1, "int, static = 2");
+    EXPECT_TYPE_ON(T, "n = len(residue(role='c_terminus'))\n", 1, "int, static = 2");
+    EXPECT_TYPE_ON(T, "n = len(residue(gap='before'))\n", 1, "int, static = 1");
+    EXPECT_TYPE_ON(T, "n = len(residue(gap='after'))\n", 1, "int, static = 1");
+    EXPECT_TYPE_ON(T, "n = len(residue(resolved=False))\n", 1, "int, static = 0");
+    EXPECT_TYPE_ON(T, "n = len(residue(resolved=True))\n", 1, "int, static = 865");
+    EXPECT_TYPE_ON(P, "n = len(residue(role='n_terminus' or 'c_terminus'))\n", 1, "int, static = 2");
+    EXPECT_DIAGS_ON(T, "r = residue(role='backbone')\n", "E0206 1: 'backbone' is not a role of residues; the roles are terminus, n_terminus, c_terminus, 5_terminus and 3_terminus\n");
+    EXPECT_DIAGS_ON(T, "r = residue(gap='inside')\n", "E0206 1: 'inside' is no gap of a residue; a gap is before or after it\n");
+    EXPECT_DIAGS_ON(T, "r = residue(resolved='no')\n", "E0206 1: `resolved` takes True or False; this is str\n");
+    // A part's name is its type's description, as an mmCIF entity's; a PDB file gives none, and its parts are named by their kinds
+    EXPECT_TYPE_ON(T, "p = part('peptide')\n", 1, "set[2], static");
+    EXPECT_TYPE_ON(T, "p = polymer(name='peptide')\n", 1, "set[2], static");
+    EXPECT_DIAGS_ON(T, "p = part(name='Tubulin*')\n", "W0601 1: `part(name='Tubulin*')` matches nothing in its scope\n");
     EXPECT_DIAGS_ON(T, "r = residue(kind='amino')\n",
         "E0206 1: 'amino' is not a residue kind; the kinds are amino_acid, nucleotide, water, ion, lipid and other | 'amino_acid'\n");
     EXPECT_DIAGS_ON(T, "r = residue(kind='')\n",
@@ -1263,5 +1279,25 @@ UTEST_F(vial_check, groups) {
     EXPECT_DIAGS_ON(&sys, "g = group(role='tcoupl')\n",
         "E0206 1: 'tcoupl' is not a role of groups; the roles are tc, energy, acc, freeze, user1, user2, comm, compressed-x, orire-fit and qmmm\n");
     EXPECT_DIAGS_ON(&sys, "g = group(kind='x')\n", "E0202 1: `group` takes no keyword `kind`; it takes name, role and scope\n");
+    md_system_free(&sys);
+}
+
+#include <md_gro.h>
+
+// A nucleosome, two DNA strands and eight histones: mdlib describes an inferred strand by its kind as it spells it, "DNA";
+// its name is the word of its kind, as part(kind=) takes it and viamd's tooltip shows it
+UTEST_F(vial_check, part_names) {
+    md_allocator_i* alloc = utest_fixture->alloc;
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"), NULL));
+    md_system_infer(&sys, &state, NULL);
+    ASSERT_TRUE(md_str_eq(md_system_part_type_description(&sys, 0), MD_STR_LIT("DNA")));
+    EXPECT_TRUE(md_str_eq(md_vial_part_name(&sys, 0), MD_STR_LIT("dna")));
+    EXPECT_STREQ("dna", md_vial_part_kind(&sys, 0));
+    EXPECT_TYPE_ON(&sys, "n = len(part('dna'))\n", 1, "int, static = 2");
+    EXPECT_TYPE_ON(&sys, "n = len(part(name='peptide'))\n", 1, "int, static = 8");
+    EXPECT_TYPE_ON(&sys, "n = len(part(kind='nucleic'))\n", 1, "int, static = 2");
+    EXPECT_DIAGS_ON(&sys, "p = part('DNA')\n", "W0601 1: `part('DNA')` matches nothing in its scope\n");
     md_system_free(&sys);
 }

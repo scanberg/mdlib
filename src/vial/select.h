@@ -183,6 +183,8 @@ typedef enum vial_key_t {
     // A bond's, which bond() takes, with kind: what holds it (md_bond_kind_names)
     VIAL_KEY_ORDER,             // 1 to 4, 'aromatic' or 'delocalized'
     VIAL_KEY_ORIGIN,            // where it comes from: file, topology, user or inferred (md_bond_origin_name)
+    VIAL_KEY_GAP,               // residues: a break of its chain before or after it (MD_RESIDUE_FLAG_BREAK_BEFORE, _AFTER)
+    VIAL_KEY_RESOLVED,          // residues: its backbone found from its bonds, its atoms of their roles (MD_RESIDUE_FLAG_RESOLVED)
     VIAL_KEY_COUNT
 } vial_key_t;
 
@@ -229,6 +231,7 @@ typedef struct vial_select_t {
 bool        vial_select_takes(uint8_t level, uint8_t key);
 const char* vial_select_keywords(uint8_t level);    // "id" for chains, for E0202's message
 uint8_t     vial_select_key(md_str_t keyword);         // VIAL_KEY_NONE when it is none of them
+const char* vial_select_key_word(uint8_t key);         // "" for VIAL_KEY_NONE
 const char* vial_select_name(uint8_t level);        // "residues"
 
 // Whether a kind= value is known for the level; the known values for E0206's message
@@ -240,6 +243,17 @@ bool        vial_select_role_known(md_str_t role);
 // Whether a value is a role of particles: backbone, main, side, base, sugar, terminus, n_terminus, c_terminus,
 // 5_terminus, 3_terminus or qm
 bool        vial_select_particle_role_known(md_str_t role);
+// The word of a part's kind (VIAL_PART_*) as part(kind=) takes it, and the name of part p as part(name=) takes it: its
+// type's description, as the data gives it (an mmCIF entity's), else what mdlib infers: the residue names of a part that
+// is no polymer, the word of its kind for a strand or water
+const char* vial_part_kind_word(uint8_t kind);
+md_str_t    vial_part_name(const struct md_system_t* sys, uint32_t p);
+// Whether a value is a role of residues: terminus, n_terminus, c_terminus, 5_terminus or 3_terminus (the ends of its
+// strand, as the particles' roles of those names); and a gap: before or after
+bool        vial_select_residue_role_known(md_str_t role);
+bool        vial_select_gap_known(md_str_t gap);
+// The words a keyword takes at a level, where they are a closed set (kind, role, gap, hybridization); 0 when not
+size_t      vial_select_words(uint8_t level, uint8_t key, const char* const** words);
 // Whether a value is a hybridization a particle selector takes: sp, sp2 or sp3
 bool        vial_select_hybridization_known(md_str_t hyb);
 

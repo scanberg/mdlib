@@ -432,6 +432,14 @@ bool md_vial_draw(md_vial_drawing_t* out, const md_vial_draw_desc_t* desc, uint3
 // drawing. Returns its length, 0 when it has none there.
 size_t md_vial_value_text(char* buf, size_t cap, const md_vial_draw_desc_t* desc, uint32_t expr);
 
+// ### WORDS ###
+// What VIAL calls a unit of a system, as its selectors take it: the kind of part part_idx, as part(kind=) takes it, the
+// kind proper ("peptide", "ligand", "ion", never the "polymer" a peptide is of too), and its name, as part(name=) takes
+// it: its type's description, as the data gives it (an mmCIF entity's), else what mdlib infers, the residue names of a
+// part that is no polymer ("GTP", "NAG-NAG") and the word of its kind for a strand or water. "" for none.
+const char* md_vial_part_kind(const struct md_system_t* sys, size_t part_idx);
+md_str_t    md_vial_part_name(const struct md_system_t* sys, size_t part_idx);
+
 // ### FILTERS ###
 // An expression that picks particles, as viamd's representations, groups and queries write them: compiled alone as one
 // statement, with the stored selections and the static selections of a program as names it may read. Nothing written

@@ -1,6 +1,7 @@
 // The system as the selectors see it, the static values of sets, and the selectors themselves.
 
 #include "select.h"
+#include <md_vial.h>
 
 #include <md_system.h>
 #include <md_bond.h>
@@ -517,9 +518,10 @@ static size_t residue_label(char* buf, size_t cap, const vial_sys_t* s, uint32_t
     return (size_t)snprintf(buf, cap, "%.*s%d", (int)name.len, name.ptr, (int)md_system_residue_seq_id(s->sys, r));
 }
 
-static const char* part_kind_name(uint8_t k) {
-    static const char* names[] = {"ligand", "peptide", "dna", "rna", "nucleic", "polymer", "glycan", "lipid", "ion", "water"};
-    return k < MD_COUNTOF(names) ? names[k] : "part";
+// The word of a part's kind (VIAL_PART_*), as part(kind=) takes it: the kind proper, not polymer for a peptide
+const char* vial_part_kind_word(uint8_t kind) {
+    static const char* words[] = {"ligand", "peptide", "dna", "rna", "nucleic", "polymer", "glycan", "lipid", "ion", "water"};
+    return kind < MD_COUNTOF(words) ? words[kind] : "";
 }
 
 size_t vial_unit_label(char* buf, size_t cap, vial_sys_t* s, uint8_t level, uint32_t unit) {
@@ -623,7 +625,7 @@ size_t vial_unit_label(char* buf, size_t cap, vial_sys_t* s, uint8_t level, uint
             const md_urange_t res = md_system_part_residue_range(sys, unit);
             r0 = res.beg; nres = res.end - res.beg;
             chain = s->part_chain[unit];
-            what = md_str_from_cstr(part_kind_name(s->part_kind[unit]));
+            what = md_str_from_cstr(vial_part_kind_word(s->part_kind[unit]));
         } else {
             need_mols(s);
             const uint32_t b = s->mol_offset[unit], e = s->mol_offset[unit + 1];
@@ -700,11 +702,17 @@ static const struct { const char* word; uint8_t key; } keywords[] = {
     {"scope", VIAL_KEY_SCOPE}, {"size", VIAL_KEY_SIZE}, {"role", VIAL_KEY_ROLE},
     {"hybridization", VIAL_KEY_HYBRIDIZATION}, {"aromatic", VIAL_KEY_AROMATIC}, {"metallic", VIAL_KEY_METALLIC},
     {"hydrogens", VIAL_KEY_HYDROGENS}, {"formal_charge", VIAL_KEY_FORMAL_CHARGE}, {"order", VIAL_KEY_ORDER}, {"origin", VIAL_KEY_ORIGIN},
+    {"gap", VIAL_KEY_GAP}, {"resolved", VIAL_KEY_RESOLVED},
 };
 
 uint8_t vial_select_key(md_str_t keyword) {
     for (size_t i = 0; i < MD_COUNTOF(keywords); ++i) if (md_str_eq(keyword, md_str_from_cstr(keywords[i].word))) return keywords[i].key;
     return VIAL_KEY_NONE;
+}
+
+const char* vial_select_key_word(uint8_t key) {
+    for (size_t i = 0; i < MD_COUNTOF(keywords); ++i) if (keywords[i].key == key) return keywords[i].word;
+    return "";
 }
 
 #define K(k) (1u << (k))
@@ -714,8 +722,9 @@ static uint32_t takes(uint8_t level) {
                                      K(VIAL_KEY_RESID) | K(VIAL_KEY_RESNAME) | K(VIAL_KEY_CHAIN) | K(VIAL_KEY_SCOPE) |
                                      K(VIAL_KEY_ROLE) | K(VIAL_KEY_HYBRIDIZATION) | K(VIAL_KEY_AROMATIC) | K(VIAL_KEY_METALLIC) |
                                      K(VIAL_KEY_HYDROGENS) | K(VIAL_KEY_FORMAL_CHARGE);
-    case VIAL_LEVEL_RESIDUE:  return K(VIAL_KEY_ID) | K(VIAL_KEY_NAME) | K(VIAL_KEY_KIND) | K(VIAL_KEY_CHAIN) | K(VIAL_KEY_SCOPE);
-    case VIAL_LEVEL_PART:     return K(VIAL_KEY_KIND) | K(VIAL_KEY_CHAIN) | K(VIAL_KEY_SCOPE);
+    case VIAL_LEVEL_RESIDUE:  return K(VIAL_KEY_ID) | K(VIAL_KEY_NAME) | K(VIAL_KEY_KIND) | K(VIAL_KEY_CHAIN) | K(VIAL_KEY_ROLE) |
+                                     K(VIAL_KEY_GAP) | K(VIAL_KEY_RESOLVED) | K(VIAL_KEY_SCOPE);
+    case VIAL_LEVEL_PART:     return K(VIAL_KEY_NAME) | K(VIAL_KEY_KIND) | K(VIAL_KEY_CHAIN) | K(VIAL_KEY_SCOPE);
     case VIAL_LEVEL_MOLECULE: return K(VIAL_KEY_NAME) | K(VIAL_KEY_CHAIN) | K(VIAL_KEY_SCOPE);
     case VIAL_LEVEL_CHAIN:    return K(VIAL_KEY_ID) | K(VIAL_KEY_SCOPE);
     case VIAL_LEVEL_TAIL:     return K(VIAL_KEY_SCOPE);
@@ -734,8 +743,8 @@ const char* vial_select_keywords(uint8_t level) {
     switch (level) {
     case VIAL_LEVEL_PARTICLE: return "name, serial, element, kind, type, resid, resname, chain, role, hybridization, aromatic, metallic, "
                                      "hydrogens, formal_charge and scope";
-    case VIAL_LEVEL_RESIDUE:  return "id, name, kind, chain and scope";
-    case VIAL_LEVEL_PART:     return "kind, chain and scope";
+    case VIAL_LEVEL_RESIDUE:  return "id, name, kind, chain, role, gap, resolved and scope";
+    case VIAL_LEVEL_PART:     return "name, kind, chain and scope";
     case VIAL_LEVEL_MOLECULE: return "name, chain and scope";
     case VIAL_LEVEL_CHAIN:    return "id and scope";
     case VIAL_LEVEL_TAIL:     return "scope";
@@ -911,7 +920,7 @@ static bool test_part_kind(const vial_match_t* m, const void* user) {
     const md_str_t w = m->s;
     if (md_str_eq(w, MD_STR_LIT("polymer"))) return k >= VIAL_PART_PEPTIDE && k <= VIAL_PART_POLYMER;
     if (md_str_eq(w, MD_STR_LIT("nucleic"))) return k == VIAL_PART_DNA || k == VIAL_PART_RNA || k == VIAL_PART_NUCLEIC;
-    return md_str_eq(w, md_str_from_cstr(part_kind_name(k)));
+    return md_str_eq(w, md_str_from_cstr(vial_part_kind_word(k)));
 }
 
 static bool match_part_kind(const vial_filter_t* f, uint8_t k) {
@@ -992,6 +1001,66 @@ static const char* particle_roles[] = {"backbone", "main", "side", "base", "suga
 
 bool vial_select_particle_role_known(md_str_t role) {
     return in_list(particle_roles, MD_COUNTOF(particle_roles), role);
+}
+
+static const char* residue_roles[] = {"terminus", "n_terminus", "c_terminus", "5_terminus", "3_terminus"};
+static const char* gaps[] = {"before", "after"};
+
+bool vial_select_residue_role_known(md_str_t role) { return in_list(residue_roles, MD_COUNTOF(residue_roles), role); }
+bool vial_select_gap_known(md_str_t gap) { return in_list(gaps, MD_COUNTOF(gaps), gap); }
+
+size_t vial_select_words(uint8_t level, uint8_t key, const char* const** words) {
+    #define W(list) (*words = (list), MD_COUNTOF(list))
+    switch (key) {
+    case VIAL_KEY_KIND:
+        switch (level) {
+        case VIAL_LEVEL_PARTICLE: return W(particle_kinds);
+        case VIAL_LEVEL_RESIDUE:  return W(residue_kinds);
+        case VIAL_LEVEL_PART:     return W(part_kinds);
+        case VIAL_LEVEL_RING:     return W(ring_kinds);
+        default: break;
+        }
+        break;
+    case VIAL_KEY_ROLE:
+        if (level == VIAL_LEVEL_PARTICLE) return W(particle_roles);
+        if (level == VIAL_LEVEL_RESIDUE) return W(residue_roles);
+        break;
+    case VIAL_KEY_GAP:           if (level == VIAL_LEVEL_RESIDUE) return W(gaps); break;
+    case VIAL_KEY_HYBRIDIZATION: if (level == VIAL_LEVEL_PARTICLE) return W(hybridizations); break;
+    default: break;
+    }
+    #undef W
+    *words = NULL;
+    return 0;
+}
+
+// A residue's roles are tags, as a particle's: the ends of its strand, a free amino or carboxyl group of an amino acid
+// (n_terminus, c_terminus), a free 5' or 3' end of a nucleotide (MD_RESIDUE_FLAG_TERMINAL_BEG, _END)
+typedef struct residue_role_test_t {
+    md_residue_flags_t flags;
+    bool               nucleotide;
+} residue_role_test_t;
+
+static bool test_residue_role(const vial_match_t* m, const void* user) {
+    if (m->kind != VIAL_MATCH_STR) return false;
+    const residue_role_test_t* r = user;
+    const bool beg = r->flags & MD_RESIDUE_FLAG_TERMINAL_BEG, end = r->flags & MD_RESIDUE_FLAG_TERMINAL_END;
+    const md_str_t w = m->s;
+    if (md_str_eq(w, MD_STR_LIT("terminus")))   return beg || end;
+    if (md_str_eq(w, MD_STR_LIT("n_terminus"))) return beg && !r->nucleotide;
+    if (md_str_eq(w, MD_STR_LIT("c_terminus"))) return end && !r->nucleotide;
+    if (md_str_eq(w, MD_STR_LIT("5_terminus"))) return beg && r->nucleotide;
+    if (md_str_eq(w, MD_STR_LIT("3_terminus"))) return end && r->nucleotide;
+    return false;
+}
+
+// A residue's gaps, tags too: a break of its chain before it, after it (MD_RESIDUE_FLAG_BREAK_BEFORE, _AFTER)
+static bool test_gap(const vial_match_t* m, const void* user) {
+    if (m->kind != VIAL_MATCH_STR) return false;
+    const md_residue_flags_t f = *(const md_residue_flags_t*)user;
+    if (md_str_eq(m->s, MD_STR_LIT("before"))) return f & MD_RESIDUE_FLAG_BREAK_BEFORE;
+    if (md_str_eq(m->s, MD_STR_LIT("after")))  return f & MD_RESIDUE_FLAG_BREAK_AFTER;
+    return false;
 }
 
 typedef struct role_test_t {
@@ -1108,10 +1177,46 @@ static bool residue_passes(const vial_sys_t* s, const vial_select_t* q, uint32_t
             break;
         }
         case VIAL_KEY_CHAIN: if (!chain_matches(s, f, vial_sys_res_chain(s, r))) return false; break;
+        case VIAL_KEY_ROLE: {
+            const residue_role_test_t t = {md_system_residue_flags(sys, r), md_system_residue_kind(sys, r) == MD_RESIDUE_KIND_NUCLEOTIDE};
+            if (!vial_filter_holds(f, test_residue_role, &t)) return false;
+            break;
+        }
+        case VIAL_KEY_GAP: {
+            const md_residue_flags_t flags = md_system_residue_flags(sys, r);
+            if (!vial_filter_holds(f, test_gap, &flags)) return false;
+            break;
+        }
+        case VIAL_KEY_RESOLVED: {
+            // Of the amino acids and nucleotides, which are resolved or not; any other residue is neither
+            const md_residue_kind_t k = md_system_residue_kind(sys, r);
+            const bool v = (md_system_residue_flags(sys, r) & MD_RESIDUE_FLAG_RESOLVED) != 0;
+            if ((k != MD_RESIDUE_KIND_AMINO_ACID && k != MD_RESIDUE_KIND_NUCLEOTIDE) || !vial_filter_holds(f, test_bool, &v)) return false;
+            break;
+        }
         default: break;
         }
     }
     return true;
+}
+
+// Its type's description, as the data gives it; an inferred type's is the residue names of a part that is no polymer,
+// and the kind of one, as mdlib spells it ("DNA", "nucleic acid"), which is the word of its kind here instead
+md_str_t vial_part_name(const md_system_t* sys, uint32_t p) {
+    const md_part_type_idx_t t = md_system_part_type_idx(sys, p);
+    const md_str_t d = t >= 0 ? md_system_part_type_description(sys, (size_t)t) : (md_str_t){0};
+    const uint8_t k = part_kind(sys, p);
+    const bool inferred = t >= 0 && (md_system_part_type_flags(sys, (size_t)t) & MD_PART_TYPE_FLAG_INFERRED);
+    const bool by_kind = inferred && ((k >= VIAL_PART_PEPTIDE && k <= VIAL_PART_POLYMER) || k == VIAL_PART_WATER);
+    return md_str_empty(d) || by_kind ? md_str_from_cstr(vial_part_kind_word(k)) : d;
+}
+
+const char* md_vial_part_kind(const md_system_t* sys, size_t part_idx) {
+    return sys && part_idx < sys->part.count ? vial_part_kind_word(part_kind(sys, (uint32_t)part_idx)) : "";
+}
+
+md_str_t md_vial_part_name(const md_system_t* sys, size_t part_idx) {
+    return sys && part_idx < sys->part.count ? vial_part_name(sys, (uint32_t)part_idx) : (md_str_t){0};
 }
 
 static bool part_passes(const vial_sys_t* s, const vial_select_t* q, uint32_t p) {
@@ -1121,6 +1226,7 @@ static bool part_passes(const vial_sys_t* s, const vial_select_t* q, uint32_t p)
         switch (f->key) {
         case VIAL_KEY_KIND:  if (!match_part_kind(f, s->part_kind[p])) return false; break;
         case VIAL_KEY_CHAIN: if (!chain_matches(s, f, s->part_chain[p])) return false; break;
+        case VIAL_KEY_NAME:  if (!match_str(f, vial_part_name(s->sys, p), true)) return false; break;
         default: break;
         }
     }

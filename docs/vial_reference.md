@@ -306,9 +306,14 @@ Names are singular, as every function's is, whatever the shape of what they give
 |  | `name` | the residue name | a glob, or a list |
 |  | `kind` | amino\_acid, nucleotide, water, ion, lipid, other | string or list |
 |  | `chain` | the author id of its chain | string or list |
-| `part` | `kind` | polymer, peptide, nucleic, dna, rna, glycan, ligand, lipid, ion, water; see below | string or list |
+|  | `role` | its ends: n\_terminus, c\_terminus, 5\_terminus, 3\_terminus, terminus; see Roles | string or list |
+|  | `gap` | a break of its chain right before or after it: before, after; see Roles | string or list |
+|  | `resolved` | an amino acid or a nucleotide whose backbone was found, its atoms of their roles; any other residue is neither True nor False | True or False |
+| `part` | `name` | the description of its type: the file's, as an mmCIF entity's, else what it is, the kind of a polymer or water and the residue names of anything else, such as GTP or NAG-NAG | a glob, or a list |
+|  | `kind` | polymer, peptide, nucleic, dna, rna, glycan, ligand, lipid, ion, water; see below | string or list |
 |  | `chain` | the author id of its chain | string or list |
-| `polymer` | `kind` | polymer, peptide, nucleic, dna, rna | string or list |
+| `polymer` | `name` | as a part's | a glob, or a list |
+|  | `kind` | polymer, peptide, nucleic, dna, rna | string or list |
 |  | `chain` | the author id of its chain | string or list |
 | `ring` | `kind` | its tags: aromatic (every bond), hetero (an atom other than C), fused (a bond shared with another ring), fused\_aromatic (an aromatic ring of a fused aromatic system, a bond shared with another aromatic ring: naphthalene, indole, a purine), sugar (a furanose or pyranose). An aliphatic ring is `not 'aromatic'`, a heteroaromatic one `'hetero' and 'aromatic'` | string or list |
 |  | `size` | the number of atoms | int, `a..b` or a list |
@@ -386,6 +391,19 @@ both   = count(atom(role='main' and 'side'))               # warning W0601 -> 0:
 end_5  = count(atom(role='5_terminus'))                    # warning W0601 -> 0: P is a peptide
 ```
 
+A residue's roles are its ends, the residues with a free end of a strand: `'n_terminus'` and `'c_terminus'` an amino acid's free amino and carboxyl ends, `'5_terminus'` and `'3_terminus'` a nucleotide's free 5' and 3' ends, `'terminus'` either. A strand that goes on over a gap, residues missing from the file between two that the bonds do not join, has no end there: the residues on either side have a `gap=`, `'before'` the first after it and `'after'` the last before it. `resolved=False` is an amino acid or a nucleotide known by its name whose backbone was not found, as of a residue the file holds a few atoms of; its particles have none of the roles above. These are what viamd's tooltip of a residue lists, as a script writes them.
+
+```python
+# on T
+ends   = residue(role='terminus')                          # -> set[4]: two strands, two ends each
+n_ends = residue(role='n_terminus')                        # -> set[2]
+gap_b  = residue(gap='before')                             # -> set[1]: chain B's strand goes on over its gap
+sides  = residue(gap='before' or 'after')                  # -> set[2]: the residues on either side of it
+whole  = count(residue(resolved=True))                     # -> 865: every amino acid
+part_r = residue(resolved=False)                           # warning W0601: T has no unresolved residue
+bb_r   = residue(role='backbone')                          # error E0206: a residue's roles are its ends
+```
+
 ### Chemistry
 
 A particle's chemistry is what mdlib perceives from the bonds: each atom's hybridization, whether it is aromatic, the hydrogens it carries and its formal charge, and the metallic phases from the metallic bonds. Only an atom has chemistry, so none of these keywords matches a bead or a virtual site, also under `not`; a hybridization is perceived for a heavy atom of the bonds, so a hydrogen or a metal has none, and its count of hydrogens is the explicit ones plus those a file without hydrogens implies, as T's are. viamd's tooltip of an atom lists the same keywords with the values it has, as a script writes them.
@@ -429,7 +447,7 @@ ct     = particle(type='CT')                               # error E0208: T give
 t      = type(particle)                                    # error E0208
 ```
 
-The kinds of a part: `polymer` is any polymer strand, `peptide`, `nucleic`, `dna` and `rna` the strands of those kinds (`nucleic` is DNA, RNA or a hybrid), and `glycan` a tree of saccharides or one sugar. A part that is no polymer is a `lipid` when its residues are lipids, an `ion` when it is one ion, a `water`, or else a `ligand`. A molecule has no kind of its own, since a glycoprotein holds a strand and its glycans: select the parts, and `molecule(part(kind='peptide'))` gives the molecules they are in.
+A part's name is what its type is, the file's description where it gives one, as an mmCIF entity's `pdbx_description`; else mdlib names it, a polymer and water by its kind and anything else by its residue names, so a PDB file's GTP is `part('GTP')`. The kinds of a part: `polymer` is any polymer strand, `peptide`, `nucleic`, `dna` and `rna` the strands of those kinds (`nucleic` is DNA, RNA or a hybrid), and `glycan` a tree of saccharides or one sugar. A part that is no polymer is a `lipid` when its residues are lipids, an `ion` when it is one ion, a `water`, or else a `ligand`. A molecule has no kind of its own, since a glycoprotein holds a strand and its glycans: select the parts, and `molecule(part(kind='peptide'))` gives the molecules they are in.
 
 ### Fragments
 
@@ -514,6 +532,8 @@ whole  = residue(particle(name='CA', chain='A'))     # -> set[433]: whole residu
 cut    = particle(name='CA', chain='A').residue      # -> set[433]: the same residues, each clipped to its CA
 flat   = ring(kind='flat')                           # error E0206
 lig    = part(kind='ligand')                         # -> set[6]: GTP, three SO4, GDP and VLB
+so4_p  = part('SO4')                                 # -> set[3]: named by their residues, as T gives no descriptions
+pep    = part('peptide')                             # -> set[2]: a strand by its kind
 mol    = molecule(part(kind='peptide'))              # -> set[2]: the molecules the strands are in
 n_mol  = len(molecule)                               # -> 17
 first5 = residue[0:5]                                # -> set[5]

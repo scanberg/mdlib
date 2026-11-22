@@ -1382,6 +1382,13 @@ UTEST(vial_ir, editor) {
     c = vial_ir__complete("x = residue(|)\n", alloc);
     EXPECT_TRUE(vial_ir__find(&c, "resname") == NULL);
     EXPECT_TRUE(vial_ir__find(&c, "id") != NULL);
+    EXPECT_TRUE(vial_ir__find(&c, "gap") != NULL && vial_ir__find(&c, "resolved") != NULL && vial_ir__find(&c, "role") != NULL);
+    c = vial_ir__complete("x = atom(|)\n", alloc);
+    EXPECT_TRUE(vial_ir__find(&c, "kind") == NULL || vial_ir__find(&c, "kind")->kind != MD_VIAL_COMPLETION_PARAMETER);    // kind() is a builtin
+    EXPECT_TRUE(vial_ir__find(&c, "serial") == NULL);
+    EXPECT_TRUE(vial_ir__find(&c, "hybridization") != NULL && vial_ir__find(&c, "formal_charge") != NULL);
+    c = vial_ir__complete("x = fragment(|)\n", alloc);
+    EXPECT_TRUE(vial_ir__find(&c, "name") != NULL);
 
     // After a dot: properties
     c = vial_ir__complete("ca = particle(name='CA')\nd = ca.c|\n", alloc);
@@ -1408,6 +1415,18 @@ UTEST(vial_ir, editor) {
     EXPECT_TRUE(vial_ir__find(&c, "CA") != NULL);
     c = vial_ir__complete("x = residue(kind='a|')\n", alloc);
     EXPECT_TRUE(vial_ir__find(&c, "amino_acid") != NULL);
+    // The words of a closed set: a residue's roles and gaps, a ring's kinds, a particle's hybridizations
+    c = vial_ir__complete("x = residue(role='n|')\n", alloc);
+    EXPECT_TRUE(vial_ir__find(&c, "n_terminus") != NULL && vial_ir__find(&c, "c_terminus") == NULL);
+    c = vial_ir__complete("x = residue(gap='|')\n", alloc);
+    EXPECT_TRUE(vial_ir__find(&c, "before") != NULL && vial_ir__find(&c, "after") != NULL);
+    c = vial_ir__complete("x = ring(kind='f|')\n", alloc);
+    EXPECT_TRUE(vial_ir__find(&c, "fused") != NULL && vial_ir__find(&c, "fused_aromatic") != NULL);
+    c = vial_ir__complete("x = particle(hybridization='sp|')\n", alloc);
+    EXPECT_TRUE(vial_ir__find(&c, "sp2") != NULL);
+    // a part's name: its description, else its kind; T's parts have none
+    c = vial_ir__complete_on("x = part(name='p|')\n", vial_test_system('T'), alloc);
+    EXPECT_TRUE(vial_ir__find(&c, "peptide") != NULL);
     c = vial_ir__complete("w = attr('|')\n", alloc);
     EXPECT_TRUE(vial_ir__find(&c, "time") != NULL);
     // and the names of the per-atom attributes, for attr(name, of=s)
