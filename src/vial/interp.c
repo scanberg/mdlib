@@ -13,6 +13,7 @@
 #include <md_system.h>
 #include <md_hbond.h>
 #include <md_interaction.h>
+#include <md_contact.h>
 
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
@@ -249,6 +250,12 @@ void vial_interp_free(vial_interp_t* in) {
         md_interaction_query_free(in->interaction.query);
         md_free(md_get_heap_allocator(), in->interaction.query, sizeof(md_interaction_query_t));
     }
+    for (size_t i = 0; i < md_array_size(in->contacts.queries); ++i) {
+        md_contact_query_free(in->contacts.queries[i]);
+        md_free(md_get_heap_allocator(), in->contacts.queries[i], sizeof(md_contact_query_t));
+    }
+    md_array_free(in->contacts.queries, md_get_heap_allocator());
+    md_array_free(in->contacts.keys, md_get_heap_allocator());
     for (int d = 0; d < VIAL_MAP_SCRATCH_DEPTH; ++d) if (in->map_scratch[d]) md_vm_arena_destroy(in->map_scratch[d]);
     if (in->temp) md_vm_arena_destroy(in->temp);
     if (in->alloc) md_arena_allocator_destroy(in->alloc);

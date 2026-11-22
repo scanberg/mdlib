@@ -666,6 +666,11 @@ one_r = [angle(r[0], r[1], r[2]) for r in res_a[0]]    # error E0304: a for over
 # on P
 _p     = particle.xyz                                # -> float[153][3] Å, frame
 rmsf   = sqrt(sum(var(_p, axis='frame'), axis=1))      # -> float[153] Å, trajectory
+cmap   = contacts(residue)                           # -> bool[15][15], frame: a contact map, i±1 and i±2 left out
+freq   = mean(contacts(residue), axis='frame')       # -> float[15][15], trajectory: how often each pair is in contact
+heavy  = contacts(residue.atom(element=not 'H'), cutoff=4.0)   # -> bool[15][15], frame: of the heavy atoms
+deg    = sum(contacts(residue), axis=1)              # -> int[15], frame: each residue's contacts
+ends   = contacts(residue[0:3], residue[-3:])        # -> bool[3][3], frame: the first three against the last three
 ca     = rmsf[particle(name='CA')]                   # -> float[15] Å
 per_r  = mean(rmsf, by=residue)                      # -> float[15] Å
 same   = [mean(rmsf[r]) for r in residue]            # -> float[15] Å
@@ -712,14 +717,14 @@ A parameter can be annotated with a kind. The kind says how much of an argument 
 res_a = residue(chain='A', kind='amino_acid')      # -> set[433]
 vlb   = particle(resname='VLB')                    # -> set
 
-def contacts(r: set, lig: set, cutoff: float = 4.0):
+def n_close(r: set, lig: set, cutoff: float = 4.0):
     """Particle pairs closer than cutoff."""
     return sum(distance(r.xyz[:, None], lig.xyz) < cutoff)
 
-n1  = contacts(res_a, vlb)                           # -> int[433], frame: one count per residue
-n2  = contacts(res_a[0], vlb)                        # -> int, frame: one residue, no mapping
+n1  = n_close(res_a, vlb)                            # -> int[433], frame: one count per residue
+n2  = n_close(res_a[0], vlb)                         # -> int, frame: one residue, no mapping
 cut = full(shape(res_a), 4.0)                        # -> float[433]: one cutoff per residue
-n3  = contacts(res_a, vlb, cut)                      # -> int[433], frame: cutoff: float pairs it per residue
+n3  = n_close(res_a, vlb, cut)                       # -> int[433], frame: cutoff: float pairs it per residue
 rg  = gyration(res_a)                                # -> float[433] Å, frame: points maps over the residues
 
 def steps(r: points):
@@ -876,6 +881,7 @@ Keywords mean the same wherever they appear. `weights=` takes `'mass'`, `None` o
 | `distance(a: point, b: point)` | `float` Å | prelude: `norm(displacement(a, b))`; leading dimensions broadcast. Also takes one argument of two points stacked along its last dimension, `float[2][3]` or `set[2]` of single particles, as `distance(r[['N', 'CA']])`, mapping over the dimensions before them. Drawn as a line labelled with the value |
 | `distance(a, b, between='closest')` | `float` Å | prelude: `_between(a: body, b: body)`, which is `min(distance(a.xyz[:, None], b.xyz))` for one body each and maps over arrays of them; `max` for `'farthest'`. A body is a set, or a point on its own. Replaces v1's `distance_min`, `distance_max` and `distance_pair`. The pair comes from `closest_pair`, a search that skips most pairs, so no n×m matrix is computed or stored. Drawn as a line between the pair |
 | `displacement(a: point, b: point)` | `float[3]` Å | b minus a, minimum image |
+| `contacts(a, b=None, cutoff=4.5, min_separation=3)` | `bool`, the dimensions of a then of b | per frame, of each set of a and each set of b, whether two of their particles are within cutoff, Å, under the minimum image (md\_contact): a contact map. Without b, of a with itself, `bool[n][n]` and symmetric: a set is in no contact with itself, nor with a set of its strand fewer than min\_separation from it in a, so the default 3 leaves out a residue's two neighbours on either side, as MDTraj's contacts do; sets of different strands, or of none, are never neighbours. Between a and b every pair counts, a residue in both with itself too where two of its particles are within cutoff, and min\_separation is E0313. The particles are those the sets hold: heavy atoms alone are `rs.atom(element=not 'H')`. `mean(contacts(rs), axis='frame')` is how often each pair is in contact, `sum(contacts(rs), axis=1)` each residue's contacts |
 | `closest_pair(p: points, q: points, distinct=False)` | `(float Å, int, int)` | the shortest distance from a point of p to a point of q under the minimum image, and the two points' indices; built in, with mdlib's distance kernel, which takes p eight points at a time and skips every point of q whose distance from their bounding sphere rules it out, so most pairs are never computed. The distance is the matrix's entry for the pair, the same bits `distance()` gives, and on equal entries the first pair in row order wins, as `argmin` has it: the kernel rounds in another order, so it also collects the pairs within rounding of its own extreme, and those are compared by their entries. `distinct=True` leaves out the pairs of a particle, or a unit such as a residue, with itself, by the dimensions' descriptions; for the nearest other point. The indices are computed only where they are used, as when hover draws the pair. Missing, with W0601, when p or q is empty |
 | `farthest_pair(p: points, q: points, distinct=False)` | `(float Å, int, int)` | the longest distance, and its two indices |
 | `angle(a, b, c: point)` | `float` ° | also takes one `float[3][3]`, three points as rows; the one-argument form maps over leading dimensions, such as `set[k][3]` from `smiles_atoms` or `rs[['N', 'CA', 'C']]` |
@@ -1017,7 +1023,7 @@ lin, plan, iso = shape_weights(particle)               # -> float and float and 
 swr  = shape_weights(residue)                          # -> float[15][3], frame: points maps over the residues
 ```
 
-Not ported from v1 yet: contact maps. Hydrogen bonds are `bond(kind='hydrogen')`, secondary structure `residue(ss=)`, and ring pucker `pucker()`, `pseudorotation()` and `ring(pucker=)`. The volumes, `sdf` and `density`, are under Volumes, and `rdf` under Frames.
+What v1 had besides: contact maps are `contacts()`, hydrogen bonds `bond(kind='hydrogen')`, secondary structure `residue(ss=)`, and ring pucker `pucker()`, `pseudorotation()` and `ring(pucker=)`. The volumes, `sdf` and `density`, are under Volumes, and `rdf` under Frames.
 
 ## Built-in functions: reductions, math and arrays
 

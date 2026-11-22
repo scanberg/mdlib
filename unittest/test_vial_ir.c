@@ -1837,6 +1837,64 @@ UTEST(vial_ir, ring_pucker) {
     vial_ir__end(&r);
 }
 
+// contacts() on each frame of P's run, as a brute force over every pair of particles of two residues finds them: within
+// the cutoff, and the residues at least min_separation apart along the strand; and between two arrays, every pair
+UTEST(vial_ir, contacts) {
+    int64_t nf = 0;
+    const md_system_t* sys = vial_ir__run_p(&nf);
+    ASSERT_TRUE(sys != NULL);
+    vial_ir__run_t r;
+    const char* src =
+        "c3 = contacts(residue)\n"
+        "c0 = contacts(residue, cutoff=3.0, min_separation=0)\n"
+        "ab = contacts(residue[0:5], residue[3:10])\n";
+    ASSERT_TRUE(vial_ir__start(&r, src, sys));
+    md_system_state_t state = {.alloc = r.alloc};
+    md_system_state_init(&state, sys->atom.count);
+    const md_str_t paths[] = {MD_STR_LIT("atom/position"), MD_STR_LIT("unitcell")};
+    md_system_extract_t* ex = md_system_extract_begin(sys, MD_STR_LIT("run"), paths, 2, r.alloc);
+    const uint32_t nr = (uint32_t)md_system_residue_count(sys);
+    ASSERT_EQ(15u, nr);
+    int64_t total = 0, total0 = 0;
+    for (int64_t f = 0; f < nf; f += 5) {
+        ASSERT_TRUE(md_system_extract_frame(ex, f, &state));
+        const vial_frame_t fr = {.xyz = (const float*)state.xyz, .num_atoms = state.num_atoms, .cell = state.unitcell, .index = f, .time = (double)f};
+        ASSERT_TRUE(vial_interp_frame(&r.in, &fr));
+        const vial_val_t* c3 = vial_ir__value(&r, "c3");
+        const vial_val_t* c0 = vial_ir__value(&r, "c0");
+        const vial_val_t* ab = vial_ir__value(&r, "ab");
+        ASSERT_TRUE(c3 && c0 && ab && c3->dtype == VIAL_DT_BOOL && ab->ndim == 2 && ab->dims[0] == 5 && ab->dims[1] == 7);
+        for (uint32_t i = 0; i < nr; ++i) {
+            for (uint32_t j = 0; j < nr; ++j) {
+                // The shortest distance between the two residues' particles, two of them
+                const md_urange_t ri = md_system_residue_atom_range(sys, i), rj = md_system_residue_atom_range(sys, j);
+                float dmin = 1e9f;
+                for (uint32_t p = ri.beg; p < ri.end; ++p) {
+                    for (uint32_t q = rj.beg; q < rj.end; ++q) {
+                        if (p == q) continue;
+                        md_float3_t d = md_float3_sub(state.xyz[q], state.xyz[p]);
+                        md_geom_min_image(d.elem, 0, 1, &state.unitcell);
+                        dmin = MD_MIN(dmin, md_float3_length(d));
+                    }
+                }
+                const uint32_t sep = i > j ? i - j : j - i;
+                const bool want3 = i != j && sep >= 3 && dmin < 4.5f;
+                const bool want0 = i != j && dmin < 3.0f;
+                EXPECT_EQ(want3, ((const uint8_t*)c3->data)[i * nr + j] != 0);
+                EXPECT_EQ(want0, ((const uint8_t*)c0->data)[i * nr + j] != 0);
+                // Between two arrays every pair of sets, a residue in both with itself too: two of its particles within
+                if (i < 5 && j >= 3 && j < 10) EXPECT_EQ(dmin < 4.5f, ((const uint8_t*)ab->data)[i * 7 + (j - 3)] != 0);
+                total += want3;
+                total0 += want0;
+            }
+        }
+    }
+    EXPECT_GT(total, 0);
+    EXPECT_GT(total0, 0);
+    md_system_extract_end(ex);
+    vial_ir__end(&r);
+}
+
 // Of each frame of P's run, the frame's own: the selectors by ss= read one DSSP of it, and the next frame another. P's
 // peptide has no helix by DSSP; its turns and bends come and go
 UTEST(vial_ir, secondary_structure_per_frame) {

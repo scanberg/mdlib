@@ -68,6 +68,12 @@ typedef struct vial_interp_t {
         uint64_t                key;
         struct md_interaction_query_t* query;
     } interaction;
+    // The group contact queries of contacts() (md_contact_query_init), one per key: the sets, the cutoff and the
+    // separation. Of the topology alone, so made once for sets that stay. Freed with the interpreter.
+    struct {
+        uint64_t*               keys;       // md_array, on the heap
+        struct md_contact_query_t** queries;// md_array, on the heap
+    } contacts;
     // The bonds computed for the frame, which the system has none of, with their flags (md_bond_flags_t): the hydrogen
     // bonds bond() finds and the bonds formed() finds. What tells the kind of such a pair of a result
     // (md_vial_filter_t::pair_flags). In temp: good while epoch is frame_epoch (vial_interp_found_bond).

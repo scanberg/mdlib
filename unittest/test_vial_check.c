@@ -1330,6 +1330,25 @@ UTEST_F(vial_check, part_names) {
     md_system_free(&sys);
 }
 
+// contacts(): of each set of a and each of b, per frame, bool with the dimensions of a then of b
+UTEST_F(vial_check, contacts) {
+    const md_system_t* T = vial_test_system('T');
+    const md_system_t* P = vial_test_system('P');
+    ASSERT_TRUE(T && P);
+    EXPECT_TYPE_ON(P, "c = contacts(residue)\n", 1, "bool[15][15], frame");
+    EXPECT_TYPE_ON(P, "c = contacts(residue, cutoff=3.5, min_separation=4)\n", 1, "bool[15][15], frame");
+    EXPECT_TYPE_ON(P, "f = mean(contacts(residue), axis='frame')\n", 1, "float[15][15], trajectory");     // how often
+    EXPECT_TYPE_ON(T, "c = contacts(residue(chain='A'), particle(resname='GTP'))\n", 1, "bool[442], frame");
+    EXPECT_TYPE_ON(T, "c = contacts(residue(chain='A'), residue(chain='B'))\n", 1, "bool[442][437], frame");
+    EXPECT_DIAGS_ON(T, "c = contacts(particle(resname='GTP'))\n",
+        "E0313 1: `contacts` of a with itself takes an array of sets, as residue() gives; this is set\n");
+    EXPECT_DIAGS_ON(T, "c = contacts(residue(chain='A'), residue(chain='B'), min_separation=3)\n",
+        "E0313 1: `min_separation` is of a with itself: contacts between a and b take none\n");
+    EXPECT_DIAGS_ON(P, "c = contacts(residue, cutoff='near')\n", "E0313 1: `cutoff` is one length; this is str\n");
+    EXPECT_DIAGS_ON(P, "c = contacts(residue, min_separation=-1)\n",
+        "E0313 1: `min_separation` is a count of sets, 0 or more, known when compiling; this is -1\n");
+}
+
 // A ring's pucker, Cremer and Pople's, and a furanose's pseudorotation: a tuple of arrays per frame; and ring(pucker=),
 // the kind of its conformation, per frame
 UTEST_F(vial_check, ring_pucker) {

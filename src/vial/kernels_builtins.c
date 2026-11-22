@@ -19,6 +19,7 @@
 #include <md_bond.h>
 #include <md_hbond.h>
 #include <md_interaction.h>
+#include <md_contact.h>
 #include <md_dssp.h>
 #include <md_pucker.h>
 #include <md_attributes.h>
@@ -3655,6 +3656,87 @@ static bool k_pucker(vial_kctx_t* k, const vial_val_t* r, bool pseudo, vial_val_
     return true;
 }
 
+// contacts(a, b, cutoff, min_separation): per frame, of each set of a and each of b, whether two of their particles are
+// within cutoff (md_contact_query_eval), with the dimensions of a then of b; of a with itself without b, a set of a
+// strand none with the sets of its strand fewer than min_separation from it in a. The queries are kept by their sets.
+static bool k_contacts(vial_kctx_t* k, const bargs_t* ba, vial_val_t* out) {
+    const vial_val_t* a = arg(ba, "a", 0);
+    const vial_val_t* b = arg(ba, "b", 1);
+    const vial_val_t* cut = arg(ba, "cutoff", 2);
+    const vial_val_t* sep = arg(ba, "min_separation", 3);
+    const md_system_t* sys = k->in->msys;
+    const vial_frame_t* fr = k->in->frame;
+    if (!sys || !fr) return vial_rt_fail(k, "R0103", "contacts reads a frame of the system");
+    if (!a || a->dtype != VIAL_DT_SET || !a->sets) return vial_rt_fail(k, "R0103", "contacts takes sets");
+    const bool self = !b || b->dtype == VIAL_DT_NONE;
+    if (!self && (b->dtype != VIAL_DT_SET || !b->sets)) return vial_rt_fail(k, "R0103", "contacts takes sets");
+    const float cutoff = cut && cut->data ? (float)num_at(cut, 0) : 4.5f;
+    const uint32_t min_sep = self ? (sep && sep->data ? (uint32_t)MD_MAX(0.0, num_at(sep, 0)) : 3u) : 0u;
+    const vial_sets_t* sa = a->sets;
+    const vial_sets_t* sb = self ? a->sets : b->sets;
+    const uint32_t na = sa->count, nb = sb->count;
+
+    // The query of these sets, made once
+    uint64_t key = md_hash64(sa->offset, ((size_t)na + 1) * sizeof(uint32_t), 0x9E3779B97F4A7C15ull);
+    key = md_hash64(sa->idx, (size_t)sa->offset[na] * sizeof(uint32_t), key);
+    if (!self) {
+        key = md_hash64(sb->offset, ((size_t)nb + 1) * sizeof(uint32_t), key ^ 1);
+        key = md_hash64(sb->idx, (size_t)sb->offset[nb] * sizeof(uint32_t), key);
+    }
+    key = md_hash64(&cutoff, sizeof(cutoff), key ^ ((uint64_t)min_sep << 32) ^ (uint64_t)self);
+    vial_interp_t* in = k->in;
+    md_contact_query_t* q = NULL;
+    for (size_t i = 0; i < md_array_size(in->contacts.keys) && !q; ++i) if (in->contacts.keys[i] == key) q = in->contacts.queries[i];
+    if (!q) {
+        md_allocator_i* heap = md_get_heap_allocator();
+        md_bitset_t* ga = md_alloc(k->alloc, ((size_t)na + 1) * sizeof(md_bitset_t));
+        md_bitset_t* gb = self ? NULL : md_alloc(k->alloc, ((size_t)nb + 1) * sizeof(md_bitset_t));
+        for (uint32_t i = 0; i < na; ++i) ga[i] = md_bitset_from_indices(vial_sets_items(sa, i), vial_sets_size(sa, i), k->alloc);
+        for (uint32_t i = 0; gb && i < nb; ++i) gb[i] = md_bitset_from_indices(vial_sets_items(sb, i), vial_sets_size(sb, i), k->alloc);
+        // The strand of each set, by its first particle; a set of none its own, so neighbours of no other
+        uint32_t* parent = NULL;
+        if (self && min_sep > 1) {
+            parent = md_alloc(k->alloc, ((size_t)na + 1) * sizeof(uint32_t));
+            for (uint32_t i = 0; i < na; ++i) {
+                const md_part_idx_t p = vial_sets_size(sa, i) ? md_system_part_find_by_atom_idx(sys, vial_sets_items(sa, i)[0]) : -1;
+                parent[i] = p >= 0 ? (uint32_t)p : 0x80000000u + i;
+            }
+        }
+        const md_contact_desc_t desc = {
+            .group_a = ga, .num_a = na, .group_b = gb, .num_b = self ? 0 : nb,
+            .criterion = MD_CONTACT_CRITERION_DISTANCE, .cutoff = cutoff,
+            .min_separation = min_sep, .group_parent = parent,
+        };
+        q = md_alloc(heap, sizeof(md_contact_query_t));
+        memset(q, 0, sizeof(*q));
+        if (!md_contact_query_init(q, &desc, sys, heap)) {
+            md_free(heap, q, sizeof(md_contact_query_t));
+            return vial_rt_fail(k, "R0103", "the contacts could not be prepared");
+        }
+        md_array_push(in->contacts.keys, key, heap);
+        md_array_push(in->contacts.queries, q, heap);
+    }
+
+    uint32_t dims[VIAL_MAX_DIMS];
+    uint8_t nd = 0;
+    if (a->ndim) dims[nd++] = na;
+    if (self ? a->ndim : b->ndim) dims[nd++] = nb;
+    vial_val_t o;
+    if (!vial_k_make_zero(k, VIAL_DT_BOOL, nd, dims, &o)) return false;
+    md_system_state_t state = {.num_atoms = fr->num_atoms, .xyz = (md_float3_t*)fr->xyz, .unitcell = fr->cell, .alloc = k->alloc};
+    md_contact_set_t cs = {0};
+    if (!md_contact_query_eval(&cs, q, &state, k->alloc)) return vial_rt_fail(k, "R0103", "the contacts could not be evaluated");
+    uint8_t* m = (uint8_t*)o.data;
+    for (size_t c = 0; c < cs.count; ++c) {
+        const uint32_t i = cs.i[c], j = cs.j[c];
+        if (i >= na || j >= nb) continue;
+        m[(size_t)i * nb + j] = 1;
+        if (self) m[(size_t)j * nb + i] = 1;
+    }
+    *out = o;
+    return true;
+}
+
 // ### DISPATCH ###
 
 bool vial_k_builtin(vial_kctx_t* k, const char* name, const vial_val_t* const* args, const md_str_t* names, uint32_t n, vial_val_t* out) {
@@ -3669,6 +3751,7 @@ bool vial_k_builtin(vial_kctx_t* k, const char* name, const vial_val_t* const* a
     if (IS("dihedral")) return k_angle(k, &ba, 4, out);
     if (IS("backbone_angles")) return k_backbone_angles(k, arg(&ba, "r", 0), out);
     if (IS("pucker")) return k_pucker(k, arg(&ba, "r", 0), false, out);
+    if (IS("contacts")) return k_contacts(k, &ba, out);
     if (IS("pseudorotation")) return k_pucker(k, arg(&ba, "r", 0), true, out);
     if (IS("closest_pair") || IS("farthest_pair")) {
         const vial_val_t* a[3] = {arg(&ba, "p", 0), arg(&ba, "q", 1), arg(&ba, "distinct", 2)};

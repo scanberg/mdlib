@@ -289,7 +289,7 @@ static const arg_unit_t arg_units[] = {
     {"density", "points", 0, UNIT_LENGTH, NULL},    {"density", "box", 2, UNIT_LENGTH, NULL},
     {"density", "sigma", 4, UNIT_LENGTH, NULL},
     {"rdf", "a", 0, UNIT_LENGTH, NULL},             {"rdf", "b", 1, UNIT_LENGTH, NULL},
-    {"rdf", "cutoff", 2, UNIT_LENGTH, NULL},
+    {"rdf", "cutoff", 2, UNIT_LENGTH, NULL},        {"contacts", "cutoff", 2, UNIT_LENGTH, NULL},
     {"sphere", "r", 1, UNIT_LENGTH, NULL},          {"disk", "r", 2, UNIT_LENGTH, NULL},
     {"arrow", "length", 3, UNIT_LENGTH, NULL},
     {"min", NULL, -1, UNIT_RESULT, NULL},           {"max", NULL, -1, UNIT_RESULT, NULL},

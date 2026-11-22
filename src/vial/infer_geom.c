@@ -670,6 +670,55 @@ static T call_pucker(infer_t* x, vial_node_id call, bool pseudo) {
     return t;
 }
 
+// contacts(a, b=None, cutoff=4.5, min_separation=3): per frame, of each set of a and each of b, whether two of their
+// particles are within cutoff (md_contact_query), bool with the dimensions of a then of b; without b, of a with itself,
+// where two sets of one strand fewer than min_separation apart in a are none, and a set is none with itself
+static T call_contacts(infer_t* x, vial_node_id call) {
+    static const param_t params[] = {{"a", VK_WHOLE, true}, {"b", VK_WHOLE, false}, {"cutoff", VK_WHOLE, false}, {"min_separation", VK_WHOLE, false}};
+    vial_node_id args[4];
+    if (!bind(x, call, "contacts", params, 4, args)) return err();
+    T ts[4];
+    for (int i = 0; i < 4; ++i) {
+        ts[i] = args[i] ? x->out->types[(args[i]) - x->out->base] : vial_type_scalar(VIAL_DT_NONE);
+        if (vial_type_is_error(&ts[i])) return err();
+    }
+    const bool self = !args[1] || ts[1].dtype == VIAL_DT_NONE;
+    for (int i = 0; i < (self ? 1 : 2); ++i) {
+        if (ts[i].dtype != VIAL_DT_SET || ts[i].ndim > 1 || (self && ts[i].ndim != 1)) {
+            vx_diag_fix(x, "E0313", args[i], NULL, self ? "`contacts` of a with itself takes an array of sets, as residue() gives; this is %s"
+                                                         : "`contacts` takes a set or an array of sets for %s; this is %s",
+                self ? vx_tstr(&ts[i]) : (i ? "b" : "a"), vx_tstr(&ts[i]));
+            return err();
+        }
+    }
+    if (args[2] && (!is_number(&ts[2]) || ts[2].dtype == VIAL_DT_BOOL || ts[2].ndim ||
+                    (ts[2].unit_kind == VIAL_UNIT_KNOWN && !md_unit_base_equal(ts[2].unit, unit_named("angstrom"))))) {
+        vx_diag_fix(x, "E0313", args[2], NULL, "`cutoff` is one length; this is %s", vx_tstr(&ts[2]));
+        return err();
+    }
+    if (args[3]) {
+        const vial_value_t v = value(x, args[3]);
+        if (ts[3].dtype != VIAL_DT_INT || ts[3].ndim || v.kind != VIAL_VAL_INT || v.i < 0) {
+            char what[32];
+            if (v.kind == VIAL_VAL_INT) snprintf(what, sizeof(what), "%lld", (long long)v.i);
+            vx_diag_fix(x, "E0313", args[3], NULL, "`min_separation` is a count of sets, 0 or more, known when compiling; this is %s",
+                v.kind == VIAL_VAL_INT ? what : vx_tstr(&ts[3]));
+            return err();
+        }
+        if (!self) {
+            vx_diag_fix(x, "E0313", args[3], NULL, "`min_separation` is of a with itself: contacts between a and b take none");
+            return err();
+        }
+    }
+    T t = vial_type_scalar(VIAL_DT_BOOL);
+    for (uint8_t k = 0; k < ts[0].ndim; ++k) vial_type_push_dim(&t, ts[0].dims[k]);
+    const T* tb = self ? &ts[0] : &ts[1];
+    for (uint8_t k = 0; k < tb->ndim; ++k) vial_type_push_dim(&t, tb->dims[k]);
+    t.stage = VIAL_STAGE_FRAME;
+    for (int i = 0; i < 3; ++i) if (ts[i].stage > t.stage) t.stage = ts[i].stage;
+    return t;
+}
+
 // The descriptions of a points core's point dimension and of the mapped ones, for W0608
 static bool shares_units(const split_t* p, const split_t* q) {
     uint32_t dp[VIAL_MAX_DIMS + 1], nq = 0;
@@ -753,6 +802,7 @@ bool vx_call_geom(infer_t* x, vial_node_id call, const vial_builtin_t* b, T* out
     if (md_str_eq(name, MD_STR_LIT("dihedral")))      { *out = call_angle(x, call, true); return true; }
     if (md_str_eq(name, MD_STR_LIT("backbone_angles"))) { *out = call_backbone_angles(x, call); return true; }
     if (md_str_eq(name, MD_STR_LIT("pucker")))        { *out = call_pucker(x, call, false); return true; }
+    if (md_str_eq(name, MD_STR_LIT("contacts")))      { *out = call_contacts(x, call); return true; }
     if (md_str_eq(name, MD_STR_LIT("pseudorotation"))) { *out = call_pucker(x, call, true); return true; }
     if (md_str_eq(name, MD_STR_LIT("closest_pair")))  { *out = call_pair(x, call, true); return true; }
     if (md_str_eq(name, MD_STR_LIT("farthest_pair"))) { *out = call_pair(x, call, false); return true; }
