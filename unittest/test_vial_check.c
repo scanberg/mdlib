@@ -1284,20 +1284,21 @@ UTEST_F(vial_check, groups) {
 
 #include <md_gro.h>
 
-// A nucleosome, two DNA strands and eight histones: mdlib describes an inferred strand by its kind as it spells it, "DNA";
-// its name is the word of its kind, as part(kind=) takes it and viamd's tooltip shows it
+// A nucleosome, two DNA strands and eight histones: an inferred strand is named by its kind, as part(kind=) takes it, and
+// its molecule by its parts
 UTEST_F(vial_check, part_names) {
     md_allocator_i* alloc = utest_fixture->alloc;
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"), NULL));
     md_system_infer(&sys, &state, NULL);
-    ASSERT_TRUE(md_str_eq(md_system_part_type_description(&sys, 0), MD_STR_LIT("DNA")));
+    ASSERT_TRUE(md_str_eq(md_system_part_type_description(&sys, 0), MD_STR_LIT("dna")));
     EXPECT_TRUE(md_str_eq(md_vial_part_name(&sys, 0), MD_STR_LIT("dna")));
     EXPECT_STREQ("dna", md_vial_part_kind(&sys, 0));
     EXPECT_TYPE_ON(&sys, "n = len(part('dna'))\n", 1, "int, static = 2");
     EXPECT_TYPE_ON(&sys, "n = len(part(name='peptide'))\n", 1, "int, static = 8");
     EXPECT_TYPE_ON(&sys, "n = len(part(kind='nucleic'))\n", 1, "int, static = 2");
     EXPECT_DIAGS_ON(&sys, "p = part('DNA')\n", "W0601 1: `part('DNA')` matches nothing in its scope\n");
+    EXPECT_TYPE_ON(&sys, "n = len(molecule('dna'))\n", 1, "int, static = 2");          // the same word for the molecule
     md_system_free(&sys);
 }

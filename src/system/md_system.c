@@ -456,9 +456,9 @@ const char* md_part_kind_name(md_part_kind_t kind) {
     case MD_PART_KIND_WATER:          return "water";
     case MD_PART_KIND_BRANCHED:       return "branched";
     case MD_PART_KIND_PEPTIDE:        return "peptide";
-    case MD_PART_KIND_DNA:            return "DNA";
-    case MD_PART_KIND_RNA:            return "RNA";
-    case MD_PART_KIND_NUCLEIC:        return "nucleic acid";
+    case MD_PART_KIND_DNA:            return "dna";
+    case MD_PART_KIND_RNA:            return "rna";
+    case MD_PART_KIND_NUCLEIC:        return "nucleic";
     case MD_PART_KIND_POLYMER:        return "polymer";
     default:                            return "";
     }

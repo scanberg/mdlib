@@ -346,7 +346,7 @@ extern "C" {
 #endif
 
 const char* md_residue_kind_name(md_residue_kind_t kind);   // "" for a value out of range
-const char* md_part_kind_name(md_part_kind_t kind);
+const char* md_part_kind_name(md_part_kind_t kind);         // lowercase, as VIAL's part(kind=) spells those it has: "dna"
 
 // The kind of residue a standard monomer is: MD_RESIDUE_KIND_AMINO_ACID or _NUCLEOTIDE, OTHER for MD_MONOMER_NONE
 md_residue_kind_t md_monomer_kind(md_monomer_t monomer);

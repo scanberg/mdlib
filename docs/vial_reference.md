@@ -447,7 +447,7 @@ ct     = particle(type='CT')                               # error E0208: T give
 t      = type(particle)                                    # error E0208
 ```
 
-A part's name is what its type is, the file's description where it gives one, as an mmCIF entity's `pdbx_description`; else mdlib names it, a polymer and water by its kind and anything else by its residue names, so a PDB file's GTP is `part('GTP')`. The kinds of a part: `polymer` is any polymer strand, `peptide`, `nucleic`, `dna` and `rna` the strands of those kinds (`nucleic` is DNA, RNA or a hybrid), and `glycan` a tree of saccharides or one sugar. A part that is no polymer is a `lipid` when its residues are lipids, an `ion` when it is one ion, a `water`, or else a `ligand`. A molecule has no kind of its own, since a glycoprotein holds a strand and its glycans: select the parts, and `molecule(part(kind='peptide'))` gives the molecules they are in.
+A part's name is what its type is, the file's description where it gives one, as an mmCIF entity's `pdbx_description`; else mdlib names it, a strand and water by its kind as `kind=` spells it, `'dna'`, and anything else by its residue names, so a PDB file's GTP is `part('GTP')`. The kinds of a part: `polymer` is any polymer strand, `peptide`, `nucleic`, `dna` and `rna` the strands of those kinds (`nucleic` is DNA, RNA or a hybrid), and `glycan` a tree of saccharides or one sugar. A part that is no polymer is a `lipid` when its residues are lipids, an `ion` when it is one ion, a `water`, or else a `ligand`. A molecule has no kind of its own, since a glycoprotein holds a strand and its glycans: select the parts, and `molecule(part(kind='peptide'))` gives the molecules they are in.
 
 ### Fragments
 

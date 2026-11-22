@@ -1200,15 +1200,12 @@ static bool residue_passes(const vial_sys_t* s, const vial_select_t* q, uint32_t
     return true;
 }
 
-// Its type's description, as the data gives it; an inferred type's is the residue names of a part that is no polymer,
-// and the kind of one, as mdlib spells it ("DNA", "nucleic acid"), which is the word of its kind here instead
+// Its type's description, as the data gives it; an inferred type's is the kind of a strand or water, as part(kind=)
+// spells it (md_part_kind_name), and the residue names of anything else
 md_str_t vial_part_name(const md_system_t* sys, uint32_t p) {
     const md_part_type_idx_t t = md_system_part_type_idx(sys, p);
     const md_str_t d = t >= 0 ? md_system_part_type_description(sys, (size_t)t) : (md_str_t){0};
-    const uint8_t k = part_kind(sys, p);
-    const bool inferred = t >= 0 && (md_system_part_type_flags(sys, (size_t)t) & MD_PART_TYPE_FLAG_INFERRED);
-    const bool by_kind = inferred && ((k >= VIAL_PART_PEPTIDE && k <= VIAL_PART_POLYMER) || k == VIAL_PART_WATER);
-    return md_str_empty(d) || by_kind ? md_str_from_cstr(vial_part_kind_word(k)) : d;
+    return md_str_empty(d) ? md_str_from_cstr(vial_part_kind_word(part_kind(sys, p))) : d;
 }
 
 const char* md_vial_part_kind(const md_system_t* sys, size_t part_idx) {

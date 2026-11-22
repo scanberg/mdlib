@@ -633,7 +633,7 @@ UTEST(hierarchy, part_type_derived) {
         // The DNA strands are DNA (by their residue names), which the nucleic backbone extraction relies upon
         EXPECT_EQ(md_system_part_type_flags(&sys, 0), inferred_kind(MD_PART_KIND_DNA));
         EXPECT_EQ(md_system_part_type_flags(&sys, 1), inferred_kind(MD_PART_KIND_DNA));
-        EXPECT_TRUE(md_str_eq(md_system_part_type_description(&sys, 0), MD_STR_LIT("DNA")));
+        EXPECT_TRUE(md_str_eq(md_system_part_type_description(&sys, 0), MD_STR_LIT("dna")));
         for (size_t i = 2; i < 6; ++i) {
             EXPECT_EQ(md_system_part_type_flags(&sys, i), inferred_kind(MD_PART_KIND_PEPTIDE));
         }
