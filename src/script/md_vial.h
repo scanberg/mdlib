@@ -277,6 +277,10 @@ typedef struct md_vial_eval_desc_t {
     // rather than made by reading the frames again (md_vial_eval_aggregate). 0 for 256 MB, as v1's frame_budget; an
     // rdf that does not fit keeps only its sum.
     size_t      frame_budget;
+    // Bytes the values kept at every frame for what reads them over the frames, as mean(x, axis='frame') reads x, may
+    // take together: past it the largest are not kept, R0106, and what reads them fails rather than the memory running
+    // out. Matrices of truths, kept as their entries ever true, do not count. 0 for 1 GB.
+    size_t      series_budget;
     // What the frames run on (md_executor.h): an interpreter and a frame reader per thread_idx. NULL, or an
     // executor of one thread, evaluates them on the calling thread. It must outlive the evaluation.
     const struct md_executor_t* executor;

@@ -1153,8 +1153,10 @@ static bool eval_fold(vial_interp_t* in, uint32_t opi) {
 
 static bool needs_series(const vial_interp_t* in, vial_ssa_t v) {
     const vial_ir_t* ir = in->ir;
-    // Outputs, but for matrices kept as pairs; what a once op or a later sweep reads is kept apart
+    // Outputs, but for those written out as frames finish, which a series would hold a second time, and matrices kept
+    // as pairs; what a once op or a later sweep reads is kept apart
     if (in->stream_pairs && in->stream_pairs[v]) return false;
+    if (in->stream && in->stream[v]) return false;
     for (size_t i = 0; i < md_array_size(ir->outputs); ++i) if (ir->outputs[i].value == v) return true;
     return false;
 }
@@ -1498,6 +1500,16 @@ static void merge_errors(vial_interp_t* in) {
     }
 }
 
+// A size in the units W0404 says it in, of 1024: 22.7 kB, 7.0 GB
+static void bytes_text(char* buf, size_t cap, uint64_t n) {
+    static const char* unit[] = {"bytes", "kB", "MB", "GB", "TB"};
+    double x = (double)n;
+    int u = 0;
+    while (x >= 1024.0 && u < 4) { x /= 1024.0; ++u; }
+    if (u == 0) snprintf(buf, cap, "%llu bytes", (unsigned long long)n);
+    else snprintf(buf, cap, "%.1f %s", x, unit[u]);
+}
+
 bool vial_interp_run(vial_interp_t* in, int64_t num_frames) {
     const vial_ir_t* ir = in->ir;
     classify(in);
@@ -1528,6 +1540,40 @@ bool vial_interp_run(vial_interp_t* in, int64_t num_frames) {
     md_array_resize(in->series, nv, in->alloc);
     memset(in->series, 0, nv * sizeof(*in->series));
     free_series_pairs(in);
+    // What the series would take, of the values whose shape is known: past the budget, the largest are not kept
+    {
+        const size_t budget = in->series_budget ? in->series_budget : VIAL_SERIES_BUDGET;
+        uint64_t* bytes = md_alloc(in->alloc, (nv ? nv : 1) * sizeof(uint64_t));
+        uint64_t total = 0;
+        for (size_t v = 0; v < nv; ++v) {
+            bytes[v] = 0;
+            if (!keep[v]) continue;
+            const vial_type_t* t = &ir->values[v].type;
+            const bool pairs = t->dtype == VIAL_DT_BOOL && t->ndim == 2 && t->dims[0].kind == VIAL_EXT_STATIC && t->dims[1].kind == VIAL_EXT_STATIC;
+            if (pairs || t->dtype == VIAL_DT_SET || t->dtype == VIAL_DT_TUPLE) continue;
+            uint64_t n = 1;
+            bool known = true;
+            for (uint8_t d = 0; d < t->ndim; ++d) { known = known && t->dims[d].kind == VIAL_EXT_STATIC; n *= t->dims[d].n; }
+            if (!known) continue;
+            bytes[v] = n * vial_dtype_size(t->dtype) * (uint64_t)(num_frames > 0 ? num_frames : 0);
+            total += bytes[v];
+        }
+        while (total > budget) {
+            size_t big = 0;
+            for (size_t v = 1; v < nv; ++v) if (bytes[v] > bytes[big]) big = v;
+            if (!bytes[big]) break;
+            const uint32_t bop = ir->values[big].op;
+            vial_kctx_t k = {.in = in, .op = bop != VIAL_IR_NO_OP ? &ir->ops[bop] : NULL, .map_index = -1};
+            char have[32], keeps[32];
+            bytes_text(have, sizeof(have), bytes[big]);
+            bytes_text(keeps, sizeof(keeps), budget);
+            vial_rt_fail(&k, "R0106", "%s over %lld frames, kept for what reads it over them: more than the %s the evaluation keeps; "
+                                      "reduce it per frame first", have, (long long)num_frames, keeps);
+            total -= bytes[big];
+            bytes[big] = 0;
+            keep[big] = 0;
+        }
+    }
     for (size_t v = 0; v < nv; ++v) {
         if (!keep[v]) continue;
         // A matrix of truths of known shape: the frames each entry is true in

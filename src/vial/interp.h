@@ -169,7 +169,12 @@ typedef struct vial_interp_t {
     // Bytes the rdfs may keep per frame (accum.h), handed out as they begin, in program order; 0 keeps none
     size_t                      frame_budget;
     size_t                      frame_kept;
+    // Bytes the values kept at every frame for what reads them over the frames may take together (vial_interp_run):
+    // past it the largest are not kept, R0106, and what reads them fails. 0 for VIAL_SERIES_BUDGET.
+    size_t                      series_budget;
 } vial_interp_t;
+
+#define VIAL_SERIES_BUDGET ((size_t)1 << 30)
 
 // The summary of a population at each frame, as v1 publishes it beside a series: <path>/mean, /variance (in the unit
 // squared) and /extent (min, max), [frames] each and [frames][2] for the extent. Periodic values are summarized around

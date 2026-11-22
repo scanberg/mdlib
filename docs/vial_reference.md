@@ -1590,6 +1590,7 @@ Codes are stable: E for errors, W for warnings, R for errors found while evaluat
 | R0103 | Extents known only when evaluating that do not fit together, such as two per-frame lengths that do not broadcast | frame 7: extents 12 and 9 do not broadcast |  |
 | R0104 | `at()` of a frame the run does not have | at() reads frame 120, which the run does not have |  |
 | R0105 | A value larger than the evaluation's limit, 2^28 elements by default | a value of 3,000,000,000 elements; the limit is 268,435,456 |  |
+| R0106 | Values kept at every frame for what reads them over the frames, past the evaluation's budget, 1 GB by default (md\_vial\_eval\_desc\_t.series\_budget): the largest is not kept, and what reads it fails | 7.0 GB over 10,000 frames, kept for what reads it over them: more than the 1.0 GB the evaluation keeps | a reduction per frame first, such as `sum(x, axis=1)` |
 
 ```python
 # on T

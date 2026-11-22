@@ -2270,6 +2270,47 @@ UTEST(vial_ir, matrix_series_as_pairs) {
     md_arena_allocator_destroy(alloc);
 }
 
+// What is kept at every frame for what reads it over the frames has a budget: past it the largest is not kept, R0106,
+// and what reads it fails, while the rest is computed
+UTEST(vial_ir, series_budget) {
+    int64_t nf = 0;
+    const md_system_t* sys = vial_ir__run_p(&nf);
+    ASSERT_TRUE(sys != NULL && nf > 4);
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
+    const char* src =
+        "_d = distance(particle.xyz, particle[0])\n"
+        "m  = mean(_d, axis='frame')\n"
+        "e  = distance(particle[0], particle[1])\n"
+        "me = mean(e, axis='frame')\n";
+    md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = MD_STR_LIT("run")}, alloc);
+    ASSERT_TRUE(prog != NULL);
+    // 153 floats over the frames is more than 2 kB; one float over them is not
+    md_vial_eval_t* eval = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = MD_STR_LIT("run"), .series_budget = 2048}, alloc);
+    ASSERT_TRUE(eval != NULL);
+    EXPECT_FALSE(md_vial_eval_run(eval));
+    const md_vial_diagnostic_t* d;
+    const size_t nd = md_vial_eval_diagnostics(eval, &d);
+    ASSERT_EQ(1u, nd);
+    EXPECT_EQ(0, strncmp(d[0].code, "R0106", 5));
+    char want[256];
+    snprintf(want, sizeof(want), "%.1f kB over %lld frames, kept for what reads it over them: more than the 2.0 kB the evaluation keeps; "
+             "reduce it per frame first", 153.0 * 4.0 * (double)nf / 1024.0, (long long)nf);
+    EXPECT_TRUE(md_str_eq(d[0].message, md_str_from_cstr(want)));
+    if (!md_str_eq(d[0].message, md_str_from_cstr(want))) printf("%.*s\n", (int)d[0].message.len, d[0].message.ptr);
+    const md_attributes_t* attrs = md_vial_eval_attributes(eval);
+    EXPECT_TRUE(md_attributes_find(attrs, MD_STR_LIT("script/m")) == NULL);
+    EXPECT_TRUE(md_attributes_find(attrs, MD_STR_LIT("script/me")) != NULL);
+    EXPECT_TRUE(md_attributes_find(attrs, MD_STR_LIT("script/e")) != NULL);
+    md_vial_eval_free(eval);
+    // Within the default, all of it
+    eval = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = MD_STR_LIT("run")}, alloc);
+    ASSERT_TRUE(md_vial_eval_run(eval));
+    EXPECT_TRUE(md_attributes_find(md_vial_eval_attributes(eval), MD_STR_LIT("script/m")) != NULL);
+    md_vial_eval_free(eval);
+    md_vial_program_free(prog);
+    md_arena_allocator_destroy(alloc);
+}
+
 // Of each frame of P's run, the frame's own: the selectors by ss= read one DSSP of it, and the next frame another. P's
 // peptide has no helix by DSSP; its turns and bends come and go
 UTEST(vial_ir, secondary_structure_per_frame) {

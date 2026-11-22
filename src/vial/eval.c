@@ -275,6 +275,7 @@ md_vial_eval_t* md_vial_eval_create_from(const md_vial_eval_t* prev, const md_vi
     }
     e->in.max_elements = desc->max_elements;
     e->in.frame_budget = desc->frame_budget ? desc->frame_budget : VIAL_RDF_FRAME_BUDGET;
+    e->in.series_budget = desc->series_budget;
     e->in.load_frame = load_frame;
     e->in.load_user = e;
     e->in.load_release = main_release;
