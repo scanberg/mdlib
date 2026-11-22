@@ -733,7 +733,7 @@ static const struct { const char* word; uint8_t key; } keywords[] = {
     {"scope", VIAL_KEY_SCOPE}, {"size", VIAL_KEY_SIZE}, {"role", VIAL_KEY_ROLE},
     {"hybridization", VIAL_KEY_HYBRIDIZATION}, {"aromatic", VIAL_KEY_AROMATIC}, {"metallic", VIAL_KEY_METALLIC},
     {"hydrogens", VIAL_KEY_HYDROGENS}, {"formal_charge", VIAL_KEY_FORMAL_CHARGE}, {"order", VIAL_KEY_ORDER}, {"origin", VIAL_KEY_ORIGIN},
-    {"gap", VIAL_KEY_GAP}, {"resolved", VIAL_KEY_RESOLVED}, {"ss", VIAL_KEY_SS},
+    {"gap", VIAL_KEY_GAP}, {"resolved", VIAL_KEY_RESOLVED}, {"ss", VIAL_KEY_SS}, {"pucker", VIAL_KEY_PUCKER},
 };
 
 uint8_t vial_select_key(md_str_t keyword) {
@@ -797,7 +797,7 @@ static uint32_t takes(uint8_t level) {
     case VIAL_LEVEL_CHAIN:    return K(VIAL_KEY_ID) | K(VIAL_KEY_SCOPE);
     case VIAL_LEVEL_TAIL:     return K(VIAL_KEY_SCOPE);
     case VIAL_LEVEL_HEAD:     return K(VIAL_KEY_SCOPE);
-    case VIAL_LEVEL_RING:     return K(VIAL_KEY_KIND) | K(VIAL_KEY_SIZE) | K(VIAL_KEY_SCOPE);
+    case VIAL_LEVEL_RING:     return K(VIAL_KEY_KIND) | K(VIAL_KEY_SIZE) | K(VIAL_KEY_PUCKER) | K(VIAL_KEY_SCOPE);
     case VIAL_LEVEL_GROUP:    return K(VIAL_KEY_NAME) | K(VIAL_KEY_ROLE) | K(VIAL_KEY_SCOPE);
     case VIAL_LEVEL_FRAGMENT: return K(VIAL_KEY_NAME) | K(VIAL_KEY_SCOPE);
     default: return 0;
@@ -817,7 +817,7 @@ const char* vial_select_keywords(uint8_t level) {
     case VIAL_LEVEL_CHAIN:    return "id and scope";
     case VIAL_LEVEL_TAIL:     return "scope";
     case VIAL_LEVEL_HEAD:     return "scope";
-    case VIAL_LEVEL_RING:     return "kind, size and scope";
+    case VIAL_LEVEL_RING:     return "kind, size, pucker and scope";
     case VIAL_LEVEL_GROUP:    return "name, role and scope";
     case VIAL_LEVEL_FRAGMENT: return "name and scope";
     default: return "";
@@ -1075,10 +1075,13 @@ static const char* residue_roles[] = {"terminus", "n_terminus", "c_terminus", "5
 static const char* gaps[] = {"before", "after"};
 // A residue's secondary structure, DSSP's states as mdlib names them (md_secondary_structure_t), and helix any of the three
 static const char* sss[] = {"helix", "helix_alpha", "helix_310", "helix_pi", "sheet", "bridge", "turn", "bend", "coil"};
+// A ring's conformation: the kinds of md_pucker_kind_t from planar, md_pucker_kind_name's as words ("half_chair")
+static const char* puckers[] = {"planar", "chair", "boat", "skew", "half_chair", "envelope", "twist"};
 
 bool vial_select_residue_role_known(md_str_t role) { return in_list(residue_roles, MD_COUNTOF(residue_roles), role); }
 bool vial_select_gap_known(md_str_t gap) { return in_list(gaps, MD_COUNTOF(gaps), gap); }
 bool vial_select_ss_known(md_str_t ss) { return in_list(sss, MD_COUNTOF(sss), ss); }
+bool vial_select_pucker_known(md_str_t pucker) { return in_list(puckers, MD_COUNTOF(puckers), pucker); }
 
 size_t vial_select_words(uint8_t level, uint8_t key, const char* const** words) {
     #define W(list) (*words = (list), MD_COUNTOF(list))
@@ -1098,6 +1101,7 @@ size_t vial_select_words(uint8_t level, uint8_t key, const char* const** words) 
         break;
     case VIAL_KEY_GAP:           if (level == VIAL_LEVEL_RESIDUE) return W(gaps); break;
     case VIAL_KEY_SS:            if (level == VIAL_LEVEL_RESIDUE) return W(sss); break;
+    case VIAL_KEY_PUCKER:        if (level == VIAL_LEVEL_RING) return W(puckers); break;
     case VIAL_KEY_HYBRIDIZATION: if (level == VIAL_LEVEL_PARTICLE) return W(hybridizations); break;
     default: break;
     }
@@ -1336,6 +1340,12 @@ static bool test_ring_kind(const vial_match_t* m, const void* user) {
 }
 
 // kind= its kinds (test_ring_kind); size= the number of atoms
+// A ring's conformation, one kind (md_pucker_kind_t, from planar at 1)
+static bool test_pucker(const vial_match_t* m, const void* user) {
+    const uint8_t k = *(const uint8_t*)user;
+    return m->kind == VIAL_MATCH_STR && k >= 1 && k <= MD_COUNTOF(puckers) && md_str_eq(m->s, md_str_from_cstr(puckers[k - 1]));
+}
+
 static bool ring_passes(const vial_sys_t* s, const vial_select_t* q, uint32_t r) {
     const uint32_t flags = md_system_ring_flags(s->sys, r);
     for (size_t i = 0; i < md_array_size(q->filters); ++i) {
@@ -1344,6 +1354,10 @@ static bool ring_passes(const vial_sys_t* s, const vial_select_t* q, uint32_t r)
             if (!match_int(f, (int64_t)(s->ring_offset[r + 1] - s->ring_offset[r]))) return false;
         } else if (f->key == VIAL_KEY_KIND) {
             if (!vial_filter_holds(f, test_ring_kind, &flags)) return false;
+        } else if (f->key == VIAL_KEY_PUCKER) {
+            // Of a ring of 5 or 6 atoms, in the frame; another has none, so not 'chair' never reaches it
+            const uint8_t k = q->pucker ? q->pucker[r] : 0;
+            if (!k || !vial_filter_holds(f, test_pucker, &k)) return false;
         }
     }
     return true;

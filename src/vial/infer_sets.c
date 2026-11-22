@@ -116,7 +116,7 @@ static void report_no_serials(infer_t* x, vial_node_id at) {
 static uint8_t key_dtype(uint8_t level, uint8_t key) {
     switch (key) {
     case VIAL_KEY_NAME: case VIAL_KEY_ELEMENT: case VIAL_KEY_KIND: case VIAL_KEY_TYPE: case VIAL_KEY_RESNAME: case VIAL_KEY_CHAIN:
-    case VIAL_KEY_ROLE: case VIAL_KEY_HYBRIDIZATION: case VIAL_KEY_GAP: case VIAL_KEY_SS: return VIAL_DT_STR;
+    case VIAL_KEY_ROLE: case VIAL_KEY_HYBRIDIZATION: case VIAL_KEY_GAP: case VIAL_KEY_SS: case VIAL_KEY_PUCKER: return VIAL_DT_STR;
     case VIAL_KEY_AROMATIC: case VIAL_KEY_METALLIC: case VIAL_KEY_RESOLVED: return VIAL_DT_BOOL;
     case VIAL_KEY_ID: return level == VIAL_LEVEL_CHAIN ? VIAL_DT_STR : VIAL_DT_INT;
     default: return VIAL_DT_INT;
@@ -312,6 +312,16 @@ static int filter_of(infer_t* x, uint8_t level, uint8_t key, vial_node_id node, 
             return -1;
         }
     }
+    if (key == VIAL_KEY_PUCKER && known == 1) {
+        for (size_t i = 0; i < md_array_size(f->expr); ++i) {
+            if (f->expr[i].kind != VIAL_MATCH_STR || vial_select_pucker_known(f->expr[i].s)) continue;
+            char ex[VIAL_EXCERPT_MAX + 4];
+            const md_str_t e = vial_excerpt(ex, sizeof(ex), f->expr[i].s);
+            vx_diag_fix(x, "E0206", node, NULL, "'%.*s' is no conformation of a ring; the conformations are planar, chair, boat, skew, "
+                "half_chair, envelope and twist", (int)e.len, e.ptr);
+            return -1;
+        }
+    }
     if (key == VIAL_KEY_SS && known == 1) {
         for (size_t i = 0; i < md_array_size(f->expr); ++i) {
             if (f->expr[i].kind != VIAL_MATCH_STR || vial_select_ss_known(f->expr[i].s)) continue;
@@ -447,8 +457,8 @@ static T selector_call(infer_t* x, vial_node_id call, md_str_t name) {
             if (r < 0) { failed = true; continue; }
             if (r == 0) known = false;
             if (key == VIAL_KEY_RESID) resid_arg = arg;
-            // The secondary structure is of the coordinates: the selection is made per frame
-            if (key == VIAL_KEY_SS && stage.stage < VIAL_STAGE_FRAME) stage.stage = VIAL_STAGE_FRAME;
+            // The secondary structure and a ring's conformation are of the coordinates: the selection is made per frame
+            if ((key == VIAL_KEY_SS || key == VIAL_KEY_PUCKER) && stage.stage < VIAL_STAGE_FRAME) stage.stage = VIAL_STAGE_FRAME;
             if (is_logic_value) logic_add(&logic, vn, (uint32_t)md_array_size(q.filters), r);
             md_array_push(q.filters, f, x->alloc);
             continue;

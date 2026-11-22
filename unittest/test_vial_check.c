@@ -1320,3 +1320,22 @@ UTEST_F(vial_check, part_names) {
     EXPECT_TYPE_ON(&sys, "n = len(molecule('dna'))\n", 1, "int, static = 2");          // the same word for the molecule
     md_system_free(&sys);
 }
+
+// A ring's pucker, Cremer and Pople's, and a furanose's pseudorotation: a tuple of arrays per frame; and ring(pucker=),
+// the kind of its conformation, per frame
+UTEST_F(vial_check, ring_pucker) {
+    const md_system_t* T = vial_test_system('T');
+    ASSERT_TRUE(T != NULL);
+    EXPECT_TYPE_ON(T, "p = pucker(ring)\n", 1, u8"(float[168] Å, float[168] °, float[168] °), frame");
+    EXPECT_TYPE_ON(T, "q, th, ph = pucker(ring(kind='sugar'))\n", 1, u8"float[2] Å and float[2] ° and float[2] °, frame");
+    EXPECT_TYPE_ON(T, "q, th, ph = pucker(ring[0])\n", 1, u8"float Å and float ° and float °, frame");
+    EXPECT_TYPE_ON(T, "p, tau = pseudorotation(ring(kind='sugar'))\n", 1, u8"float[2] ° and float[2] °, frame");
+    EXPECT_TYPE_ON(T, "q, th, ph = pucker(residue('PRO')[0].ring)\n", 1, u8"float[1] Å and float[1] ° and float[1] °, frame");
+    EXPECT_TYPE_ON(T, "q, th, ph = pucker(ring(particle(resname='PRO')))\n", 1, u8"float[40] Å and float[40] ° and float[40] °, frame");   // a proline's ring each
+    EXPECT_DIAGS_ON(T, "p = pucker(residue('PRO'))\n",
+        "E0313 1: `pucker` takes rings, as ring() gives them, and `residue('PRO')` is no ring | pucker(ring(residue('PRO')))\n");
+    EXPECT_TYPE_ON(T, "r = ring(pucker='chair')\n", 1, "set[?], frame");
+    EXPECT_TYPE_ON(T, "r = ring(pucker='envelope' or 'twist', size=5)\n", 1, "set[?], frame");
+    EXPECT_DIAGS_ON(T, "r = ring(pucker='half chair')\n", "E0206 1: 'half chair' is no conformation of a ring; the conformations are planar, "
+        "chair, boat, skew, half_chair, envelope and twist\n");
+}

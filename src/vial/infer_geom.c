@@ -626,6 +626,50 @@ static T call_backbone_angles(infer_t* x, vial_node_id call) {
     return with_loop(x, call, &loop, core, &t) ? t : err();
 }
 
+// pucker(r): of the ring each set of r is, (Q Å, theta °, phi °) in a frame, Cremer and Pople's, theta of a ring of six
+// and the phases of a ring whose order its chemistry fixes, else missing; pseudorotation(r): (P °, tau_m °) of a
+// furanose, Altona and Sundaralingam's. The phases are periodic in [0, 360), theta runs over [0, 180].
+static T call_pucker(infer_t* x, vial_node_id call, bool pseudo) {
+    const char* fname = pseudo ? "pseudorotation" : "pucker";
+    static const param_t params[] = {{"r", VK_SET, true}};
+    vial_node_id args[1];
+    if (!bind(x, call, fname, params, 1, args)) return err();
+    split_t sp[1];
+    T loop;
+    if (!map_args(x, call, fname, params, 1, args, sp, &loop)) return err();
+    // Rings, where the sets are known: the conventions are of a ring's atoms in their order around it
+    const vial_value_t v = vx_value_of(x, args[0]);
+    if (v.kind == VIAL_VAL_SETS && v.sets->level != VIAL_LEVEL_RING) {
+        char ex[VIAL_EXCERPT_MAX + 4], buf[256], pre[32];
+        excerpt(ex, sizeof(ex), x, args[0]);
+        snprintf(pre, sizeof(pre), "%s(ring(", fname);
+        const char* fix = fix_around(buf, sizeof(buf), x, args[0], pre, "))");
+        vx_diag_fix(x, "E0313", args[0], fix, "`%s` takes rings, as ring() gives them, and `%s` is no ring", fname, ex);
+        return err();
+    }
+    T q = length();
+    T ang = vial_type_scalar(VIAL_DT_FLOAT);
+    ang.unit = unit_named("deg");
+    T phase = ang;
+    phase.flags |= VIAL_TYPE_PERIODIC;
+    phase.period_beg = 0.0f; phase.period_end = 360.0f; phase.seam = 0.0f;
+    const T cores_cp[3] = {q, ang, phase};      // Q, theta, phi
+    const T cores_as[2] = {phase, ang};         // P, tau_m
+    const T* cores = pseudo ? cores_as : cores_cp;
+    const uint32_t ne = pseudo ? 2 : 3;
+    T* elems = md_alloc(x->alloc, ne * sizeof(T));
+    for (uint32_t e = 0; e < ne; ++e) {
+        T c = cores[e];
+        c.stage = VIAL_STAGE_FRAME;
+        if (!with_loop(x, call, &loop, c, &elems[e])) return err();
+    }
+    T t = vial_type_scalar(VIAL_DT_TUPLE);
+    t.elems = elems;
+    t.num_elems = ne;
+    join_stage(&t, &elems[0]);
+    return t;
+}
+
 // The descriptions of a points core's point dimension and of the mapped ones, for W0608
 static bool shares_units(const split_t* p, const split_t* q) {
     uint32_t dp[VIAL_MAX_DIMS + 1], nq = 0;
@@ -708,6 +752,8 @@ bool vx_call_geom(infer_t* x, vial_node_id call, const vial_builtin_t* b, T* out
     if (md_str_eq(name, MD_STR_LIT("angle")))         { *out = call_angle(x, call, false); return true; }
     if (md_str_eq(name, MD_STR_LIT("dihedral")))      { *out = call_angle(x, call, true); return true; }
     if (md_str_eq(name, MD_STR_LIT("backbone_angles"))) { *out = call_backbone_angles(x, call); return true; }
+    if (md_str_eq(name, MD_STR_LIT("pucker")))        { *out = call_pucker(x, call, false); return true; }
+    if (md_str_eq(name, MD_STR_LIT("pseudorotation"))) { *out = call_pucker(x, call, true); return true; }
     if (md_str_eq(name, MD_STR_LIT("closest_pair")))  { *out = call_pair(x, call, true); return true; }
     if (md_str_eq(name, MD_STR_LIT("farthest_pair"))) { *out = call_pair(x, call, false); return true; }
     if (md_str_eq(name, MD_STR_LIT("fit")))           { *out = call_fit(x, call); return true; }

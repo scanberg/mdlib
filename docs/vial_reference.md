@@ -318,6 +318,7 @@ Names are singular, as every function's is, whatever the shape of what they give
 |  | `chain` | the author id of its chain | string or list |
 | `ring` | `kind` | its tags: aromatic (every bond), hetero (an atom other than C), fused (a bond shared with another ring), fused\_aromatic (an aromatic ring of a fused aromatic system, a bond shared with another aromatic ring: naphthalene, indole, a purine), sugar (a furanose or pyranose). An aliphatic ring is `not 'aromatic'`, a heteroaromatic one `'hetero' and 'aromatic'` | string or list |
 |  | `size` | the number of atoms | int, `a..b` or a list |
+|  | `pucker` | the kind of its conformation in the frame: planar, chair, boat, skew, half\_chair, envelope, twist; a ring of 5 or 6 atoms has one, under 0.1 Å of amplitude planar. A selection by it is made per frame | string or list |
 | `molecule` | `name` | the name of its molecule type: the topology's, else what its parts are, such as peptide, GTP or water | a glob, or a list |
 |  | `chain` | the author id of its chain | string or list |
 | `chain` | `id` | the author chain id | string or list |
@@ -534,6 +535,12 @@ second = polymer[1]                                  # -> set: chain B's strand;
 not_p  = polymer(kind='ligand')                      # error E0206: a ligand is not a polymer
 aro    = ring(kind='aromatic')                       # -> set[n]
 pl     = planarity(aro)                              # -> float[n] Å, frame: how far each is from flat, RMS
+q, th, ph = pucker(ring(kind='sugar'))               # -> float[2] Å and float[2] ° and float[2] °, frame: the riboses of GTP and GDP
+p, tau = pseudorotation(ring(kind='sugar'))          # -> float[2] ° and float[2] °, frame
+q_pro, _t, ph_pro = pucker(ring(particle(resname='PRO')))   # -> float[40] Å and float[40] ° and float[40] °, frame: theta missing, five atoms
+puck   = ring(pucker='envelope' or 'twist')          # -> set[?], frame: the five-membered rings that pucker
+flat_r = ring(pucker='planar', kind=not 'aromatic')  # -> set[?], frame
+bad_p  = pucker(residue('PRO'))                      # error E0313: a ring's pucker; pucker(ring(residue('PRO')))
 phe0   = residue('PHE')[0].ring                      # -> set[1]: its benzene ring
 trp    = ring(particle(resname='TRP'))               # -> set[16]: eight TRP, two fused rings each
 whole  = residue(particle(name='CA', chain='A'))     # -> set[433]: whole residues, one CA each
@@ -876,6 +883,8 @@ Keywords mean the same wherever they appear. `weights=` takes `'mass'`, `None` o
 | `backbone_angles(r: set)` | `float[3]` °, in (−180, 180\] | of the residue each set is in, its φ, ψ and ω, as IUPAC defines them: φ about N–CA (C of the residue before, N, CA, C), ψ about CA–C (N, CA, C, N of the residue after), ω about the peptide bond to the residue after (CA, C, N and CA of it), so a cis peptide bond before a proline is the ω of the residue before it. Maps over an array of sets, `backbone_angles(residue)` is `float[n][3]`; a set within several residues is E0313. Missing where a neighbour is: φ at the start of a strand and after a chain break, ψ and ω at its end and before one, all three for a residue of no protein backbone, as a water, or of a CA trace (md\_backbone\_segment\_dihedrals). viamd's tooltip of a residue shows the same three |
 | `gyration(p: points, weights='mass')` | `float` Å | prelude: `sqrt(sum(w * norm(displacement(com(p, weights), p))**2) / sum(w))`, with `w = weight(p, weights)`. Drawn as a sphere of that radius at the centre |
 | `normal(p: points)` | `float[3]` | prelude: the direction of least spread, `v[:, 0]` of `eigh(d.T @ d)` with `d = displacement(com(p, weights=None), p)`. Drawn as an arrow from the centre |
+| `pucker(r: set)` | `(float Å, float °, float °)` | of the ring each set is, as `ring()` and `.ring` give them, its Cremer–Pople coordinates in the frame (md\_pucker\_ring): the amplitude Q, θ in \[0, 180\] of a ring of six (0 and 180 at the two chairs, 90 at the boats and skews) and the phase φ in \[0, 360). The phases depend on where the ring starts and which way it runs, so they are given only where its chemistry fixes its order, a sugar from the ring O and a proline from N; of a ring such as benzene's, whose order came down to the index of an atom, they are missing and Q alone means something, as the kind of its conformation does (`ring(pucker=)`). Q is missing for a ring of 3 or 4 atoms. Maps over an array of sets, a tuple of arrays; a set that is no ring is E0313 |
+| `pseudorotation(r: set)` | `(float °, float °)` | of the ring each set is, Altona and Sundaralingam's phase P in \[0, 360) and amplitude τm of a furanose, from O4', C1', C2', C3', C4': C3'-endo near P = 18°, C2'-endo near 162°. Missing for any other ring |
 | `planarity(p: points)` | `float` Å | prelude: the RMS distance of the points from their plane of least spread, `sqrt(mean((d @ v[:, 0])**2))` with d and v as `normal` has them; 0 for a flat ring. Drawn as `normal` is |
 | `shape_weights(p: points, weights='mass')` | `float[3]` | prelude: how linear, planar and isotropic the points are, `(l2 - l1, 2 (l1 - l0), 3 l0) / (l0 + l1 + l2)` with l the eigenvalues of the gyration tensor, ascending; they sum to 1, as v1's. Unpack them as `lin, plan, iso = shape_weights(s)`. Drawn as three arrows from the centre along the principal axes, each as long as the spread along it |
 | `within(r, of: points)` | `set`, frame | the scope's particles within r of any particle or point of `of`: d <= r, with d the bits `distance()` gives for the pair, under the minimum image; `of=` is always written, so `within(5.0, of=protein)` reads as it means and the radius cannot be mistaken for the set. `within(5.0, protein)` is E0203, with the fix `of=protein` |
@@ -1008,7 +1017,7 @@ lin, plan, iso = shape_weights(particle)               # -> float and float and 
 swr  = shape_weights(residue)                          # -> float[15][3], frame: points maps over the residues
 ```
 
-Not ported from v1 yet: contact maps, hydrogen bonds, secondary structure and ring pucker. The volumes, `sdf` and `density`, are under Volumes, and `rdf` under Frames.
+Not ported from v1 yet: contact maps. Hydrogen bonds are `bond(kind='hydrogen')`, secondary structure `residue(ss=)`, and ring pucker `pucker()`, `pseudorotation()` and `ring(pucker=)`. The volumes, `sdf` and `density`, are under Volumes, and `rdf` under Frames.
 
 ## Built-in functions: reductions, math and arrays
 

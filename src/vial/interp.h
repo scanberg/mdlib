@@ -77,6 +77,12 @@ typedef struct vial_interp_t {
         uint64_t                epoch;
         int32_t*                states;
     } ss;
+    // The kind of each ring's conformation in the frame (md_pucker_conformer), md_pucker_kind_t per ring of msys, for
+    // ring(pucker=): in temp, good while epoch is frame_epoch and kinds is not NULL
+    struct {
+        uint64_t                epoch;
+        uint8_t*                kinds;
+    } pucker;
     size_t                      max_elements;   // the most elements one value may have (R0105); 0 for the default
     vial_val_t*                 vals;       // md_array by ssa
     uint8_t*                    state;      // md_array by ssa: 0 not computed, 1 computed for this frame, 2 static

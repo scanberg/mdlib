@@ -100,6 +100,7 @@ UTEST(vial_ir, lowers_and_verifies) {
 #include <core/md_vec_math.h>
 #include <core/md_linalg.h>
 #include <md_dssp.h>
+#include <md_pucker.h>
 
 typedef struct vial_ir__run_t {
     md_allocator_i*     alloc;
@@ -1758,6 +1759,81 @@ UTEST(vial_ir, secondary_structure) {
     EXPECT_STREQ(want, vial_ir__out(&r, "other", buf, sizeof(buf)));
     EXPECT_STREQ("0", vial_ir__out(&r, "wat", buf, sizeof(buf)));
     printf("T: %d of %d residues in a helix, %d alpha, %d in a sheet\n", want_helix, want_any, want_alpha, want_sheet);
+    vial_ir__end(&r);
+}
+
+// A published value of the frame evaluated, or NULL
+static const vial_val_t* vial_ir__value(vial_ir__run_t* r, const char* name) {
+    const vial_ir_t* ir = md_vial__run_ir(r->prog);
+    for (size_t i = 0; i < md_array_size(ir->outputs); ++i) {
+        if (md_str_eq(ir->outputs[i].name, md_str_from_cstr(name))) return vial_interp_value(&r->in, ir->outputs[i].value);
+    }
+    return NULL;
+}
+
+static bool vial_ir__missing(const vial_val_t* v, size_t i) {
+    return v->missing && (v->missing[i / 64] >> (i % 64) & 1);
+}
+
+// pucker(), pseudorotation() and ring(pucker=) on T, as md_pucker_ring gives them ring by ring: the amplitude of every
+// ring of 5 to 7, the phases of those whose order is fixed, theta of those of six, the pseudorotation of the furanoses
+UTEST(vial_ir, ring_pucker) {
+    const md_system_t* sys = vial_test_system('T');
+    const md_system_state_t* st = vial_test_state('T');
+    ASSERT_TRUE(sys && st);
+    vial_ir__run_t r;
+    const char* src =
+        "q, th, ph = pucker(ring)\n"
+        "p, tau = pseudorotation(ring)\n"
+        "n_planar = len(ring(pucker='planar'))\n"
+        "n_chair = len(ring(pucker='chair'))\n"
+        "n_env = len(ring(pucker='envelope'))\n"
+        "n_twist = len(ring(pucker='twist'))\n"
+        "n_five = len(ring(pucker='envelope' or 'twist'))\n"
+        "n_any = len(ring(pucker=not 'planar'))\n";
+    ASSERT_TRUE(vial_ir__start(&r, src, sys));
+    const vial_frame_t fr = {.xyz = (const float*)st->xyz, .num_atoms = st->num_atoms, .cell = st->unitcell, .index = 0, .time = 0.0};
+    ASSERT_TRUE(vial_interp_frame(&r.in, &fr));
+    const vial_val_t* v[5] = {vial_ir__value(&r, "q"), vial_ir__value(&r, "th"), vial_ir__value(&r, "ph"), vial_ir__value(&r, "p"), vial_ir__value(&r, "tau")};
+    for (int i = 0; i < 5; ++i) ASSERT_TRUE(v[i] && v[i]->dtype == VIAL_DT_FLOAT);
+    const size_t n = md_ring_data_count(&sys->ring);
+    ASSERT_EQ(n, vial_val_count(v[0]));
+    int kinds[8] = {0}, anchored = 0, pseudo = 0;
+    for (size_t i = 0; i < n; ++i) {
+        md_pucker_ring_t pr;
+        const bool ok = md_pucker_ring(&pr, sys, st, i);
+        const float* d[5];
+        for (int e = 0; e < 5; ++e) d[e] = (const float*)v[e]->data;
+        EXPECT_EQ(!ok, vial_ir__missing(v[0], i));
+        EXPECT_EQ(!(ok && pr.anchored), vial_ir__missing(v[2], i));
+        EXPECT_EQ(!(ok && pr.anchored && pr.size == 6), vial_ir__missing(v[1], i));
+        EXPECT_EQ(!(ok && pr.has_pseudo), vial_ir__missing(v[3], i));
+        if (ok) EXPECT_EQ(pr.cp.amplitude, d[0][i]);
+        if (ok && pr.anchored) EXPECT_EQ(pr.cp.phi2, d[2][i]);
+        if (ok && pr.anchored && pr.size == 6) EXPECT_EQ(pr.cp.theta, d[1][i]);
+        if (ok && pr.has_pseudo) { EXPECT_EQ(pr.pseudo_phase, d[3][i]); EXPECT_EQ(pr.pseudo_amplitude, d[4][i]); }
+        if (ok) kinds[md_pucker_conformer(&pr.cp).kind] += 1;
+        anchored += ok && pr.anchored;
+        pseudo += ok && pr.has_pseudo;
+    }
+    EXPECT_GT(anchored, 0);
+    EXPECT_GT(pseudo, 0);       // the riboses of GTP and GDP
+    char buf[64], want[64];
+    static const struct { const char* name; int kind; } counts[] = {
+        {"n_planar", MD_PUCKER_KIND_PLANAR}, {"n_chair", MD_PUCKER_KIND_CHAIR}, {"n_env", MD_PUCKER_KIND_ENVELOPE}, {"n_twist", MD_PUCKER_KIND_TWIST},
+    };
+    for (size_t i = 0; i < MD_COUNTOF(counts); ++i) {
+        snprintf(want, sizeof(want), "%d", kinds[counts[i].kind]);
+        EXPECT_STREQ(want, vial_ir__out(&r, counts[i].name, buf, sizeof(buf)));
+    }
+    snprintf(want, sizeof(want), "%d", kinds[MD_PUCKER_KIND_ENVELOPE] + kinds[MD_PUCKER_KIND_TWIST]);
+    EXPECT_STREQ(want, vial_ir__out(&r, "n_five", buf, sizeof(buf)));
+    int named = 0;
+    for (int k = MD_PUCKER_KIND_CHAIR; k <= MD_PUCKER_KIND_TWIST; ++k) named += kinds[k];
+    snprintf(want, sizeof(want), "%d", named);
+    EXPECT_STREQ(want, vial_ir__out(&r, "n_any", buf, sizeof(buf)));
+    printf("T: %zu rings, %d anchored, %d furanoses; planar %d, chair %d, envelope %d, twist %d\n", n, anchored, pseudo,
+        kinds[MD_PUCKER_KIND_PLANAR], kinds[MD_PUCKER_KIND_CHAIR], kinds[MD_PUCKER_KIND_ENVELOPE], kinds[MD_PUCKER_KIND_TWIST]);
     vial_ir__end(&r);
 }
 

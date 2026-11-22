@@ -25,7 +25,8 @@ static const vial_builtin_t builtins[] = {
     {"mass", F}, {"weight", F}, {"charge", F}, {"element", F}, {"name", F}, {"bfactor", F}, {"com", F | P},
     // The values of a particle's properties that are keywords of particle(), one per particle
     {"kind", F}, {"type", F}, {"hybridization", F}, {"aromatic", F}, {"metallic", F}, {"hydrogens", F}, {"formal_charge", F},
-    {"displacement", F}, {"closest_pair", F}, {"farthest_pair", F}, {"angle", F}, {"dihedral", F}, {"backbone_angles", F}, {"within", F},
+    {"displacement", F}, {"closest_pair", F}, {"farthest_pair", F}, {"angle", F}, {"dihedral", F}, {"backbone_angles", F}, {"pucker", F},
+    {"pseudorotation", F}, {"within", F},
     {"fit", F},
     // Reductions
     {"sum", F}, {"mean", F}, {"min", F}, {"max", F}, {"std", F}, {"var", F}, {"any", F}, {"all", F}, {"argmin", F},

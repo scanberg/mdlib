@@ -192,6 +192,7 @@ typedef enum vial_key_t {
     VIAL_KEY_GAP,               // residues: a break of its chain before or after it (MD_RESIDUE_FLAG_BREAK_BEFORE, _AFTER)
     VIAL_KEY_RESOLVED,          // residues: its backbone found from its bonds, its atoms of their roles (MD_RESIDUE_FLAG_RESOLVED)
     VIAL_KEY_SS,                // residues: its secondary structure in the frame (md_dssp_compute), so a selection per frame
+    VIAL_KEY_PUCKER,            // rings: the kind of its conformation in the frame (md_pucker_conformer), so a selection per frame
     VIAL_KEY_COUNT
 } vial_key_t;
 
@@ -239,6 +240,8 @@ typedef struct vial_select_t {
     const vial_sets_t*      scope;          // NULL for the system
     const int32_t*          ss;             // ss=: the secondary structure of the frame, md_secondary_structure_t per segment
                                             // of the protein backbone; NULL, and ss= matches nothing, of no frame
+    const uint8_t*          pucker;         // pucker=: the kind of each ring's conformation in the frame, md_pucker_kind_t per
+                                            // ring of the system; NULL, and pucker= matches nothing, of no frame
 } vial_select_t;
 
 // The keywords of a selector, in the order the reference lists them; false for a keyword it does not take
@@ -267,6 +270,7 @@ md_str_t    vial_part_name(const struct md_system_t* sys, uint32_t p);
 bool        vial_select_residue_role_known(md_str_t role);
 bool        vial_select_gap_known(md_str_t gap);
 bool        vial_select_ss_known(md_str_t ss);
+bool        vial_select_pucker_known(md_str_t pucker);
 // The words a keyword takes at a level, where they are a closed set (kind, role, gap, hybridization); 0 when not
 size_t      vial_select_words(uint8_t level, uint8_t key, const char* const** words);
 // Whether a value is a hybridization a particle selector takes: sp, sp2 or sp3

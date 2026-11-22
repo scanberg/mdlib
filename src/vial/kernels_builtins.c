@@ -19,6 +19,7 @@
 #include <md_bond.h>
 #include <md_hbond.h>
 #include <md_dssp.h>
+#include <md_pucker.h>
 #include <md_attributes.h>
 #include <md_element.h>
 #include <core/md_geom.h>
@@ -3344,6 +3345,39 @@ static const int32_t* frame_secondary_structure(vial_kctx_t* k) {
     return in->ss.states;
 }
 
+// The frame as a state for mdlib's functions of one: its positions and cell, nothing kept
+static md_system_state_t frame_state_view(vial_kctx_t* k, const float* xyz) {
+    md_system_state_t st = {0};
+    st.num_atoms = k->in->frame->num_atoms;
+    st.xyz = (md_float3_t*)xyz;
+    st.unitcell = frame_cell(k);
+    return st;
+}
+
+// Ring ring_idx of the system puckered in the frame (md_pucker_ring); false for one of another size than 5 to 7
+static bool frame_ring_pucker(vial_kctx_t* k, uint32_t ring_idx, md_pucker_ring_t* out) {
+    const float* xyz = frame_xyz(k);
+    if (!xyz || !k->in->msys || k->in->frame->num_atoms < k->in->msys->atom.count) return false;
+    const md_system_state_t st = frame_state_view(k, xyz);
+    return md_pucker_ring(out, k->in->msys, &st, ring_idx);
+}
+
+// The kind of each ring's conformation in the frame, once a frame for every selector that asks (vial_interp_t.pucker)
+static const uint8_t* frame_ring_puckers(vial_kctx_t* k) {
+    vial_interp_t* in = k->in;
+    if (in->pucker.kinds && in->pucker.epoch == in->frame_epoch) return in->pucker.kinds;
+    if (!frame_xyz(k) || !in->msys) return NULL;
+    const size_t n = md_ring_data_count(&in->msys->ring);
+    uint8_t* kinds = md_alloc(in->temp ? in->temp : k->alloc, n ? n : 1);
+    for (size_t r = 0; r < n; ++r) {
+        md_pucker_ring_t p;
+        kinds[r] = frame_ring_pucker(k, (uint32_t)r, &p) ? (uint8_t)md_pucker_conformer(&p.cp).kind : (uint8_t)MD_PUCKER_KIND_NONE;
+    }
+    in->pucker.kinds = kinds;
+    in->pucker.epoch = in->frame_epoch;
+    return kinds;
+}
+
 static bool k_select(vial_kctx_t* k, const char* name, const bargs_t* ba, vial_val_t* out) {
     if (!k->in->sys) return vial_rt_fail(k, "R0103", "%s needs a system", name);
     uint8_t pkind;
@@ -3376,6 +3410,7 @@ static bool k_select(vial_kctx_t* k, const char* name, const bargs_t* ba, vial_v
         vial_filter_t f;
         if (!keyword_filter(k, key, v, &f)) return false;
         if (key == VIAL_KEY_SS && !(q.ss = frame_secondary_structure(k))) return false;
+        if (key == VIAL_KEY_PUCKER && !(q.pucker = frame_ring_puckers(k))) return false;
         md_array_push(q.filters, f, k->alloc);
     }
     vial_sets_t* s = vial_select(k->in->sys, &q, k->alloc);
@@ -3550,6 +3585,43 @@ static bool k_backbone_angles(vial_kctx_t* k, const vial_val_t* r, vial_val_t* o
     return true;
 }
 
+// pucker(r): of the ring each set is, its Cremer-Pople amplitude Q (Å), theta (°, of a ring of six) and phi (°, phi2),
+// the phases missing where the ring's order is not fixed by its chemistry (md_pucker_ring_order); pseudorotation(r):
+// the phase P and amplitude tau_m (°) of a furanose. A tuple of arrays of the sets' shape
+static bool k_pucker(vial_kctx_t* k, const vial_val_t* r, bool pseudo, vial_val_t* out) {
+    const char* fname = pseudo ? "pseudorotation" : "pucker";
+    if (!r || r->dtype != VIAL_DT_SET || !r->sets) return vial_rt_fail(k, "R0103", "%s takes rings", fname);
+    if (r->sets->level != VIAL_LEVEL_RING || !r->sets->unit) return vial_rt_fail(k, "R0103", "%s takes rings, as ring() gives them", fname);
+    const size_t cnt = r->ndim ? vial_val_count(r) : 1;
+    const uint32_t ne = pseudo ? 2 : 3;
+    vial_val_t* el = md_alloc(k->alloc, ne * sizeof(vial_val_t));
+    for (uint32_t e = 0; e < ne; ++e) if (!vial_k_make(k, VIAL_DT_FLOAT, r->ndim, r->dims, &el[e])) return false;
+    for (size_t i = 0; i < cnt; ++i) {
+        md_pucker_ring_t p;
+        const bool ok = i < r->sets->count && frame_ring_pucker(k, r->sets->unit[i], &p);
+        float v[3] = {0};
+        bool has[3] = {false, false, false};
+        if (pseudo) {
+            has[0] = has[1] = ok && p.has_pseudo;
+            v[0] = p.pseudo_phase;
+            v[1] = p.pseudo_amplitude;
+        } else {
+            has[0] = ok;
+            has[1] = ok && p.anchored && p.size == 6;
+            has[2] = ok && p.anchored;
+            v[0] = p.cp.amplitude;
+            v[1] = p.cp.theta;
+            v[2] = p.cp.phi2;
+        }
+        for (uint32_t e = 0; e < ne; ++e) {
+            ((float*)el[e].data)[i] = has[e] ? v[e] : 0.0f;
+            if (!has[e]) vial_val_set_missing(&el[e], i, k->alloc);
+        }
+    }
+    *out = (vial_val_t){.dtype = VIAL_DT_TUPLE, .elems = el, .num_elems = ne};
+    return true;
+}
+
 // ### DISPATCH ###
 
 bool vial_k_builtin(vial_kctx_t* k, const char* name, const vial_val_t* const* args, const md_str_t* names, uint32_t n, vial_val_t* out) {
@@ -3563,6 +3635,8 @@ bool vial_k_builtin(vial_kctx_t* k, const char* name, const vial_val_t* const* a
     if (IS("angle")) return k_angle(k, &ba, 3, out);
     if (IS("dihedral")) return k_angle(k, &ba, 4, out);
     if (IS("backbone_angles")) return k_backbone_angles(k, arg(&ba, "r", 0), out);
+    if (IS("pucker")) return k_pucker(k, arg(&ba, "r", 0), false, out);
+    if (IS("pseudorotation")) return k_pucker(k, arg(&ba, "r", 0), true, out);
     if (IS("closest_pair") || IS("farthest_pair")) {
         const vial_val_t* a[3] = {arg(&ba, "p", 0), arg(&ba, "q", 1), arg(&ba, "distinct", 2)};
         if (!a[0] || !a[1]) return vial_rt_fail(k, "R0103", "%s takes p and q", name);
