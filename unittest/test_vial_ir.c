@@ -2069,6 +2069,15 @@ UTEST(vial_ir, matrix_pairs) {
         EXPECT_TRUE(o[0].flags & MD_VIAL_OUTPUT_MATRIX);
         EXPECT_TRUE(o[0].flags & MD_VIAL_OUTPUT_TEMPORAL);
         EXPECT_FALSE(o[2].flags & MD_VIAL_OUTPUT_MATRIX);
+        // What a row and a column stand for: residues, by their particles
+        uint32_t atoms[64];
+        const md_urange_t r2 = md_system_residue_atom_range(sys, 2), r3 = md_system_residue_atom_range(sys, 3);
+        ASSERT_EQ((size_t)(r2.end - r2.beg), md_vial_output_atoms(prog, MD_STR_LIT("m"), 0, 2, atoms, 64));
+        for (uint32_t i = r2.beg; i < r2.end; ++i) EXPECT_EQ(i, atoms[i - r2.beg]);
+        ASSERT_EQ((size_t)(r3.end - r3.beg), md_vial_output_atoms(prog, MD_STR_LIT("ab"), 1, 0, atoms, 64));
+        EXPECT_EQ(r3.beg, atoms[0]);
+        EXPECT_EQ(0u, md_vial_output_atoms(prog, MD_STR_LIT("ab"), 1, 7, atoms, 64));
+        EXPECT_EQ(0u, md_vial_output_atoms(prog, MD_STR_LIT("n"), 0, 0, atoms, 64));
     }
     const md_vial_eval_desc_t ed = {.sys = sys, .run = MD_STR_LIT("run"), .executor = test_executor_of_threads(4)};
     md_vial_eval_t* eval = md_vial_eval_create(prog, &ed, alloc);

@@ -170,6 +170,11 @@ typedef struct md_vial_output_t {
 
 size_t md_vial_outputs(const md_vial_program_t* prog, const md_vial_output_t** out);
 
+// The particles index `index` of dimension dim of output name stands for, where the dimension runs over a selection
+// known when compiling, as its labels do: the residue of a row of contacts(residue). Their atom indices of the system
+// into out, at most cap; returns how many there are, 0 for none.
+size_t md_vial_output_atoms(const md_vial_program_t* prog, md_str_t name, uint8_t dim, uint32_t index, uint32_t* out, size_t cap);
+
 // What hover shows of the innermost expression at a byte offset of the source, as the checker knows it: its span,
 // type, stage, pass and, where known when compiling, its value. False where no expression with a type is.
 typedef struct md_vial_hover_t {

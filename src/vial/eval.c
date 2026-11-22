@@ -595,16 +595,14 @@ static void publish_periods(md_vial_eval_t* e) {
 
 // What each index of dimension d of a value of type t is, as labels from alloc, when the dimension runs over the units
 // of a selection the checker knows (MET1/A for a residue, CA/MET1/A for a particle); else NULL
+static const vial_sets_t* dim_sets(const vial_ir_t* ir, const vial_type_t* t, uint8_t d);
+
 static md_str_t* dim_labels(const vial_ir_t* ir, const vial_type_t* t, uint8_t d, vial_sys_t* vs, md_allocator_i* alloc) {
-    if (!ir->descs || d >= t->ndim || t->dtype == VIAL_DT_SET || t->dims[d].kind != VIAL_EXT_STATIC) return NULL;
-    const uint32_t dsc = t->dims[d].desc;
-    if (!dsc || dsc >= md_array_size(ir->descs)) return NULL;
-    const vial_desc_t* ds = &ir->descs[dsc];
-    const uint32_t n = t->dims[d].n;
     // The particles of one set, or the units of an array of them
-    const vial_sets_t* ss = ds->sets;
-    if (!ss || n == 0) return NULL;
-    if (ss->single ? vial_sets_size(ss, 0) != n : (ds->level == VIAL_LEVEL_NONE || !ss->unit || ss->count != n)) return NULL;
+    const vial_sets_t* ss = dim_sets(ir, t, d);
+    if (!ss) return NULL;
+    const vial_desc_t* ds = &ir->descs[t->dims[d].desc];
+    const uint32_t n = t->dims[d].n;
     md_str_t* labels = md_alloc(alloc, n * sizeof(md_str_t));
     for (uint32_t i = 0; i < n; ++i) {
         char buf[128];
@@ -631,6 +629,37 @@ static md_str_t* component_labels(const vial_builtin_t* b, uint32_t n, md_alloca
     md_str_t* names = md_alloc(alloc, n * sizeof(md_str_t));
     for (uint32_t i = 0; i < n; ++i) names[i] = md_str_from_cstr(b->components[i]);
     return names;
+}
+
+// The sets dimension d of a value of type t runs over, when it runs over the units of a selection the checker knows,
+// n of them, as dim_labels labels them; else NULL
+static const vial_sets_t* dim_sets(const vial_ir_t* ir, const vial_type_t* t, uint8_t d) {
+    if (!ir->descs || d >= t->ndim || t->dtype == VIAL_DT_SET || t->dims[d].kind != VIAL_EXT_STATIC) return NULL;
+    const uint32_t dsc = t->dims[d].desc;
+    if (!dsc || dsc >= md_array_size(ir->descs)) return NULL;
+    const vial_desc_t* ds = &ir->descs[dsc];
+    const uint32_t n = t->dims[d].n;
+    const vial_sets_t* ss = ds->sets;
+    if (!ss || n == 0) return NULL;
+    if (ss->single ? vial_sets_size(ss, 0) != n : (ds->level == VIAL_LEVEL_NONE || !ss->unit || ss->count != n)) return NULL;
+    return ss;
+}
+
+size_t md_vial_output_atoms(const md_vial_program_t* prog, md_str_t name, uint8_t dim, uint32_t index, uint32_t* out, size_t cap) {
+    const vial_ir_t* ir = prog ? md_vial__run_ir(prog) : NULL;
+    if (!ir) return 0;
+    for (size_t k = 0; k < md_array_size(ir->outputs); ++k) {
+        if (!md_str_eq(ir->outputs[k].name, name)) continue;
+        const vial_type_t* t = &ir->values[ir->outputs[k].value].type;
+        const vial_sets_t* ss = dim_sets(ir, t, dim);
+        if (!ss || index >= t->dims[dim].n) return 0;
+        // One set's particles, one each, or a set of the array
+        const uint32_t* items = ss->single ? vial_sets_items(ss, 0) + index : vial_sets_items(ss, index);
+        const size_t n = ss->single ? 1 : vial_sets_size(ss, index);
+        for (size_t i = 0; out && i < MD_MIN(n, cap); ++i) out[i] = items[i];
+        return n;
+    }
+    return 0;
 }
 
 // What the members of an output of one or two dimensions are: <path>/labels for its first dimension, its rows, and
