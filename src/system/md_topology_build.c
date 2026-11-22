@@ -235,16 +235,16 @@ bool md_topology_system_supplement(md_system_t* sys, const md_topology_desc_t* d
         }
     }
 
-    // ## Bonds: the topology's, of every atom, replace those the data gave of the graph; its non-covalent ones are kept,
+    // ## Bonds: the topology's, of every atom, replace those the data gave of the graph; its interactions are kept,
     // and the user's edits are apart (md_system_t::bond_edit)
     {
         const md_bond_list_t* old = &sys->given_bond;
         const size_t old_count = md_bond_list_count(old);
-        size_t num_noncovalent = 0;
-        for (size_t i = 0; i < old_count; ++i) num_noncovalent += md_bond_is_noncovalent(old->flags[i]);
+        size_t num_interactions = 0;
+        for (size_t i = 0; i < old_count; ++i) num_interactions += md_bond_is_interaction(old->flags[i]);
         md_bond_list_t given = {0};
-        md_array_ensure(given.pairs, d.num_bonds + num_noncovalent, sys->alloc);
-        md_array_ensure(given.flags, d.num_bonds + num_noncovalent, sys->alloc);
+        md_array_ensure(given.pairs, d.num_bonds + num_interactions, sys->alloc);
+        md_array_ensure(given.flags, d.num_bonds + num_interactions, sys->alloc);
         for (size_t b = 0; b < d.num_bonds; ++b) {
             const md_atom_pair_t pair = d.bonds[b];
             if (md_atom_particle_kind(&sys->atom, (size_t)pair.idx[0]) == MD_PARTICLE_VIRTUAL_SITE ||
@@ -254,7 +254,7 @@ bool md_topology_system_supplement(md_system_t* sys, const md_topology_desc_t* d
         }
         const size_t num_topology = md_array_size(given.pairs);
         for (size_t i = 0; i < old_count; ++i) {
-            if (!md_bond_is_noncovalent(old->flags[i])) continue;
+            if (!md_bond_is_interaction(old->flags[i])) continue;
             md_array_push_no_grow(given.pairs, old->pairs[i]);
             md_array_push_no_grow(given.flags, old->flags[i]);
         }

@@ -40,7 +40,7 @@ static const md_bond_kind_name_t bond_kind_names[] = {
     {"coordinate",  MD_BOND_FLAG_KIND_MASK,     (md_bond_flags_t)MD_BOND_KIND_COORDINATE},
     {"elastic",     MD_BOND_FLAG_KIND_MASK,     (md_bond_flags_t)MD_BOND_KIND_ELASTIC},
     {"metallic",    MD_BOND_FLAG_KIND_MASK,     (md_bond_flags_t)MD_BOND_KIND_METALLIC},
-    {"interaction", (md_bond_flags_t)0x80,      (md_bond_flags_t)0x80},     // md_bond_is_noncovalent: the four below
+    {"interaction", (md_bond_flags_t)0x80,      (md_bond_flags_t)0x80},     // md_bond_is_interaction: the four below
     {"contact",     MD_BOND_FLAG_KIND_MASK,     (md_bond_flags_t)MD_BOND_KIND_CONTACT},
     {"hydrogen",    MD_BOND_FLAG_KIND_MASK,     (md_bond_flags_t)MD_BOND_KIND_HYDROGEN},
     {"ionic",       MD_BOND_FLAG_KIND_MASK,     (md_bond_flags_t)MD_BOND_KIND_IONIC},
@@ -1251,20 +1251,20 @@ void md_bond_merge(md_bond_data_t* out, const md_bond_list_t* given, const md_bo
         }
     }
 
-    // The bonds of the first range, then the non-covalent ones: of each the inferred, the given and the user's
+    // The bonds of the first range, then the interactions: of each the inferred, the given and the user's
     md_array_ensure(out->pairs, num[0] + num[1] + num[2], alloc);
     md_array_ensure(out->flags, num[0] + num[1] + num[2], alloc);
     for (int range = 0; range < 2; ++range) {
         for (int k = 0; k < 3; ++k) {
             for (size_t i = 0; i < num[k]; ++i) {
-                if (!keep[k][i] || md_bond_is_noncovalent(lists[k]->flags[i]) != (range == 1)) continue;
+                if (!keep[k][i] || md_bond_is_interaction(lists[k]->flags[i]) != (range == 1)) continue;
                 md_array_push_no_grow(out->pairs, lists[k]->pairs[i]);
                 md_array_push_no_grow(out->flags, lists[k]->flags[i]);
             }
         }
         if (range == 0) out->count = md_array_size(out->pairs);
     }
-    out->noncovalent_count = md_array_size(out->pairs) - out->count;
+    out->interaction_count = md_array_size(out->pairs) - out->count;
     md_bond_build_connectivity(out, atom_count, alloc);
 
     md_temp_end(temp_scope);
@@ -1482,8 +1482,8 @@ bool md_bond_delta_compute(md_bond_delta_t* out, const md_system_t* sys, const m
             }
         }
 
-        // The non-covalent bonds of the system, whose pairs form nothing
-        const size_t num_nc = sys->bond.noncovalent_count;
+        // The interactions of the system, whose pairs form nothing
+        const size_t num_nc = sys->bond.interaction_count;
         uint64_t* nc_keys = md_temp_alloc_array(temp, uint64_t, MD_MAX(num_nc, 1));
         for (size_t k = 0; k < num_nc; ++k) nc_keys[k] = delta_pair_key(sys->bond.pairs[num_bonds + k]);
         qsort(nc_keys, num_nc, sizeof(uint64_t), compare_u64);

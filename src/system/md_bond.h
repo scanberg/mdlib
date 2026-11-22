@@ -11,7 +11,7 @@ struct md_system_t;
 struct md_system_state_t;
 struct md_executor_t;
 
-// Bonds: the bond graph of the atoms and the non-covalent bonds (md_bond_data_t), and iterating them.
+// Bonds: the bond graph of the atoms and the interactions (md_bond_data_t), and iterating them.
 
 // Bond flags: what a bond is (the CHEMISTRY in the low byte: order, resonance and kind) and where it and its chemistry
 // came from (the PROVENANCE above it). Each field is one value or one bit, so every combination describes a case (bar
@@ -33,7 +33,7 @@ struct md_executor_t;
 //   KIND       A value in bits 5-7 (md_bond_kind_t): read it with md_bond_kind and write it with md_bond_flags_set_kind.
 //              What holds the two atoms together, one kind per bond. Bits 7 and 6 clear: of the bond graph
 //              (md_bond_is_graph). Bit 7 set: an interaction, of the second range of md_bond_data_t
-//              (md_bond_is_noncovalent).
+//              (md_bond_is_interaction).
 //     COVALENT     0x00  A bond of the molecule, also between two metals of a molecule (the Mn-Mn of Mn2(CO)10, the
 //                        Mo-Mo of a paddlewheel): whether a bond involves a metal is a question for the elements of its
 //                        atoms. Two metal atoms of a metallic phase have a METALLIC bond instead.
@@ -155,13 +155,13 @@ static inline md_bond_flags_t md_bond_flags_set_kind(md_bond_flags_t flags, md_b
     return (md_bond_flags_t)(((unsigned int)flags & ~mask) | ((unsigned int)kind & mask));
 }
 
-// A bond of the bond graph: covalent or coordinate. Elastic, metallic and non-covalent bonds are not.
+// A bond of the bond graph: covalent or coordinate. Elastic and metallic bonds and the interactions are not.
 static inline bool md_bond_is_graph(md_bond_flags_t flags) {
     return ((unsigned int)flags & 0xC0u) == 0;
 }
 
 // An interaction, a non-covalent bond, of the second range of md_bond_data_t: a contact, a hydrogen, ionic or halogen bond.
-static inline bool md_bond_is_noncovalent(md_bond_flags_t flags) {
+static inline bool md_bond_is_interaction(md_bond_flags_t flags) {
     return ((unsigned int)flags & 0x80u) != 0;
 }
 
@@ -210,20 +210,20 @@ typedef struct md_bond_conn_data_t {
 //   [0, count)                              the bond graph, covalent and coordinate bonds, and the bonds outside of it
 //                                           which the connectivity leaves out: the elastic bonds (MD_BOND_KIND_ELASTIC),
 //                                           springs of the force field, and the metallic bonds (MD_BOND_KIND_METALLIC)
-//   [count, count + noncovalent_count)      the persistent interactions (md_bond_is_noncovalent): contacts,
+//   [count, count + interaction_count)      the persistent interactions (md_bond_is_interaction): contacts,
 //                                           hydrogen, ionic and halogen bonds a file gives or a user marks
 // Whatever walks the bonds as the graph (the connectivity, rings, molecules, perception, matching, bonds formed and
 // broken over a run) reads the first range only, by count, and leaves the elastic and metallic bonds out. The arrays
 // hold both ranges, so they are uploaded as one. A bond index names a bond in either range: md_bond_pair and
 // md_system_bond_flags take both. Made by md_bond_merge in md_system_infer, which then perceives their kinds and orders
 // in place; no bond is added or removed here, but by the edits of the core (md_system_bond_insert, md_system_bond_remove)
-// and inference again. md_bond_find finds a bond of the graph, md_bond_find_noncovalent one of the second range. Bonds computed for a frame
+// and inference again. md_bond_find finds a bond of the graph, md_bond_find_interaction one of the second range. Bonds computed for a frame
 // (bonds formed, hydrogen bonds found) are never here: they are a bond set of their own (md_bond_delta_t, the script).
 typedef struct md_bond_data_t {
     size_t count;                   // Bonds of the first range: the graph, the elastic and the metallic bonds
-    size_t noncovalent_count;       // Non-covalent bonds, the second range
-    md_atom_pair_t*  pairs;         // [count + noncovalent_count]
-    md_bond_flags_t* flags;         // [count + noncovalent_count]
+    size_t interaction_count;       // Interactions, the second range
+    md_atom_pair_t*  pairs;         // [count + interaction_count]
+    md_bond_flags_t* flags;         // [count + interaction_count]
     md_bond_conn_data_t  conn;      // Connectivity of the graph, without the elastic bonds
 } md_bond_data_t;
 
@@ -302,9 +302,9 @@ static inline void md_bond_list_free(md_bond_list_t* list, md_allocator_i* alloc
 }
 
 // The range of a bond of flags a pair has one bond of: 0 of the first range of md_bond_data_t but the elastic bonds, 1
-// the elastic bonds (which stand in for no bond of the molecule), 2 the non-covalent bonds
+// the elastic bonds (which stand in for no bond of the molecule), 2 the interactions
 static inline uint32_t md_bond_range(md_bond_flags_t flags) {
-    return md_bond_is_noncovalent(flags) ? 2 : md_bond_kind(flags) == MD_BOND_KIND_ELASTIC ? 1 : 0;
+    return md_bond_is_interaction(flags) ? 2 : md_bond_kind(flags) == MD_BOND_KIND_ELASTIC ? 1 : 0;
 }
 
 // The pair and the range of a bond of flags (md_bond_range), as one: a pair has one bond of each range. The atoms in
@@ -375,12 +375,12 @@ static inline md_bond_idx_t md_bond_find(const md_bond_data_t* bond_data, md_ato
 	return -1;
 }
 
-// The non-covalent bond between two atoms (an index in the second range of md_bond_data_t), or -1. An atom pair has
-// one bond at most, of the graph (md_bond_find) or non-covalent.
-static inline md_bond_idx_t md_bond_find_noncovalent(const md_bond_data_t* bond_data, md_atom_idx_t atom_idx_a, md_atom_idx_t atom_idx_b) {
+// The interaction between two atoms (an index in the second range of md_bond_data_t), or -1. An atom pair has one bond
+// at most, of the graph (md_bond_find) or an interaction.
+static inline md_bond_idx_t md_bond_find_interaction(const md_bond_data_t* bond_data, md_atom_idx_t atom_idx_a, md_atom_idx_t atom_idx_b) {
     MD_ASSERT(bond_data);
     // They are few and have no connectivity
-    const size_t end = bond_data->count + bond_data->noncovalent_count;
+    const size_t end = bond_data->count + bond_data->interaction_count;
     for (size_t i = bond_data->count; i < end; ++i) {
         const md_atom_pair_t p = bond_data->pairs[i];
         if ((p.idx[0] == atom_idx_a && p.idx[1] == atom_idx_b) || (p.idx[0] == atom_idx_b && p.idx[1] == atom_idx_a)) {
@@ -392,7 +392,7 @@ static inline md_bond_idx_t md_bond_find_noncovalent(const md_bond_data_t* bond_
 
 static inline md_atom_pair_t md_bond_pair(const md_bond_data_t* bond_data, md_bond_idx_t bond_idx) {
     MD_ASSERT(bond_data);
-    if (bond_idx >= 0 && (size_t)bond_idx < bond_data->count + bond_data->noncovalent_count) {
+    if (bond_idx >= 0 && (size_t)bond_idx < bond_data->count + bond_data->interaction_count) {
         return bond_data->pairs[bond_idx];
     }
     md_atom_pair_t invalid_pair = { -1, -1 };
@@ -413,7 +413,7 @@ static inline void md_bond_data_clear(md_bond_data_t* bond_data) {
     MD_ASSERT(bond_data);
 
     bond_data->count = 0;
-    bond_data->noncovalent_count = 0;
+    bond_data->interaction_count = 0;
     md_array_shrink(bond_data->pairs, 0);
     md_array_shrink(bond_data->flags, 0);
     
@@ -465,8 +465,8 @@ bool md_bond_infer(md_bond_list_t* out, const struct md_system_t* sys, const str
 // inferred come first, then those given, then the user's, each in its order. An edit which removes a bond
 // (MD_BOND_FLAG_INACTIVE) takes the bond given or inferred of its pair and range away (md_bond_key); one which adds a
 // bond is kept, and the bond given or inferred of its pair goes. An inferred bond is left out between two atoms of
-// complete (md_atom_data_t::bonds_complete; NULL: of none), and where it would duplicate a pair given a bond (a
-// non-covalent bond included: a pair has one bond, and that one was given). An elastic bond, which is no bond of the
+// complete (md_atom_data_t::bonds_complete; NULL: of none), and where it would duplicate a pair given a bond (an
+// interaction included: a pair has one bond, and that one was given). An elastic bond, which is no bond of the
 // molecule, takes no other bond's place.
 void md_bond_merge(md_bond_data_t* out, const md_bond_list_t* given, const md_bond_list_t* edits, const md_bond_list_t* inferred, const uint8_t* complete, size_t atom_count, md_allocator_i* alloc);
 
@@ -511,7 +511,7 @@ void md_bond_mask_grow(struct md_bitmask_t* mask, const md_bond_data_t* bond, si
 //     the graph counts against that while it is within its cutoff, but not once it is stretched beyond it on its way to
 //     breaking: a bond forming as another breaks (a proton moving, the transition state of a substitution) shows both
 //     for the frames it takes, while two atoms which clash in the reference do not bond in every frame.
-//   - A pair with a non-covalent bond in the system forms no bond: what was given of it stands.
+//   - A pair with an interaction in the system forms no bond: what was given of it stands.
 //   - The metallic bonds neither break nor form: two atoms of a metallic phase (atoms of metallic bonds, md_bond_metallic_atoms) are
 //     left out.
 //     What touches the phase has its bonds to it here only, formed in the frames where it is close enough, as it

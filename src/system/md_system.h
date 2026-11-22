@@ -84,7 +84,7 @@ typedef struct md_system_t {
     md_bond_list_t              given_bond;
     md_bond_list_t              bond_edit;
     // The bonds, inferred (md_system_infer): those given, and those found between the atoms whose bonds are not given
-    // complete; the bond graph, then the non-covalent bonds (md_bond_data_t), with their connectivity and the orders the
+    // complete; the bond graph, then the interactions (md_bond_data_t), with their connectivity and the orders the
     // chemistry perceives. Empty until inferred.
     md_bond_data_t              bond;
     
@@ -353,7 +353,7 @@ static inline bool md_system_is_coarse_grained(const md_system_t* sys) {
     return false;
 }
 
-// The bonds of the bond graph. The persistent non-covalent bonds come after them (md_bond_data_t).
+// The bonds of the bond graph. The persistent interactions come after them (md_bond_data_t).
 static inline size_t md_system_bond_count(const md_system_t* sys) {
     MD_ASSERT(sys);
     return sys->bond.count;
@@ -576,8 +576,8 @@ void md_system_set_bonds_complete(md_system_t* sys);
 // (md_system_infer). False when nothing was added.
 bool md_system_bond_insert(md_system_t* sys, md_atom_idx_t atom_idx_a, md_atom_idx_t atom_idx_b, md_bond_flags_t flags);
 
-// Removes the bond between the two atoms in the range of a bond of flags (md_bond_key: the graph or the non-covalent
-// bonds, an elastic bond apart): one the user added is gone, and one the data gives or inference finds is removed by an
+// Removes the bond between the two atoms in the range of a bond of flags (md_bond_key: the graph or the interactions,
+// an elastic bond apart): one the user added is gone, and one the data gives or inference finds is removed by an
 // edit (MD_BOND_FLAG_INACTIVE, md_system_t::bond_edit), whether there is one now or not. An edit of the core, as
 // md_system_bond_insert. False when it was removed already.
 bool md_system_bond_remove(md_system_t* sys, md_atom_idx_t atom_idx_a, md_atom_idx_t atom_idx_b, md_bond_flags_t flags);
@@ -596,7 +596,7 @@ static inline md_ring_flags_t md_system_ring_flags(const md_system_t* sys, size_
 
 static inline md_bond_flags_t md_system_bond_flags(const md_system_t* sys, md_bond_idx_t bond_idx) {
     MD_ASSERT(sys);
-    if (bond_idx >= 0 && (size_t)bond_idx < sys->bond.count + sys->bond.noncovalent_count) {
+    if (bond_idx >= 0 && (size_t)bond_idx < sys->bond.count + sys->bond.interaction_count) {
         return sys->bond.flags[bond_idx];
     }
     return MD_BOND_FLAG_NONE;

@@ -797,8 +797,8 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
     }
 
     // ## Bonds given: those the topology gives, of the atoms of the molecules it covers, which have these and no others
-    // (bonds_complete). Laid out as [kept] [kept topology] [new topology] [non-covalent]: what is given between two
-    // covered atoms is replaced, but for the non-covalent bonds; the user's edits are apart (md_system_t::bond_edit).
+    // (bonds_complete). Laid out as [kept] [kept topology] [new topology] [interactions]: what is given between two
+    // covered atoms is replaced, but for the interactions; the user's edits are apart (md_system_t::bond_edit).
     {
         const md_bond_list_t* old = &sys->given_bond;
         const size_t old_count = md_bond_list_count(old);
@@ -809,7 +809,7 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
         for (int pass = 0; pass < 2; ++pass) {
             for (size_t i = 0; i < old_count; ++i) {
                 const md_atom_pair_t  pair = old->pairs[i];
-                if (md_bond_is_noncovalent(old->flags[i])) continue;
+                if (md_bond_is_interaction(old->flags[i])) continue;
                 if ((md_bond_origin(old->flags[i]) == MD_BOND_ORIGIN_TOPOLOGY) != (pass == 1)) continue;
                 const bool valid = pair.idx[0] >= 0 && pair.idx[1] >= 0 && (size_t)pair.idx[0] < atom_count && (size_t)pair.idx[1] < atom_count;
                 if (valid && covered[pair.idx[0]] && covered[pair.idx[1]]) continue;  // Replaced by the topology
@@ -833,9 +833,9 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
             }
         }
 
-        // The non-covalent bonds are not the topology's: kept as they are
+        // The interactions are not the topology's: kept as they are
         for (size_t i = 0; i < old_count; ++i) {
-            if (!md_bond_is_noncovalent(old->flags[i])) continue;
+            if (!md_bond_is_interaction(old->flags[i])) continue;
             md_array_push_no_grow(given.pairs, old->pairs[i]);
             md_array_push_no_grow(given.flags, old->flags[i]);
         }

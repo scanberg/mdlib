@@ -169,8 +169,8 @@ static void expect_same_derived(int* utest_result, const char* file, int line, c
     SAME_COUNT(chain) SAME_COUNT(part) SAME_COUNT(part.type) SAME_COUNT(residue.type) SAME_COUNT(lipid) SAME_COUNT(bond)
     SAME_COUNT(molecule) SAME_COUNT(molecule.type) SAME_COUNT(protein_backbone.range) SAME_COUNT(nucleic_backbone.range)
 #undef SAME_COUNT
-    if (a->bond.noncovalent_count != b->bond.noncovalent_count) {
-        printf("%s:%i: %s: 'bond.noncovalent_count' differs\n", file, line, what);
+    if (a->bond.interaction_count != b->bond.interaction_count) {
+        printf("%s:%i: %s: 'bond.interaction_count' differs\n", file, line, what);
         *utest_result = UTEST_TEST_FAILURE;
     }
 }

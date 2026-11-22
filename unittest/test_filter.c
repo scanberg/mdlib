@@ -329,7 +329,7 @@ UTEST(filter, bonds) {
     ASSERT_EQ(7, (int)sys.bond.count);
     md_system_bond_insert(&sys, 6, 3, md_bond_flags_set_origin(md_bond_flags_set_kind(MD_BOND_FLAG_KIND_GIVEN, MD_BOND_KIND_HYDROGEN), MD_BOND_ORIGIN_USER));
     ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
-    ASSERT_EQ(1, (int)sys.bond.noncovalent_count);
+    ASSERT_EQ(1, (int)sys.bond.interaction_count);
 
     const md_filter_context_t fctx = {&sys, &state, NULL, NULL};
     md_array(md_atom_pair_t) pairs = 0;

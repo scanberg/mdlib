@@ -272,7 +272,7 @@ typedef struct plane_t {
 typedef md_pucker_ring_t pucker_rec_t;
 
 // A set of bonds (TYPE_BONDSET), in two parts: the persistent bonds of the system by index (both ranges of
-// md_bond_data_t: the graph and the non-covalent bonds), and the bonds which are none of them (computed for a frame: the
+// md_bond_data_t: the graph and the interactions), and the bonds which are none of them (computed for a frame: the
 // bonds formed in it) by atom pair. A pair with a persistent bond is always in the first part, never in the second, so
 // sets compare and combine by their bonds whatever produced them. The indices are those of the topology the set was
 // made from. The payloads live in the allocator of the data holding the set (data_bitset_alloc), as those of an atomset.
@@ -9475,7 +9475,7 @@ md_filter_result_t md_filter_bonds(md_array(md_atom_pair_t)* dst, md_str_t expr,
                         md_bitmask_or(&b, sets[i]);
                     }
                     const md_bitset_t atoms = md_bitmask_extract(&b, temp_alloc);
-                    const size_t total = sys->bond.count + sys->bond.noncovalent_count;
+                    const size_t total = sys->bond.count + sys->bond.interaction_count;
                     for (size_t i = 0; i < total; ++i) {
                         const md_atom_pair_t p = sys->bond.pairs[i];
                         if (md_bitset_test(atoms, (uint32_t)p.idx[0]) && md_bitset_test(atoms, (uint32_t)p.idx[1])) {

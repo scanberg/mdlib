@@ -8222,9 +8222,9 @@ static const match_name_t bond_resonances[] = {
     {MD_STR_INIT("localized"),   MD_BOND_FLAG_NONE},
 };
 
-// The persistent bonds of the system: the graph, then the non-covalent bonds (md_bond_data_t)
+// The persistent bonds of the system: the graph, then the interactions (md_bond_data_t)
 static inline uint32_t bond_total(const md_system_t* sys) {
-    return (uint32_t)(sys->bond.count + sys->bond.noncovalent_count);
+    return (uint32_t)(sys->bond.count + sys->bond.interaction_count);
 }
 
 static inline uint64_t bond_pair_key(md_atom_pair_t p) {
@@ -8455,7 +8455,7 @@ static bool bond_filter_pass(const bond_filter_t* f, md_bond_flags_t fl) {
         for (size_t k = 0; k < f->num_kinds && !any; ++k) any = (fl & f->kinds[k].mask) == f->kinds[k].value;
         if (!any) return false;
     }
-    // Order and resonance are of the bonds of the graph: neither a non-covalent bond, a spring (elastic) nor the bond of
+    // Order and resonance are of the bonds of the graph: neither an interaction, a spring (elastic) nor the bond of
     // a metal (metallic) has them
     const bool graph = md_bond_is_graph(fl);
     if (f->has_order) {
@@ -8500,7 +8500,7 @@ static void bond_collect_atom(md_bitmask_t* b, uint32_t atom, const md_bitset_t*
 //              in b. With b alone: the bonds with an atom in b.
 //   kind       Any of md_bond_kind_names: 'covalent' (covalent and coordinate), 'coordinate', 'elastic', 'metallic',
 //              'interaction' (the four below), 'contact', 'hydrogen', 'ionic', 'halogen'; 'noncovalent' as 'interaction'.
-//   order      The order (an int or a range, 0 for unknown) of a bond of the graph: non-covalent bonds have none.
+//   order      The order (an int or a range, 0 for unknown) of a bond of the graph: interactions have none.
 //   resonance  Any of 'aromatic', 'delocalized', 'localized' (neither), of a bond of the graph.
 //   origin     Any of 'file', 'topology', 'user', 'inferred'.
 // bond(d, ...) with a bond_delta in place of a is _bond_of_delta.
@@ -8555,7 +8555,7 @@ static int _bond(data_t* dst, data_t arg[], eval_context_t* ctx) {
                     if (bond_in_context(sys->bond.pairs[i], ctx) && bond_filter_pass(&filter, sys->bond.flags[i])) md_bitmask_set_bit(&b, i);
                 }
             }
-            // The non-covalent bonds have no connectivity: they are few, and looked at one by one
+            // The interactions have no connectivity: they are few, and looked at one by one
             for (uint32_t i = (uint32_t)sys->bond.count; i < total; ++i) {
                 const md_atom_pair_t p = sys->bond.pairs[i];
                 const uint32_t x = (uint32_t)p.idx[0], y = (uint32_t)p.idx[1];

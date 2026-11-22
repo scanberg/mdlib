@@ -1242,7 +1242,7 @@ with an atom in it which are not broken and those formed, with an atom in `b` wh
 `"inferred"` origin, covalent or coordinate, and of no known order.
 
 `kind` is any of the kinds above. `order` is the order of a bond of the graph, a number or a range: 1 single, 2 double,
-3 triple, 4 quadruple, 0 unknown; non-covalent bonds have none. `resonance` is any of `"aromatic"`, `"delocalized"`
+3 triple, 4 quadruple, 0 unknown; interactions have none. `resonance` is any of `"aromatic"`, `"delocalized"`
 (carboxylate, guanidinium, nitro, ...) and `"localized"` (neither), of a bond of the graph. `origin` is any of `"file"`,
 `"topology"`, `"user"` and `"inferred"`. An unknown name is a compile error which lists the valid ones.
 
@@ -1277,7 +1277,7 @@ bond which vibrates near its cutoff from flickering; it is measured against the 
 so a frame gives the same bonds whatever was evaluated before it. Only the bonds of the `breakable` origins break: a
 bond a user added stays, and so by default does one of a force field topology, as in a classical simulation. A bond
 forming as another breaks (a proton moving, the transition state of a substitution) shows both for the frames it
-takes. A pair with a non-covalent bond in the system forms no bond. In a coarse grained system no bonds form or
+takes. A pair with an interaction in the system forms no bond. In a coarse grained system no bonds form or
 break: it is a compile error.
 
 The result is read with [`formed`](#formed), [`broken`](#broken) and [`bond`](#bond).

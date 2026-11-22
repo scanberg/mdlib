@@ -1470,7 +1470,7 @@ static bool test_bond_origin(const vial_match_t* m, const void* user) {
 }
 
 // Whether a bond passes the filters. not takes the complement among the bonds with the property: every bond has a kind
-// and an origin, and a bond of unknown order, as a non-covalent one, has none, so order=not 1 is never one of those.
+// and an origin, and a bond of unknown order, as an interaction, has none, so order=not 1 is never one of those.
 static bool bond_passes(md_bond_flags_t f, const vial_filter_t* filters, size_t num_filters) {
     bool kind_given = false;
     for (size_t i = 0; i < num_filters; ++i) {
@@ -1495,7 +1495,7 @@ vial_sets_t* vial_select_bonds(const vial_sys_t* s, const vial_sets_t* within, c
                                md_allocator_i* alloc) {
     const md_system_t* sys = s->sys;
     const md_bond_data_t* bd = &sys->bond;
-    const size_t total = bd->count + bd->noncovalent_count;
+    const size_t total = bd->count + bd->interaction_count;
     // Both ends in the set: by a mark per particle
     uint8_t* in = NULL;
     if (within) {

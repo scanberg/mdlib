@@ -174,11 +174,11 @@ UTEST(bonds, metal_sites_deposited) {
 }
 
 // The user's edits (md_system_t::bond_edit) of a range, which add a bond or remove one (MD_BOND_FLAG_INACTIVE)
-static size_t edits_of(const md_system_t* sys, bool noncovalent, bool inactive) {
+static size_t edits_of(const md_system_t* sys, bool interaction, bool inactive) {
     size_t n = 0;
     for (size_t i = 0; i < md_bond_list_count(&sys->bond_edit); ++i) {
         const md_bond_flags_t f = sys->bond_edit.flags[i];
-        n += md_bond_is_noncovalent(f) == noncovalent && ((f & MD_BOND_FLAG_INACTIVE) != 0) == inactive;
+        n += md_bond_is_interaction(f) == interaction && ((f & MD_BOND_FLAG_INACTIVE) != 0) == inactive;
     }
     return n;
 }
@@ -247,17 +247,17 @@ UTEST(bonds, reinference_keeps_removed_bonds) {
     md_vm_arena_destroy(alloc);
 }
 
-// The persistent non-covalent bonds sit in a range of their own after the bond graph (md_bond_data_t): the graph and
+// The persistent interactions sit in a range of their own after the bond graph (md_bond_data_t): the graph and
 // everything derived from it never sees them, and inserting, removing and inferring bonds keeps both ranges, of the
 // bonds given and of the bonds
 static void expect_ranges(int* utest_result, const md_bond_data_t* bond) {
-    for (size_t i = 0; i < bond->count; ++i) EXPECT_FALSE(md_bond_is_noncovalent(bond->flags[i]));
-    for (size_t i = bond->count; i < bond->count + bond->noncovalent_count; ++i) EXPECT_TRUE(md_bond_is_noncovalent(bond->flags[i]));
-    EXPECT_EQ(bond->count + bond->noncovalent_count, md_array_size(bond->pairs));
-    EXPECT_EQ(bond->count + bond->noncovalent_count, md_array_size(bond->flags));
+    for (size_t i = 0; i < bond->count; ++i) EXPECT_FALSE(md_bond_is_interaction(bond->flags[i]));
+    for (size_t i = bond->count; i < bond->count + bond->interaction_count; ++i) EXPECT_TRUE(md_bond_is_interaction(bond->flags[i]));
+    EXPECT_EQ(bond->count + bond->interaction_count, md_array_size(bond->pairs));
+    EXPECT_EQ(bond->count + bond->interaction_count, md_array_size(bond->flags));
 }
 
-UTEST(bonds, noncovalent_range) {
+UTEST(bonds, interaction_range) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
@@ -266,7 +266,7 @@ UTEST(bonds, noncovalent_range) {
     const size_t graph = sys.bond.count;
     const int n = (int)sys.atom.count;
     ASSERT_GE(n, 6);
-    EXPECT_EQ(0, (int)sys.bond.noncovalent_count);
+    EXPECT_EQ(0, (int)sys.bond.interaction_count);
 
     const md_bond_flags_t user = md_bond_flags_set_origin(MD_BOND_FLAG_KIND_GIVEN, MD_BOND_ORIGIN_USER);
     const md_bond_flags_t hbond = md_bond_flags_set_kind(user, MD_BOND_KIND_HYDROGEN);
@@ -291,48 +291,48 @@ UTEST(bonds, noncovalent_range) {
     // The bonds are of what is given once inferred: the graph does not have them, the second range does
     ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
     EXPECT_EQ(graph + 1, sys.bond.count);
-    EXPECT_EQ(2, (int)sys.bond.noncovalent_count);
+    EXPECT_EQ(2, (int)sys.bond.interaction_count);
     expect_ranges(utest_result, &sys.bond);
     EXPECT_FALSE(has_bond(&sys, 0, n - 1, NULL));
     EXPECT_TRUE(has_bond(&sys, 2, n - 3, NULL));
-    const md_bond_idx_t hb = md_bond_find_noncovalent(&sys.bond, n - 1, 0);
+    const md_bond_idx_t hb = md_bond_find_interaction(&sys.bond, n - 1, 0);
     ASSERT_GE(hb, (md_bond_idx_t)sys.bond.count);
     EXPECT_EQ(hbond, md_system_bond_flags(&sys, hb));
-    EXPECT_EQ(-1, md_bond_find_noncovalent(&sys.bond, 2, n - 3));
+    EXPECT_EQ(-1, md_bond_find_interaction(&sys.bond, 2, n - 3));
 
     // Inferring the bonds again keeps them, and the user's bond of the graph
     ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
     EXPECT_EQ(graph + 1, sys.bond.count);
-    EXPECT_EQ(2, (int)sys.bond.noncovalent_count);
-    EXPECT_GE(md_bond_find_noncovalent(&sys.bond, 0, n - 1), 0);
-    EXPECT_GE(md_bond_find_noncovalent(&sys.bond, 1, n - 2), 0);
+    EXPECT_EQ(2, (int)sys.bond.interaction_count);
+    EXPECT_GE(md_bond_find_interaction(&sys.bond, 0, n - 1), 0);
+    EXPECT_GE(md_bond_find_interaction(&sys.bond, 1, n - 2), 0);
     EXPECT_TRUE(has_bond(&sys, 2, n - 3, NULL));
 
-    // A pair the user marks non-covalent is not given a covalent bond by inference as well
+    // A pair the user marks an interaction is not given a covalent bond by inference as well
     const md_atom_pair_t covalent = sys.bond.pairs[0];
     ASSERT_EQ(MD_BOND_ORIGIN_INFERRED, md_bond_origin(sys.bond.flags[0]));
     EXPECT_TRUE(md_system_bond_insert(&sys, covalent.idx[0], covalent.idx[1], hbond));
     EXPECT_EQ(3, (int)edits_of(&sys, true, false));
     ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
     EXPECT_FALSE(has_bond(&sys, covalent.idx[0], covalent.idx[1], NULL));
-    EXPECT_GE(md_bond_find_noncovalent(&sys.bond, covalent.idx[0], covalent.idx[1]), 0);
+    EXPECT_GE(md_bond_find_interaction(&sys.bond, covalent.idx[0], covalent.idx[1]), 0);
     EXPECT_EQ(graph, sys.bond.count);
-    EXPECT_EQ(3, (int)sys.bond.noncovalent_count);
+    EXPECT_EQ(3, (int)sys.bond.interaction_count);
 
-    // Removing keeps the ranges: the bond of the graph given (the last non-covalent one moves down), then a
-    // non-covalent one
+    // Removing keeps the ranges: the bond of the graph given (the last interaction moves down), then an
+    // interaction
     EXPECT_TRUE(md_system_bond_remove(&sys, 2, n - 3, user));
     EXPECT_EQ(0, (int)edits_of(&sys, false, false));
     EXPECT_EQ(3, (int)edits_of(&sys, true, false));
     ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
     EXPECT_EQ(graph - 1, sys.bond.count);
-    EXPECT_EQ(3, (int)sys.bond.noncovalent_count);
+    EXPECT_EQ(3, (int)sys.bond.interaction_count);
     expect_ranges(utest_result, &sys.bond);
     EXPECT_TRUE(md_system_bond_remove(&sys, 1, n - 2, inter));
     ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
-    EXPECT_EQ(2, (int)sys.bond.noncovalent_count);
-    EXPECT_EQ(-1, md_bond_find_noncovalent(&sys.bond, 1, n - 2));
-    EXPECT_GE(md_bond_find_noncovalent(&sys.bond, 0, n - 1), 0);
+    EXPECT_EQ(2, (int)sys.bond.interaction_count);
+    EXPECT_EQ(-1, md_bond_find_interaction(&sys.bond, 1, n - 2));
+    EXPECT_GE(md_bond_find_interaction(&sys.bond, 0, n - 1), 0);
     md_vm_arena_destroy(alloc);
 }
 
@@ -404,7 +404,7 @@ UTEST(bonds, kind_code) {
     const md_bond_kind_t kinds[] = { MD_BOND_KIND_COVALENT, MD_BOND_KIND_COORDINATE, MD_BOND_KIND_ELASTIC, MD_BOND_KIND_METALLIC,
                                      MD_BOND_KIND_CONTACT, MD_BOND_KIND_HYDROGEN, MD_BOND_KIND_IONIC, MD_BOND_KIND_HALOGEN };
     const bool graph[]       = { true,  true,  false, false, false, false, false, false };
-    const bool noncovalent[] = { false, false, false, false, true,  true,  true,  true  };
+    const bool interaction[] = { false, false, false, false, true,  true,  true,  true  };
     const md_bond_flags_t rest = md_bond_flags_set_origin(md_bond_flags_set_order(MD_BOND_FLAG_AROMATIC | MD_BOND_FLAG_ORDER_PERCEIVED | MD_BOND_FLAG_KIND_GIVEN, 2), MD_BOND_ORIGIN_USER);
     for (size_t i = 0; i < MD_COUNTOF(kinds); ++i) {
         // Over a bond of another kind, so every bit of the old one goes
@@ -412,7 +412,7 @@ UTEST(bonds, kind_code) {
         EXPECT_EQ(kinds[i], md_bond_kind(f));
         EXPECT_EQ(rest, f & ~MD_BOND_FLAG_KIND_MASK);
         EXPECT_EQ(graph[i], md_bond_is_graph(f));
-        EXPECT_EQ(noncovalent[i], md_bond_is_noncovalent(f));
+        EXPECT_EQ(interaction[i], md_bond_is_interaction(f));
     }
 }
 
@@ -564,8 +564,8 @@ UTEST(bonds, delta_transition_shows_both) {
     md_vm_arena_destroy(f.alloc);
 }
 
-// A pair with a non-covalent bond in the system forms no bond
-UTEST(bonds, delta_keeps_noncovalent) {
+// A pair with an interaction in the system forms no bond
+UTEST(bonds, delta_keeps_interactions) {
     delta_fixture_t f = {0};
     ASSERT_TRUE(delta_fixture_init(&f));
     md_system_bond_insert(&f.sys, 1, 3, md_bond_flags_set_origin(md_bond_flags_set_kind(MD_BOND_FLAG_KIND_GIVEN, MD_BOND_KIND_HYDROGEN), MD_BOND_ORIGIN_USER));

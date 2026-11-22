@@ -3212,7 +3212,7 @@ static bool k_bond(vial_kctx_t* k, const bargs_t* ba, vial_val_t* out) {
             md_array(uint32_t) idx = 0;
             md_array_push_array(idx, r->idx, r->count, k->alloc);
             for (size_t i = 0; i < hs.count; ++i) {
-                if (md_bond_find_noncovalent(&sys->bond, hs.hydrogen[i], hs.acceptor[i]) >= 0) continue;
+                if (md_bond_find_interaction(&sys->bond, hs.hydrogen[i], hs.acceptor[i]) >= 0) continue;
                 md_array_push(idx, hs.hydrogen[i], k->alloc);
                 md_array_push(idx, hs.acceptor[i], k->alloc);
             }

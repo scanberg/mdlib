@@ -7117,7 +7117,7 @@ UTEST(script, bondsets) {
     // A hydrogen bond a user marks, from a water hydrogen to O2
     md_system_bond_insert(&sys, 6, 3, md_bond_flags_set_origin(md_bond_flags_set_kind(MD_BOND_FLAG_KIND_GIVEN, MD_BOND_KIND_HYDROGEN), MD_BOND_ORIGIN_USER));
     ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
-    ASSERT_EQ(1, (int)sys.bond.noncovalent_count);
+    ASSERT_EQ(1, (int)sys.bond.interaction_count);
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
     const char* src =
