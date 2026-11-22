@@ -244,8 +244,17 @@ static bool eval_mcs(vial_interp_t* in, uint32_t opi) {
     return vial_k_mcs(&k, av, op->num_args ? ir->names + op->arg_beg : NULL, op->num_args, xyz, &in->vals[op->result]);
 }
 
+static void free_series_pairs(vial_interp_t* in) {
+    if (!in->series_pairs_owned) return;
+    for (size_t v = 0; v < md_array_size(in->series_pairs); ++v) if (in->series_pairs[v]) md_pair_frames_free(in->series_pairs[v]);
+    md_array_free(in->series_pairs, md_get_heap_allocator());
+    in->series_pairs = NULL;
+    in->series_pairs_owned = false;
+}
+
 void vial_interp_free(vial_interp_t* in) {
     free_accums(in);
+    free_series_pairs(in);
     if (in->hbond.query) { md_hbond_query_free(in->hbond.query); md_free(md_get_heap_allocator(), in->hbond.query, sizeof(md_hbond_query_t)); }
     if (in->interaction.query) {
         md_interaction_query_free(in->interaction.query);
@@ -984,8 +993,102 @@ static vial_val_t frame_of(const vial_val_t* s, int64_t f, md_allocator_i* alloc
     return e;
 }
 
+// Frame f of a matrix of truths kept as pairs, made from them into alloc; false when the frame was not computed
+static bool pairs_frame(const vial_interp_t* in, vial_ssa_t v, int64_t f, md_allocator_i* alloc, vial_val_t* out) {
+    const md_pair_frames_t* pf = in->series_pairs && v < md_array_size(in->series_pairs) ? in->series_pairs[v] : NULL;
+    if (!pf || f < 0 || !md_pair_frames_has(pf, (uint32_t)f)) return false;
+    const uint32_t dims[2] = {md_pair_frames_rows(pf), md_pair_frames_cols(pf)};
+    vial_val_t o = vial_val_make(VIAL_DT_BOOL, 2, dims, alloc);
+    if (!o.data || !md_pair_frames_frame(o.data, pf, (uint32_t)f)) return false;
+    *out = o;
+    return true;
+}
+
+// Of the frames where mask[f] is nonzero (NULL for every frame), those of a matrix of truths kept as pairs that were
+// computed, stacked as the run stacks a series: frames not computed are left out where skip, else missing throughout
+static bool pairs_stacked(const vial_interp_t* in, vial_ssa_t a, const uint8_t* mask, bool skip, md_allocator_i* alloc, vial_val_t* out) {
+    const md_pair_frames_t* pf = in->series_pairs && a < md_array_size(in->series_pairs) ? in->series_pairs[a] : NULL;
+    if (!pf) return false;
+    const int64_t nf = in->num_frames;
+    const uint32_t rows = md_pair_frames_rows(pf), cols = md_pair_frames_cols(pf);
+    int64_t count = 0;
+    for (int64_t f = 0; f < nf; ++f) if (!mask || mask[f]) count += !skip || md_pair_frames_has(pf, (uint32_t)f);
+    if (!count) return false;
+    const uint32_t dims[3] = {(uint32_t)count, rows, cols};
+    vial_val_t o = vial_val_make(VIAL_DT_BOOL, 3, dims, alloc);
+    o.flags = VIAL_VAL_FRAMES;
+    const size_t inner = (size_t)rows * cols;
+    int64_t w = 0;
+    for (int64_t f = 0; f < nf; ++f) {
+        if (mask && !mask[f]) continue;
+        const bool have = md_pair_frames_has(pf, (uint32_t)f);
+        if (skip && !have) continue;
+        if (!have || !md_pair_frames_frame((uint8_t*)o.data + (size_t)w * inner, pf, (uint32_t)f)) {
+            for (size_t k = 0; k < inner; ++k) vial_val_set_missing(&o, (size_t)w * inner + k, alloc);
+        }
+        w++;
+    }
+    *out = o;
+    return true;
+}
+
+// A reduction over the frames of a matrix of truths kept as pairs, mean, sum, any or all of it with axis='frame' and
+// nothing else, counted from the frames each entry is true in over the frames where mask[f] is nonzero (NULL for every
+// frame), so that the matrix is never made at every frame. Frames not computed are left out, as missing ones are; with
+// none, the result is missing. False for any other op.
+static bool pairs_reduce(const vial_interp_t* in, uint32_t opi, const uint8_t* mask, md_allocator_i* alloc, vial_val_t* out) {
+    const vial_ir_t* ir = in->ir;
+    const vial_ir_op_t* op = &ir->ops[opi];
+    if (op->kind != VIAL_IR_BUILTIN || op->num_args < 2 || !in->series_pairs || !ir->names) return false;
+    const char* name = vial_builtin_at(op->aux)->name;
+    const int kind = !strcmp(name, "mean") ? 0 : !strcmp(name, "sum") ? 1 : !strcmp(name, "any") ? 2 : !strcmp(name, "all") ? 3 : -1;
+    if (kind < 0) return false;
+    // The value first, axis= named; any other argument given (by=) is not counted here
+    const vial_ssa_t x = ir->args[op->arg_beg];
+    vial_ssa_t ax = 0;
+    for (uint32_t q = 1; q < op->num_args; ++q) {
+        const vial_ssa_t aq = ir->args[op->arg_beg + q];
+        if (md_str_eq(ir->names[op->arg_beg + q], MD_STR_LIT("axis"))) ax = aq;
+        else if (aq) return false;
+    }
+    if (!x || !ax || x >= md_array_size(in->series_pairs) || !in->series_pairs[x]) return false;
+    const uint32_t aop = ir->values[ax].op;
+    if (aop == VIAL_IR_NO_OP || ir->ops[aop].kind != VIAL_IR_CONST) return false;
+    const vial_val_t* axis = &ir->consts[ir->ops[aop].aux];
+    if (axis->dtype != VIAL_DT_STR || axis->ndim || !md_str_eq(*(const md_str_t*)axis->data, MD_STR_LIT("frame"))) return false;
+    const md_pair_frames_t* pf = in->series_pairs[x];
+    const uint32_t rows = md_pair_frames_rows(pf), cols = md_pair_frames_cols(pf);
+    const size_t n = (size_t)rows * cols;
+    const uint8_t dt = ir->values[op->result].type.dtype;
+    if ((kind == 0 && dt != VIAL_DT_FLOAT && dt != VIAL_DT_FLOAT64) || (kind == 1 && dt != VIAL_DT_INT) || (kind >= 2 && dt != VIAL_DT_BOOL)) return false;
+    md_bitset_t frames = md_bitset_range(0, (uint32_t)in->num_frames);
+    if (mask) {
+        uint32_t* idx = md_alloc(alloc, ((size_t)in->num_frames + 1) * sizeof(uint32_t));
+        size_t ni = 0;
+        for (int64_t f = 0; f < in->num_frames; ++f) if (mask[f]) idx[ni++] = (uint32_t)f;
+        frames = md_bitset_from_indices(idx, ni, alloc);
+    }
+    float* frac = md_alloc(alloc, (n ? n : 1) * sizeof(float));
+    const size_t num = md_pair_frames_occupancy(frac, pf, frames);
+    const uint32_t dims[2] = {rows, cols};
+    vial_val_t o = vial_val_make(dt, 2, dims, alloc);
+    for (size_t i = 0; i < n; ++i) {
+        if (!num) { vial_val_set_missing(&o, i, alloc); continue; }
+        const int64_t c = llround((double)frac[i] * (double)num);
+        switch (kind) {
+        case 0: if (dt == VIAL_DT_FLOAT) ((float*)o.data)[i] = frac[i]; else ((double*)o.data)[i] = (double)c / (double)num; break;
+        case 1: ((int32_t*)o.data)[i] = (int32_t)c; break;
+        case 2: ((uint8_t*)o.data)[i] = c > 0; break;
+        default: ((uint8_t*)o.data)[i] = c == (int64_t)num; break;
+        }
+    }
+    *out = o;
+    return true;
+}
+
 // A per-frame value's series, stacked: [frames] and its shape, flagged as frames
 static bool stacked(vial_interp_t* in, vial_ssa_t a, vial_val_t* out) {
+    if (pairs_stacked(in, a, NULL, false, in->alloc, out)) return true;
     const vial_val_t* s = in->series ? in->series[a] : NULL;
     if (!s) return false;
     const int64_t nf = in->num_frames;
@@ -1078,8 +1181,7 @@ static void stream_out(vial_interp_t* main, vial_ssa_t v, int64_t f, const vial_
 }
 
 // A matrix of truths at frame f, as the entries true in it; missing ones are not. Nothing when it has another shape.
-static void pairs_out(vial_interp_t* main, vial_ssa_t v, int64_t f, const vial_val_t* val, md_allocator_i* temp) {
-    md_pair_frames_t* pf = main->stream_pairs[v];
+static void pairs_into(md_pair_frames_t* pf, int64_t f, const vial_val_t* val, md_allocator_i* temp) {
     if (val->dtype != VIAL_DT_BOOL || val->ndim != 2 || !val->data || f < 0) return;
     if (val->dims[0] != md_pair_frames_rows(pf) || val->dims[1] != md_pair_frames_cols(pf)) return;
     const size_t n = (size_t)val->dims[0] * val->dims[1];
@@ -1275,6 +1377,8 @@ static int run_frame(vial_interp_t* in, vial_interp_t* main, uint8_t sweep, int6
             if (in->series[op->result] && (in->series[op->result][f].dtype || in->series[op->result][f].ndim)) {
                 in->vals[op->result] = in->series[op->result][f];
                 in->state[op->result] = 1;
+            } else if (pairs_frame(in, op->result, f, in->temp, &in->vals[op->result])) {
+                in->state[op->result] = 1;
             }
             continue;
         }
@@ -1300,8 +1404,9 @@ static int run_frame(vial_interp_t* in, vial_interp_t* main, uint8_t sweep, int6
         if (!done) { result = FRAME_FAILED; continue; }
         in->state[op->result] = 1;
         if (in->series[op->result]) in->series[op->result][f] = vial_val_copy(&in->vals[op->result], in->alloc);
+        else if (in->series_pairs && in->series_pairs[op->result]) pairs_into(in->series_pairs[op->result], f, &in->vals[op->result], in->temp);
         if (main->stream && main->stream[op->result]) stream_out(main, op->result, f, &in->vals[op->result]);
-        if (main->stream_pairs && main->stream_pairs[op->result]) pairs_out(main, op->result, f, &in->vals[op->result], in->temp);
+        if (main->stream_pairs && main->stream_pairs[op->result]) pairs_into(main->stream_pairs[op->result], f, &in->vals[op->result], in->temp);
     }
     if (sweep < 8 && main->frame_done[sweep]) main->frame_done[sweep][f] = 1;
     in->frame = NULL;
@@ -1346,6 +1451,7 @@ static void worker_sync(vial_interp_t* w, const vial_interp_t* main) {
     w->op_class = main->op_class;
     w->op_sweep = main->op_sweep;
     w->series = main->series;
+    w->series_pairs = main->series_pairs;
     w->num_frames = main->num_frames;
     w->times = main->times;
     w->stop = main->stop;
@@ -1421,8 +1527,23 @@ bool vial_interp_run(vial_interp_t* in, int64_t num_frames) {
     }
     md_array_resize(in->series, nv, in->alloc);
     memset(in->series, 0, nv * sizeof(*in->series));
+    free_series_pairs(in);
     for (size_t v = 0; v < nv; ++v) {
         if (!keep[v]) continue;
+        // A matrix of truths of known shape: the frames each entry is true in
+        const vial_type_t* t = &ir->values[v].type;
+        if (t->dtype == VIAL_DT_BOOL && t->ndim == 2 && t->dims[0].kind == VIAL_EXT_STATIC && t->dims[1].kind == VIAL_EXT_STATIC && num_frames > 0) {
+            md_pair_frames_t* pf = md_pair_frames_create(t->dims[0].n, t->dims[1].n, (uint32_t)num_frames, md_get_heap_allocator());
+            if (pf) {
+                if (!in->series_pairs) {
+                    md_array_resize(in->series_pairs, nv, md_get_heap_allocator());
+                    memset(in->series_pairs, 0, nv * sizeof(*in->series_pairs));
+                    in->series_pairs_owned = true;
+                }
+                in->series_pairs[v] = pf;
+                continue;
+            }
+        }
         in->series[v] = md_alloc(in->alloc, (num_frames ? num_frames : 1) * sizeof(vial_val_t));
         memset(in->series[v], 0, (num_frames ? num_frames : 1) * sizeof(vial_val_t));
     }
@@ -1477,6 +1598,11 @@ bool vial_interp_run(vial_interp_t* in, int64_t num_frames) {
             const uint32_t opi = top->ops[i];
             const vial_ir_op_t* op = &ir->ops[opi];
             if (!op->num_results || !in->live[opi] || in->op_class[opi] != VIAL_OP_ONCE || in->op_sweep[opi] != sweep) continue;
+            // A frame reduction of a matrix of truths kept as pairs: counted from them
+            if (pairs_reduce(in, opi, NULL, in->alloc, &in->vals[op->result])) {
+                in->state[op->result] = 3;
+                continue;
+            }
             vial_ssa_t replaced[64];
             vial_val_t old[64];
             uint32_t nr = 0;
@@ -1528,6 +1654,10 @@ static bool once_subset(const vial_interp_t* in, vial_interp_t* child, uint32_t 
         return true;
     }
     if (!in->op_class || in->op_class[opi] != VIAL_OP_ONCE) return false;
+    if (pairs_reduce(in, opi, mask, alloc, &child->vals[op->result])) {
+        child->state[op->result] = 1;
+        return true;
+    }
     const int64_t nf = in->num_frames;
     bool reads_series = false;
     for (uint32_t k = 0; k < op->num_args; ++k) {
@@ -1535,6 +1665,13 @@ static bool once_subset(const vial_interp_t* in, vial_interp_t* child, uint32_t 
         if (!a) continue;
         const uint32_t src = ir->values[a].op;
         if (src != VIAL_IR_NO_OP && in->op_class[src] == VIAL_OP_PER_FRAME) {
+            vial_val_t pv;
+            if (pairs_stacked(in, a, mask, true, alloc, &pv)) {
+                child->vals[a] = pv;
+                child->state[a] = 1;
+                reads_series = true;
+                continue;
+            }
             const vial_val_t* s = in->series ? in->series[a] : NULL;
             if (!s) return false;
             // The kept frames that are chosen, stacked as the run stacks a whole series

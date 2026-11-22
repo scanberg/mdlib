@@ -114,6 +114,11 @@ typedef struct vial_interp_t {
     uint8_t*                    op_class;   // md_array by op: VIAL_OP_STATIC, VIAL_OP_PER_FRAME or VIAL_OP_ONCE
     uint8_t*                    op_sweep;   // md_array by op: the sweep a per-frame op runs in, after which a once op runs
     vial_val_t**                series;     // md_array by ssa: the value at each frame, or NULL when it is not kept
+    // A matrix of truths kept as a series, of known shape: as the frames each entry is true in (md_pair_frames.h) in
+    // place of series[v], which is NULL. A frame reduction of it is counted from those (vial_interp_run), anything
+    // else that reads it gets its frames made from them. By ssa; the main interpreter's, which the workers share.
+    struct md_pair_frames_t**   series_pairs;
+    bool                        series_pairs_owned;
     double*                     times;      // [num_frames], time() of each frame
     int64_t                     num_frames;
     uint8_t                     sweep;      // the sweep being run

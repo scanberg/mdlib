@@ -2185,6 +2185,91 @@ UTEST(vial_ir, matrix_pairs) {
     md_arena_allocator_destroy(alloc);
 }
 
+// A matrix of truths per frame that reductions over the frames read is kept as the frames each entry is true in: mean,
+// sum, any and all counted from them, over every frame and over chosen ones; anything else that reads it, var() or an op
+// of a later sweep, gets its frames made from them, and agrees with the same of it as floats, kept as they are
+UTEST(vial_ir, matrix_series_as_pairs) {
+    int64_t nf = 0;
+    const md_system_t* sys = vial_ir__run_p(&nf);
+    ASSERT_TRUE(sys != NULL && nf > 4);
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
+    const char* src =
+        "_c     = contacts(residue)\n"
+        "freq   = mean(_c, axis='frame')\n"
+        "n_in   = sum(_c, axis='frame')\n"
+        "ever   = any(_c, axis='frame')\n"
+        "always = all(_c, axis='frame')\n"
+        "vf     = var(float(_c), axis='frame')\n"
+        "vb     = var(_c, axis='frame')\n"
+        "late   = sum(where(freq > 0.5, _c, False), axis=1)\n"
+        "late_f = sum(where(freq > 0.5, float(_c), 0.0), axis=1)\n";
+    const md_vial_compile_desc_t cd = {.sys = sys, .run = MD_STR_LIT("run")};
+    md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &cd, alloc);
+    ASSERT_TRUE(prog != NULL);
+    md_vial_eval_t* eval = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = MD_STR_LIT("run"), .executor = test_executor_of_threads(3)}, alloc);
+    ASSERT_TRUE(eval != NULL);
+    ASSERT_TRUE(md_vial_eval_run(eval));
+    const md_attributes_t* attrs = md_vial_eval_attributes(eval);
+    #define DATA(name) md_attributes_find(attrs, MD_STR_LIT("script/" name))
+    const md_attribute_t* freq = DATA("freq");
+    const md_attribute_t* n_in = DATA("n_in");
+    const md_attribute_t* ever = DATA("ever");
+    const md_attribute_t* always = DATA("always");
+    const md_attribute_t* vf = DATA("vf");
+    const md_attribute_t* vb = DATA("vb");
+    const md_attribute_t* late = DATA("late");
+    const md_attribute_t* late_f = DATA("late_f");
+    ASSERT_TRUE(freq && n_in && ever && always && vf && vb && late && late_f);
+    #undef DATA
+    // Each frame's matrix, as the interpreter gives it
+    vial_ir__run_t r;
+    ASSERT_TRUE(vial_ir__start(&r, "c = contacts(residue)\n", sys));
+    md_system_state_t state = {.alloc = r.alloc};
+    md_system_state_init(&state, sys->atom.count);
+    const md_str_t paths[] = {MD_STR_LIT("atom/position"), MD_STR_LIT("unitcell")};
+    md_system_extract_t* ex = md_system_extract_begin(sys, MD_STR_LIT("run"), paths, 2, r.alloc);
+    uint32_t count[225] = {0}, half[225] = {0};
+    uint8_t mask[64] = {0};
+    uint32_t num_half = 0;
+    for (int64_t f = 0; f < nf; ++f) {
+        ASSERT_TRUE(md_system_extract_frame(ex, f, &state));
+        const vial_frame_t fr = {.xyz = (const float*)state.xyz, .num_atoms = state.num_atoms, .cell = state.unitcell, .index = f, .time = (double)f};
+        ASSERT_TRUE(vial_interp_frame(&r.in, &fr));
+        const vial_val_t* c = vial_ir__value(&r, "c");
+        ASSERT_TRUE(c && c->dtype == VIAL_DT_BOOL);
+        mask[f] = f % 3 == 1;
+        num_half += mask[f];
+        for (int i = 0; i < 225; ++i) {
+            const bool t = ((const uint8_t*)c->data)[i] != 0;
+            count[i] += t;
+            half[i] += t && mask[f];
+        }
+    }
+    md_system_extract_end(ex);
+    vial_ir__end(&r);
+    uint32_t some = 0;
+    for (int i = 0; i < 225; ++i) {
+        EXPECT_NEAR((float)count[i] / (float)nf, ((const float*)freq->data)[i], 1e-6f);
+        EXPECT_EQ((int32_t)count[i], ((const int32_t*)n_in->data)[i]);
+        EXPECT_EQ(count[i] > 0, ((const uint8_t*)ever->data)[i] != 0);
+        EXPECT_EQ(count[i] == (uint32_t)nf, ((const uint8_t*)always->data)[i] != 0);
+        EXPECT_NEAR(((const float*)vf->data)[i], ((const float*)vb->data)[i], 1e-6f);
+        some += count[i] > 0 && count[i] < (uint32_t)nf;
+    }
+    EXPECT_GT(some, 0u);
+    for (int64_t k = 0; k < nf * 15; ++k) EXPECT_EQ((double)((const int32_t*)late->data)[k], (double)((const float*)late_f->data)[k]);
+    // Over chosen frames, as a plot period asks
+    float got[225], other[225];
+    ASSERT_EQ(225u, md_vial_eval_aggregate(eval, MD_STR_LIT("freq"), mask, got, 225));
+    for (int i = 0; i < 225; ++i) EXPECT_NEAR((float)half[i] / (float)num_half, got[i], 1e-6f);
+    ASSERT_EQ(225u, md_vial_eval_aggregate(eval, MD_STR_LIT("vb"), mask, got, 225));
+    ASSERT_EQ(225u, md_vial_eval_aggregate(eval, MD_STR_LIT("vf"), mask, other, 225));
+    for (int i = 0; i < 225; ++i) EXPECT_NEAR(other[i], got[i], 1e-6f);
+    md_vial_eval_free(eval);
+    md_vial_program_free(prog);
+    md_arena_allocator_destroy(alloc);
+}
+
 // Of each frame of P's run, the frame's own: the selectors by ss= read one DSSP of it, and the next frame another. P's
 // peptide has no helix by DSSP; its turns and bends come and go
 UTEST(vial_ir, secondary_structure_per_frame) {
