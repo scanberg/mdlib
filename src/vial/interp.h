@@ -63,6 +63,14 @@ typedef struct vial_interp_t {
         uint64_t                key;
         struct md_hbond_query_t* query;
     } hbond;
+    // The bonds computed for the frame, which the system has none of, with their flags (md_bond_flags_t): the hydrogen
+    // bonds bond() finds and the bonds formed() finds. What tells the kind of such a pair of a result
+    // (md_vial_filter_t::pair_flags). In temp: good while epoch is frame_epoch (vial_interp_found_bond).
+    struct {
+        uint64_t                epoch;
+        uint32_t*               pairs;      // md_array, two for each
+        uint32_t*               flags;      // md_array
+    } found;
     size_t                      max_elements;   // the most elements one value may have (R0105); 0 for the default
     vial_val_t*                 vals;       // md_array by ssa
     uint8_t*                    state;      // md_array by ssa: 0 not computed, 1 computed for this frame, 2 static
@@ -154,6 +162,8 @@ bool vial_interp_init(vial_interp_t* in, const vial_ir_t* ir, vial_sys_t* sys, c
 // Computes only what the given values need from now on, as hover and at() do; init marks what the outputs need
 void vial_interp_only(vial_interp_t* in, const vial_ssa_t* roots, size_t n);
 void vial_interp_free(vial_interp_t* in);
+// Keeps a bond computed for the frame, of particles a and b, which the system has none of (vial_interp_t::found)
+void vial_interp_found_bond(vial_interp_t* in, uint32_t a, uint32_t b, uint32_t flags);
 
 // Computes the static values of the top level. An op that fails is recorded in in->errors, and what is computed from
 // it is not computed; the rest is. False when something failed.

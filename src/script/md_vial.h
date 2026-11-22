@@ -461,6 +461,11 @@ typedef struct md_vial_filter_t {
     size_t                  num_sets;
     uint32_t*               offsets;    // [num_sets + 1] into atoms
     uint32_t*               atoms;      // each set's particles, ascending
+    // Where it picks pairs of particles, [n][2] of one particle each (bond(), formed(), broken()): the flags
+    // (md_bond_flags_t) of the bond of each pair, the system's (of its graph, the bonds outside of it or its
+    // interactions) or the one the evaluation computed for the frame (a hydrogen bond found, a bond formed), and
+    // MD_BOND_FLAG_INACTIVE for a pair of no bond. [num_sets / 2]; NULL where it picks no pairs.
+    uint32_t*               pair_flags;
     // When not ok: the first error, its span in expr, empty when it is about the whole
     md_vial_diagnostic_t    error;
 } md_vial_filter_t;

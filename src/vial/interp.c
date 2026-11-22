@@ -250,6 +250,18 @@ void vial_interp_free(vial_interp_t* in) {
     memset(in, 0, sizeof(*in));
 }
 
+void vial_interp_found_bond(vial_interp_t* in, uint32_t a, uint32_t b, uint32_t flags) {
+    if (in->found.epoch != in->frame_epoch) {
+        // Of a frame before, whose temp is gone
+        in->found.pairs = NULL;
+        in->found.flags = NULL;
+        in->found.epoch = in->frame_epoch;
+    }
+    md_array_push(in->found.pairs, a, in->temp);
+    md_array_push(in->found.pairs, b, in->temp);
+    md_array_push(in->found.flags, flags, in->temp);
+}
+
 const vial_val_t* vial_interp_value(const vial_interp_t* in, vial_ssa_t v) {
     return v && v < md_array_size(in->state) && in->state[v] ? &in->vals[v] : NULL;
 }

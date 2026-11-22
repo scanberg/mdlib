@@ -3211,10 +3211,12 @@ static bool k_bond(vial_kctx_t* k, const bargs_t* ba, vial_val_t* out) {
         if (md_hbond_query_eval(&hs, in->hbond.query, &state, k->alloc) && hs.count) {
             md_array(uint32_t) idx = 0;
             md_array_push_array(idx, r->idx, r->count, k->alloc);
+            const md_bond_flags_t found = md_bond_flags_set_origin(md_bond_flags_set_kind(MD_BOND_FLAG_NONE, MD_BOND_KIND_HYDROGEN), MD_BOND_ORIGIN_INFERRED);
             for (size_t i = 0; i < hs.count; ++i) {
                 if (md_bond_find_interaction(&sys->bond, hs.hydrogen[i], hs.acceptor[i]) >= 0) continue;
                 md_array_push(idx, hs.hydrogen[i], k->alloc);
                 md_array_push(idx, hs.acceptor[i], k->alloc);
+                vial_interp_found_bond(in, (uint32_t)hs.hydrogen[i], (uint32_t)hs.acceptor[i], (uint32_t)found);
             }
             const uint32_t n2 = (uint32_t)md_array_size(idx);
             r->idx = idx;
@@ -3286,6 +3288,7 @@ static bool k_bond_changes(vial_kctx_t* k, const bargs_t* ba, bool formed, vial_
         for (size_t i = 0; i < d.num_formed; ++i) {
             md_array_push(pairs, (uint32_t)d.formed_pair[i].idx[0], k->alloc);
             md_array_push(pairs, (uint32_t)d.formed_pair[i].idx[1], k->alloc);
+            vial_interp_found_bond(in, (uint32_t)d.formed_pair[i].idx[0], (uint32_t)d.formed_pair[i].idx[1], d.formed_flags ? (uint32_t)d.formed_flags[i] : 0u);
         }
     } else {
         for (md_bitset_iter_t it = md_bitset_iter(d.broken); md_bitset_iter_next(&it);) {

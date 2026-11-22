@@ -15,6 +15,7 @@
 #include <core/md_array.h>
 #include <core/md_common.h>
 #include <core/md_executor.h>
+#include <core/md_hash.h>
 
 #include <math.h>
 #include <stdarg.h>
@@ -1639,6 +1640,42 @@ static bool filter_all(md_vial_filter_t* out, const md_vial_filter_desc_t* desc,
     return true;
 }
 
+static inline uint64_t filter_pair_key(uint32_t a, uint32_t b) {
+    return ((uint64_t)MD_MIN(a, b) << 32) | MD_MAX(a, b);
+}
+
+// The flags of the bond of each pair a filter picks (md_vial_filter_t::pair_flags), atoms two by two: the system's, of
+// its graph by the connectivity and of its other bonds (the elastic and metallic ones, the interactions) by their
+// pairs; else the one the evaluation computed for the frame (vial_interp_t::found); else none, MD_BOND_FLAG_INACTIVE
+static uint32_t* filter_pair_flags(const md_system_t* sys, const vial_interp_t* in, const uint32_t* atoms, size_t num_pairs, md_allocator_i* alloc, md_allocator_i* temp) {
+    uint32_t* flags = md_alloc(alloc, MD_MAX(num_pairs, 1) * sizeof(uint32_t));
+    md_hashmap32_t other = { .allocator = temp };
+    md_hashmap32_t found = { .allocator = temp };
+    const size_t total = sys->bond.pairs && sys->bond.flags ? sys->bond.count + sys->bond.interaction_count : 0;
+    for (size_t i = 0; i < total; ++i) {
+        if (md_bond_is_graph(sys->bond.flags[i])) continue;
+        const md_atom_pair_t p = sys->bond.pairs[i];
+        md_hashmap_add(&other, filter_pair_key((uint32_t)p.idx[0], (uint32_t)p.idx[1]), (uint32_t)i);
+    }
+    const size_t num_found = in && in->found.epoch == in->frame_epoch ? md_array_size(in->found.flags) : 0;
+    for (size_t i = 0; i < num_found; ++i) {
+        const uint64_t key = filter_pair_key(in->found.pairs[2 * i], in->found.pairs[2 * i + 1]);
+        if (!md_hashmap_get(&found, key)) md_hashmap_add(&found, key, (uint32_t)i);
+    }
+    const uint32_t na = (uint32_t)sys->atom.count;
+    for (size_t i = 0; i < num_pairs; ++i) {
+        const uint32_t a = atoms[2 * i], b = atoms[2 * i + 1];
+        const uint64_t key = filter_pair_key(a, b);
+        const md_bond_idx_t bi = a < na && b < na ? md_system_bond_find(sys, (md_atom_idx_t)a, (md_atom_idx_t)b) : -1;
+        const uint32_t* o = NULL;
+        if (bi >= 0)                                    flags[i] = (uint32_t)md_system_bond_flags(sys, bi);
+        else if ((o = md_hashmap_get(&other, key)))     flags[i] = (uint32_t)sys->bond.flags[*o];
+        else if ((o = md_hashmap_get(&found, key)))     flags[i] = in->found.flags[*o];
+        else                                            flags[i] = (uint32_t)MD_BOND_FLAG_INACTIVE;
+    }
+    return flags;
+}
+
 bool md_vial_filter(md_vial_filter_t* out, md_str_t expr, const md_vial_filter_desc_t* desc, md_allocator_i* alloc) {
     if (!out) return false;
     memset(out, 0, sizeof(*out));
@@ -1729,6 +1766,10 @@ bool md_vial_filter(md_vial_filter_t* out, md_str_t expr, const md_vial_filter_d
         out->num_sets = md_array_size(offsets) - 1;
         out->offsets = offsets;
         out->atoms = atoms ? atoms : md_alloc(alloc, sizeof(uint32_t));
+        // Pairs of one particle each: the bond of each, as the system has it or the evaluation found it
+        bool pairs = out->ndim == 2 && out->dims[1] == 2;
+        for (size_t k = 0; pairs && k < out->num_sets; ++k) pairs = offsets[k + 1] - offsets[k] == 1;
+        if (pairs) out->pair_flags = filter_pair_flags(desc->sys, pt.have_in ? &pt.in : NULL, out->atoms, out->num_sets / 2, alloc, arena);
         out->ok = ok = true;
     }
 done:

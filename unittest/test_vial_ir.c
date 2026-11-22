@@ -1945,6 +1945,11 @@ UTEST(vial_ir, hydrogen_bonds_per_frame) {
     ASSERT_EQ(2u, f.num_sets);
     EXPECT_EQ(1u, f.atoms[f.offsets[0]]);
     EXPECT_EQ(3u, f.atoms[f.offsets[1]]);
+    // Its flags, as the filter found it: the system has no bond of the pair
+    ASSERT_TRUE(f.pair_flags != NULL);
+    EXPECT_EQ((uint32_t)md_bond_flags_set_origin((md_bond_flags_t)MD_BOND_KIND_HYDROGEN, MD_BOND_ORIGIN_INFERRED), f.pair_flags[0]);
+    ASSERT_TRUE(md_vial_filter(&f, MD_STR_LIT("particle[1]"), &at0, alloc));
+    EXPECT_TRUE(f.pair_flags == NULL);
     ASSERT_TRUE(md_vial_filter(&f, MD_STR_LIT("bond(kind='interaction', origin='inferred')"), &at0, alloc));
     EXPECT_EQ(2u, f.num_sets);
     // Both ends in the set
@@ -1957,6 +1962,8 @@ UTEST(vial_ir, hydrogen_bonds_per_frame) {
     EXPECT_EQ(0u, f.num_sets);
     ASSERT_TRUE(md_vial_filter(&f, MD_STR_LIT("bond(kind=['hydrogen', 'covalent'], order=1)"), &at0, alloc));
     EXPECT_EQ(8u, f.num_sets);      // the four O-H
+    ASSERT_TRUE(f.pair_flags != NULL);
+    for (size_t i = 0; i < 4; ++i) EXPECT_EQ(MD_BOND_KIND_COVALENT, md_bond_kind((md_bond_flags_t)f.pair_flags[i]));
     md_system_free(&sys);
 
     // Per frame over a run: what md_hbond finds in each of P's 38 frames
@@ -2053,6 +2060,27 @@ UTEST(vial_ir, bonds_formed_and_broken) {
     }
     md_vial_eval_free(e);
     md_vial_program_free(prog);
+    // A filter at the second frame: the bond formed has its flags as formed() found it, the bond broken the system's
+    {
+        const md_str_t paths[] = {MD_STR_LIT("atom/position"), MD_STR_LIT("unitcell")};
+        md_system_extract_t* ex = md_system_extract_begin(&sys, MD_STR_LIT("run"), paths, 2, alloc);
+        ASSERT_TRUE(ex != NULL);
+        md_system_state_t fs = {.alloc = alloc};
+        md_system_state_init(&fs, sys.atom.count);
+        ASSERT_TRUE(md_system_extract_frame(ex, 1, &fs));
+        const md_vial_filter_desc_t at1 = {.sys = &sys, .state = &fs};
+        md_vial_filter_t f;
+        ASSERT_TRUE(md_vial_filter(&f, MD_STR_LIT("formed()"), &at1, alloc));
+        ASSERT_EQ(2u, f.num_sets);
+        ASSERT_TRUE(f.pair_flags != NULL);
+        EXPECT_EQ(MD_BOND_KIND_COVALENT, md_bond_kind((md_bond_flags_t)f.pair_flags[0]));
+        EXPECT_EQ(MD_BOND_ORIGIN_INFERRED, md_bond_origin((md_bond_flags_t)f.pair_flags[0]));
+        ASSERT_TRUE(md_vial_filter(&f, MD_STR_LIT("broken()"), &at1, alloc));
+        ASSERT_EQ(2u, f.num_sets);
+        ASSERT_TRUE(f.pair_flags != NULL);
+        EXPECT_EQ((uint32_t)md_system_bond_flags(&sys, md_system_bond_find(&sys, (md_atom_idx_t)f.atoms[0], (md_atom_idx_t)f.atoms[1])), f.pair_flags[0]);
+        md_system_extract_end(ex);
+    }
     // Values formed() and broken() refuse
     const char* bad[3] = {"f = formed(tolerance=0.7)\n", "f = broken(breakable='pdb')\n", "f = formed(particle, color=1)\n"};
     const char* code[3] = {"E0313", "E0206", "E0202"};
