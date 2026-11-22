@@ -486,7 +486,7 @@ UTEST_F(vial_check, selector_diagnostics) {
     const md_system_t* P = vial_test_system('P');
     ASSERT_TRUE(T != NULL && P != NULL);
     EXPECT_DIAGS_ON(T, "b = chain(name='A')\n", "E0202 1: `chain` takes no keyword `name`; it takes id and scope | id='A'\n");
-    EXPECT_DIAGS_ON(T, "b = residue(resname='ALA')\n", "E0202 1: `residue` takes no keyword `resname`; it takes id, name, kind, chain, role, gap, resolved and scope | name='ALA'\n");
+    EXPECT_DIAGS_ON(T, "b = residue(resname='ALA')\n", "E0202 1: `residue` takes no keyword `resname`; it takes id, name, kind, chain, role, gap, resolved, ss and scope | name='ALA'\n");
     // A bare number: the file's or a position, and v1's from 1; neither is taken without saying
     EXPECT_DIAGS_ON(T, "r = residue(5)\n", "E0205 1: `residue` takes a set or a name; a number is the file's, residue(id=5), or a position, "
         "residue[4], counted from 0, which is v1's residue(5)\n");
@@ -508,6 +508,15 @@ UTEST_F(vial_check, selector_diagnostics) {
     EXPECT_DIAGS_ON(T, "r = residue(role='backbone')\n", "E0206 1: 'backbone' is not a role of residues; the roles are terminus, n_terminus, c_terminus, 5_terminus and 3_terminus\n");
     EXPECT_DIAGS_ON(T, "r = residue(gap='inside')\n", "E0206 1: 'inside' is no gap of a residue; a gap is before or after it\n");
     EXPECT_DIAGS_ON(T, "r = residue(resolved='no')\n", "E0206 1: `resolved` takes True or False; this is str\n");
+    // The secondary structure is of the coordinates, so a selection by it is made per frame
+    EXPECT_TYPE_ON(T, "r = residue(ss='helix')\n", 1, "set[?], frame");
+    EXPECT_TYPE_ON(T, "r = residue(ss='helix' and not 'helix_pi', chain='A')\n", 1, "set[?], frame");
+    EXPECT_TYPE_ON(T, "r = residue(ss=['sheet', 'bridge'])\n", 1, "set[?], frame");
+    EXPECT_TYPE_ON(T, "n = len(residue(ss='coil'))\n", 1, "int, frame");
+    EXPECT_DIAGS_ON(T, "r = residue(ss='alpha')\n", "E0206 1: 'alpha' is no secondary structure; the secondary structures are helix, "
+        "helix_alpha, helix_310, helix_pi, sheet, bridge, turn, bend and coil\n");
+    EXPECT_DIAGS_ON(T, "r = residue(ss='H')\n", "E0206 1: 'H' is no secondary structure; the secondary structures are helix, "
+        "helix_alpha, helix_310, helix_pi, sheet, bridge, turn, bend and coil\n");
     // A part's name is its type's description, as an mmCIF entity's; a PDB file gives none, and its parts are named by their kinds
     EXPECT_TYPE_ON(T, "p = part('peptide')\n", 1, "set[2], static");
     EXPECT_TYPE_ON(T, "p = polymer(name='peptide')\n", 1, "set[2], static");

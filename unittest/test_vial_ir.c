@@ -99,6 +99,7 @@ UTEST(vial_ir, lowers_and_verifies) {
 #include <core/md_geom.h>
 #include <core/md_vec_math.h>
 #include <core/md_linalg.h>
+#include <md_dssp.h>
 
 typedef struct vial_ir__run_t {
     md_allocator_i*     alloc;
@@ -1706,6 +1707,101 @@ UTEST(vial_ir, backbone_angles_ends) {
     EXPECT_STREQ("0", vial_ir__out(&r, "n_wat", buf, sizeof(buf)));
     EXPECT_STREQ("[False, True, True]", vial_ir__out(&r, "before", buf, sizeof(buf)));     // the first after the gap: no phi
     EXPECT_STREQ("[True, False, False]", vial_ir__out(&r, "after", buf, sizeof(buf)));     // the last before it: no psi, no omega
+    vial_ir__end(&r);
+}
+
+// residue(ss=): DSSP of the frame's coordinates (md_dssp_compute), helix any of its three helices, and none for a residue
+// of no protein backbone
+UTEST(vial_ir, secondary_structure) {
+    const md_system_t* sys = vial_test_system('T');
+    const md_system_state_t* st = vial_test_state('T');
+    ASSERT_TRUE(sys && st);
+    // By hand
+    const md_protein_backbone_data_t* bb = &sys->protein_backbone;
+    const size_t n = bb->segment.count;
+    ASSERT_GT(n, 0u);
+    md_secondary_structure_t* ss = malloc(n * sizeof(md_secondary_structure_t));
+    ASSERT_TRUE(md_dssp_compute(ss, n, st->xyz, &st->unitcell, bb));
+    int want_helix = 0, want_alpha = 0, want_sheet = 0, want_any = 0;
+    for (size_t i = 0; i < n; ++i) {
+        if (bb->segment.res_idx[i] < 0 || ss[i] == MD_SECONDARY_STRUCTURE_UNKNOWN) continue;
+        want_any += 1;
+        want_alpha += ss[i] == MD_SECONDARY_STRUCTURE_HELIX_ALPHA;
+        want_sheet += ss[i] == MD_SECONDARY_STRUCTURE_BETA_SHEET;
+        want_helix += ss[i] == MD_SECONDARY_STRUCTURE_HELIX_ALPHA || ss[i] == MD_SECONDARY_STRUCTURE_HELIX_310 || ss[i] == MD_SECONDARY_STRUCTURE_HELIX_PI;
+    }
+    free(ss);
+    ASSERT_GT(want_alpha, 0);
+    ASSERT_GT(want_sheet, 0);
+    vial_ir__run_t r;
+    const char* src =
+        "helix = len(residue(ss='helix'))\n"
+        "alpha = len(residue(ss='helix_alpha'))\n"
+        "sheet = len(residue(ss='sheet'))\n"
+        "three = len(residue(ss='helix_alpha')) + len(residue(ss='helix_310')) + len(residue(ss='helix_pi'))\n"
+        "other = len(residue(ss=not 'helix'))\n"
+        "nopi  = len(residue(ss='helix' and not 'helix_pi')) + len(residue(ss='helix_pi'))\n"
+        "wat   = len(residue(kind='water', ss=not 'helix'))\n";
+    ASSERT_TRUE(vial_ir__start(&r, src, sys));
+    const vial_frame_t fr = {.xyz = (const float*)st->xyz, .num_atoms = st->num_atoms, .cell = st->unitcell, .index = 0, .time = 0.0};
+    ASSERT_TRUE(vial_interp_frame(&r.in, &fr));
+    char buf[64], want[64];
+    snprintf(want, sizeof(want), "%d", want_helix);
+    EXPECT_STREQ(want, vial_ir__out(&r, "helix", buf, sizeof(buf)));
+    EXPECT_STREQ(want, vial_ir__out(&r, "three", buf, sizeof(buf)));
+    EXPECT_STREQ(want, vial_ir__out(&r, "nopi", buf, sizeof(buf)));
+    snprintf(want, sizeof(want), "%d", want_alpha);
+    EXPECT_STREQ(want, vial_ir__out(&r, "alpha", buf, sizeof(buf)));
+    snprintf(want, sizeof(want), "%d", want_sheet);
+    EXPECT_STREQ(want, vial_ir__out(&r, "sheet", buf, sizeof(buf)));
+    snprintf(want, sizeof(want), "%d", want_any - want_helix);
+    EXPECT_STREQ(want, vial_ir__out(&r, "other", buf, sizeof(buf)));
+    EXPECT_STREQ("0", vial_ir__out(&r, "wat", buf, sizeof(buf)));
+    printf("T: %d of %d residues in a helix, %d alpha, %d in a sheet\n", want_helix, want_any, want_alpha, want_sheet);
+    vial_ir__end(&r);
+}
+
+// Of each frame of P's run, the frame's own: the selectors by ss= read one DSSP of it, and the next frame another. P's
+// peptide has no helix by DSSP; its turns and bends come and go
+UTEST(vial_ir, secondary_structure_per_frame) {
+    int64_t nf = 0;
+    const md_system_t* sys = vial_ir__run_p(&nf);
+    ASSERT_TRUE(sys != NULL);
+    vial_ir__run_t r;
+    ASSERT_TRUE(vial_ir__start(&r, "t = len(residue(ss='turn'))\nb = len(residue(ss='bend'))\nc = len(residue(ss='coil'))\n"
+                                   "h = len(residue(ss='helix'))\n", sys));
+    static const char* names[4] = {"t", "b", "c", "h"};
+    double* got[4];
+    for (int k = 0; k < 4; ++k) {
+        got[k] = malloc(nf * sizeof(double));
+        ASSERT_TRUE(vial_ir__frames(&r, sys, nf, names[k], got[k]));
+    }
+    md_system_state_t state = {.alloc = r.alloc};
+    md_system_state_init(&state, sys->atom.count);
+    const md_str_t paths[] = {MD_STR_LIT("atom/position"), MD_STR_LIT("unitcell")};
+    md_system_extract_t* ex = md_system_extract_begin(sys, MD_STR_LIT("run"), paths, 2, r.alloc);
+    const size_t n = sys->protein_backbone.segment.count;
+    md_secondary_structure_t* ss = malloc(n * sizeof(md_secondary_structure_t));
+    int changes = 0;
+    for (int64_t f = 0; f < nf; ++f) {
+        md_system_extract_frame(ex, f, &state);
+        md_dssp_compute(ss, n, state.xyz, &state.unitcell, &sys->protein_backbone);
+        int want[4] = {0};
+        for (size_t i = 0; i < n; ++i) {
+            want[0] += ss[i] == MD_SECONDARY_STRUCTURE_TURN;
+            want[1] += ss[i] == MD_SECONDARY_STRUCTURE_BEND;
+            want[2] += ss[i] == MD_SECONDARY_STRUCTURE_COIL;
+            want[3] += ss[i] == MD_SECONDARY_STRUCTURE_HELIX_ALPHA || ss[i] == MD_SECONDARY_STRUCTURE_HELIX_310 || ss[i] == MD_SECONDARY_STRUCTURE_HELIX_PI;
+        }
+        for (int k = 0; k < 4; ++k) {
+            EXPECT_EQ((double)want[k], got[k][f]);
+            changes += f > 0 && got[k][f] != got[k][f - 1];
+        }
+    }
+    EXPECT_GT(changes, 0);      // a stale frame's would show
+    md_system_extract_end(ex);
+    free(ss);
+    for (int k = 0; k < 4; ++k) free(got[k]);
     vial_ir__end(&r);
 }
 

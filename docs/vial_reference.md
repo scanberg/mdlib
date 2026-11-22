@@ -309,6 +309,7 @@ Names are singular, as every function's is, whatever the shape of what they give
 |  | `role` | its ends: n\_terminus, c\_terminus, 5\_terminus, 3\_terminus, terminus; see Roles | string or list |
 |  | `gap` | a break of its chain right before or after it: before, after; see Roles | string or list |
 |  | `resolved` | an amino acid or a nucleotide whose backbone was found, its atoms of their roles; any other residue is neither True nor False | True or False |
+|  | `ss` | its secondary structure in the frame, by DSSP: helix\_alpha, helix\_310, helix\_pi, sheet, bridge, turn, bend, coil, and helix any of the three helices; see Roles. A selection by it is made per frame | string or list |
 | `part` | `name` | the description of its type: the file's, as an mmCIF entity's, else what it is, the kind of a polymer or water and the residue names of anything else, such as GTP or NAG-NAG | a glob, or a list |
 |  | `kind` | polymer, peptide, nucleic, dna, rna, glycan, ligand, lipid, ion, water; see below | string or list |
 |  | `chain` | the author id of its chain | string or list |
@@ -394,6 +395,8 @@ end_5  = count(atom(role='5_terminus'))                    # warning W0601 -> 0:
 
 A residue's roles are its ends, the residues with a free end of a strand: `'n_terminus'` and `'c_terminus'` an amino acid's free amino and carboxyl ends, `'5_terminus'` and `'3_terminus'` a nucleotide's free 5' and 3' ends, `'terminus'` either. A strand that goes on over a gap, residues missing from the file between two that the bonds do not join, has no end there: the residues on either side have a `gap=`, `'before'` the first after it and `'after'` the last before it. `resolved=False` is an amino acid or a nucleotide known by its name whose backbone was not found, as of a residue the file holds a few atoms of; its particles have none of the roles above. These are what viamd's tooltip of a residue lists, as a script writes them.
 
+A residue of a protein backbone has its secondary structure in each frame, as DSSP assigns it from the frame's coordinates (md\_dssp\_compute): `'helix_alpha'`, `'helix_310'` and `'helix_pi'` the helices, `'sheet'` a strand of a ladder and `'bridge'` an isolated bridge, `'turn'`, `'bend'` and `'coil'` the rest. `'helix'` is any of the three helices, as `'covalent'` is a group of bonds, so `ss='helix' and not 'helix_pi'` is the alpha and 3-10 helices. A residue of no protein backbone, a water or a nucleotide, has none, so `ss=not 'helix'` never reaches it. The words are DSSP's states by name, not its letters. viamd's tooltip of a residue shows its `ss` of the coordinates shown, and the state the cartoon draws where that differs, as the cartoon smooths the states over frames.
+
 ```python
 # on T
 ends   = residue(role='terminus')                          # -> set[4]: two strands, two ends each
@@ -403,6 +406,10 @@ sides  = residue(gap='before' or 'after')                  # -> set[2]: the resi
 whole  = count(residue(resolved=True))                     # -> 865: every amino acid
 part_r = residue(resolved=False)                           # warning W0601: T has no unresolved residue
 bb_r   = residue(role='backbone')                          # error E0206: a residue's roles are its ends
+hel    = residue(ss='helix', chain='A')                    # -> set[?], frame: by DSSP of the frame
+n_hel  = len(residue(ss='helix_alpha' or 'helix_310'))     # -> int, frame
+beta   = residue(ss=['sheet', 'bridge'])                   # -> set[?], frame
+ss_h   = residue(ss='H')                                   # error E0206: the states by name, as helix_alpha
 ```
 
 ### Chemistry

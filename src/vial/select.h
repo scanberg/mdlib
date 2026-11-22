@@ -97,6 +97,7 @@ md_str_t   vial_sys_chain_id(const vial_sys_t* s, int32_t chain);   // empty for
 int32_t vial_sys_res_chain(const vial_sys_t* s, uint32_t res);   // -1 for none
 int32_t vial_sys_atom_res(const vial_sys_t* s, uint32_t atom);   // -1 for none
 int32_t vial_sys_atom_segment(vial_sys_t* s, uint32_t atom);     // the protein backbone's segment of its residue, -1 for none
+int32_t vial_sys_res_segment(vial_sys_t* s, uint32_t res);       // -1 for none
 
 // Builds the view of a system; false without one
 bool vial_sys_init(vial_sys_t* s, const struct md_system_t* sys, md_allocator_i* alloc);
@@ -190,6 +191,7 @@ typedef enum vial_key_t {
     VIAL_KEY_ORIGIN,            // where it comes from: file, topology, user or inferred (md_bond_origin_name)
     VIAL_KEY_GAP,               // residues: a break of its chain before or after it (MD_RESIDUE_FLAG_BREAK_BEFORE, _AFTER)
     VIAL_KEY_RESOLVED,          // residues: its backbone found from its bonds, its atoms of their roles (MD_RESIDUE_FLAG_RESOLVED)
+    VIAL_KEY_SS,                // residues: its secondary structure in the frame (md_dssp_compute), so a selection per frame
     VIAL_KEY_COUNT
 } vial_key_t;
 
@@ -235,6 +237,8 @@ typedef struct vial_select_t {
     vial_filter_t*          filters;        // md_array
     const vial_sets_t*      within;         // a positional set or array of sets, or NULL
     const vial_sets_t*      scope;          // NULL for the system
+    const int32_t*          ss;             // ss=: the secondary structure of the frame, md_secondary_structure_t per segment
+                                            // of the protein backbone; NULL, and ss= matches nothing, of no frame
 } vial_select_t;
 
 // The keywords of a selector, in the order the reference lists them; false for a keyword it does not take
@@ -262,6 +266,7 @@ md_str_t    vial_part_name(const struct md_system_t* sys, uint32_t p);
 // strand, as the particles' roles of those names); and a gap: before or after
 bool        vial_select_residue_role_known(md_str_t role);
 bool        vial_select_gap_known(md_str_t gap);
+bool        vial_select_ss_known(md_str_t ss);
 // The words a keyword takes at a level, where they are a closed set (kind, role, gap, hybridization); 0 when not
 size_t      vial_select_words(uint8_t level, uint8_t key, const char* const** words);
 // Whether a value is a hybridization a particle selector takes: sp, sp2 or sp3

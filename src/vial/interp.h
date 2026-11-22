@@ -71,6 +71,12 @@ typedef struct vial_interp_t {
         uint32_t*               pairs;      // md_array, two for each
         uint32_t*               flags;      // md_array
     } found;
+    // The secondary structure of the frame (md_dssp_compute), md_secondary_structure_t per segment of msys's protein
+    // backbone, for residue(ss=): in temp, good while epoch is frame_epoch and states is not NULL
+    struct {
+        uint64_t                epoch;
+        int32_t*                states;
+    } ss;
     size_t                      max_elements;   // the most elements one value may have (R0105); 0 for the default
     vial_val_t*                 vals;       // md_array by ssa
     uint8_t*                    state;      // md_array by ssa: 0 not computed, 1 computed for this frame, 2 static

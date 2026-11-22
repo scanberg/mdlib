@@ -55,19 +55,26 @@ int32_t vial_sys_atom_res(const vial_sys_t* s, uint32_t a) {
     return r != NONE32 && r < s->num_res ? (int32_t)r : -1;
 }
 
-int32_t vial_sys_atom_segment(vial_sys_t* s, uint32_t a) {
-    if (!s->have_res_segs) {
-        s->have_res_segs = true;
-        s->res_seg = md_alloc(s->alloc, (s->num_res + 1) * sizeof(int32_t));
-        for (uint32_t r = 0; r < s->num_res; ++r) s->res_seg[r] = -1;
-        const md_protein_backbone_data_t* bb = &s->sys->protein_backbone;
-        for (size_t i = 0; bb->segment.res_idx && i < bb->segment.count; ++i) {
-            const int32_t r = bb->segment.res_idx[i];
-            if (r >= 0 && (uint32_t)r < s->num_res) s->res_seg[r] = (int32_t)i;
-        }
+static void need_res_segs(vial_sys_t* s) {
+    if (s->have_res_segs) return;
+    s->have_res_segs = true;
+    s->res_seg = md_alloc(s->alloc, (s->num_res + 1) * sizeof(int32_t));
+    for (uint32_t r = 0; r < s->num_res; ++r) s->res_seg[r] = -1;
+    const md_protein_backbone_data_t* bb = &s->sys->protein_backbone;
+    for (size_t i = 0; bb->segment.res_idx && i < bb->segment.count; ++i) {
+        const int32_t r = bb->segment.res_idx[i];
+        if (r >= 0 && (uint32_t)r < s->num_res) s->res_seg[r] = (int32_t)i;
     }
+}
+
+int32_t vial_sys_res_segment(vial_sys_t* s, uint32_t r) {
+    need_res_segs(s);
+    return r < s->num_res ? s->res_seg[r] : -1;
+}
+
+int32_t vial_sys_atom_segment(vial_sys_t* s, uint32_t a) {
     const int32_t r = vial_sys_atom_res(s, a);
-    return r >= 0 ? s->res_seg[r] : -1;
+    return r >= 0 ? vial_sys_res_segment(s, (uint32_t)r) : -1;
 }
 
 int32_t vial_sys_res_chain(const vial_sys_t* s, uint32_t r) {
@@ -726,7 +733,7 @@ static const struct { const char* word; uint8_t key; } keywords[] = {
     {"scope", VIAL_KEY_SCOPE}, {"size", VIAL_KEY_SIZE}, {"role", VIAL_KEY_ROLE},
     {"hybridization", VIAL_KEY_HYBRIDIZATION}, {"aromatic", VIAL_KEY_AROMATIC}, {"metallic", VIAL_KEY_METALLIC},
     {"hydrogens", VIAL_KEY_HYDROGENS}, {"formal_charge", VIAL_KEY_FORMAL_CHARGE}, {"order", VIAL_KEY_ORDER}, {"origin", VIAL_KEY_ORIGIN},
-    {"gap", VIAL_KEY_GAP}, {"resolved", VIAL_KEY_RESOLVED},
+    {"gap", VIAL_KEY_GAP}, {"resolved", VIAL_KEY_RESOLVED}, {"ss", VIAL_KEY_SS},
 };
 
 uint8_t vial_select_key(md_str_t keyword) {
@@ -784,7 +791,7 @@ static uint32_t takes(uint8_t level) {
                                      K(VIAL_KEY_ROLE) | K(VIAL_KEY_HYBRIDIZATION) | K(VIAL_KEY_AROMATIC) | K(VIAL_KEY_METALLIC) |
                                      K(VIAL_KEY_HYDROGENS) | K(VIAL_KEY_FORMAL_CHARGE);
     case VIAL_LEVEL_RESIDUE:  return K(VIAL_KEY_ID) | K(VIAL_KEY_NAME) | K(VIAL_KEY_KIND) | K(VIAL_KEY_CHAIN) | K(VIAL_KEY_ROLE) |
-                                     K(VIAL_KEY_GAP) | K(VIAL_KEY_RESOLVED) | K(VIAL_KEY_SCOPE);
+                                     K(VIAL_KEY_GAP) | K(VIAL_KEY_RESOLVED) | K(VIAL_KEY_SS) | K(VIAL_KEY_SCOPE);
     case VIAL_LEVEL_PART:     return K(VIAL_KEY_NAME) | K(VIAL_KEY_KIND) | K(VIAL_KEY_CHAIN) | K(VIAL_KEY_SCOPE);
     case VIAL_LEVEL_MOLECULE: return K(VIAL_KEY_NAME) | K(VIAL_KEY_CHAIN) | K(VIAL_KEY_SCOPE);
     case VIAL_LEVEL_CHAIN:    return K(VIAL_KEY_ID) | K(VIAL_KEY_SCOPE);
@@ -804,7 +811,7 @@ const char* vial_select_keywords(uint8_t level) {
     switch (level) {
     case VIAL_LEVEL_PARTICLE: return "name, serial, element, kind, type, resid, resname, chain, role, hybridization, aromatic, metallic, "
                                      "hydrogens, formal_charge and scope";
-    case VIAL_LEVEL_RESIDUE:  return "id, name, kind, chain, role, gap, resolved and scope";
+    case VIAL_LEVEL_RESIDUE:  return "id, name, kind, chain, role, gap, resolved, ss and scope";
     case VIAL_LEVEL_PART:     return "name, kind, chain and scope";
     case VIAL_LEVEL_MOLECULE: return "name, chain and scope";
     case VIAL_LEVEL_CHAIN:    return "id and scope";
@@ -1066,9 +1073,12 @@ bool vial_select_particle_role_known(md_str_t role) {
 
 static const char* residue_roles[] = {"terminus", "n_terminus", "c_terminus", "5_terminus", "3_terminus"};
 static const char* gaps[] = {"before", "after"};
+// A residue's secondary structure, DSSP's states as mdlib names them (md_secondary_structure_t), and helix any of the three
+static const char* sss[] = {"helix", "helix_alpha", "helix_310", "helix_pi", "sheet", "bridge", "turn", "bend", "coil"};
 
 bool vial_select_residue_role_known(md_str_t role) { return in_list(residue_roles, MD_COUNTOF(residue_roles), role); }
 bool vial_select_gap_known(md_str_t gap) { return in_list(gaps, MD_COUNTOF(gaps), gap); }
+bool vial_select_ss_known(md_str_t ss) { return in_list(sss, MD_COUNTOF(sss), ss); }
 
 size_t vial_select_words(uint8_t level, uint8_t key, const char* const** words) {
     #define W(list) (*words = (list), MD_COUNTOF(list))
@@ -1087,6 +1097,7 @@ size_t vial_select_words(uint8_t level, uint8_t key, const char* const** words) 
         if (level == VIAL_LEVEL_RESIDUE) return W(residue_roles);
         break;
     case VIAL_KEY_GAP:           if (level == VIAL_LEVEL_RESIDUE) return W(gaps); break;
+    case VIAL_KEY_SS:            if (level == VIAL_LEVEL_RESIDUE) return W(sss); break;
     case VIAL_KEY_HYBRIDIZATION: if (level == VIAL_LEVEL_PARTICLE) return W(hybridizations); break;
     default: break;
     }
@@ -1122,6 +1133,15 @@ static bool test_gap(const vial_match_t* m, const void* user) {
     if (md_str_eq(m->s, MD_STR_LIT("before"))) return f & MD_RESIDUE_FLAG_BREAK_BEFORE;
     if (md_str_eq(m->s, MD_STR_LIT("after")))  return f & MD_RESIDUE_FLAG_BREAK_AFTER;
     return false;
+}
+
+// A residue's secondary structure, one state with a group: helix is any of alpha, 3-10 and pi
+static bool test_ss(const vial_match_t* m, const void* user) {
+    if (m->kind != VIAL_MATCH_STR) return false;
+    const md_secondary_structure_t ss = *(const md_secondary_structure_t*)user;
+    static const char* words[] = {"", "coil", "turn", "bend", "helix_310", "helix_alpha", "helix_pi", "sheet", "bridge"};    // md_secondary_structure_t
+    if (md_str_eq(m->s, MD_STR_LIT("helix"))) return ss == MD_SECONDARY_STRUCTURE_HELIX_310 || ss == MD_SECONDARY_STRUCTURE_HELIX_ALPHA || ss == MD_SECONDARY_STRUCTURE_HELIX_PI;
+    return (size_t)ss < MD_COUNTOF(words) && ss != MD_SECONDARY_STRUCTURE_UNKNOWN && md_str_eq(m->s, md_str_from_cstr(words[ss]));
 }
 
 typedef struct role_test_t {
@@ -1253,6 +1273,13 @@ static bool residue_passes(const vial_sys_t* s, const vial_select_t* q, uint32_t
             const md_residue_kind_t k = md_system_residue_kind(sys, r);
             const bool v = (md_system_residue_flags(sys, r) & MD_RESIDUE_FLAG_RESOLVED) != 0;
             if ((k != MD_RESIDUE_KIND_AMINO_ACID && k != MD_RESIDUE_KIND_NUCLEOTIDE) || !vial_filter_holds(f, test_bool, &v)) return false;
+            break;
+        }
+        case VIAL_KEY_SS: {
+            // Of a residue of the protein backbone, in the frame; any other has none, so not 'helix' never reaches it
+            const int32_t seg = s->have_res_segs ? s->res_seg[r] : -1;
+            const md_secondary_structure_t ss = q->ss && seg >= 0 ? (md_secondary_structure_t)q->ss[seg] : MD_SECONDARY_STRUCTURE_UNKNOWN;
+            if (ss == MD_SECONDARY_STRUCTURE_UNKNOWN || !vial_filter_holds(f, test_ss, &ss)) return false;
             break;
         }
         default: break;
@@ -1455,6 +1482,7 @@ static vial_sets_t* select_particles_of(vial_sys_t* s, const vial_select_t* q, m
 }
 
 vial_sets_t* vial_select(vial_sys_t* s, const vial_select_t* q, md_allocator_i* alloc) {
+    if (q->ss) need_res_segs(s);
     if (q->level == VIAL_LEVEL_PARTICLE && q->within && q->within->single) return select_particles_of(s, q, alloc);
     const uint64_t* scope = q->scope ? bitmap(q->scope, s->num_atoms, alloc) : NULL;
     const uint64_t* within = q->within ? bitmap(q->within, s->num_atoms, alloc) : NULL;

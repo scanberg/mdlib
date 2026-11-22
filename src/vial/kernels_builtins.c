@@ -18,6 +18,7 @@
 #include <core/md_hash.h>
 #include <md_bond.h>
 #include <md_hbond.h>
+#include <md_dssp.h>
 #include <md_attributes.h>
 #include <md_element.h>
 #include <core/md_geom.h>
@@ -3322,6 +3323,27 @@ static bool k_bond_changes(vial_kctx_t* k, const bargs_t* ba, bool formed, vial_
     return true;
 }
 
+// The secondary structure of the frame, once a frame for every selector that asks (vial_interp_t.ss)
+static const int32_t* frame_secondary_structure(vial_kctx_t* k) {
+    vial_interp_t* in = k->in;
+    if (in->ss.states && in->ss.epoch == in->frame_epoch) return in->ss.states;
+    const float* xyz = frame_xyz(k);
+    if (!xyz || !in->msys) return NULL;
+    const md_protein_backbone_data_t* bb = &in->msys->protein_backbone;
+    const size_t n = bb->segment.count;
+    md_allocator_i* a = in->temp ? in->temp : k->alloc;
+    md_secondary_structure_t* ss = md_alloc(a, (n ? n : 1) * sizeof(md_secondary_structure_t));
+    MD_STATIC_ASSERT(sizeof(md_secondary_structure_t) == sizeof(int32_t), "a state per segment, as an int32");
+    if (!n || in->frame->num_atoms < in->msys->atom.count) md_memset(ss, 0, (n ? n : 1) * sizeof(md_secondary_structure_t));
+    else {
+        const md_unitcell_t cell = frame_cell(k);
+        if (!md_dssp_compute(ss, n, (const md_float3_t*)xyz, &cell, bb)) md_memset(ss, 0, n * sizeof(md_secondary_structure_t));
+    }
+    in->ss.states = (int32_t*)ss;
+    in->ss.epoch = in->frame_epoch;
+    return in->ss.states;
+}
+
 static bool k_select(vial_kctx_t* k, const char* name, const bargs_t* ba, vial_val_t* out) {
     if (!k->in->sys) return vial_rt_fail(k, "R0103", "%s needs a system", name);
     uint8_t pkind;
@@ -3353,6 +3375,7 @@ static bool k_select(vial_kctx_t* k, const char* name, const bargs_t* ba, vial_v
         if (key == VIAL_KEY_NONE) return vial_rt_fail(k, "R0103", "%s takes no keyword %.*s", name, (int)ba->names[i].len, ba->names[i].ptr);
         vial_filter_t f;
         if (!keyword_filter(k, key, v, &f)) return false;
+        if (key == VIAL_KEY_SS && !(q.ss = frame_secondary_structure(k))) return false;
         md_array_push(q.filters, f, k->alloc);
     }
     vial_sets_t* s = vial_select(k->in->sys, &q, k->alloc);
