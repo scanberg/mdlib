@@ -405,6 +405,96 @@ UTEST_F(contact, pairs_triclinic) {
     EXPECT_TRUE(check_pairs(&desc, sys, &utest_fixture->npt_state, utest_fixture->alloc));
 }
 
+// bond_separation: groups joined by a path of at most that many bonds are not in contact, as the reference finds them
+// growing each group along its bonds; within one set and between two, by surface distance and by cutoff
+UTEST_F(contact, bond_separation) {
+    md_system_t* sys = &utest_fixture->ala;
+    md_system_state_t* st = &utest_fixture->ala_state;
+    md_allocator_i* alloc = utest_fixture->alloc;
+    size_t num = 0;
+    md_bitset_t* res = make_residue_groups(&num, sys, MD_RESIDUE_KIND_AMINO_ACID, SIZE_MAX, alloc);
+    ASSERT_GT(num, (size_t)10);
+    // The peptide is extended in this frame: its residues touch their neighbours' neighbours, within 4.5 Å, and nothing
+    // further along
+    md_contact_desc_t desc = { .group_a = res, .num_a = num, .cutoff = 4.5, .bond_separation = 1 };
+    EXPECT_TRUE(check_against_reference(&desc, sys, st, alloc));
+    desc = (md_contact_desc_t){ .group_a = res, .num_a = num, .cutoff = 4.5, .bond_separation = 2 };
+    EXPECT_TRUE(check_against_reference(&desc, sys, st, alloc));
+    // Between two overlapping sets: a residue in both is 0 bonds from itself
+    desc = (md_contact_desc_t){ .group_a = res, .num_a = 9, .group_b = res + 1, .num_b = num - 1, .cutoff = 4.5, .bond_separation = 1 };
+    EXPECT_TRUE(check_against_reference(&desc, sys, st, alloc));
+
+    // Along one strand, residues i and i + 1 are 1 bond apart, i and i + 2 four, i and i + 3 seven: 4 is min_separation 3
+    uint64_t* bonded = NULL;
+    const size_t nb = md_contact_bonded_pairs(&bonded, res, num, NULL, 0, 4, sys, alloc);
+    ASSERT_EQ(2 * num - 3, nb);
+    for (size_t k = 0; k < nb; ++k) {
+        const uint32_t i = (uint32_t)(bonded[k] >> 32), j = (uint32_t)bonded[k];
+        EXPECT_TRUE(i < j && j - i <= 2);
+    }
+    EXPECT_EQ(num - 1, md_contact_bonded_pairs(&bonded, res, num, NULL, 0, 3, sys, alloc));
+    for (uint32_t s = 1; s <= 4; s += 3) {
+        md_contact_set_t by_bonds = {0}, by_index = {0};
+        desc = (md_contact_desc_t){ .group_a = res, .num_a = num, .cutoff = 4.5, .bond_separation = s };
+        ASSERT_TRUE(md_contact_compute(&by_bonds, &desc, sys, st, alloc));
+        desc.bond_separation = 0;
+        desc.min_separation = s == 1 ? 2 : 3;
+        ASSERT_TRUE(md_contact_compute(&by_index, &desc, sys, st, alloc));
+        if (s == 1) EXPECT_GT(by_bonds.count, 0u);
+        ASSERT_EQ(by_index.count, by_bonds.count);
+        for (size_t k = 0; k < by_bonds.count; ++k) {
+            EXPECT_EQ(by_index.i[k], by_bonds.i[k]);
+            EXPECT_EQ(by_index.j[k], by_bonds.j[k]);
+        }
+    }
+
+    // Groups of one particle: the pairs of particles within that many bonds, as exclude_bonds leaves them out
+    const uint32_t na = 60;
+    md_bitset_t* atoms = md_alloc(alloc, sizeof(md_bitset_t) * na);
+    for (uint32_t k = 0; k < na; ++k) atoms[k] = md_bitset_range(k, k + 1);
+    md_contact_set_t by_groups = {0}, by_atoms = {0};
+    desc = (md_contact_desc_t){ .group_a = atoms, .num_a = na, .criterion = MD_CONTACT_CRITERION_RADII, .cutoff = 1.0, .bond_separation = 4 };
+    ASSERT_TRUE(md_contact_compute(&by_groups, &desc, sys, st, alloc));
+    desc.bond_separation = 0;
+    desc.exclude_bonds = 4;
+    ASSERT_TRUE(md_contact_compute(&by_atoms, &desc, sys, st, alloc));
+    ASSERT_GT(by_groups.count, 0u);
+    ASSERT_EQ(by_atoms.count, by_groups.count);
+    for (size_t k = 0; k < by_groups.count; ++k) EXPECT_EQ(by_atoms.i[k] * 1000 + by_atoms.j[k], by_groups.i[k] * 1000 + by_groups.j[k]);
+}
+
+// Separation follows the bonds: chain A of the tubulin lacks residues 39 to 45, so 38 and 46, next to each other in
+// the order of the residues, are not neighbours, while 37 and 38 are
+UTEST(contact, bond_separation_across_a_gap) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(64));
+    md_system_t sys = {.alloc = alloc};
+    md_system_state_t st = {.alloc = alloc};
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), NULL));
+    md_system_infer(&sys, &st, NULL);
+    const size_t nr = md_system_residue_count(&sys);
+    md_bitset_t* res = md_alloc(alloc, sizeof(md_bitset_t) * nr);
+    int64_t r37 = -1, r38 = -1, r46 = -1;
+    for (size_t r = 0; r < nr; ++r) {
+        const md_urange_t rg = md_system_residue_atom_range(&sys, r);
+        res[r] = md_bitset_range(rg.beg, rg.end);
+        const int id = (int)md_system_residue_seq_id(&sys, r);
+        if (r37 < 0 && id == 37) r37 = (int64_t)r;
+        if (r38 < 0 && id == 38) r38 = (int64_t)r;
+        if (r46 < 0 && id == 46) r46 = (int64_t)r;
+    }
+    ASSERT_TRUE(r37 >= 0 && r38 == r37 + 1 && r46 == r38 + 1);
+    uint64_t* bonded = NULL;
+    const size_t nb = md_contact_bonded_pairs(&bonded, res, nr, NULL, 0, 4, &sys, alloc);
+    bool near_37 = false, near_46 = false;
+    for (size_t k = 0; k < nb; ++k) {
+        near_37 |= bonded[k] == (((uint64_t)r37 << 32) | (uint64_t)r38);
+        near_46 |= bonded[k] == (((uint64_t)r38 << 32) | (uint64_t)r46);
+    }
+    EXPECT_TRUE(near_37);
+    EXPECT_FALSE(near_46);
+    md_arena_allocator_destroy(alloc);
+}
+
 // With a parent per group, only groups of the same parent are neighbours
 UTEST_F(contact, min_separation_parent) {
     size_t num = 0;

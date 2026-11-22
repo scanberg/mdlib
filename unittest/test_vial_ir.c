@@ -1839,8 +1839,8 @@ UTEST(vial_ir, ring_pucker) {
 }
 
 // contacts() on each frame of P's run, as a brute force over every pair of particles of two residues finds them: their van
-// der Waals surfaces within 1 Å by default, or their centres within cutoff=, and the residues at least min_separation
-// apart along the strand; and between two arrays, every pair
+// der Waals surfaces within 1 Å by default, or their centres within cutoff=, and the residues more than 4 bonds apart,
+// which along P's one strand is three residues or more; and between two arrays the same
 UTEST(vial_ir, contacts) {
     int64_t nf = 0;
     const md_system_t* sys = vial_ir__run_p(&nf);
@@ -1848,7 +1848,7 @@ UTEST(vial_ir, contacts) {
     vial_ir__run_t r;
     const char* src =
         "c3 = contacts(residue)\n"
-        "c0 = contacts(residue, cutoff=3.0, min_separation=0)\n"
+        "c0 = contacts(residue, cutoff=3.0, bond_separation=0)\n"
         "ab = contacts(residue[0:5], residue[3:10])\n";
     ASSERT_TRUE(vial_ir__start(&r, src, sys));
     md_system_state_t state = {.alloc = r.alloc};
@@ -1887,8 +1887,9 @@ UTEST(vial_ir, contacts) {
                 const bool want0 = i != j && dmin < 3.0f;
                 EXPECT_EQ(want3, ((const uint8_t*)c3->data)[i * nr + j] != 0);
                 EXPECT_EQ(want0, ((const uint8_t*)c0->data)[i * nr + j] != 0);
-                // Between two arrays every pair of sets, a residue in both with itself too: two of its particles within
-                if (i < 5 && j >= 3 && j < 10) EXPECT_EQ(gmin < 1.0f, ((const uint8_t*)ab->data)[i * 7 + (j - 3)] != 0);
+                // Between two arrays the same: residues of one strand fewer than three apart are within 4 bonds, a
+                // residue in both 0 from itself
+                if (i < 5 && j >= 3 && j < 10) EXPECT_EQ(sep >= 3 && gmin < 1.0f, ((const uint8_t*)ab->data)[i * 7 + (j - 3)] != 0);
                 total += want3;
                 total0 += want0;
             }

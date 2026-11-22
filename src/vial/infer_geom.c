@@ -671,9 +671,6 @@ static T call_pucker(infer_t* x, vial_node_id call, bool pseudo) {
     return t;
 }
 
-// contacts(a, b=None, cutoff=4.5, min_separation=3): per frame, of each set of a and each of b, whether two of their
-// particles are within cutoff (md_contact_query), bool with the dimensions of a then of b; without b, of a with itself,
-// where two sets of one strand fewer than min_separation apart in a are none, and a set is none with itself
 // The particles of the sets of node whose van der Waals radius is no element's: atoms of no known element, which have
 // the placeholder radius of element 0, where contacts by surface distance cannot know how near they come. A bead has a
 // radius of its own, and a virtual site, the M of a 4 site water, none, and touches nothing as it should.
@@ -691,9 +688,12 @@ static uint32_t count_no_radius(infer_t* x, vial_node_id node, uint32_t* total) 
     return none;
 }
 
+// contacts(a, b=None, surface_distance=1.0, cutoff=None, bond_separation=4): per frame, of each set of a and each of b,
+// whether two of their particles touch (md_contact_query), bool with the dimensions of a then of b; without b, of a with
+// itself, where a set is none with itself; sets joined by a path of at most bond_separation bonds are none
 static T call_contacts(infer_t* x, vial_node_id call) {
     static const param_t params[] = {{"a", VK_WHOLE, true}, {"b", VK_WHOLE, false}, {"surface_distance", VK_WHOLE, false}, {"cutoff", VK_WHOLE, false},
-                                     {"min_separation", VK_WHOLE, false}};
+                                     {"bond_separation", VK_WHOLE, false}};
     vial_node_id args[5];
     if (!bind(x, call, "contacts", params, 5, args)) return err();
     T ts[5];
@@ -722,19 +722,22 @@ static T call_contacts(infer_t* x, vial_node_id call) {
                                                "surfaces of their particles or between their centres: give one");
         return err();
     }
+    uint32_t bond_sep = 4;
     if (args[4]) {
         const vial_value_t v = value(x, args[4]);
-        if (ts[4].dtype != VIAL_DT_INT || ts[4].ndim || v.kind != VIAL_VAL_INT || v.i < 0) {
+        if (ts[4].dtype != VIAL_DT_INT || ts[4].ndim || v.kind != VIAL_VAL_INT || v.i < 0 || v.i > 254) {
             char what[32];
             if (v.kind == VIAL_VAL_INT) snprintf(what, sizeof(what), "%lld", (long long)v.i);
-            vx_diag_fix(x, "E0313", args[4], NULL, "`min_separation` is a count of sets, 0 or more, known when compiling; this is %s",
+            vx_diag_fix(x, "E0313", args[4], NULL, "`bond_separation` is a count of bonds, 0 to 254, known when compiling; this is %s",
                 v.kind == VIAL_VAL_INT ? what : vx_tstr(&ts[4]));
             return err();
         }
-        if (!self) {
-            vx_diag_fix(x, "E0313", args[4], NULL, "`min_separation` is of a with itself: contacts between a and b take none");
-            return err();
-        }
+        bond_sep = (uint32_t)v.i;
+    }
+    // Without bonds, nothing is separated by them: neighbours along a chain touch, as coarse-grained beads of a system
+    // read without its topology do
+    if (bond_sep && x->sys && x->sys->sys && x->sys->sys->bond.count == 0) {
+        vx_diag_fix(x, "W0611", call, NULL, "the system has no bonds, so bond_separation leaves nothing out: neighbours along a chain are in contact");
     }
     // By surface distance, a particle needs a radius of its own
     if (!args[3]) {

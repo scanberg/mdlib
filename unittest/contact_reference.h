@@ -58,11 +58,26 @@ static inline md_array(ref_pair_t) ref_contacts(const md_contact_desc_t* desc, c
     }
     md_bitmask_t* excl = md_alloc(alloc, sizeof(md_bitmask_t) * sys->atom.count);
     memset(excl, 0, sizeof(md_bitmask_t) * sys->atom.count);
+    // bond_separation: the particles within that many bonds of each group of A, its own among them
+    md_bitmask_t* grown = md_alloc(alloc, sizeof(md_bitmask_t) * (desc->num_a + 1));
+    memset(grown, 0, sizeof(md_bitmask_t) * (desc->num_a + 1));
 
     md_array(ref_pair_t) result = 0;
     for (uint32_t i = 0; i < desc->num_a; ++i) {
         for (uint32_t j = self ? i + 1 : 0; j < num_b; ++j) {
             if (self && desc->min_separation > 1 && j - i < desc->min_separation && (!desc->group_parent || desc->group_parent[i] == desc->group_parent[j])) continue;
+            if (desc->bond_separation) {
+                if (!grown[i].alloc) {
+                    grown[i] = md_bitmask_create(0, (uint32_t)sys->atom.count, alloc);
+                    md_bitset_iter_t it = md_bitset_iter(A[i]);
+                    while (md_bitset_iter_next(&it)) md_bitmask_set_bit(&grown[i], it.idx);
+                    md_bond_mask_grow(&grown[i], &sys->bond, sys->atom.count, desc->bond_separation, NULL);
+                }
+                bool near = false;
+                md_bitset_iter_t jt = md_bitset_iter(B[j]);
+                while (!near && md_bitset_iter_next(&jt)) near = md_bitmask_test_bit(&grown[i], jt.idx);
+                if (near) continue;
+            }
             ref_pair_t p = { i, j, 0, 0, FLT_MAX };
             md_bitset_iter_t ia = md_bitset_iter(A[i]);
             while (md_bitset_iter_next(&ia)) {

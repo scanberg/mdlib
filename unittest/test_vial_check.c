@@ -1338,17 +1338,16 @@ UTEST_F(vial_check, contacts) {
     const md_system_t* P = vial_test_system('P');
     ASSERT_TRUE(T && P);
     EXPECT_TYPE_ON(P, "c = contacts(residue)\n", 1, "bool[15][15], frame");
-    EXPECT_TYPE_ON(P, "c = contacts(residue, cutoff=3.5, min_separation=4)\n", 1, "bool[15][15], frame");
+    EXPECT_TYPE_ON(P, "c = contacts(residue, cutoff=3.5, bond_separation=7)\n", 1, "bool[15][15], frame");
     EXPECT_TYPE_ON(P, "f = mean(contacts(residue), axis='frame')\n", 1, "float[15][15], trajectory");     // how often
     EXPECT_TYPE_ON(T, "c = contacts(residue(chain='A'), particle(resname='GTP'))\n", 1, "bool[442], frame");
     EXPECT_TYPE_ON(T, "c = contacts(residue(chain='A'), residue(chain='B'))\n", 1, "bool[442][437], frame");
     EXPECT_DIAGS_ON(T, "c = contacts(particle(resname='GTP'))\n",
         "E0313 1: `contacts` of a with itself takes an array of sets, as residue() gives; this is set\n");
-    EXPECT_DIAGS_ON(T, "c = contacts(residue(chain='A'), residue(chain='B'), min_separation=3)\n",
-        "E0313 1: `min_separation` is of a with itself: contacts between a and b take none\n");
+    EXPECT_TYPE_ON(T, "c = contacts(residue(chain='A'), residue(chain='B'), bond_separation=0)\n", 1, "bool[442][437], frame");
     EXPECT_DIAGS_ON(P, "c = contacts(residue, cutoff='near')\n", "E0313 1: `cutoff` is one length; this is str\n");
-    EXPECT_DIAGS_ON(P, "c = contacts(residue, min_separation=-1)\n",
-        "E0313 1: `min_separation` is a count of sets, 0 or more, known when compiling; this is -1\n");
+    EXPECT_DIAGS_ON(P, "c = contacts(residue, bond_separation=-1)\n",
+        "E0313 1: `bond_separation` is a count of bonds, 0 to 254, known when compiling; this is -1\n");
     // Between surfaces by default, between centres with cutoff=; not both
     EXPECT_TYPE_ON(P, "c = contacts(residue, surface_distance=0.4)\n", 1, "bool[15][15], frame");
     EXPECT_TYPE_ON(P, "c = contacts(residue, surface_distance=0.05 nm)\n", 1, "bool[15][15], frame");
@@ -1368,10 +1367,12 @@ UTEST_F(vial_check, contacts) {
         md_system_state_t st = {.alloc = utest_fixture->alloc};
         ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, (md_str_t){pdb, sizeof(pdb) - 1}, NULL));
         md_system_infer(&sys, &st, NULL);
+        // Nor has it bonds: by bond_separation nothing is left out, W0611
         EXPECT_DIAGS_ON(&sys, "c = contacts(residue)\n",
+            "W0611 1: the system has no bonds, so bond_separation leaves nothing out: neighbours along a chain are in contact\n"
             "W0610 1: 3 of the 4 particles are of no element known, so their van der Waals radius is a placeholder of 1.0 Å; `cutoff=` counts a "
             "contact between particle centres\n");
-        EXPECT_DIAGS_ON(&sys, "c = contacts(residue, cutoff=4.5)\n", "");
+        EXPECT_DIAGS_ON(&sys, "c = contacts(residue, cutoff=4.5, bond_separation=0)\n", "");
     }
 }
 

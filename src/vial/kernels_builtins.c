@@ -3656,16 +3656,16 @@ static bool k_pucker(vial_kctx_t* k, const vial_val_t* r, bool pseudo, vial_val_
     return true;
 }
 
-// contacts(a, b, surface_distance, cutoff, min_separation): per frame, of each set of a and each of b, whether two of
+// contacts(a, b, surface_distance, cutoff, bond_separation): per frame, of each set of a and each of b, whether two of
 // their particles touch (md_contact_query_eval): their van der Waals surfaces within surface_distance, 1 Å by default, or
-// their centres within cutoff; with the dimensions of a then of b; of a with itself without b, a set of a
-// strand none with the sets of its strand fewer than min_separation from it in a. The queries are kept by their sets.
+// their centres within cutoff; with the dimensions of a then of b; of a with itself without b. Two sets joined by a path
+// of at most bond_separation bonds, 4 by default, are in no contact. The queries are kept by their sets.
 static bool k_contacts(vial_kctx_t* k, const bargs_t* ba, vial_val_t* out) {
     const vial_val_t* a = arg(ba, "a", 0);
     const vial_val_t* b = arg(ba, "b", 1);
     const vial_val_t* surf = arg(ba, "surface_distance", 2);
     const vial_val_t* cut = arg(ba, "cutoff", 3);
-    const vial_val_t* sep = arg(ba, "min_separation", 4);
+    const vial_val_t* sep = arg(ba, "bond_separation", 4);
     const md_system_t* sys = k->in->msys;
     const vial_frame_t* fr = k->in->frame;
     if (!sys || !fr) return vial_rt_fail(k, "R0103", "contacts reads a frame of the system");
@@ -3675,7 +3675,7 @@ static bool k_contacts(vial_kctx_t* k, const bargs_t* ba, vial_val_t* out) {
     // Between the van der Waals surfaces of the particles by default, 1 Å apart; between their centres with cutoff=
     const bool centres = cut && cut->data;
     const float cutoff = centres ? (float)num_at(cut, 0) : surf && surf->data ? (float)num_at(surf, 0) : 1.0f;
-    const uint32_t min_sep = self ? (sep && sep->data ? (uint32_t)MD_MAX(0.0, num_at(sep, 0)) : 3u) : 0u;
+    const uint32_t bond_sep = sep && sep->data ? (uint32_t)MD_MAX(0.0, num_at(sep, 0)) : 4u;
     const vial_sets_t* sa = a->sets;
     const vial_sets_t* sb = self ? a->sets : b->sets;
     const uint32_t na = sa->count, nb = sb->count;
@@ -3687,7 +3687,7 @@ static bool k_contacts(vial_kctx_t* k, const bargs_t* ba, vial_val_t* out) {
         key = md_hash64(sb->offset, ((size_t)nb + 1) * sizeof(uint32_t), key ^ 1);
         key = md_hash64(sb->idx, (size_t)sb->offset[nb] * sizeof(uint32_t), key);
     }
-    key = md_hash64(&cutoff, sizeof(cutoff), key ^ ((uint64_t)min_sep << 32) ^ (uint64_t)self ^ ((uint64_t)centres << 1));
+    key = md_hash64(&cutoff, sizeof(cutoff), key ^ ((uint64_t)bond_sep << 32) ^ (uint64_t)self ^ ((uint64_t)centres << 1));
     vial_interp_t* in = k->in;
     md_contact_query_t* q = NULL;
     for (size_t i = 0; i < md_array_size(in->contacts.keys) && !q; ++i) if (in->contacts.keys[i] == key) q = in->contacts.queries[i];
@@ -3697,19 +3697,10 @@ static bool k_contacts(vial_kctx_t* k, const bargs_t* ba, vial_val_t* out) {
         md_bitset_t* gb = self ? NULL : md_alloc(k->alloc, ((size_t)nb + 1) * sizeof(md_bitset_t));
         for (uint32_t i = 0; i < na; ++i) ga[i] = md_bitset_from_indices(vial_sets_items(sa, i), vial_sets_size(sa, i), k->alloc);
         for (uint32_t i = 0; gb && i < nb; ++i) gb[i] = md_bitset_from_indices(vial_sets_items(sb, i), vial_sets_size(sb, i), k->alloc);
-        // The strand of each set, by its first particle; a set of none its own, so neighbours of no other
-        uint32_t* parent = NULL;
-        if (self && min_sep > 1) {
-            parent = md_alloc(k->alloc, ((size_t)na + 1) * sizeof(uint32_t));
-            for (uint32_t i = 0; i < na; ++i) {
-                const md_part_idx_t p = vial_sets_size(sa, i) ? md_system_part_find_by_atom_idx(sys, vial_sets_items(sa, i)[0]) : -1;
-                parent[i] = p >= 0 ? (uint32_t)p : 0x80000000u + i;
-            }
-        }
         const md_contact_desc_t desc = {
             .group_a = ga, .num_a = na, .group_b = gb, .num_b = self ? 0 : nb,
             .criterion = centres ? MD_CONTACT_CRITERION_DISTANCE : MD_CONTACT_CRITERION_RADII, .cutoff = cutoff,
-            .min_separation = min_sep, .group_parent = parent,
+            .bond_separation = bond_sep,
         };
         q = md_alloc(heap, sizeof(md_contact_query_t));
         memset(q, 0, sizeof(*q));

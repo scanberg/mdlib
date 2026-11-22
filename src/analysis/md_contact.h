@@ -132,6 +132,13 @@ typedef struct md_contact_desc_t {
     // Optional, one per group of group_a: the parent (chain, fibril, ...) of each group. Groups of different parents
     // are never 'neighbours', whatever their indices. NULL treats all groups as one sequence.
     const uint32_t* group_parent;
+
+    // Exclude pairs of groups joined by a path of at most this many bonds, from a particle of one to a particle of the
+    // other; 0 excludes nothing. A group is 0 bonds from one it shares a particle with, so between two sets a group in
+    // both is in no contact with itself. Neighbouring residues of a protein are 1 bond apart and the next but one 4, so
+    // 4 leaves out the two neighbours on either side; single particles 4 bonds apart, as ChimeraX's bondSeparation.
+    // Unlike min_separation it follows the bonds: across a disulfide, round a cyclic peptide, not across a chain break.
+    uint32_t bond_separation;
 } md_contact_desc_t;
 
 // A set of group pairs in contact, sorted by (i, j).
@@ -164,6 +171,10 @@ typedef struct md_contact_query_t {
     float    cutoff;
     uint32_t min_separation;
     uint32_t* parent;       // [num_a] or NULL
+
+    // The pairs of groups bond_separation leaves out, as md_contact_bonded_pairs gives them
+    uint64_t* bonded;
+    size_t    num_bonded;
 
     // Particle to groups, in compressed rows over all particles of the system: the groups of particle k are
     // grp[off[k]] .. grp[off[k+1]-1]. The B set is NULL for contacts within one set.
@@ -243,6 +254,12 @@ bool md_contact_query_eval(md_contact_set_t* out, const md_contact_query_t* quer
 
 // Prepare, evaluate and release in one go, for a single evaluation
 bool md_contact_compute(md_contact_set_t* out, const md_contact_desc_t* desc, const struct md_system_t* sys, const struct md_system_state_t* state, struct md_allocator_i* alloc);
+
+// The pairs of groups that md_contact_desc_t.bond_separation leaves out: joined by a path of at most max_bonds bonds
+// from a particle of one to a particle of the other, 0 apart where they share one. Within one set (group_b NULL) as
+// i < j, between two as (i of a, j of b). Keys (i << 32) | j, ascending, into *out from alloc; returns how many.
+size_t md_contact_bonded_pairs(uint64_t** out, const struct md_bitset_t* group_a, size_t num_a, const struct md_bitset_t* group_b, size_t num_b,
+                               uint32_t max_bonds, const struct md_system_t* sys, struct md_allocator_i* alloc);
 
 void md_contact_set_free(md_contact_set_t* set);
 

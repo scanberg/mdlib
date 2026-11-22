@@ -319,7 +319,85 @@ void md_contact_query_free(md_contact_query_t* q) {
     if (q->parent) md_free(alloc, q->parent, sizeof(uint32_t) * MD_MAX(q->num_a, 1));
     if (q->type)   md_free(alloc, q->type, sizeof(uint32_t) * MD_MAX(N, 1));
     if (q->type_cutoff) md_free(alloc, q->type_cutoff, sizeof(float) * MD_MAX((size_t)q->num_types * q->num_types, 1));
+    if (q->bonded) md_free(alloc, q->bonded, sizeof(uint64_t) * MD_MAX(q->num_bonded, 1));
     md_memset(q, 0, sizeof(md_contact_query_t));
+}
+
+static int compare_u64(const void* a, const void* b);
+static size_t sort_unique_u64(uint64_t* keys, size_t count);
+
+size_t md_contact_bonded_pairs(uint64_t** out, const md_bitset_t* group_a, size_t num_a, const md_bitset_t* group_b, size_t num_b,
+                               uint32_t max_bonds, const md_system_t* sys, md_allocator_i* alloc) {
+    if (out) *out = NULL;
+    if (!out || !sys || !alloc || max_bonds == 0 || num_a == 0 || !group_a || (group_b && num_b == 0)) return 0;
+    const bool self = group_b == NULL;
+    const md_bitset_t* gb = self ? group_a : group_b;
+    const size_t nb = self ? num_a : num_b;
+    const uint32_t N = (uint32_t)sys->atom.count;
+    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
+    // The groups of b of each particle, in compressed rows
+    uint32_t* off = md_alloc(temp_alloc, sizeof(uint32_t) * ((size_t)N + 1));
+    md_memset(off, 0, sizeof(uint32_t) * ((size_t)N + 1));
+    for (size_t g = 0; g < nb; ++g) {
+        md_bitset_iter_t it = md_bitset_iter(gb[g]);
+        while (md_bitset_iter_next(&it)) if (it.idx < N) off[it.idx + 1] += 1;
+    }
+    for (uint32_t k = 0; k < N; ++k) off[k + 1] += off[k];
+    uint32_t* grp = md_alloc(temp_alloc, sizeof(uint32_t) * MD_MAX(off[N], 1));
+    uint32_t* fill = md_alloc(temp_alloc, sizeof(uint32_t) * MD_MAX((size_t)N, 1));
+    md_memcpy(fill, off, sizeof(uint32_t) * N);
+    for (size_t g = 0; g < nb; ++g) {
+        md_bitset_iter_t it = md_bitset_iter(gb[g]);
+        while (md_bitset_iter_next(&it)) if (it.idx < N) grp[fill[it.idx]++] = (uint32_t)g;
+    }
+    // From each group of a, breadth first along the bonds from all its particles at once
+    uint8_t* depth = md_alloc(temp_alloc, MD_MAX((size_t)N, 1));     // 0 not reached, else 1 + bonds
+    md_memset(depth, 0, MD_MAX((size_t)N, 1));
+    const uint32_t limit = MD_MIN(max_bonds, 254) + 1;
+    md_array(uint32_t) queue = 0;
+    md_array(uint64_t) keys = 0;
+    const bool have_bonds = sys->bond.conn.offset != NULL;
+    for (size_t g = 0; g < num_a; ++g) {
+        md_array_shrink(queue, 0);
+        md_bitset_iter_t it = md_bitset_iter(group_a[g]);
+        while (md_bitset_iter_next(&it)) {
+            if (it.idx >= N || depth[it.idx]) continue;
+            depth[it.idx] = 1;
+            md_array_push(queue, it.idx, temp_alloc);
+        }
+        for (size_t head = 0; have_bonds && head < md_array_size(queue); ++head) {
+            const uint32_t cur = queue[head];
+            if (depth[cur] >= limit) continue;
+            md_bond_iter_t bi = md_bond_iter(&sys->bond, cur);
+            while (md_bond_iter_has_next(&bi)) {
+                const uint32_t next = md_bond_iter_atom_index(&bi);
+                md_bond_iter_next(&bi);
+                if (next < N && depth[next] == 0) {
+                    depth[next] = depth[cur] + 1;
+                    md_array_push(queue, next, temp_alloc);
+                }
+            }
+        }
+        for (size_t v = 0; v < md_array_size(queue); ++v) {
+            const uint32_t p = queue[v];
+            depth[p] = 0;
+            for (uint32_t k = off[p]; k < off[p + 1]; ++k) {
+                uint32_t i = (uint32_t)g, j = grp[k];
+                if (self) {
+                    if (i == j) continue;
+                    if (i > j) { const uint32_t t = i; i = j; j = t; }
+                }
+                md_array_push(keys, ((uint64_t)i << 32) | j, temp_alloc);
+            }
+        }
+    }
+    const size_t n = sort_unique_u64(keys, md_array_size(keys));
+    uint64_t* res = n ? md_alloc(alloc, sizeof(uint64_t) * n) : NULL;
+    if (n) md_memcpy(res, keys, sizeof(uint64_t) * n);
+    md_temp_end(temp);
+    *out = res;
+    return n;
 }
 
 bool md_contact_query_init(md_contact_query_t* q, const md_contact_desc_t* desc, const md_system_t* sys, md_allocator_i* alloc) {
@@ -438,6 +516,10 @@ bool md_contact_query_init(md_contact_query_t* q, const md_contact_desc_t* desc,
         .particle_label = desc->particle_label,
     };
     result = md_contact_pairs_init(&q->pairs, &pairs_desc, sys, alloc);
+    if (result && desc->bond_separation) {
+        q->num_bonded = md_contact_bonded_pairs(&q->bonded, desc->group_a, desc->num_a, self ? NULL : desc->group_b, self ? 0 : desc->num_b,
+                                                desc->bond_separation, sys, alloc);
+    }
 
 done:
     md_temp_end(temp);
@@ -573,13 +655,22 @@ bool md_contact_query_eval(md_contact_set_t* out, const md_contact_query_t* q, c
             order[k] = (key_idx_t){ acc.key[k], (uint32_t)k };
         }
         qsort(order, count, sizeof(key_idx_t), compare_key_idx);
+        // Less those bond_separation leaves out: both sorted, so one walk
+        size_t kept = 0;
+        for (size_t k = 0, b = 0; k < count; ++k) {
+            while (b < q->num_bonded && q->bonded[b] < order[k].key) ++b;
+            if (b < q->num_bonded && q->bonded[b] == order[k].key) continue;
+            order[kept++] = order[k];
+        }
 
-        out->count      = count;
-        out->i          = md_alloc(alloc, sizeof(uint32_t) * count);
-        out->j          = md_alloc(alloc, sizeof(uint32_t) * count);
-        out->atom_pairs = md_alloc(alloc, sizeof(uint32_t) * count);
-        out->d_min      = md_alloc(alloc, sizeof(float) * count);
-        for (size_t k = 0; k < count; ++k) {
+        out->count      = kept;
+        if (kept) {
+            out->i          = md_alloc(alloc, sizeof(uint32_t) * kept);
+            out->j          = md_alloc(alloc, sizeof(uint32_t) * kept);
+            out->atom_pairs = md_alloc(alloc, sizeof(uint32_t) * kept);
+            out->d_min      = md_alloc(alloc, sizeof(float) * kept);
+        }
+        for (size_t k = 0; k < kept; ++k) {
             const uint32_t src = order[k].idx;
             out->i[k]          = (uint32_t)(order[k].key >> 32);
             out->j[k]          = (uint32_t)(order[k].key & 0xFFFFFFFFu);
