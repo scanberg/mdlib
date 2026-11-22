@@ -1952,7 +1952,13 @@ static bool check_stmt(infer_t* x, vial_node_id s) {
     case VIAL_N_FOR:
         return vx_check_for(x, s);
     case VIAL_N_RETURN: {
-        if (!x->frame) return true;
+        // A return is a def's. At top level there is no function to return from, also within a top-level loop, whose
+        // names are a frame of its own (vx_check_for) but not a def's: nothing of it is lowered, and what follows it is
+        // checked as Python checks it, which refuses the script
+        if (!x->frame || x->frame->t->nodes[x->frame->def].kind != VIAL_N_DEF) {
+            diag(x, "E0101", s, "`return` outside a def");
+            return false;
+        }
         const vial_node_id v = child(x, s, 0);
         const T t = v ? infer(x, v) : scalar(VIAL_DT_NONE);
         if (v) set_value(x, s, value_of(x, v));
