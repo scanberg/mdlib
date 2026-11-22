@@ -14,6 +14,8 @@
 #define P   VIAL_BUILTIN_PROPERTY
 #define K   VIAL_BUILTIN_KIND
 
+static const char* const backbone_angles[] = {"phi", "psi", "omega", NULL};
+
 static const vial_builtin_t builtins[] = {
     // Selectors, usable bare for all their units
     {"particle", SEL}, {"atom", SEL}, {"bead", SEL}, {"residue", SEL}, {"part", SEL}, {"polymer", SEL}, {"molecule", SEL},
@@ -25,8 +27,9 @@ static const vial_builtin_t builtins[] = {
     {"mass", F}, {"weight", F}, {"charge", F}, {"element", F}, {"name", F}, {"bfactor", F}, {"com", F | P},
     // The values of a particle's properties that are keywords of particle(), one per particle
     {"kind", F}, {"type", F}, {"hybridization", F}, {"aromatic", F}, {"metallic", F}, {"hydrogens", F}, {"formal_charge", F},
-    {"displacement", F}, {"closest_pair", F}, {"farthest_pair", F}, {"angle", F}, {"dihedral", F}, {"backbone_angles", F}, {"pucker", F},
-    {"pseudorotation", F}, {"contacts", F}, {"within", F},
+    {"displacement", F}, {"closest_pair", F}, {"farthest_pair", F}, {"angle", F}, {"dihedral", F}, {"pucker", F},
+    {"backbone_angles", F, MD_VIAL_PLOT_HISTOGRAM, backbone_angles},
+    {"pseudorotation", F}, {"contacts", F, MD_VIAL_PLOT_HEATMAP}, {"within", F},
     {"fit", F},
     // Reductions
     {"sum", F}, {"mean", F}, {"min", F}, {"max", F}, {"std", F}, {"var", F}, {"any", F}, {"all", F}, {"argmin", F},
@@ -44,7 +47,7 @@ static const vial_builtin_t builtins[] = {
     // Sets, patterns, bonds, attributes
     {"smiles", F}, {"smiles_atoms", F}, {"bond", F}, {"formed", F}, {"broken", F}, {"attr", F},
     // Frames
-    {"histogram", F}, {"rdf", F}, {"sdf", F}, {"density", F}, {"mcs", F}, {"smooth", F}, {"derivative", F}, {"autocorrelation", F}, {"fold", F}, {"at", F},
+    {"histogram", F, MD_VIAL_PLOT_BINS}, {"rdf", F, MD_VIAL_PLOT_BINS}, {"sdf", F}, {"density", F}, {"mcs", F}, {"smooth", F}, {"derivative", F}, {"autocorrelation", F}, {"fold", F}, {"at", F},
     {"time", F}, {"frame", F},
     // Drawing
     {"shown", F}, {"marker", F}, {"line", F}, {"arrow", F}, {"sphere", F}, {"arc", F}, {"disk", F}, {"text", F},

@@ -15,6 +15,10 @@ enum {
 typedef struct vial_builtin_t {
     const char* name;
     uint32_t    flags;
+    // How what it returns is plotted (md_vial_plot_t), 0 for by its shape, and the names of its components, along its
+    // last dimension, NULL-terminated
+    uint8_t             plot;
+    const char* const*  components;
 } vial_builtin_t;
 
 const vial_builtin_t* vial_builtin_find(md_str_t name);

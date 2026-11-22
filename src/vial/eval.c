@@ -544,8 +544,49 @@ static void publish_periods(md_vial_eval_t* e) {
     }
 }
 
-// What the members of an array output are, as <path>/labels: the labels of the units its one dimension runs over
-// (MET1/A for a residue, CA/MET1/A for a particle), which v1 gave only for what an attr() pattern matched. Static.
+// What each index of dimension d of a value of type t is, as labels from alloc, when the dimension runs over the units
+// of a selection the checker knows (MET1/A for a residue, CA/MET1/A for a particle); else NULL
+static md_str_t* dim_labels(const vial_ir_t* ir, const vial_type_t* t, uint8_t d, vial_sys_t* vs, md_allocator_i* alloc) {
+    if (!ir->descs || d >= t->ndim || t->dtype == VIAL_DT_SET || t->dims[d].kind != VIAL_EXT_STATIC) return NULL;
+    const uint32_t dsc = t->dims[d].desc;
+    if (!dsc || dsc >= md_array_size(ir->descs)) return NULL;
+    const vial_desc_t* ds = &ir->descs[dsc];
+    const uint32_t n = t->dims[d].n;
+    // The particles of one set, or the units of an array of them
+    const vial_sets_t* ss = ds->sets;
+    if (!ss || n == 0) return NULL;
+    if (ss->single ? vial_sets_size(ss, 0) != n : (ds->level == VIAL_LEVEL_NONE || !ss->unit || ss->count != n)) return NULL;
+    md_str_t* labels = md_alloc(alloc, n * sizeof(md_str_t));
+    for (uint32_t i = 0; i < n; ++i) {
+        char buf[128];
+        const size_t len = ss->single ? vial_unit_label(buf, sizeof(buf), vs, VIAL_LEVEL_PARTICLE, vial_sets_items(ss, 0)[i])
+                                      : vial_unit_label(buf, sizeof(buf), vs, ds->level, ss->unit[i]);
+        labels[i] = md_alloc_str(alloc, (md_str_t){buf, len});
+    }
+    return labels;
+}
+
+// The builtin that gives IR value v, mapped over elements or not; NULL for any other value
+static const vial_builtin_t* value_builtin(const vial_ir_t* ir, vial_ssa_t v) {
+    uint32_t op = ir->values[v].op;
+    if (op != VIAL_IR_NO_OP && ir->ops[op].kind == VIAL_IR_ELEM && ir->ops[op].num_args) op = ir->values[ir->args[ir->ops[op].arg_beg]].op;
+    return op != VIAL_IR_NO_OP && ir->ops[op].kind == VIAL_IR_BUILTIN ? vial_builtin_at(ir->ops[op].aux) : NULL;
+}
+
+// The names of the components builtin b gives along the last dimension, n of them, from alloc; NULL when it names none
+// or n is not their count
+static md_str_t* component_labels(const vial_builtin_t* b, uint32_t n, md_allocator_i* alloc) {
+    uint32_t count = 0;
+    while (b && b->components && b->components[count]) ++count;
+    if (!count || count != n) return NULL;
+    md_str_t* names = md_alloc(alloc, n * sizeof(md_str_t));
+    for (uint32_t i = 0; i < n; ++i) names[i] = md_str_from_cstr(b->components[i]);
+    return names;
+}
+
+// What the members of an output of one or two dimensions are: <path>/labels for its first dimension, its rows, and
+// <path>/column_labels for its second, each where dim_labels knows them, and for the last the components its builtin
+// names. v1 gave them only for what an attr() pattern matched. Static.
 static void publish_labels(md_vial_eval_t* e) {
     const vial_ir_t* ir = e->ir;
     if (!ir->descs) return;
@@ -553,27 +594,20 @@ static void publish_labels(md_vial_eval_t* e) {
         const vial_ir_output_t* o = &ir->outputs[k];
         if (o->hidden) continue;
         const vial_type_t* t = &ir->values[o->value].type;
-        if (t->ndim != 1 || t->dtype == VIAL_DT_SET || t->dims[0].kind != VIAL_EXT_STATIC) continue;
-        const uint32_t dsc = t->dims[0].desc;
-        if (!dsc || dsc >= md_array_size(ir->descs)) continue;
-        const vial_desc_t* d = &ir->descs[dsc];
-        const uint32_t n = t->dims[0].n;
-        // The particles of one set, or the units of an array of them
-        const vial_sets_t* ss = d->sets;
-        if (!ss || n == 0) continue;
-        if (ss->single ? vial_sets_size(ss, 0) != n : (d->level == VIAL_LEVEL_NONE || !ss->unit || ss->count != n)) continue;
-        md_str_t* labels = md_alloc(e->arena, n * sizeof(md_str_t));
-        for (uint32_t i = 0; i < n; ++i) {
-            char buf[128];
-            const size_t len = ss->single ? vial_unit_label(buf, sizeof(buf), &e->vs, VIAL_LEVEL_PARTICLE, vial_sets_items(ss, 0)[i])
-                                          : vial_unit_label(buf, sizeof(buf), &e->vs, d->level, ss->unit[i]);
-            labels[i] = md_alloc_str(e->arena, (md_str_t){buf, len});
+        if (t->ndim < 1 || t->ndim > 2) continue;
+        for (uint8_t d = 0; d < t->ndim; ++d) {
+            md_str_t* labels = dim_labels(ir, t, d, &e->vs, e->arena);
+            if (!labels && d + 1 == t->ndim && t->ndim == 2 && t->dims[d].kind == VIAL_EXT_STATIC) {
+                labels = component_labels(value_builtin(ir, o->value), t->dims[d].n, e->arena);
+            }
+            if (!labels) continue;
+            const uint32_t n = t->dims[d].n;
+            char path[192];
+            snprintf(path, sizeof(path), d ? "script/%.*s/column_labels" : "script/%.*s/labels", (int)o->name.len, o->name.ptr);
+            md_attribute_desc_t ld = {.path = md_str_from_cstr(path), .format = {.type = MD_ATTRIBUTE_TYPE_STR, .components = 1, .rank = 1, .shape = {n}},
+                                      .data = labels, .byte_size = n * sizeof(md_str_t)};
+            md_attributes_replace(&e->attributes, &ld);
         }
-        char path[192];
-        snprintf(path, sizeof(path), "script/%.*s/labels", (int)o->name.len, o->name.ptr);
-        md_attribute_desc_t ld = {.path = md_str_from_cstr(path), .format = {.type = MD_ATTRIBUTE_TYPE_STR, .components = 1, .rank = 1, .shape = {n}},
-                                  .data = labels, .byte_size = n * sizeof(md_str_t)};
-        md_attributes_replace(&e->attributes, &ld);
     }
 }
 
@@ -590,6 +624,64 @@ static void publish_range(md_vial_eval_t* e, md_str_t name, const double lohi[2]
     if (dst) { dst[0] = lohi[0]; dst[1] = lohi[1]; }
 }
 
+static double range_end(const vial_val_t* c) {
+    return c->dtype == VIAL_DT_FLOAT ? *(const float*)c->data : c->dtype == VIAL_DT_FLOAT64 ? *(const double*)c->data :
+           c->dtype == VIAL_DT_INT ? *(const int32_t*)c->data : NAN;
+}
+
+// The bins of a distribution, IR value v as in computes it: an rdf's distances, Å, as its accumulator binned them; a
+// histogram's range=, in the unit of what it counts, read from the IR when it is a constant, so known before anything
+// is computed, else as in computed it, of the first frame of an evaluation, or of the one frame of a point. False for
+// any other value.
+static bool value_range(const vial_ir_t* ir, const vial_interp_t* in, bool point, vial_ssa_t v, double lohi[2], md_unit_t* unit) {
+    if (!v || v >= md_array_size(ir->values)) return false;
+    const vial_rdf_t* rdf = vial_accum_rdf(vial_interp_accum(in, v));
+    if (rdf) {
+        vial_unit_name(MD_STR_LIT("angstrom"), unit);
+        lohi[0] = rdf->lo;
+        lohi[1] = rdf->hi;
+        return true;
+    }
+    uint32_t op = ir->values[v].op;
+    if (op != VIAL_IR_NO_OP && ir->ops[op].kind == VIAL_IR_ELEM && ir->ops[op].num_args) op = ir->values[ir->args[ir->ops[op].arg_beg]].op;
+    if (op == VIAL_IR_NO_OP || ir->ops[op].kind != VIAL_IR_BUILTIN || strcmp(vial_builtin_at(ir->ops[op].aux)->name, "histogram")) return false;
+    const vial_ir_op_t* h = &ir->ops[op];
+    vial_ssa_t rs = 0, xs = 0;
+    for (uint32_t a = 0; a < h->num_args; ++a) {
+        const md_str_t nm = ir->names ? ir->names[h->arg_beg + a] : (md_str_t){0};
+        if (md_str_eq(nm, MD_STR_LIT("range"))) rs = ir->args[h->arg_beg + a];
+        else if (md_str_eq(nm, MD_STR_LIT("x")) || (!nm.len && a == 0)) xs = ir->args[h->arg_beg + a];
+    }
+    const vial_type_t* xt = xs ? &ir->values[xs].type : NULL;
+    *unit = xt && xt->unit_kind == VIAL_UNIT_KNOWN ? xt->unit : md_unit_none();
+    const uint32_t rop = rs ? ir->values[rs].op : VIAL_IR_NO_OP;
+    if (rop != VIAL_IR_NO_OP && ir->ops[rop].kind == VIAL_IR_TUPLE && ir->ops[rop].num_args == 2) {
+        bool ok = true;
+        for (int i = 0; i < 2 && ok; ++i) {
+            const vial_ssa_t a = ir->args[ir->ops[rop].arg_beg + i];
+            const uint32_t aop = a ? ir->values[a].op : VIAL_IR_NO_OP;
+            const vial_val_t* c = aop != VIAL_IR_NO_OP && ir->ops[aop].kind == VIAL_IR_CONST ? &ir->consts[ir->ops[aop].aux] : NULL;
+            ok = c && c->data && !c->ndim;
+            if (ok) lohi[i] = range_end(c);
+        }
+        if (ok) return true;
+    }
+    const vial_val_t* r = NULL;
+    if (rop != VIAL_IR_NO_OP && ir->ops[rop].kind == VIAL_IR_CONST) r = &ir->consts[ir->ops[rop].aux];
+    else if (rs && in) r = point ? vial_interp_value(in, rs) : in->state && in->state[rs] ? vial_interp_at(in, rs, 0) : NULL;
+    if (!r) return false;
+    if (r->dtype == VIAL_DT_TUPLE && r->num_elems == 2 && r->elems[0].data && r->elems[1].data) {
+        for (int i = 0; i < 2; ++i) lohi[i] = range_end(&r->elems[i]);
+    } else if (r->dtype == VIAL_DT_RANGE && r->data) {
+        memcpy(lohi, r->data, 2 * sizeof(double));
+    } else if ((r->dtype == VIAL_DT_FLOAT || r->dtype == VIAL_DT_FLOAT64) && vial_val_count(r) == 2 && r->data) {
+        for (int i = 0; i < 2; ++i) lohi[i] = r->dtype == VIAL_DT_FLOAT ? ((const float*)r->data)[i] : ((const double*)r->data)[i];
+    } else {
+        return false;
+    }
+    return true;
+}
+
 static void publish_ranges(md_vial_eval_t* e) {
     publish_periods(e);
     publish_labels(e);
@@ -597,57 +689,9 @@ static void publish_ranges(md_vial_eval_t* e) {
     for (size_t k = 0; k < md_array_size(ir->outputs); ++k) {
         const vial_ir_output_t* o = &ir->outputs[k];
         if (o->hidden) continue;
-        const vial_rdf_t* rdf = vial_accum_rdf(vial_interp_accum(&e->in, o->value));
-        if (rdf) {
-            md_unit_t length;
-            vial_unit_name(MD_STR_LIT("angstrom"), &length);
-            publish_range(e, o->name, (const double[2]){rdf->lo, rdf->hi}, length);
-            continue;
-        }
-        uint32_t op = ir->values[o->value].op;
-        if (op != VIAL_IR_NO_OP && ir->ops[op].kind == VIAL_IR_ELEM && ir->ops[op].num_args) op = ir->values[ir->args[ir->ops[op].arg_beg]].op;
-        if (op == VIAL_IR_NO_OP || ir->ops[op].kind != VIAL_IR_BUILTIN || strcmp(vial_builtin_at(ir->ops[op].aux)->name, "histogram")) continue;
-        const vial_ir_op_t* h = &ir->ops[op];
-        vial_ssa_t rs = 0, xs = 0;
-        for (uint32_t a = 0; a < h->num_args; ++a) {
-            const md_str_t nm = ir->names ? ir->names[h->arg_beg + a] : (md_str_t){0};
-            if (md_str_eq(nm, MD_STR_LIT("range"))) rs = ir->args[h->arg_beg + a];
-            else if (md_str_eq(nm, MD_STR_LIT("x")) || (!nm.len && a == 0)) xs = ir->args[h->arg_beg + a];
-        }
-        // A constant, read from the IR, so it is known before anything is evaluated; else what the run computed
         double lohi[2];
-        const uint32_t rop = rs ? ir->values[rs].op : VIAL_IR_NO_OP;
-        if (rop != VIAL_IR_NO_OP && ir->ops[rop].kind == VIAL_IR_TUPLE && ir->ops[rop].num_args == 2) {
-            bool ok = true;
-            for (int i = 0; i < 2 && ok; ++i) {
-                const vial_ssa_t a = ir->args[ir->ops[rop].arg_beg + i];
-                const uint32_t aop = a ? ir->values[a].op : VIAL_IR_NO_OP;
-                const vial_val_t* c = aop != VIAL_IR_NO_OP && ir->ops[aop].kind == VIAL_IR_CONST ? &ir->consts[ir->ops[aop].aux] : NULL;
-                ok = c && c->data && !c->ndim;
-                if (ok) lohi[i] = c->dtype == VIAL_DT_FLOAT ? *(const float*)c->data : c->dtype == VIAL_DT_FLOAT64 ? *(const double*)c->data :
-                                  c->dtype == VIAL_DT_INT ? *(const int32_t*)c->data : NAN;
-            }
-            if (ok) goto have;
-        }
-        const vial_val_t* r = rop != VIAL_IR_NO_OP && ir->ops[rop].kind == VIAL_IR_CONST ? &ir->consts[ir->ops[rop].aux] :
-                              rs && e->in.state && e->in.state[rs] ? vial_interp_at(&e->in, rs, 0) : NULL;
-        if (!r) continue;
-        if (r->dtype == VIAL_DT_TUPLE && r->num_elems == 2 && r->elems[0].data && r->elems[1].data) {
-            for (int i = 0; i < 2; ++i) {
-                const vial_val_t* el = &r->elems[i];
-                lohi[i] = el->dtype == VIAL_DT_FLOAT ? *(const float*)el->data : el->dtype == VIAL_DT_FLOAT64 ? *(const double*)el->data :
-                          el->dtype == VIAL_DT_INT ? *(const int32_t*)el->data : NAN;
-            }
-        } else if (r->dtype == VIAL_DT_RANGE && r->data) {
-            memcpy(lohi, r->data, sizeof(lohi));
-        } else if ((r->dtype == VIAL_DT_FLOAT || r->dtype == VIAL_DT_FLOAT64) && vial_val_count(r) == 2 && r->data) {
-            for (int i = 0; i < 2; ++i) lohi[i] = r->dtype == VIAL_DT_FLOAT ? ((const float*)r->data)[i] : ((const double*)r->data)[i];
-        } else {
-            continue;
-        }
-    have:;
-        const vial_type_t* xt = xs ? &ir->values[xs].type : NULL;
-        publish_range(e, o->name, lohi, xt && xt->unit_kind == VIAL_UNIT_KNOWN ? xt->unit : md_unit_none());
+        md_unit_t unit = md_unit_none();
+        if (value_range(ir, &e->in, false, o->value, lohi, &unit)) publish_range(e, o->name, lohi, unit);
     }
 }
 
@@ -1509,6 +1553,102 @@ size_t md_vial_value_text(char* buf, size_t cap, const md_vial_draw_desc_t* desc
     point_free(&pt);
     md_arena_allocator_destroy(arena);
     return len;
+}
+
+#define VALUE_MAX ((size_t)1 << 22)
+
+// val as numbers into out, from alloc, with what its type t of ir knows of them
+static bool value_out(md_vial_value_t* out, const vial_val_t* val, const vial_ir_t* ir, const vial_type_t* t, vial_sys_t* vs,
+                      md_allocator_i* alloc) {
+    if (!val || !val->data || val->ndim > 2 || (val->flags & VIAL_VAL_FRAMES)) return false;
+    if (val->dtype != VIAL_DT_BOOL && val->dtype != VIAL_DT_INT && val->dtype != VIAL_DT_FLOAT && val->dtype != VIAL_DT_FLOAT64) return false;
+    size_t n = 1;
+    for (uint8_t d = 0; d < val->ndim; ++d) n *= val->dims[d];
+    if (n > VALUE_MAX) return false;
+    out->ndim = val->ndim;
+    for (uint8_t d = 0; d < val->ndim; ++d) out->dims[d] = val->dims[d];
+    out->truth = val->dtype == VIAL_DT_BOOL;
+    out->data = md_alloc(alloc, (n ? n : 1) * sizeof(double));
+    for (size_t i = 0; i < n; ++i) out->data[i] = vial_val_is_missing(val, i) ? NAN : vial_arg_num(val, i);
+    out->unit = t->unit_kind == VIAL_UNIT_KNOWN ? t->unit : md_unit_none();
+    if ((t->flags & VIAL_TYPE_PERIODIC) && t->period_end > t->period_beg) {
+        out->has_period = true;
+        out->period[0] = t->period_beg;
+        out->period[1] = t->period_end;
+    }
+    // What the checker knows of a dimension is of the value computed when it is as long
+    if (t->ndim == val->ndim) {
+        for (uint8_t d = 0; d < val->ndim; ++d) if (t->dims[d].n == val->dims[d]) out->labels[d] = dim_labels(ir, t, d, vs, alloc);
+    }
+    return true;
+}
+
+// How out is plotted: the way of the builtin that gives IR value v, mapped over elements or not, else by its shape; none
+// when that way does not fit the shape
+static void value_plot(md_vial_value_t* out, const vial_ir_t* ir, vial_ssa_t v, md_allocator_i* alloc) {
+    const vial_builtin_t* b = value_builtin(ir, v);
+    uint8_t plot = b ? b->plot : MD_VIAL_PLOT_NONE;
+    if (!plot) {
+        if (out->ndim == 1 && !out->truth) plot = MD_VIAL_PLOT_HISTOGRAM;
+        else if (out->ndim == 2 && out->labels[0] && out->labels[1]) plot = MD_VIAL_PLOT_HEATMAP;
+    }
+    bool fits = false;
+    switch (plot) {
+    case MD_VIAL_PLOT_HISTOGRAM: fits = out->ndim == 1 || out->ndim == 2; break;
+    case MD_VIAL_PLOT_BINS:      fits = out->has_range && (out->ndim == 1 || out->ndim == 2); break;
+    case MD_VIAL_PLOT_HEATMAP:   fits = out->ndim == 2; break;
+    default: break;
+    }
+    out->plot = fits ? plot : MD_VIAL_PLOT_NONE;
+    // Its components, when the value has as many along its last dimension
+    if (fits && out->ndim == 2 && !out->labels[1]) out->labels[1] = component_labels(b, out->dims[1], alloc);
+}
+
+bool md_vial_value(md_vial_value_t* out, const md_vial_draw_desc_t* desc, uint32_t expr, md_allocator_i* alloc) {
+    if (out) memset(out, 0, sizeof(*out));
+    if (!out || !alloc || !desc || !desc->prog || !desc->sys) return false;
+    const vial_ir_t* ir = md_vial__ir(desc->prog);
+    md_vial__pick_t pick;
+    const vial_ssa_t v = md_vial__expr_target(desc->prog, expr, &pick);
+    if (!ir || !v || v >= md_array_size(ir->values)) return false;
+    if (pick.narrow) {
+        uint32_t ne;
+        md_vial_program_t* np = md_vial__narrowed(desc->prog, &pick, desc->sys, desc->run, &ne);
+        if (!np) return false;
+        md_vial_draw_desc_t nd = *desc;
+        nd.prog = np;
+        nd.eval = NULL;
+        const bool ok = md_vial_value(out, &nd, ne, alloc);
+        md_vial_program_free(np);
+        return ok;
+    }
+    const vial_type_t* t = &ir->values[v].type;
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
+    vial_sys_t vs;
+    vial_sys_init(&vs, desc->sys, arena);
+    bool ok = false;
+    if (t->stage == VIAL_STAGE_TRAJECTORY) {
+        const md_vial_eval_t* e = desc->eval;
+        vial_val_t one;
+        if (trajectory_value(e, v, desc->frame, &one) && value_out(out, &one, ir, t, &vs, alloc)) {
+            ok = true;
+            out->has_range = value_range(e->ir, &e->in, false, md_vial__run_value(e->prog, v), out->range, &out->range_unit);
+        }
+    } else {
+        int64_t num_frames = 0;
+        const double* times = desc->eval ? desc->eval->times : run_times(desc->sys, desc->run, arena, &num_frames);
+        if (desc->eval) num_frames = desc->eval->num_frames;
+        point_t pt;
+        const vial_val_t* val = point_eval(&pt, desc->prog, desc->sys, desc->run, times, num_frames, desc->frame, desc->state, v, false);
+        if (val && value_out(out, val, ir, t, &vs, alloc)) {
+            ok = true;
+            out->has_range = value_range(ir, &pt.in, true, v, out->range, &out->range_unit);
+        }
+        point_free(&pt);
+    }
+    if (ok) value_plot(out, ir, v, alloc);
+    md_arena_allocator_destroy(arena);
+    return ok;
 }
 
 // ### FILTERS ###

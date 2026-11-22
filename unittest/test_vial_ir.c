@@ -1895,6 +1895,158 @@ UTEST(vial_ir, contacts) {
     vial_ir__end(&r);
 }
 
+// The numbers hover plots beside a value's text, at the frame shown: a builtin's own way of plotting what it gives, as
+// it is and through its name, and by shape for anything else; nothing for truths of one dimension, a number or sets.
+// Over the trajectory, once evaluated: distributions with their ranges
+UTEST(vial_ir, hover_values) {
+    int64_t nf = 0;
+    const md_system_t* sys = vial_ir__run_p(&nf);
+    ASSERT_TRUE(sys != NULL && nf > 4);
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
+    const char* src =
+        "rs   = residue\n"
+        "bb   = backbone_angles(rs)\n"
+        "c0   = bb[:, 0]\n"
+        "ca   = particle(name='CA')\n"
+        "dd   = distance(ca.xyz, ca[0])\n"
+        "t    = dd > 3.8\n"
+        "n    = len(rs)\n"
+        "m    = contacts(rs)\n"
+        "ends = distance(ca[0], ca[14])\n"
+        "h    = histogram(ends, axis='frame', bins=8, range=(0.0, 50.0))\n"
+        "g    = rdf(ca, ca, 2.0..8.0, bins=60)\n";
+    md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &(md_vial_compile_desc_t){.sys = sys, .run = MD_STR_LIT("run")}, alloc);
+    ASSERT_TRUE(prog != NULL);
+    #define AT(text, plus) md_vial_expr_at(prog, (uint32_t)(strstr(src, text) - src) + (plus))
+    md_vial_draw_desc_t desc = {.prog = prog, .sys = sys, .run = MD_STR_LIT("run"), .frame = 3, .element = -1};
+    md_vial_value_t v;
+
+    // backbone_angles: three populations on one circle, phi, psi and omega, of the residues, at that frame
+    ASSERT_TRUE(md_vial_value(&v, &desc, AT("backbone_angles(", 1), alloc));
+    EXPECT_EQ(MD_VIAL_PLOT_HISTOGRAM, v.plot);
+    ASSERT_EQ(2, v.ndim);
+    EXPECT_EQ(15u, v.dims[0]);
+    EXPECT_EQ(3u, v.dims[1]);
+    ASSERT_TRUE(v.labels[0] != NULL && v.labels[1] != NULL);
+    EXPECT_GT(v.labels[0][0].len, 0u);
+    EXPECT_TRUE(md_str_eq(v.labels[1][0], MD_STR_LIT("phi")));
+    EXPECT_TRUE(md_str_eq(v.labels[1][1], MD_STR_LIT("psi")));
+    EXPECT_TRUE(md_str_eq(v.labels[1][2], MD_STR_LIT("omega")));
+    EXPECT_TRUE(v.has_period);
+    EXPECT_EQ(-180.0, v.period[0]);
+    EXPECT_EQ(180.0, v.period[1]);
+    EXPECT_FALSE(md_unit_is_none(v.unit));
+    EXPECT_FALSE(v.has_range);
+    EXPECT_FALSE(v.truth);
+    {
+        vial_ir__run_t r;
+        ASSERT_TRUE(vial_ir__start(&r, src, sys));
+        md_system_state_t state = {.alloc = r.alloc};
+        md_system_state_init(&state, sys->atom.count);
+        const md_str_t paths[] = {MD_STR_LIT("atom/position"), MD_STR_LIT("unitcell")};
+        md_system_extract_t* ex = md_system_extract_begin(sys, MD_STR_LIT("run"), paths, 2, r.alloc);
+        ASSERT_TRUE(md_system_extract_frame(ex, 3, &state));
+        const vial_frame_t fr = {.xyz = (const float*)state.xyz, .num_atoms = state.num_atoms, .cell = state.unitcell, .index = 3, .time = 3.0};
+        ASSERT_TRUE(vial_interp_frame(&r.in, &fr));
+        const vial_val_t* bb = vial_ir__value(&r, "bb");
+        ASSERT_TRUE(bb && bb->dtype == VIAL_DT_FLOAT);
+        size_t num_missing = 0;
+        for (size_t i = 0; i < 45; ++i) {
+            if (vial_val_is_missing(bb, i)) { EXPECT_TRUE(isnan(v.data[i])); ++num_missing; }
+            else EXPECT_NEAR(((const float*)bb->data)[i], v.data[i], 1e-5);
+        }
+        EXPECT_EQ(3u, num_missing);
+        md_system_extract_end(ex);
+        vial_ir__end(&r);
+    }
+    // Through its name the same; a column of it is no longer what backbone_angles gives: one population, unnamed
+    ASSERT_TRUE(md_vial_value(&v, &desc, AT("bb[:, 0]", 0), alloc));
+    EXPECT_EQ(MD_VIAL_PLOT_HISTOGRAM, v.plot);
+    EXPECT_EQ(2, v.ndim);
+    EXPECT_TRUE(v.labels[1] != NULL);
+    ASSERT_TRUE(md_vial_value(&v, &desc, AT("c0 ", 0), alloc));
+    EXPECT_EQ(MD_VIAL_PLOT_HISTOGRAM, v.plot);
+    ASSERT_EQ(1, v.ndim);
+    EXPECT_EQ(15u, v.dims[0]);
+    EXPECT_TRUE(v.labels[1] == NULL);
+
+    // Distances: a population, in Å; truths of one dimension and a number, no plot; sets, no numbers
+    ASSERT_TRUE(md_vial_value(&v, &desc, AT("distance(ca.xyz", 1), alloc));
+    EXPECT_EQ(MD_VIAL_PLOT_HISTOGRAM, v.plot);
+    ASSERT_EQ(1, v.ndim);
+    EXPECT_EQ(15u, v.dims[0]);
+    EXPECT_FALSE(md_unit_is_none(v.unit));
+    EXPECT_FALSE(v.has_period);
+    EXPECT_EQ(0.0, v.data[0]);
+    ASSERT_TRUE(md_vial_value(&v, &desc, AT("t    =", 0), alloc));
+    EXPECT_TRUE(v.truth);
+    EXPECT_EQ(MD_VIAL_PLOT_NONE, v.plot);
+    ASSERT_TRUE(md_vial_value(&v, &desc, AT("len(", 1), alloc));
+    EXPECT_EQ(0, v.ndim);
+    EXPECT_EQ(15.0, v.data[0]);
+    EXPECT_EQ(MD_VIAL_PLOT_NONE, v.plot);
+    EXPECT_FALSE(md_vial_value(&v, &desc, AT("particle(", 1), alloc));
+
+    // contacts: a heatmap, its rows and columns the residues
+    ASSERT_TRUE(md_vial_value(&v, &desc, AT("contacts(", 1), alloc));
+    EXPECT_EQ(MD_VIAL_PLOT_HEATMAP, v.plot);
+    EXPECT_TRUE(v.truth);
+    ASSERT_EQ(2, v.ndim);
+    EXPECT_EQ(15u, v.dims[0]);
+    EXPECT_EQ(15u, v.dims[1]);
+    ASSERT_TRUE(v.labels[0] != NULL && v.labels[1] != NULL);
+    EXPECT_TRUE(md_str_eq(v.labels[0][4], v.labels[1][4]));
+    EXPECT_FALSE(md_str_eq(v.labels[0][4], v.labels[1][5]));
+    for (uint32_t i = 0; i < 15; ++i) EXPECT_EQ(0.0, v.data[i * 15 + i]);
+
+    // Over the trajectory: nothing before it is evaluated; then the bins, over their range in the unit of what they count
+    EXPECT_FALSE(md_vial_value(&v, &desc, AT("histogram(", 1), alloc));
+    md_vial_eval_t* eval = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = sys, .run = MD_STR_LIT("run")}, alloc);
+    ASSERT_TRUE(eval != NULL);
+    ASSERT_TRUE(md_vial_eval_run(eval));
+    desc.eval = eval;
+    ASSERT_TRUE(md_vial_value(&v, &desc, AT("histogram(", 1), alloc));
+    EXPECT_EQ(MD_VIAL_PLOT_BINS, v.plot);
+    ASSERT_EQ(1, v.ndim);
+    EXPECT_EQ(8u, v.dims[0]);
+    ASSERT_TRUE(v.has_range);
+    EXPECT_EQ(0.0, v.range[0]);
+    EXPECT_EQ(50.0, v.range[1]);
+    EXPECT_FALSE(md_unit_is_none(v.range_unit));
+    double total = 0;
+    for (uint32_t i = 0; i < 8; ++i) total += v.data[i];
+    EXPECT_EQ((double)nf, total);
+    ASSERT_TRUE(md_vial_value(&v, &desc, AT("rdf(", 1), alloc));
+    EXPECT_EQ(MD_VIAL_PLOT_BINS, v.plot);
+    EXPECT_EQ(60u, v.dims[0]);
+    ASSERT_TRUE(v.has_range);
+    EXPECT_NEAR(2.0, v.range[0], 1e-9);
+    EXPECT_NEAR(8.0, v.range[1], 1e-9);
+    EXPECT_FALSE(md_unit_is_none(v.range_unit));
+    // A value per frame, with the evaluation given too: the frame shown
+    ASSERT_TRUE(md_vial_value(&v, &desc, AT("contacts(", 1), alloc));
+    EXPECT_EQ(MD_VIAL_PLOT_HEATMAP, v.plot);
+    // Published beside the outputs: the rows and columns of a matrix, a builtin's components as its columns
+    {
+        const md_attributes_t* attrs = md_vial_eval_attributes(eval);
+        const md_attribute_t* rl = md_attributes_find(attrs, MD_STR_LIT("script/m/labels"));
+        const md_attribute_t* cl = md_attributes_find(attrs, MD_STR_LIT("script/m/column_labels"));
+        ASSERT_TRUE(rl != NULL && cl != NULL);
+        EXPECT_EQ(15u, rl->format.shape[0]);
+        EXPECT_EQ(15u, cl->format.shape[0]);
+        EXPECT_TRUE(md_str_eq(md_attribute_str(attrs, rl, 2), md_attribute_str(attrs, cl, 2)));
+        const md_attribute_t* bc = md_attributes_find(attrs, MD_STR_LIT("script/bb/column_labels"));
+        ASSERT_TRUE(bc != NULL && md_attributes_find(attrs, MD_STR_LIT("script/bb/labels")) != NULL);
+        ASSERT_EQ(3u, bc->format.shape[0]);
+        EXPECT_TRUE(md_str_eq(md_attribute_str(attrs, bc, 1), MD_STR_LIT("psi")));
+        EXPECT_TRUE(md_attributes_find(attrs, MD_STR_LIT("script/dd/column_labels")) == NULL);
+    }
+    #undef AT
+    md_vial_eval_free(eval);
+    md_vial_program_free(prog);
+    md_arena_allocator_destroy(alloc);
+}
+
 // Of each frame of P's run, the frame's own: the selectors by ss= read one DSSP of it, and the next frame another. P's
 // peptide has no helix by DSSP; its turns and bends come and go
 UTEST(vial_ir, secondary_structure_per_frame) {

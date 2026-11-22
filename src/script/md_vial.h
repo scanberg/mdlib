@@ -432,6 +432,39 @@ bool md_vial_draw(md_vial_drawing_t* out, const md_vial_draw_desc_t* desc, uint3
 // drawing. Returns its length, 0 when it has none there.
 size_t md_vial_value_text(char* buf, size_t cap, const md_vial_draw_desc_t* desc, uint32_t expr);
 
+// How a value is plotted beside its text: a builtin's own way for what it returns, as it is, through names and returns;
+// else by its shape, a histogram for an array of numbers and a heatmap for a matrix over two selections
+typedef enum md_vial_plot_t {
+    MD_VIAL_PLOT_NONE = 0,
+    MD_VIAL_PLOT_HISTOGRAM,     // the population of the numbers, binned: of each column overlaid when of two dimensions
+    MD_VIAL_PLOT_BINS,          // a distribution, its bins spanning range: of each row overlaid when of two dimensions
+    MD_VIAL_PLOT_HEATMAP,       // a matrix, its rows and columns labels[0] and labels[1]
+} md_vial_plot_t;
+
+// The numbers of an expression where desc draws, for a plot of them beside that text
+typedef struct md_vial_value_t {
+    uint8_t     plot;           // md_vial_plot_t
+    uint8_t     ndim;           // 0, 1 or 2
+    bool        truth;          // truths, each 0 or 1
+    uint32_t    dims[2];
+    double*     data;           // [dims[0]][dims[1]]; NaN where missing
+    md_unit_t   unit;           // of data, none when not known
+    // What each index of a dimension is: a unit of a selection known when compiling (MET1/A for a residue, CA/MET1/A
+    // for a particle), or a component a builtin names ("phi"); else NULL
+    md_str_t*   labels[2];
+    bool        has_period;     // the numbers lie on a circle from period[0] to period[1], as dihedrals do
+    double      period[2];
+    // A distribution: data are its bins, spanning range evenly, in range_unit; a histogram's range=, an rdf's distances
+    bool        has_range;
+    double      range[2];
+    md_unit_t   range_unit;
+} md_vial_value_t;
+
+// The value of an expression where desc draws, as md_vial_value_text takes it but not scaled by value_scale: a number or
+// a truth, or an array of one or two dimensions of them, at most 4,194,304, as doubles from alloc (an arena suits).
+// False when there is none there, it fails, or it is anything else, such as sets, tuples and text.
+bool md_vial_value(md_vial_value_t* out, const md_vial_draw_desc_t* desc, uint32_t expr, struct md_allocator_i* alloc);
+
 // ### WORDS ###
 // What VIAL calls a unit of a system, as its selectors take it: the kind of part part_idx, as part(kind=) takes it, the
 // kind proper ("peptide", "ligand", "ion", never the "polymer" a peptide is of too), and its name, as part(name=) takes
