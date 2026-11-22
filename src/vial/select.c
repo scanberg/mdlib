@@ -765,7 +765,7 @@ const char* vial_select_name(uint8_t level) {
 
 static const char* residue_kinds[] = {"other", "amino_acid", "nucleotide", "water", "ion", "lipid"};   // md_residue_kind_t
 static const char* particle_kinds[] = {"atom", "bead", "virtual"};                                    // md_particle_kind_t
-static const char* ring_kinds[] = {"aromatic", "aliphatic", "hetero", "heteroaromatic", "sugar"};
+static const char* ring_kinds[] = {"aromatic", "hetero", "fused", "fused_aromatic", "sugar"};
 static const char* part_kinds[] = {"polymer", "peptide", "nucleic", "dna", "rna", "glycan", "ligand", "lipid", "ion", "water"};
 
 static bool in_list(const char** list, size_t n, md_str_t s) {
@@ -788,7 +788,7 @@ const char* vial_select_kinds(uint8_t level) {
     case VIAL_LEVEL_PARTICLE: return "atom, bead and virtual";
     case VIAL_LEVEL_RESIDUE:  return "amino_acid, nucleotide, water, ion, lipid and other";
     case VIAL_LEVEL_PART:     return "polymer, peptide, nucleic, dna, rna, glycan, ligand, lipid, ion and water";
-    case VIAL_LEVEL_RING:     return "aromatic, aliphatic, hetero, heteroaromatic and sugar";
+    case VIAL_LEVEL_RING:     return "aromatic, hetero, fused, fused_aromatic and sugar";
     default: return "";
     }
 }
@@ -1127,17 +1127,19 @@ static bool part_passes(const vial_sys_t* s, const vial_select_t* q, uint32_t p)
     return true;
 }
 
-// A ring's kinds are tags, several to a ring: aromatic (every bond aromatic), aliphatic (not), hetero (an atom other than
-// C), heteroaromatic (both), sugar (a furanose or pyranose)
+// A ring's kinds are tags, several to a ring (md_ring_flags_t): aromatic (every bond aromatic), hetero (an atom other than
+// C), fused (a bond shared with another ring), fused_aromatic (an aromatic ring of a fused aromatic system, which shares a
+// bond with another aromatic ring: naphthalene, indole, a purine, whose sextets are not assigned to rings), sugar (a
+// furanose or pyranose). What the others combine to, an aliphatic ring or a heteroaromatic one, is written with
+// and/or/not: not 'aromatic', 'hetero' and 'aromatic'.
 static bool test_ring_kind(const vial_match_t* m, const void* user) {
     if (m->kind != VIAL_MATCH_STR) return false;
     const uint32_t flags = *(const uint32_t*)user;
-    const bool aro = flags & MD_RING_FLAG_AROMATIC, het = flags & MD_RING_FLAG_HETERO;
     const md_str_t w = m->s;
-    if (md_str_eq(w, MD_STR_LIT("aromatic")))       return aro;
-    if (md_str_eq(w, MD_STR_LIT("aliphatic")))      return !aro;
-    if (md_str_eq(w, MD_STR_LIT("hetero")))         return het;
-    if (md_str_eq(w, MD_STR_LIT("heteroaromatic"))) return het && aro;
+    if (md_str_eq(w, MD_STR_LIT("aromatic")))       return flags & MD_RING_FLAG_AROMATIC;
+    if (md_str_eq(w, MD_STR_LIT("hetero")))         return flags & MD_RING_FLAG_HETERO;
+    if (md_str_eq(w, MD_STR_LIT("fused")))          return flags & MD_RING_FLAG_FUSED;
+    if (md_str_eq(w, MD_STR_LIT("fused_aromatic"))) return (flags & MD_RING_FLAG_AROMATIC) && (flags & MD_RING_FLAG_FUSED_AROMATIC);
     if (md_str_eq(w, MD_STR_LIT("sugar")))          return flags & MD_RING_FLAG_SUGAR;
     return false;
 }

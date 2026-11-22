@@ -34,6 +34,14 @@ def normal(p: points):
     n = v[:, 0]                                  # the direction of least spread
     return shown(n, arrow(c, direction=n, length=5.0))
 
+def planarity(p: points):
+    c = com(p, weights=None)
+    d = displacement(c, p)                       # float[n][3]
+    w, v = eigh(d.T @ d)                         # eigenvalues ascending
+    h = d @ v[:, 0]                              # the distances from the plane of least spread
+    r = sqrt(mean(h**2))
+    return shown(r, arrow(c, direction=v[:, 0], length=5.0))
+
 def shape_weights(p: points, weights='mass'):
     w = weight(p, weights)
     c = com(p, weights)

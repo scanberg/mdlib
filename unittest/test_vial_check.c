@@ -528,11 +528,14 @@ UTEST_F(vial_check, keyword_logic) {
     EXPECT_TYPE_ON(T, "r = residue('ALA' or 'GLY')\n", 1, "set[123], static");
     EXPECT_TYPE_ON(T, "r = residue(kind='amino_acid', name=not ('ALA' or 'GLY'))\n", 1, "set[742], static");
     EXPECT_TYPE_ON(T, "r = residue(id=1..10 or 430..440, chain='A')\n", 1, "set[21], static");
-    // A ring's kinds are tags: and is all of them
-    EXPECT_TYPE_ON(T, "r = ring(kind='heteroaromatic')\n", 1, "set[36], static");
+    // A ring's kinds are tags: and is all of them, and what they combine to is written so, as no word of its own
     EXPECT_TYPE_ON(T, "r = ring(kind='hetero' and 'aromatic')\n", 1, "set[36], static");
-    EXPECT_TYPE_ON(T, "r = ring(kind='aliphatic')\n", 1, "set[47], static");
     EXPECT_TYPE_ON(T, "r = ring(kind=not 'aromatic')\n", 1, "set[47], static");
+    EXPECT_DIAGS_ON(T, "r = ring(kind='aliphatic')\n", "E0206 1: 'aliphatic' is not a ring kind; the kinds are aromatic, hetero, fused, fused_aromatic and sugar\n");
+    // Fused: every ring of TRP's indole, and of the purines of GTP and GDP; those are fused aromatic systems as well
+    EXPECT_TYPE_ON(T, "r = ring(particle(resname='TRP'), kind='fused')\n", 1, "set[16], static");
+    EXPECT_TYPE_ON(T, "r = ring(particle(resname='TRP'), kind='fused_aromatic')\n", 1, "set[16], static");
+    EXPECT_TYPE_ON(T, "r = ring(particle(resname='PHE'), kind='fused')\n", 1, "set[0], static");
     // and/or over sets stay their intersection and union, which scope= takes
     EXPECT_TYPE_ON(T, "r = residue(scope=water or particle(resname='GTP'))\n", 1, "set[9], static");
     // A value the keyword does not take, under and/or/not: reported at that value

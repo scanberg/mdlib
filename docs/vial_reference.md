@@ -310,7 +310,7 @@ Names are singular, as every function's is, whatever the shape of what they give
 |  | `chain` | the author id of its chain | string or list |
 | `polymer` | `kind` | polymer, peptide, nucleic, dna, rna | string or list |
 |  | `chain` | the author id of its chain | string or list |
-| `ring` | `kind` | aromatic (every bond), aliphatic, hetero (an atom other than C), heteroaromatic, sugar (a furanose or pyranose) | string or list |
+| `ring` | `kind` | its tags: aromatic (every bond), hetero (an atom other than C), fused (a bond shared with another ring), fused\_aromatic (an aromatic ring of a fused aromatic system, a bond shared with another aromatic ring: naphthalene, indole, a purine), sugar (a furanose or pyranose). An aliphatic ring is `not 'aromatic'`, a heteroaromatic one `'hetero' and 'aromatic'` | string or list |
 |  | `size` | the number of atoms | int, `a..b` or a list |
 | `molecule` | `name` | the name of its molecule type: the topology's, else what its parts are, such as peptide, GTP or water | a glob, or a list |
 |  | `chain` | the author id of its chain | string or list |
@@ -507,6 +507,7 @@ sb     = polymer(chain='B')                          # -> set[1]
 second = polymer[1]                                  # -> set: chain B's strand; part[1] is a ligand
 not_p  = polymer(kind='ligand')                      # error E0206: a ligand is not a polymer
 aro    = ring(kind='aromatic')                       # -> set[n]
+pl     = planarity(aro)                              # -> float[n] Å, frame: how far each is from flat, RMS
 phe0   = residue('PHE')[0].ring                      # -> set[1]: its benzene ring
 trp    = ring(particle(resname='TRP'))               # -> set[16]: eight TRP, two fused rings each
 whole  = residue(particle(name='CA', chain='A'))     # -> set[433]: whole residues, one CA each
@@ -760,6 +761,14 @@ def normal(p: points):
     n = v[:, 0]                                  # the direction of least spread
     return shown(n, arrow(c, direction=n, length=5.0))
 
+def planarity(p: points):
+    c = com(p, weights=None)
+    d = displacement(c, p)                       # float[n][3]
+    w, v = eigh(d.T @ d)                         # eigenvalues ascending
+    h = d @ v[:, 0]                              # the distances from the plane of least spread
+    r = sqrt(mean(h**2))
+    return shown(r, arrow(c, direction=v[:, 0], length=5.0))
+
 def shape_weights(p: points, weights='mass'):
     w = weight(p, weights)
     c = com(p, weights)
@@ -835,6 +844,7 @@ Keywords mean the same wherever they appear. `weights=` takes `'mass'`, `None` o
 | `dihedral(a, b, c, d: point)` | `float` °, in (−180, 180\] | also takes one `float[4][3]`, or four one-particle sets; the one-argument form maps over leading dimensions, such as `set[k][4]` from `smiles_atoms` or `residue[['N', 'CA', 'CB', 'CG']]`, chi1 of every residue that has a CG |
 | `gyration(p: points, weights='mass')` | `float` Å | prelude: `sqrt(sum(w * norm(displacement(com(p, weights), p))**2) / sum(w))`, with `w = weight(p, weights)`. Drawn as a sphere of that radius at the centre |
 | `normal(p: points)` | `float[3]` | prelude: the direction of least spread, `v[:, 0]` of `eigh(d.T @ d)` with `d = displacement(com(p, weights=None), p)`. Drawn as an arrow from the centre |
+| `planarity(p: points)` | `float` Å | prelude: the RMS distance of the points from their plane of least spread, `sqrt(mean((d @ v[:, 0])**2))` with d and v as `normal` has them; 0 for a flat ring. Drawn as `normal` is |
 | `shape_weights(p: points, weights='mass')` | `float[3]` | prelude: how linear, planar and isotropic the points are, `(l2 - l1, 2 (l1 - l0), 3 l0) / (l0 + l1 + l2)` with l the eigenvalues of the gyration tensor, ascending; they sum to 1, as v1's. Unpack them as `lin, plan, iso = shape_weights(s)`. Drawn as three arrows from the centre along the principal axes, each as long as the spread along it |
 | `within(r, of: points)` | `set`, frame | the scope's particles within r of any particle or point of `of`: d <= r, with d the bits `distance()` gives for the pair, under the minimum image; `of=` is always written, so `within(5.0, of=protein)` reads as it means and the radius cannot be mistaken for the set. `within(5.0, protein)` is E0203, with the fix `of=protein` |
 

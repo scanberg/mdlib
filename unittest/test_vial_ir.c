@@ -2098,6 +2098,51 @@ UTEST(vial_ir, bonds_formed_and_broken) {
     remove(path);
 }
 
+// planarity(): the RMS distance from the plane of least spread. Four atoms of a square, alternately 0.1 Å above and
+// below its plane in the first model, flat in the second.
+UTEST(vial_ir, planarity) {
+    static const char pdb[] =
+        "MODEL        1\n"
+        "HETATM    1  C1  LIG A   1       1.000   1.000   0.100  1.00  0.00           C\n"
+        "HETATM    2  C2  LIG A   1      -1.000   1.000  -0.100  1.00  0.00           C\n"
+        "HETATM    3  C3  LIG A   1      -1.000  -1.000   0.100  1.00  0.00           C\n"
+        "HETATM    4  C4  LIG A   1       1.000  -1.000  -0.100  1.00  0.00           C\n"
+        "ENDMDL\n"
+        "MODEL        2\n"
+        "HETATM    1  C1  LIG A   1       1.000   1.000   0.000  1.00  0.00           C\n"
+        "HETATM    2  C2  LIG A   1      -1.000   1.000   0.000  1.00  0.00           C\n"
+        "HETATM    3  C3  LIG A   1      -1.000  -1.000   0.000  1.00  0.00           C\n"
+        "HETATM    4  C4  LIG A   1       1.000  -1.000   0.000  1.00  0.00           C\n"
+        "ENDMDL\n"
+        "END\n";
+    const char* path = "vial_ir_planarity.pdb";
+    FILE* fp = fopen(path, "wb");
+    ASSERT_TRUE(fp != NULL);
+    fwrite(pdb, 1, sizeof(pdb) - 1, fp);
+    fclose(fp);
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
+    md_system_t sys = {.alloc = alloc};
+    md_system_state_t st = {.alloc = alloc};
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, md_str_from_cstr(path), NULL));
+    ASSERT_TRUE(md_pdb_system_publish_run(&sys, md_str_from_cstr(path), MD_STR_LIT("run"), MD_RUN_FLAG_DISABLE_CACHE_WRITE));
+    md_vial_program_t* prog = md_vial_compile(MD_STR_LIT("pl = planarity(particle)\n"), &(md_vial_compile_desc_t){.sys = &sys, .run = MD_STR_LIT("run")}, alloc);
+    ASSERT_TRUE(prog != NULL);
+    md_vial_eval_t* e = md_vial_eval_create(prog, &(md_vial_eval_desc_t){.sys = &sys, .run = MD_STR_LIT("run")}, alloc);
+    ASSERT_TRUE(e && md_vial_eval_run(e));
+    const md_attributes_t* out = md_vial_eval_attributes(e);
+    const md_attribute_t* a = md_attributes_find(out, MD_STR_LIT("script/pl"));
+    ASSERT_TRUE(a != NULL);
+    double v[2] = {0};
+    ASSERT_EQ(2u, md_attribute_extract_f64(v, 2, out, a, md_attribute_slice_all(), md_unit_none()));
+    EXPECT_NEAR(0.1, v[0], 1e-5);
+    EXPECT_NEAR(0.0, v[1], 1e-5);
+    md_vial_eval_free(e);
+    md_vial_program_free(prog);
+    md_system_free(&sys);
+    md_arena_allocator_destroy(alloc);
+    remove(path);
+}
+
 // Fragments, as when compiling so per frame: a scope that changes per frame takes the selector to evaluation
 UTEST(vial_ir, fragments) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
