@@ -1694,9 +1694,16 @@ static bool bond_passes(md_bond_flags_t f, const vial_filter_t* filters, size_t 
     return kind_given || md_bond_is_graph(f);
 }
 
-bool vial_select_bonds_hydrogen(const vial_filter_t* filters, size_t num_filters) {
-    const md_bond_flags_t f = md_bond_flags_set_origin(md_bond_flags_set_kind(MD_BOND_FLAG_NONE, MD_BOND_KIND_HYDROGEN), MD_BOND_ORIGIN_INFERRED);
-    return bond_passes(f, filters, num_filters);
+uint32_t vial_select_bonds_found(const vial_filter_t* filters, size_t num_filters) {
+    static const struct { md_bond_kind_t kind; uint32_t bit; } found[] = {
+        {MD_BOND_KIND_HYDROGEN, VIAL_FOUND_HYDROGEN}, {MD_BOND_KIND_IONIC, VIAL_FOUND_IONIC}, {MD_BOND_KIND_HALOGEN, VIAL_FOUND_HALOGEN},
+    };
+    uint32_t bits = 0;
+    for (size_t i = 0; i < MD_COUNTOF(found); ++i) {
+        const md_bond_flags_t f = md_bond_flags_set_origin(md_bond_flags_set_kind(MD_BOND_FLAG_NONE, found[i].kind), MD_BOND_ORIGIN_INFERRED);
+        if (bond_passes(f, filters, num_filters)) bits |= found[i].bit;
+    }
+    return bits;
 }
 
 vial_sets_t* vial_select_bonds(const vial_sys_t* s, const vial_sets_t* within, const vial_filter_t* filters, size_t num_filters,

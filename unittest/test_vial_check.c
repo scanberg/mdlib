@@ -681,13 +681,22 @@ UTEST_F(vial_check, bond_keywords) {
     EXPECT_TYPE_ON(T, "n = len(bond(kind='covalent' and not 'coordinate'))\n", 1, "int, static = 7078");
     EXPECT_TYPE_ON(T, "n = len(bond(kind='coordinate'))\n", 1, "int, static = 7");     // MG and its ligands
     EXPECT_TYPE_ON(T, "n = len(bond(kind='interaction'))\n", 1, "int, frame");   // hydrogen bonds are found per frame
-    EXPECT_TYPE_ON(T, "n = len(bond(kind=['contact', 'ionic', 'halogen']))\n", 1, "int, static = 0");
+    EXPECT_TYPE_ON(T, "n = len(bond(kind='contact'))\n", 1, "int, static = 0");
+    // Ionic and halogen bonds are found per frame too (md_interaction); T has charged groups, and no halogen
+    EXPECT_TYPE_ON(T, "n = len(bond(kind=['contact', 'ionic', 'halogen']))\n", 1, "int, frame");
+    EXPECT_TYPE_ON(T, "b = bond(kind='ionic')\n", 1, "set[?][2], frame");
+    EXPECT_DIAGS_ON(T, "b = bond(kind='ionic')\n", "");
+    EXPECT_DIAGS_ON(T, "b = bond(kind='halogen')\n", "W0601 1: `bond(kind='halogen')` finds no halogen bonds: the system has no Cl, Br or I bonded to a C\n");
+    EXPECT_DIAGS_ON(T, "b = bond(kind=['hydrogen', 'halogen'])\n", "W0601 1: `bond(kind=['hydrogen', 'halogen'…` finds no hydrogen bonds: the system's N and O "
+        "carry no hydrogens; no halogen bonds: the system has no Cl, Br or I bonded to a C\n");
+    EXPECT_DIAGS_ON(T, "b = bond(kind='interaction')\n", "");     // the ionic bonds can be found
+    EXPECT_TYPE_ON(T, "b = bond(within(8.0, of=particle(resname='GTP')), kind='ionic' or 'hydrogen')\n", 1, "set[?][2], frame");
     // A bond is of one kind: and between two kinds holds for none, whatever the system
     EXPECT_DIAGS_ON(T, "b = bond(kind='hydrogen' and 'ionic')\n", "W0601 1: no bond is of the kind `'hydrogen' and 'ionic'`: a bond is of one kind, "
         "so and between two kinds holds for none\n");
     EXPECT_DIAGS("b = bond(kind='coordinate' and 'elastic')\n", "W0601 1: no bond is of the kind `'coordinate' and 'elastic'`: a bond is of one kind, "
         "so and between two kinds holds for none\n");
-    EXPECT_DIAGS_ON(T, "b = bond(kind='interaction' and 'ionic')\n", "W0601 1: `bond(kind='interaction' and 'ion…` matches nothing in its scope\n");
+    EXPECT_TYPE_ON(T, "b = bond(kind='interaction' and 'ionic')\n", 1, "set[?][2], frame");      // the ionic bonds
     // An order is one value per bond: a resonance's word, else 1 to 3; the coordinate bonds have none
     EXPECT_TYPE_ON(T, "n = len(bond(order=1))\n", 1, "int, static = 5078");
     EXPECT_TYPE_ON(T, "n = len(bond(order=2))\n", 1, "int, static = 946");

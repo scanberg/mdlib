@@ -13,6 +13,7 @@
 #include <md_match.h>
 #include <md_attributes.h>
 #include <md_hbond.h>
+#include <md_interaction.h>
 #include <md_smiles.h>
 #include <md_element.h>
 #include <core/md_bitset.h>
@@ -1498,22 +1499,48 @@ static T call_bonds(infer_t* x, vial_node_id call) {
     t.stage = st.stage;
     const vial_value_t sv = sn ? vx_value_of(x, sn) : (vial_value_t){0};
     const bool all = !sn || st.dtype == VIAL_DT_NONE;
-    // Hydrogen bonds are found at each frame from the geometry (md_hbond), where the filters let one through, as of
-    // kind='hydrogen' with no origin= or order= to keep them out: the bonds are then per frame
-    if (vial_select_bonds_hydrogen(q.filters, md_array_size(q.filters))) {
+    // Hydrogen, ionic and halogen bonds are found at each frame from the geometry (md_hbond, md_interaction), where the
+    // filters let one through, as of kind='hydrogen' with no origin= or order= to keep them out: the bonds are then per
+    // frame
+    const uint32_t found = vial_select_bonds_found(q.filters, md_array_size(q.filters));
+    if (found) {
         if (logic_at) {
             if (logic.unknown) { report_logic_unknown(x, logic_at); return err(); }
             lower_logic(x, &logic, q.filters);
         }
         if (x->sys) {
-            md_hbond_query_t hq = {0};
+            // W0601 where none of them can be found, with why each cannot
+            char why[384] = "";
+            int len = 0;
+            bool any = false;
             md_temp_scope_t temp = md_temp_begin_avoid(x->alloc);
-            const bool none = md_hbond_query_init(&hq, &(md_hbond_desc_t){0}, x->sys->sys, md_temp_allocator(temp)) && (hq.flags & MD_HBOND_FLAG_NO_HYDROGENS);
+            if (found & VIAL_FOUND_HYDROGEN) {
+                md_hbond_query_t hq = {0};
+                const bool none = md_hbond_query_init(&hq, &(md_hbond_desc_t){0}, x->sys->sys, md_temp_allocator(temp)) && (hq.flags & MD_HBOND_FLAG_NO_HYDROGENS);
+                if (none) len += snprintf(why + len, sizeof(why) - len, "no hydrogen bonds: the system's N and O carry no hydrogens");
+                else any = true;
+            }
+            if (found & (VIAL_FOUND_IONIC | VIAL_FOUND_HALOGEN)) {
+                md_interaction_params_t p = md_interaction_params_default();
+                p.kinds = ((found & VIAL_FOUND_IONIC) ? MD_INTERACTION_IONIC : 0) | ((found & VIAL_FOUND_HALOGEN) ? MD_INTERACTION_HALOGEN : 0);
+                p.exclude_bonds = 0;
+                md_interaction_query_t iq = {0};
+                md_interaction_query_init(&iq, &(md_interaction_desc_t){.params = &p}, x->sys->sys, md_temp_allocator(temp));
+                if (found & VIAL_FOUND_IONIC) {
+                    if (md_interaction_query_can_find(&iq, MD_INTERACTION_IONIC)) any = true;
+                    else len += snprintf(why + len, sizeof(why) - (size_t)MD_MIN(len, (int)sizeof(why)), "%sno ionic bonds: the system has no charged groups of both signs", len ? "; " : "");
+                }
+                if (found & VIAL_FOUND_HALOGEN) {
+                    if (md_interaction_query_can_find(&iq, MD_INTERACTION_HALOGEN)) any = true;
+                    else len += snprintf(why + len, sizeof(why) - (size_t)MD_MIN(len, (int)sizeof(why)), "%sno halogen bonds: the system has %s", len ? "; " : "",
+                        iq.num_halogens ? "no acceptor of them" : "no Cl, Br or I bonded to a C");
+                }
+            }
             md_temp_end(temp);
-            if (none) {
+            if (!any) {
                 char ex[VIAL_EXCERPT_MAX + 4];
                 const md_str_t e = vial_excerpt(ex, sizeof(ex), vx_text(x, call));
-                vx_diag_fix(x, "W0601", call, NULL, "`%.*s` finds no hydrogen bonds: the system's N and O carry no hydrogens", (int)e.len, e.ptr);
+                vx_diag_fix(x, "W0601", call, NULL, "`%.*s` finds %s", (int)e.len, e.ptr, why);
             }
         }
         t.stage = VIAL_STAGE_FRAME;

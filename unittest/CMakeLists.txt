@@ -17,6 +17,7 @@ set (SRC_FILES
     test_chem.c
     test_contact.c
     test_hbond.c
+    test_interaction.c
     test_water.c
     test_nonbonded.c
     test_infer_atomic_number.c

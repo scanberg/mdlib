@@ -201,6 +201,8 @@ set(MD_ANALYSIS_FILES
   src/analysis/md_contact.h
   src/analysis/md_hbond.c
   src/analysis/md_hbond.h
+  src/analysis/md_interaction.c
+  src/analysis/md_interaction.h
   src/analysis/md_mcs.c
   src/analysis/md_mcs.h
   src/analysis/md_pucker.c

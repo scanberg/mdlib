@@ -18,6 +18,7 @@
 #include <core/md_hash.h>
 #include <md_bond.h>
 #include <md_hbond.h>
+#include <md_interaction.h>
 #include <md_dssp.h>
 #include <md_pucker.h>
 #include <md_attributes.h>
@@ -3188,12 +3189,13 @@ static bool k_bond(vial_kctx_t* k, const bargs_t* ba, vial_val_t* out) {
         nf += 1;
     }
     vial_sets_t* r = vial_select_bonds(k->in->sys, within, filters, nf, k->alloc);
-    if (vial_select_bonds_hydrogen(filters, nf)) {
-        // The hydrogen bonds of the frame, from the geometry: H...A, the hydrogen first as the system stores one,
-        // within the set, and those the system holds already left to it
+    const uint32_t found_kinds = vial_select_bonds_found(filters, nf);
+    if (found_kinds) {
+        // The hydrogen, ionic and halogen bonds of the frame, from the geometry: H...A, the hydrogen first as the system
+        // stores one, the cation's atom first, X first; within the set, and those the system holds already left to it
         const md_system_t* sys = k->in->msys;
         const vial_frame_t* fr = k->in->frame;
-        if (!fr) return vial_rt_fail(k, "R0103", "bond's hydrogen bonds are of a frame");
+        if (!fr) return vial_rt_fail(k, "R0103", "bond's hydrogen, ionic and halogen bonds are of a frame");
         vial_interp_t* in = k->in;
         md_array(uint32_t) sel = 0;
         uint64_t key = 0x9E3779B97F4A7C15ull;
@@ -3204,39 +3206,70 @@ static bool k_bond(vial_kctx_t* k, const bargs_t* ba, vial_val_t* out) {
             }
             key = md_hash64(sel, md_array_size(sel) * sizeof(uint32_t), key ^ md_array_size(sel));
         }
-        if (!in->hbond.query || in->hbond.key != key) {
-            md_allocator_i* heap = md_get_heap_allocator();
-            if (in->hbond.query) md_hbond_query_free(in->hbond.query);
-            else in->hbond.query = md_alloc(heap, sizeof(md_hbond_query_t));
-            memset(in->hbond.query, 0, sizeof(md_hbond_query_t));
-            md_bitset_t set = {0};
-            if (within) set = md_bitset_from_indices(sel, md_array_size(sel), k->alloc);
-            const md_hbond_desc_t desc = {.set_a = within ? &set : NULL};
-            if (!md_hbond_query_init(in->hbond.query, &desc, sys, heap)) {
-                md_free(heap, in->hbond.query, sizeof(md_hbond_query_t));
-                in->hbond.query = NULL;
-                return vial_rt_fail(k, "R0103", "the hydrogen bonds could not be prepared");
-            }
-            in->hbond.key = key;
-        }
+        md_bitset_t set = {0};
+        if (within) set = md_bitset_from_indices(sel, md_array_size(sel), k->alloc);
         md_system_state_t state = {.num_atoms = fr->num_atoms, .xyz = (md_float3_t*)fr->xyz, .unitcell = fr->cell, .alloc = k->alloc};
-        md_hbond_set_t hs = {0};
-        if (md_hbond_query_eval(&hs, in->hbond.query, &state, k->alloc) && hs.count) {
-            md_array(uint32_t) idx = 0;
-            md_array_push_array(idx, r->idx, r->count, k->alloc);
-            const md_bond_flags_t found = md_bond_flags_set_origin(md_bond_flags_set_kind(MD_BOND_FLAG_NONE, MD_BOND_KIND_HYDROGEN), MD_BOND_ORIGIN_INFERRED);
-            for (size_t i = 0; i < hs.count; ++i) {
-                if (md_bond_find_interaction(&sys->bond, hs.hydrogen[i], hs.acceptor[i]) >= 0) continue;
-                md_array_push(idx, hs.hydrogen[i], k->alloc);
-                md_array_push(idx, hs.acceptor[i], k->alloc);
-                vial_interp_found_bond(in, (uint32_t)hs.hydrogen[i], (uint32_t)hs.acceptor[i], (uint32_t)found);
+        md_array(uint32_t) idx = 0;
+        md_array_push_array(idx, r->idx, r->count, k->alloc);
+        if (found_kinds & VIAL_FOUND_HYDROGEN) {
+            if (!in->hbond.query || in->hbond.key != key) {
+                md_allocator_i* heap = md_get_heap_allocator();
+                if (in->hbond.query) md_hbond_query_free(in->hbond.query);
+                else in->hbond.query = md_alloc(heap, sizeof(md_hbond_query_t));
+                memset(in->hbond.query, 0, sizeof(md_hbond_query_t));
+                const md_hbond_desc_t desc = {.set_a = within ? &set : NULL};
+                if (!md_hbond_query_init(in->hbond.query, &desc, sys, heap)) {
+                    md_free(heap, in->hbond.query, sizeof(md_hbond_query_t));
+                    in->hbond.query = NULL;
+                    return vial_rt_fail(k, "R0103", "the hydrogen bonds could not be prepared");
+                }
+                in->hbond.key = key;
             }
-            const uint32_t n2 = (uint32_t)md_array_size(idx);
-            r->idx = idx;
-            r->count = n2;
-            r->offset = md_alloc(k->alloc, (n2 + 1) * sizeof(uint32_t));
-            for (uint32_t q = 0; q <= n2; ++q) r->offset[q] = q;
+            md_hbond_set_t hs = {0};
+            if (md_hbond_query_eval(&hs, in->hbond.query, &state, k->alloc)) {
+                const md_bond_flags_t found = md_bond_flags_set_origin(md_bond_flags_set_kind(MD_BOND_FLAG_NONE, MD_BOND_KIND_HYDROGEN), MD_BOND_ORIGIN_INFERRED);
+                for (size_t i = 0; i < hs.count; ++i) {
+                    if (md_bond_find_interaction(&sys->bond, hs.hydrogen[i], hs.acceptor[i]) >= 0) continue;
+                    md_array_push(idx, hs.hydrogen[i], k->alloc);
+                    md_array_push(idx, hs.acceptor[i], k->alloc);
+                    vial_interp_found_bond(in, (uint32_t)hs.hydrogen[i], (uint32_t)hs.acceptor[i], (uint32_t)found);
+                }
+            }
         }
+        if (found_kinds & (VIAL_FOUND_IONIC | VIAL_FOUND_HALOGEN)) {
+            md_interaction_params_t p = md_interaction_params_default();
+            p.kinds = ((found_kinds & VIAL_FOUND_IONIC) ? MD_INTERACTION_IONIC : 0) | ((found_kinds & VIAL_FOUND_HALOGEN) ? MD_INTERACTION_HALOGEN : 0);
+            const uint64_t ikey = key ^ ((uint64_t)p.kinds << 56);
+            if (!in->interaction.query || in->interaction.key != ikey) {
+                md_allocator_i* heap = md_get_heap_allocator();
+                if (in->interaction.query) md_interaction_query_free(in->interaction.query);
+                else in->interaction.query = md_alloc(heap, sizeof(md_interaction_query_t));
+                memset(in->interaction.query, 0, sizeof(md_interaction_query_t));
+                const md_interaction_desc_t desc = {.params = &p, .set = within ? &set : NULL};
+                if (!md_interaction_query_init(in->interaction.query, &desc, sys, heap)) {
+                    md_free(heap, in->interaction.query, sizeof(md_interaction_query_t));
+                    in->interaction.query = NULL;
+                    return vial_rt_fail(k, "R0103", "the ionic and halogen bonds could not be prepared");
+                }
+                in->interaction.key = ikey;
+            }
+            md_interaction_set_t is = {0};
+            if (md_interaction_query_eval(&is, in->interaction.query, &state, k->alloc)) {
+                for (size_t i = 0; i < is.count; ++i) {
+                    if (md_bond_find_interaction(&sys->bond, (md_atom_idx_t)is.a[i], (md_atom_idx_t)is.b[i]) >= 0) continue;
+                    const md_bond_kind_t kind = is.kind[i] == MD_INTERACTION_IONIC ? MD_BOND_KIND_IONIC : MD_BOND_KIND_HALOGEN;
+                    const md_bond_flags_t found = md_bond_flags_set_origin(md_bond_flags_set_kind(MD_BOND_FLAG_NONE, kind), MD_BOND_ORIGIN_INFERRED);
+                    md_array_push(idx, is.a[i], k->alloc);
+                    md_array_push(idx, is.b[i], k->alloc);
+                    vial_interp_found_bond(in, is.a[i], is.b[i], (uint32_t)found);
+                }
+            }
+        }
+        const uint32_t n2 = (uint32_t)md_array_size(idx);
+        r->idx = idx;
+        r->count = n2;
+        r->offset = md_alloc(k->alloc, (n2 + 1) * sizeof(uint32_t));
+        for (uint32_t q = 0; q <= n2; ++q) r->offset[q] = q;
     }
     vial_val_t o = {.dtype = VIAL_DT_SET, .sets = r, .ndim = 2};
     o.dims[0] = r->count / 2;

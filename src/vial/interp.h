@@ -63,6 +63,11 @@ typedef struct vial_interp_t {
         uint64_t                key;
         struct md_hbond_query_t* query;
     } hbond;
+    // The same of the ionic and halogen bonds (md_interaction_query_init), by key: the set and the kinds
+    struct {
+        uint64_t                key;
+        struct md_interaction_query_t* query;
+    } interaction;
     // The bonds computed for the frame, which the system has none of, with their flags (md_bond_flags_t): the hydrogen
     // bonds bond() finds and the bonds formed() finds. What tells the kind of such a pair of a result
     // (md_vial_filter_t::pair_flags). In temp: good while epoch is frame_epoch (vial_interp_found_bond).
