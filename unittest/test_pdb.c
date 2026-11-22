@@ -14,6 +14,7 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_file.h>
 #include <core/md_vec_math.h>
+#include <core/md_parse.h>
 
 #include "run_check.h"
 
@@ -210,6 +211,81 @@ UTEST(pdb, cryst_record_without_its_1) {
     EXPECT_EQ((int)MD_RESIDUE_KIND_AMINO_ACID, (int)md_system_residue_kind(&sys, 0));
     md_system_free(&sys);
     md_arena_allocator_destroy(alloc);
+}
+
+// The bonds of the LINK and SSBOND records, by the residues and names of their atoms, of origin MD_BOND_ORIGIN_FILE: a
+// zinc's links coordinate once perceived, one to a residue of an insertion code (52A, not 52), none to a symmetry mate
+// or to an alternate location not loaded, and the disulfide, which a CONECT record gives too, once. The atoms are
+// farther apart than inference bonds them.
+UTEST(pdb, link_and_ssbond_records) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
+    static const char pdb[] =
+        "SSBOND   1 CYS A   10    CYS A   20                          1555   1555  3.50\n"
+        "LINK         ZN   ZN B 101                 SG  CYS A  10     1555   1555  3.50\n"
+        "LINK         ZN   ZN B 101                 CA  GLY A  52A    1555   1555  3.60\n"
+        "LINK         ZN   ZN B 101                 SG  CYS A  20     1555   2555  4.95\n"
+        "LINK         ZN   ZN B 101                 SG BCYS A  20     1555   1555  4.95\n"
+        "ATOM      1  SG  CYS A  10       0.000   0.000   0.000  1.00  0.00           S\n"
+        "ATOM      2  SG ACYS A  20       3.500   0.000   0.000  1.00  0.00           S\n"
+        "ATOM      3  SG BCYS A  20       3.500   4.000   0.000  1.00  0.00           S\n"
+        "ATOM      4  CA  GLY A  52       0.000   3.600   3.500  1.00  0.00           C\n"
+        "ATOM      5  CA  GLY A  52A      0.000  -3.600   3.500  1.00  0.00           C\n"
+        "TER\n"
+        "HETATM    6  ZN   ZN B 101       0.000   0.000   3.500  1.00  0.00          ZN\n"
+        "CONECT    1    2\n"
+        "END\n";
+    md_system_t sys = {.alloc = alloc};
+    md_system_state_t state = {.alloc = alloc};
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(pdb), NULL));
+    ASSERT_EQ(5, (int)sys.atom.count);      // SG of CYS 10 and 20, CA of GLY 52 and 52A, ZN
+    EXPECT_EQ(3, (int)md_bond_list_count(&sys.given_bond));
+    ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
+    const md_bond_flags_t mask = MD_BOND_FLAG_KIND_MASK | MD_BOND_FLAG_ORIGIN_MASK;
+    const md_bond_idx_t ss = md_system_bond_find(&sys, 0, 1), zn_sg = md_system_bond_find(&sys, 4, 0), zn_ca = md_system_bond_find(&sys, 4, 3);
+    ASSERT_GE(ss, 0);
+    ASSERT_GE(zn_sg, 0);
+    ASSERT_GE(zn_ca, 0);
+    EXPECT_EQ(md_bond_flags_set_origin((md_bond_flags_t)MD_BOND_KIND_COVALENT, MD_BOND_ORIGIN_FILE),   md_system_bond_flags(&sys, ss) & mask);
+    EXPECT_EQ(md_bond_flags_set_origin((md_bond_flags_t)MD_BOND_KIND_COORDINATE, MD_BOND_ORIGIN_FILE), md_system_bond_flags(&sys, zn_sg) & mask);
+    EXPECT_EQ(md_bond_flags_set_origin((md_bond_flags_t)MD_BOND_KIND_COORDINATE, MD_BOND_ORIGIN_FILE), md_system_bond_flags(&sys, zn_ca) & mask);
+    EXPECT_EQ(-1, md_system_bond_find(&sys, 4, 2));     // GLY 52, without the insertion code
+    EXPECT_EQ(-1, md_system_bond_find(&sys, 4, 1));     // CYS 20: of a symmetry mate, and of its second location
+    EXPECT_EQ(3, (int)sys.bond.count);
+    md_system_free(&sys);
+    md_arena_allocator_destroy(alloc);
+}
+
+// 1k4r without its CONECT records: its SSBOND records give the same 18 disulfides, between the SG of its cysteines
+UTEST(pdb, ssbond_records_of_1k4r) {
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
+    const md_str_t text = md_load_textfile(MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), alloc);
+    ASSERT_FALSE(md_str_empty(text));
+    char* buf = md_alloc(alloc, text.len + 1);
+    size_t len = 0;
+    md_str_t rest = text, line;
+    while (md_parse_next_token_delim(&line, &rest, '\n')) {
+        if (md_str_begins_with(line, MD_STR_LIT("CONECT"))) continue;
+        md_memcpy(buf + len, line.ptr, line.len);
+        len += line.len;
+        buf[len++] = '\n';
+    }
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, (md_str_t){buf, len}, NULL));
+    ASSERT_EQ((size_t)18, md_bond_list_count(&sys.given_bond));
+    for (size_t i = 0; i < 18; ++i) {
+        EXPECT_TRUE(md_str_eq(md_atom_name(&sys.atom, sys.given_bond.pairs[i].idx[0]), MD_STR_LIT("SG")));
+        EXPECT_TRUE(md_str_eq(md_atom_name(&sys.atom, sys.given_bond.pairs[i].idx[1]), MD_STR_LIT("SG")));
+        EXPECT_EQ(md_bond_flags_set_origin(MD_BOND_FLAG_KIND_GIVEN, MD_BOND_ORIGIN_FILE), sys.given_bond.flags[i]);
+    }
+    // Atoms 23 and 226 (Cys 3 and Cys 30), as the CONECT records have them
+    bool found = false;
+    for (size_t i = 0; i < 18; ++i) {
+        const md_atom_pair_t p = sys.given_bond.pairs[i];
+        found |= (p.idx[0] == 22 && p.idx[1] == 225) || (p.idx[0] == 225 && p.idx[1] == 22);
+    }
+    EXPECT_TRUE(found);
+    md_vm_arena_destroy(alloc);
 }
 
 // Past 99999 atoms VMD writes the serials in hexadecimal (186a0 for 100000), and '*****' past FFFFF: not hybrid-36,

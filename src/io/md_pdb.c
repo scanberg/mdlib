@@ -33,8 +33,8 @@ extern "C" {
 #endif
 
 // The PDB loader reads what a system is made of, straight from the text into the system: the atoms of the first
-// model (ATOM, HETATM), where TER records end the chains, the cell of the first CRYST1 record, the bonds of the CONECT
-// records and the biomolecules of REMARK 350. Every other record is passed over. A file of several models is a run as
+// model (ATOM, HETATM), where TER records end the chains, the cell of the first CRYST1 record, the bonds of the CONECT,
+// LINK and SSBOND records and the biomolecules of REMARK 350. Every other record is passed over. A file of several models is a run as
 // well (md_pdb_system_publish_run), whose index is found by a scan of the record names alone.
 
 #define MD_PDB_CACHE_MAGIC 0x89172bab124545
@@ -114,6 +114,8 @@ typedef enum {
     PDB_LINE_CRYST1,
     PDB_LINE_CONECT,
     PDB_LINE_REMARK_350,
+    PDB_LINE_LINK,          // LINK, and Refmac's LINKR of the same columns
+    PDB_LINE_SSBOND,
 } pdb_line_kind_t;
 
 // The first eight characters of a line as a word, as they are in memory (little endian), and of those the first n
@@ -151,6 +153,8 @@ static MD_FORCE_INLINE pdb_line_kind_t pdb_line_kind(md_str_t line) {
     if ((w & PDB_MASK(5)) == PDB_W8('M','O','D','E','L',0,0,0))                     return PDB_LINE_MODEL;
     if (w6 == PDB_W8('E','N','D','M','D','L',0,0))                                  return PDB_LINE_ENDMDL;
     if (w6 == PDB_W8('C','O','N','E','C','T',0,0))                                  return PDB_LINE_CONECT;
+    if (w6 == PDB_W8('L','I','N','K',' ',' ',0,0) || w6 == PDB_W8('L','I','N','K','R',' ',0,0)) return PDB_LINE_LINK;
+    if (w6 == PDB_W8('S','S','B','O','N','D',0,0))                                  return PDB_LINE_SSBOND;
     if (w6 == PDB_W8('C','R','Y','S','T','1',0,0) || w6 == PDB_W8('C','R','Y','S','T',' ',0,0)) return PDB_LINE_CRYST1;
     if (w == PDB_W8('R','E','M','A','R','K',' ','3') && line.len >= 10 && line.ptr[8] == '5' && line.ptr[9] == '0') return PDB_LINE_REMARK_350;
     return PDB_LINE_NONE;
@@ -195,6 +199,7 @@ typedef struct pdb_extras_t {
     bool    has_cell;           // The first CRYST1 record gives one
     md_unitcell_t cell;
     md_array(int32_t) conect;   // The serials of the bonds of the CONECT records, two for each
+    md_array(struct pdb_link_t) links;  // The bonds of the LINK and SSBOND records
     int32_t biomolecule;        // REMARK 350: the one whose groups of chains follow
     md_array(pdb_group_t) groups;
     md_array(char)   chains;
@@ -210,9 +215,66 @@ static inline int32_t conect_serial(md_str_t line, size_t beg) {
     return parse_id(line, beg, end, NULL);
 }
 
+// A bond of a LINK or SSBOND record: its two atoms by their residues (chain, sequence number, insertion code and name)
+// and their names, as the atom lines have them. An SSBOND record names two cysteines, whose SG are bonded.
+typedef struct pdb_link_t {
+    md_label_t atom[2];
+    md_label_t res[2];
+    int32_t    seq[2];
+    char       chain[2];        // As the file has it: ' ' for none
+    char       ins[2];          // ' ' for none
+    bool       ssbond;
+} pdb_link_t;
+
+static MD_FORCE_INLINE md_label_t pdb_label(md_str_t line, size_t offset, size_t width);
+
+// The bond of a LINK or SSBOND record; false for one to a symmetry mate (an operator other than 1555), to an alternate
+// location other than the first (which is not loaded) or of a line too short for its atoms
+static bool pdb_link_record(pdb_link_t* out, md_str_t line, bool ssbond) {
+    // Of each atom: its name, alternate location, residue name, chain, sequence number and insertion code. An SSBOND
+    // record has neither name nor alternate location.
+    static const size_t cols[2][2][6] = {
+        {{13, 17, 18, 22, 23, 27}, {43, 47, 48, 52, 53, 57}},
+        {{ 0,  0, 12, 16, 18, 22}, { 0,  0, 26, 30, 32, 36}},
+    };
+    const size_t (*c)[6] = cols[ssbond ? 1 : 0];
+    pdb_link_t link = { .ssbond = ssbond };
+    for (int p = 0; p < 2; ++p) {
+        if (line.len < c[p][4] + 3) return false;
+        if (ssbond) {
+            link.atom[p] = md_label_make(MD_STR_LIT("SG"));
+        } else {
+            const char alt = extract_char(line, c[p][1]);
+            if (alt != ' ' && alt != 'A') return false;
+            link.atom[p] = pdb_label(line, c[p][0] - 1, 4);
+        }
+        link.res[p] = pdb_label(line, c[p][2] - 1, 4);
+        uint32_t bad = 0;
+        link.seq[p] = parse_id(line, c[p][4], c[p][4] + 3, &bad);
+        if (bad) return false;
+        const char chain = extract_char(line, c[p][3]), ins = extract_char(line, c[p][5]);
+        link.chain[p] = chain ? chain : ' ';
+        link.ins[p]   = ins ? ins : ' ';
+        // The symmetry operator of the atom, columns 60 to 65 and 67 to 72: none, or 1555 (the identity)
+        const size_t sym_beg = p ? 67 : 60;
+        if (line.len >= sym_beg) {
+            const md_str_t sym = md_str_trim(md_str_substr(line, sym_beg - 1, MD_MIN(line.len - (sym_beg - 1), 6)));
+            if (!md_str_empty(sym) && !md_str_eq(sym, MD_STR_LIT("1555"))) return false;
+        }
+    }
+    *out = link;
+    return true;
+}
+
 static void pdb_extras_record(pdb_extras_t* x, pdb_line_kind_t kind, md_str_t line) {
     md_allocator_i* alloc = x->alloc;
     switch (kind) {
+    case PDB_LINE_LINK:
+    case PDB_LINE_SSBOND: {
+        pdb_link_t link;
+        if (pdb_link_record(&link, md_str_trim_end(line), kind == PDB_LINE_SSBOND)) md_array_push(x->links, link, alloc);
+        break;
+    }
     case PDB_LINE_CRYST1:
         // The first one: a file of models has one for each, the same
         if (!x->seen_cryst1) {
@@ -452,9 +514,84 @@ static void pdb_conect_bonds(md_system_t* sys, const int32_t* atom_serial, const
     }
 }
 
-// What follows the atoms and residues: the cell, the bonds of the CONECT records (by the serials of the atoms loaded),
-// the units of the file (the runs of residues of one chain id) and the assemblies of REMARK 350
-static void pdb_system_finish(md_system_t* sys, md_system_state_t* state, const pdb_extras_t* x, const int32_t* atom_serial, const md_str_t* res_chain_ids, const bool* res_after_ter, md_allocator_i* temp_arena) {
+// The key of a residue by its chain, sequence number, insertion code and name, and of an atom of it by its name
+static inline uint64_t pdb_res_key(char chain, int32_t seq, char ins, md_str_t res) {
+    const uint64_t head = (uint64_t)(uint8_t)chain | ((uint64_t)(uint8_t)ins << 8) | ((uint64_t)(uint32_t)seq << 16);
+    return md_hash64_str(res, head * 0x9E3779B97F4A7C15ull);
+}
+static inline uint64_t pdb_atom_key(uint64_t res_key, md_str_t name) {
+    return md_hash64_str(name, res_key);
+}
+
+// The bonds of the LINK and SSBOND records, given, of origin MD_BOND_ORIGIN_FILE, between the atoms loaded which they
+// name. A LINK record's is covalent until perceived otherwise (a metal's coordinate, md_system_infer_coordination); an
+// SSBOND record's, a disulfide, is given covalent (MD_BOND_FLAG_KIND_GIVEN). A pair the file gives a bond of already (a
+// CONECT record, which wwPDB writes for the atoms of a LINK record too) keeps that one.
+static void pdb_link_bonds(md_system_t* sys, const pdb_link_t* links, size_t num_links, const md_str_t* res_chain_ids, const char* res_ins, md_allocator_i* temp_arena) {
+    if (num_links == 0 || !res_chain_ids || !res_ins) return;
+    const size_t num_atoms = sys->atom.count;
+    // The atoms of the residues the records name, of which there are few
+    md_hashmap32_t res_map = { .allocator = temp_arena };
+    for (size_t i = 0; i < num_links; ++i) {
+        for (int p = 0; p < 2; ++p) md_hashmap_add(&res_map, pdb_res_key(links[i].chain[p], links[i].seq[p], links[i].ins[p], MD_LABEL_STR(links[i].res[p])), 1u);
+    }
+    uint32_t* res_of = md_alloc(temp_arena, MD_MAX(num_atoms, 1) * sizeof(uint32_t));
+    md_hashmap32_t atom_map = { .allocator = temp_arena };
+    for (size_t r = 0; r < sys->residue.count; ++r) {
+        const char chain = res_chain_ids[r].len ? res_chain_ids[r].ptr[0] : ' ';
+        const uint64_t res_key = pdb_res_key(chain, sys->residue.seq_id[r], res_ins[r], MD_LABEL_STR(sys->residue.name[r]));
+        if (!md_hashmap_get(&res_map, res_key)) continue;
+        for (uint32_t a = sys->residue.atom_offset[r]; a < sys->residue.atom_offset[r + 1] && a < num_atoms; ++a) {
+            res_of[a] = (uint32_t)r;
+            const uint64_t key = pdb_atom_key(res_key, md_atom_name(&sys->atom, a));
+            if (!md_hashmap_get(&atom_map, key)) md_hashmap_add(&atom_map, key, a);
+        }
+    }
+    // The pairs given already, and those of the records before
+    md_hashmap32_t pair_map = { .allocator = temp_arena };
+    md_bond_list_t* given = &sys->given_bond;
+    for (size_t i = 0; i < md_bond_list_count(given); ++i) {
+        const md_atom_pair_t p = given->pairs[i];
+        md_hashmap_add(&pair_map, ((uint64_t)MD_MIN((uint32_t)p.idx[0], (uint32_t)p.idx[1]) << 32) | MD_MAX((uint32_t)p.idx[0], (uint32_t)p.idx[1]), 1u);
+    }
+    size_t missing = 0;
+    for (size_t i = 0; i < num_links; ++i) {
+        const pdb_link_t* l = &links[i];
+        uint32_t idx[2] = {0};
+        bool found = true;
+        for (int p = 0; p < 2 && found; ++p) {
+            const md_str_t res = MD_LABEL_STR(l->res[p]), name = MD_LABEL_STR(l->atom[p]);
+            const uint32_t* a = md_hashmap_get(&atom_map, pdb_atom_key(pdb_res_key(l->chain[p], l->seq[p], l->ins[p], res), name));
+            if (a) {
+                const size_t r = res_of[*a];
+                const char chain = res_chain_ids[r].len ? res_chain_ids[r].ptr[0] : ' ';
+                found = chain == l->chain[p] && sys->residue.seq_id[r] == l->seq[p] && res_ins[r] == l->ins[p] &&
+                    md_str_eq(MD_LABEL_STR(sys->residue.name[r]), res) && md_str_eq(md_atom_name(&sys->atom, *a), name);
+            } else {
+                found = false;
+            }
+            if (found) idx[p] = *a;
+        }
+        if (!found) {
+            missing += 1;
+            continue;
+        }
+        if (idx[0] == idx[1]) continue;
+        const uint64_t pair = ((uint64_t)MD_MIN(idx[0], idx[1]) << 32) | MD_MAX(idx[0], idx[1]);
+        if (md_hashmap_get(&pair_map, pair)) continue;
+        md_hashmap_add(&pair_map, pair, 1u);
+        const md_bond_flags_t flags = md_bond_flags_set_origin(l->ssbond ? MD_BOND_FLAG_KIND_GIVEN : MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_FILE);
+        md_bond_list_push(given, (md_atom_idx_t)idx[0], (md_atom_idx_t)idx[1], flags, sys->alloc);
+    }
+    if (missing) {
+        MD_LOG_DEBUG("PDB: %zu of the LINK and SSBOND records name atoms which are not loaded", missing);
+    }
+}
+
+// What follows the atoms and residues: the cell, the bonds of the CONECT records (by the serials of the atoms loaded)
+// and of the LINK and SSBOND records (by their residues and names), the units of the file (the runs of residues of one
+// chain id) and the assemblies of REMARK 350
+static void pdb_system_finish(md_system_t* sys, md_system_state_t* state, const pdb_extras_t* x, const int32_t* atom_serial, const md_str_t* res_chain_ids, const char* res_ins, const bool* res_after_ter, md_allocator_i* temp_arena) {
     if (x->has_cell) {
         state->unitcell = x->cell;
     }
@@ -466,6 +603,7 @@ static void pdb_system_finish(md_system_t* sys, md_system_state_t* state, const 
     if (num_conect > 0 && atom_serial) {
         pdb_conect_bonds(sys, atom_serial, x->conect, num_conect, temp_arena);
     }
+    pdb_link_bonds(sys, x->links, md_array_size(x->links), res_chain_ids, res_ins, temp_arena);
 
     // The units of the file are its chains: the runs of residues of one chain id, which a TER record ends (two chains of
     // one id written one after the other are two: the segments of an EM structure)
@@ -569,6 +707,7 @@ typedef struct pdb_residue_start_t {
     md_sequence_id_t seq_id;    // INT_MAX where the field is not a number of the format
     md_label_t       name;
     char             chain_id;  // As the file has it: ' ' for none
+    char             ins_code;  // ' ' for none
     bool             after_ter; // A TER record before it: it begins a unit of the file
 } pdb_residue_start_t;
 
@@ -863,6 +1002,7 @@ static void pdb_parse_lines(void* arg, uint32_t beg, uint32_t end, uint32_t thre
                 res->name      = pdb_label(line, 17, 4);
                 const pdb_res_fields_t fields = pdb_res_fields(line);
                 res->chain_id  = pdb_res_fields_chain(&fields);
+                res->ins_code  = line.len >= 27 ? line.ptr[26] : ' ';
                 res->after_ter = first ? piece->first_after_ter : ln.after_ter;
                 ++res;
             }
@@ -1060,6 +1200,8 @@ static void pdb_read_records(pdb_load_t* L) {
         case PDB_LINE_CRYST1:
         case PDB_LINE_CONECT:
         case PDB_LINE_REMARK_350:
+        case PDB_LINE_LINK:
+        case PDB_LINE_SSBOND:
             pdb_extras_record(&L->extras, rec->kind, (md_str_t){ L->text + rec->offset, rec->len });
             break;
         default:
@@ -1217,6 +1359,7 @@ typedef struct pdb_residues_t {
     size_t num_res;
     char*  chain_chars;
     md_str_t* chain_ids;
+    char*  ins_codes;
     bool*  after_ter;
 } pdb_residues_t;
 
@@ -1232,6 +1375,7 @@ static void pdb_build_residues(void* arg, uint32_t beg, uint32_t end, uint32_t t
         res->seq_id[r] = rs->seq_id;
         rb->chain_chars[r] = rs->chain_id;
         rb->chain_ids[r] = md_str_trim((md_str_t){ &rb->chain_chars[r], 1 });
+        rb->ins_codes[r] = rs->ins_code;
         rb->after_ter[r] = rs->after_ter;
     }
 }
@@ -1276,6 +1420,7 @@ static bool pdb_make_system(pdb_load_t* L, const md_executor_t* ex) {
         .num_res = num_res,
         .chain_chars = md_alloc(temp, MD_MAX(num_res, 1)),
         .chain_ids = md_alloc(temp, MD_MAX(num_res, 1) * sizeof(md_str_t)),
+        .ins_codes = md_alloc(temp, MD_MAX(num_res, 1)),
         .after_ter = md_alloc(temp, MD_MAX(num_res, 1) * sizeof(bool)),
     };
     if (!md_parallel_for(ex, (uint32_t)MD_DIV_UP(num_res, PDB_RES_CHUNK), 1, pdb_build_residues, &rb)) return false;
@@ -1302,7 +1447,7 @@ static bool pdb_make_system(pdb_load_t* L, const md_executor_t* ex) {
         if (L->col_varies[c]) md_attributes_publish_atom_column(&sys->attributes, col_path[c], col_unit[c], 1, L->column[c], num_atoms);
     }
 
-    pdb_system_finish(sys, state, &L->extras, L->serial, rb.chain_ids, rb.after_ter, temp);
+    pdb_system_finish(sys, state, &L->extras, L->serial, rb.chain_ids, rb.ins_codes, rb.after_ter, temp);
     pdb_lap(L, PDB_PHASE_FINISH, &t);
 
     const double* ms = L->ms;

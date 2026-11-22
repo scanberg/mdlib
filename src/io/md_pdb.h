@@ -20,13 +20,14 @@ struct md_executor_t;
 
 // A PDB file is read into a system, and nothing else: there is no representation of the file of its own. What the
 // system has of it is the atoms (ATOM, HETATM) of the first model, the chains (and where TER records end them), the
-// cell of the first CRYST1 record, the bonds of the CONECT records and the biomolecules of REMARK 350. The other
+// cell of the first CRYST1 record, the bonds of the CONECT, LINK and SSBOND records and the biomolecules of REMARK 350. The other
 // records are passed over: this is a loader of systems, not a reader of every record of the format.
 
 // SYSTEM
 // The system: the atoms (of the first model, or of all with MD_LOAD_FLAG_ALL_MODELS), where they are, their types,
 // the residues, the units of the file (its chains, by the character of column 22 as the file has it: a digit is an id as
-// a letter is, a blank none), the bonds of the CONECT records, the cell and the assemblies. No bonds beyond the file's,
+// a letter is, a blank none), the bonds of the CONECT, LINK and SSBOND records (a LINK's covalent, or coordinate where
+// it is of a metal, an SSBOND's a disulfide), the cell and the assemblies. No bonds beyond the file's,
 // nor what the residues are by them: md_system_infer derives those, when the caller wants them. The executor of desc
 // (NULL: the calling thread) reads a file and its lines in parallel; of a file of several models, the first model and
 // the CONECT records after the last are read, not the models between.
