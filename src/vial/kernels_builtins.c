@@ -3496,6 +3496,37 @@ static bool k_autocorrelation(vial_kctx_t* k, const vial_val_t* x, const vial_va
     return true;
 }
 
+// backbone_angles(r): per set, the residue of its first particle, its phi, psi and omega in degrees, each missing where
+// it has none (md_backbone_segment_dihedrals)
+static bool k_backbone_angles(vial_kctx_t* k, const vial_val_t* r, vial_val_t* out) {
+    if (!r || r->dtype != VIAL_DT_SET || !r->sets) return vial_rt_fail(k, "R0103", "backbone_angles takes residues");
+    if (!k->in->sys || !k->in->msys) return vial_rt_fail(k, "R0103", "backbone_angles needs a system");
+    const float* xyz = frame_xyz(k);
+    if (!xyz) return false;
+    const md_system_t* sys = k->in->msys;
+    if (k->in->frame->num_atoms < sys->atom.count) return vial_rt_fail(k, "R0103", "the frame has fewer particles than the system");
+    const md_unitcell_t cell = frame_cell(k);
+    const size_t cnt = r->ndim ? vial_val_count(r) : 1;
+    uint32_t dims[VIAL_MAX_DIMS + 1];
+    memcpy(dims, r->dims, r->ndim * sizeof(uint32_t));
+    dims[r->ndim] = 3;
+    vial_val_t o;
+    if (!vial_k_make(k, VIAL_DT_FLOAT, r->ndim + 1, dims, &o)) return false;
+    for (size_t i = 0; i < cnt; ++i) {
+        const uint32_t n = vial_sets_size(r->sets, (uint32_t)i);
+        const int32_t seg = n ? vial_sys_atom_segment(k->in->sys, vial_sets_items(r->sets, (uint32_t)i)[0]) : -1;
+        float a[3] = {0};
+        const uint32_t has = seg >= 0 ? md_backbone_segment_dihedrals(a, (size_t)seg, (const md_float3_t*)xyz, &cell, &sys->protein_backbone) : 0;
+        float* O = (float*)o.data + 3 * i;
+        for (uint32_t c = 0; c < 3; ++c) {
+            if (has & (1u << c)) O[c] = (float)MD_RAD_TO_DEG(a[c]);
+            else { O[c] = 0.0f; vial_val_set_missing(&o, 3 * i + c, k->alloc); }
+        }
+    }
+    *out = o;
+    return true;
+}
+
 // ### DISPATCH ###
 
 bool vial_k_builtin(vial_kctx_t* k, const char* name, const vial_val_t* const* args, const md_str_t* names, uint32_t n, vial_val_t* out) {
@@ -3508,6 +3539,7 @@ bool vial_k_builtin(vial_kctx_t* k, const char* name, const vial_val_t* const* a
     if (IS("displacement")) return k_displacement(k, arg(&ba, "a", 0), arg(&ba, "b", 1), out);
     if (IS("angle")) return k_angle(k, &ba, 3, out);
     if (IS("dihedral")) return k_angle(k, &ba, 4, out);
+    if (IS("backbone_angles")) return k_backbone_angles(k, arg(&ba, "r", 0), out);
     if (IS("closest_pair") || IS("farthest_pair")) {
         const vial_val_t* a[3] = {arg(&ba, "p", 0), arg(&ba, "q", 1), arg(&ba, "distinct", 2)};
         if (!a[0] || !a[1]) return vial_rt_fail(k, "R0103", "%s takes p and q", name);

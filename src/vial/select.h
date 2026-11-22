@@ -88,10 +88,15 @@ typedef struct vial_sys_t {
     // The atoms of the metallic phases, once needed: 1 for such an atom (md_bond_metallic_atoms)
     bool        have_metallic;
     uint8_t*    metallic;       // [atom]
+    // The segment of the protein backbone of each residue, once needed, -1 for none
+    bool        have_res_segs;
+    int32_t*    res_seg;        // [residue]
 } vial_sys_t;
 
 md_str_t   vial_sys_chain_id(const vial_sys_t* s, int32_t chain);   // empty for -1
 int32_t vial_sys_res_chain(const vial_sys_t* s, uint32_t res);   // -1 for none
+int32_t vial_sys_atom_res(const vial_sys_t* s, uint32_t atom);   // -1 for none
+int32_t vial_sys_atom_segment(vial_sys_t* s, uint32_t atom);     // the protein backbone's segment of its residue, -1 for none
 
 // Builds the view of a system; false without one
 bool vial_sys_init(vial_sys_t* s, const struct md_system_t* sys, md_allocator_i* alloc);

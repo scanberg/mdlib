@@ -48,6 +48,28 @@ static uint8_t part_kind(const md_system_t* sys, uint32_t p) {
     return VIAL_PART_LIGAND;
 }
 
+static uint32_t atom_res(const vial_sys_t* s, uint32_t a);
+
+int32_t vial_sys_atom_res(const vial_sys_t* s, uint32_t a) {
+    const uint32_t r = a < s->num_atoms ? atom_res(s, a) : NONE32;
+    return r != NONE32 && r < s->num_res ? (int32_t)r : -1;
+}
+
+int32_t vial_sys_atom_segment(vial_sys_t* s, uint32_t a) {
+    if (!s->have_res_segs) {
+        s->have_res_segs = true;
+        s->res_seg = md_alloc(s->alloc, (s->num_res + 1) * sizeof(int32_t));
+        for (uint32_t r = 0; r < s->num_res; ++r) s->res_seg[r] = -1;
+        const md_protein_backbone_data_t* bb = &s->sys->protein_backbone;
+        for (size_t i = 0; bb->segment.res_idx && i < bb->segment.count; ++i) {
+            const int32_t r = bb->segment.res_idx[i];
+            if (r >= 0 && (uint32_t)r < s->num_res) s->res_seg[r] = (int32_t)i;
+        }
+    }
+    const int32_t r = vial_sys_atom_res(s, a);
+    return r >= 0 ? s->res_seg[r] : -1;
+}
+
 int32_t vial_sys_res_chain(const vial_sys_t* s, uint32_t r) {
     const md_system_t* sys = s->sys;
     if (!s->num_chains || !sys->chain.res_chain || r >= s->num_res) return -1;

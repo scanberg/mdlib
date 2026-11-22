@@ -1651,6 +1651,64 @@ UTEST(vial_ir, selector_logic_per_frame) {
     md_arena_allocator_destroy(alloc);
 }
 
+// backbone_angles(): phi, psi and omega of each residue, as dihedral() gives them across neighbours, missing where a
+// neighbour is: P's one strand has no phi at its first residue and no psi and omega at its last
+UTEST(vial_ir, backbone_angles) {
+    int64_t nf = 0;
+    const md_system_t* sys = vial_ir__run_p(&nf);
+    ASSERT_TRUE(sys != NULL);
+    vial_ir__run_t r;
+    const char* src =
+        "rs   = residue\n"
+        "bb   = backbone_angles(rs)\n"
+        "phi  = dihedral(rs[:-1]['C'], rs[1:]['N'], rs[1:]['CA'], rs[1:]['C'])\n"
+        "psi  = dihedral(rs[:-1]['N'], rs[:-1]['CA'], rs[:-1]['C'], rs[1:]['N'])\n"
+        "om   = dihedral(rs[:-1]['CA'], rs[:-1]['C'], rs[1:]['N'], rs[1:]['CA'])\n"
+        "e_phi = max(abs(cos(bb[1:, 0]) - cos(phi)) + abs(sin(bb[1:, 0]) - sin(phi)))\n"
+        "e_psi = max(abs(cos(bb[:-1, 1]) - cos(psi)) + abs(sin(bb[:-1, 1]) - sin(psi)))\n"
+        "e_om  = max(abs(cos(bb[:-1, 2]) - cos(om)) + abs(sin(bb[:-1, 2]) - sin(om)))\n"
+        "trans = min(abs(bb[:-1, 2]))\n"
+        "n_ok  = sum(valid(bb))\n";
+    ASSERT_TRUE(vial_ir__start(&r, src, sys));
+    double* v = malloc(nf * sizeof(double));
+    static const char* errs[] = {"e_phi", "e_psi", "e_om"};
+    for (int i = 0; i < 3; ++i) {
+        ASSERT_TRUE(vial_ir__frames(&r, sys, nf, errs[i], v));
+        for (int64_t f = 0; f < nf; ++f) EXPECT_LT(v[f], 1e-4);
+    }
+    ASSERT_TRUE(vial_ir__frames(&r, sys, nf, "trans", v));
+    for (int64_t f = 0; f < nf; ++f) EXPECT_GT(v[f], 120.0);     // no proline: every peptide bond trans, near 180° (cis is near 0°)
+    ASSERT_TRUE(vial_ir__frames(&r, sys, nf, "n_ok", v));
+    for (int64_t f = 0; f < nf; ++f) EXPECT_EQ(42.0, v[f]);     // 15 residues, three angles each, but three
+    free(v);
+    vial_ir__end(&r);
+}
+
+// On T: two strands, chain B's over a gap. A residue on either side of the gap has what the other side does not give
+// it, as the ends of the strands do; a residue of no backbone, a water, has none
+UTEST(vial_ir, backbone_angles_ends) {
+    const md_system_t* sys = vial_test_system('T');
+    const md_system_state_t* st = vial_test_state('T');
+    ASSERT_TRUE(sys && st);
+    vial_ir__run_t r;
+    const char* src =
+        "n_gap  = sum(valid(backbone_angles(residue(gap='before' or 'after'))))\n"
+        "n_end  = sum(valid(backbone_angles(residue(role='terminus'))))\n"
+        "n_wat  = sum(valid(backbone_angles(residue(kind='water'))))\n"
+        "before = valid(backbone_angles(residue(gap='before')[0]))\n"
+        "after  = valid(backbone_angles(residue(gap='after')[0]))\n";
+    ASSERT_TRUE(vial_ir__start(&r, src, sys));
+    const vial_frame_t fr = {.xyz = (const float*)st->xyz, .num_atoms = st->num_atoms, .cell = st->unitcell, .index = 0, .time = 0.0};
+    ASSERT_TRUE(vial_interp_frame(&r.in, &fr));
+    char buf[128];
+    EXPECT_STREQ("3", vial_ir__out(&r, "n_gap", buf, sizeof(buf)));     // phi before it, psi and omega after it
+    EXPECT_STREQ("6", vial_ir__out(&r, "n_end", buf, sizeof(buf)));     // psi and omega of the N-termini, phi of the C-termini
+    EXPECT_STREQ("0", vial_ir__out(&r, "n_wat", buf, sizeof(buf)));
+    EXPECT_STREQ("[False, True, True]", vial_ir__out(&r, "before", buf, sizeof(buf)));     // the first after the gap: no phi
+    EXPECT_STREQ("[True, False, False]", vial_ir__out(&r, "after", buf, sizeof(buf)));     // the last before it: no psi, no omega
+    vial_ir__end(&r);
+}
+
 // bond()'s hydrogen bonds, found per frame, with and/or/not as with the list it stands for
 UTEST(vial_ir, bond_logic_per_frame) {
     int64_t nf = 0;

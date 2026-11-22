@@ -660,6 +660,9 @@ _close = residue[distance(residue.com, residue[0].com) < 6.0]    # -> set[?], fr
 rs     = residue[1:6]                                # -> set[5]
 nca    = angle(rs['N'], rs['CA'], rs['C'])             # -> float[5] °, frame: N-CA-C in each residue
 phi    = dihedral(rs[:-1]['C'], rs[1:]['N'], rs[1:]['CA'], rs[1:]['C'])   # -> float[4] °, frame: across neighbours
+bba    = backbone_angles(residue)                    # -> float[15][3] °, frame: φ, ψ, ω; no φ for the first, no ψ, ω for the last
+phi2   = backbone_angles(rs)[:, 0]                   # -> float[5] °, frame: φ of residues 2 to 6
+bad_bb = backbone_angles(protein)                    # error E0313: a set stands for one residue; backbone_angles(residue(protein))
 _nn    = angle(_close['N'], _close['CA'], _close['C'])  # -> float[?] °, frame: of the residues near the first
 p1     = rs.particle[1]                              # -> set[5]: the second particle of each residue
 v1ang  = angle(rs.particle[[1, 0, 2]])               # -> float[5] °, frame: v1's angle(2,1,3) in residue(2:6)
@@ -863,6 +866,7 @@ Keywords mean the same wherever they appear. `weights=` takes `'mass'`, `None` o
 | `farthest_pair(p: points, q: points, distinct=False)` | `(float Å, int, int)` | the longest distance, and its two indices |
 | `angle(a, b, c: point)` | `float` ° | also takes one `float[3][3]`, three points as rows; the one-argument form maps over leading dimensions, such as `set[k][3]` from `smiles_atoms` or `rs[['N', 'CA', 'C']]` |
 | `dihedral(a, b, c, d: point)` | `float` °, in (−180, 180\] | also takes one `float[4][3]`, or four one-particle sets; the one-argument form maps over leading dimensions, such as `set[k][4]` from `smiles_atoms` or `residue[['N', 'CA', 'CB', 'CG']]`, chi1 of every residue that has a CG |
+| `backbone_angles(r: set)` | `float[3]` °, in (−180, 180\] | of the residue each set is in, its φ, ψ and ω, as IUPAC defines them: φ about N–CA (C of the residue before, N, CA, C), ψ about CA–C (N, CA, C, N of the residue after), ω about the peptide bond to the residue after (CA, C, N and CA of it), so a cis peptide bond before a proline is the ω of the residue before it. Maps over an array of sets, `backbone_angles(residue)` is `float[n][3]`; a set within several residues is E0313. Missing where a neighbour is: φ at the start of a strand and after a chain break, ψ and ω at its end and before one, all three for a residue of no protein backbone, as a water, or of a CA trace (md\_backbone\_segment\_dihedrals). viamd's tooltip of a residue shows the same three |
 | `gyration(p: points, weights='mass')` | `float` Å | prelude: `sqrt(sum(w * norm(displacement(com(p, weights), p))**2) / sum(w))`, with `w = weight(p, weights)`. Drawn as a sphere of that radius at the centre |
 | `normal(p: points)` | `float[3]` | prelude: the direction of least spread, `v[:, 0]` of `eigh(d.T @ d)` with `d = displacement(com(p, weights=None), p)`. Drawn as an arrow from the centre |
 | `planarity(p: points)` | `float` Å | prelude: the RMS distance of the points from their plane of least spread, `sqrt(mean((d @ v[:, 0])**2))` with d and v as `normal` has them; 0 for a flat ring. Drawn as `normal` is |

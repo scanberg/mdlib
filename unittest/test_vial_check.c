@@ -341,6 +341,14 @@ UTEST_F(vial_check, stacked_particles) {
     EXPECT_TYPE_ON(P, "a = angle(particle(resid=3)[[1, 0, 2]])\n", 1, u8"float °, frame");
     EXPECT_TYPE_ON(P, "rs = residue[1:6]\na = angle(rs.particle[[1, 0, 2]])\n", 2, u8"float[5] °, frame");
     EXPECT_TYPE_ON(P, "d = dihedral(residue[['N', 'CA', 'CB', 'HB1']])\n", 1, u8"float[15] °, frame");
+    // A residue's phi, psi and omega, of each residue of an array
+    EXPECT_TYPE_ON(P, "bb = backbone_angles(residue)\n", 1, u8"float[15][3] °, frame");
+    EXPECT_TYPE_ON(P, "bb = backbone_angles(residue[3])\n", 1, u8"float[3] °, frame");
+    EXPECT_TYPE_ON(P, "bb = backbone_angles(residue['CA'])\n", 1, u8"float[15][3] °, frame");
+    EXPECT_TYPE_ON(P, "bb = backbone_angles(r=residue[0:2])\n", 1, u8"float[2][3] °, frame");
+    EXPECT_DIAGS_ON(P, "bb = backbone_angles(protein)\n",
+        "E0313 1: `backbone_angles` takes residues, a set within one residue each, and `protein` holds particles of several | backbone_angles(residue(protein))\n");
+    EXPECT_DIAGS_ON(P, "bb = backbone_angles(1.0)\n", "E0313 1: `backbone_angles` takes a set for r; this is float\n");
     EXPECT_TYPE_ON(P, "rs = residue[1:6]\nd = distance(rs[['N', 'CA']])\n", 2, u8"float[5] Å, frame");
     EXPECT_TYPE_ON(P, "d = distance(particle(resid=3)[[0, 1]])\n", 1, u8"float Å, frame");
     EXPECT_TYPE_ON(P, "def f(r: set):\n    return angle(r[['N', 'CA', 'C']])\nx = f(residue[1:6])\n", 3, u8"float[5] °, frame");

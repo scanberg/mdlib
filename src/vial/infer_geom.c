@@ -589,6 +589,43 @@ static T call_angle(infer_t* x, vial_node_id call, bool dihedral) {
     return with_loop(x, call, &loop, core, &t) ? t : err();
 }
 
+// backbone_angles(r): of the residue each set of r is in, its phi, psi and omega in a frame, float[3] °, each missing
+// where the residue has none (md_backbone_segment_dihedrals): phi at the start of a strand or after a gap, psi and
+// omega at its end or before one, all three of a residue of no protein backbone or of a CA trace
+static T call_backbone_angles(infer_t* x, vial_node_id call) {
+    static const param_t params[] = {{"r", VK_SET, true}};
+    vial_node_id args[1];
+    if (!bind(x, call, "backbone_angles", params, 1, args)) return err();
+    split_t sp[1];
+    T loop;
+    if (!map_args(x, call, "backbone_angles", params, 1, args, sp, &loop)) return err();
+    // A set stands for its residue, so it is within one, where the sets are known
+    const vial_value_t v = vx_value_of(x, args[0]);
+    if (v.kind == VIAL_VAL_SETS && x->sys) {
+        for (uint32_t i = 0; i < v.sets->count; ++i) {
+            const uint32_t* it = vial_sets_items(v.sets, i);
+            const uint32_t n = vial_sets_size(v.sets, i);
+            const int32_t r0 = n ? vial_sys_atom_res(x->sys, it[0]) : -1;
+            bool one = true;
+            for (uint32_t j = 1; j < n && one; ++j) one = vial_sys_atom_res(x->sys, it[j]) == r0;
+            if (one) continue;
+            char ex[VIAL_EXCERPT_MAX + 4], buf[256];
+            excerpt(ex, sizeof(ex), x, args[0]);
+            const char* fix = fix_around(buf, sizeof(buf), x, args[0], "backbone_angles(residue(", "))");
+            vx_diag_fix(x, "E0313", args[0], fix, "`backbone_angles` takes residues, a set within one residue each, and `%s` holds particles of several", ex);
+            return err();
+        }
+    }
+    T core = vial_type_scalar(VIAL_DT_FLOAT);
+    core.unit = unit_named("deg");
+    core.flags |= VIAL_TYPE_PERIODIC;
+    core.period_beg = -180.0f; core.period_end = 180.0f; core.seam = 180.0f;
+    vial_type_push_dim(&core, vial_extent_static(3));
+    core.stage = VIAL_STAGE_FRAME;
+    T t;
+    return with_loop(x, call, &loop, core, &t) ? t : err();
+}
+
 // The descriptions of a points core's point dimension and of the mapped ones, for W0608
 static bool shares_units(const split_t* p, const split_t* q) {
     uint32_t dp[VIAL_MAX_DIMS + 1], nq = 0;
@@ -670,6 +707,7 @@ bool vx_call_geom(infer_t* x, vial_node_id call, const vial_builtin_t* b, T* out
     if (md_str_eq(name, MD_STR_LIT("displacement")))  { *out = call_displacement(x, call); return true; }
     if (md_str_eq(name, MD_STR_LIT("angle")))         { *out = call_angle(x, call, false); return true; }
     if (md_str_eq(name, MD_STR_LIT("dihedral")))      { *out = call_angle(x, call, true); return true; }
+    if (md_str_eq(name, MD_STR_LIT("backbone_angles"))) { *out = call_backbone_angles(x, call); return true; }
     if (md_str_eq(name, MD_STR_LIT("closest_pair")))  { *out = call_pair(x, call, true); return true; }
     if (md_str_eq(name, MD_STR_LIT("farthest_pair"))) { *out = call_pair(x, call, false); return true; }
     if (md_str_eq(name, MD_STR_LIT("fit")))           { *out = call_fit(x, call); return true; }

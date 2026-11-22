@@ -7,6 +7,30 @@
 // Polymer inference: the roles of the atoms of amino acids and nucleotides, the classification of residues, the
 // protein and nucleic acid backbones and their chain breaks, and the backbone of a state (md_util.h).
 
+// The dihedrals of the segment cur, of the neighbours it has in its range (prev, next; NULL for none), from the bond
+// vectors under the minimum image
+static uint32_t segment_dihedrals(float out[3], const md_amino_acid_atoms_t* prev, const md_amino_acid_atoms_t* cur, const md_amino_acid_atoms_t* next,
+                                  const md_float3_t* xyz, const md_unitcell_t* cell) {
+    out[0] = out[1] = out[2] = 0.0f;
+    // C-1 -> N, N -> CA, CA -> C, C -> N+1, N+1 -> CA+1
+    md_float3_t d[5] = {
+        prev ? md_float3_sub(xyz[cur->n], xyz[prev->c]) : (md_float3_t){0},
+        md_float3_sub(xyz[cur->ca], xyz[cur->n]),
+        md_float3_sub(xyz[cur->c], xyz[cur->ca]),
+        next ? md_float3_sub(xyz[next->n], xyz[cur->c]) : (md_float3_t){0},
+        next ? md_float3_sub(xyz[next->ca], xyz[next->n]) : (md_float3_t){0},
+    };
+    md_geom_min_image((float*)d, 0, MD_COUNTOF(d), cell);
+    uint32_t has = 0;
+    if (prev) { out[0] = md_float3_dihedral_angle(d[0], d[1], d[2]); has |= MD_BACKBONE_PHI; }
+    if (next) {
+        out[1] = md_float3_dihedral_angle(d[1], d[2], d[3]);
+        out[2] = md_float3_dihedral_angle(d[2], d[3], d[4]);
+        has |= MD_BACKBONE_PSI | MD_BACKBONE_OMEGA;
+    }
+    return has;
+}
+
 bool md_backbone_angles_compute(md_backbone_angles_t backbone_angles[], size_t capacity, const md_float3_t* xyz, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone) {
     if (!backbone_angles) return false;
     if (capacity == 0) return false;
@@ -26,34 +50,33 @@ bool md_backbone_angles_compute(md_backbone_angles_t backbone_angles[], size_t c
             continue;
         }
 
+        const md_amino_acid_atoms_t* atoms = backbone->segment.atoms;
         for (size_t i = range.beg + 1; i + 1 < range.end; ++i) {
-			int c_prev_idx = backbone->segment.atoms[i - 1].c;
-			int ca_idx     = backbone->segment.atoms[i].ca;
-			int  c_idx     = backbone->segment.atoms[i].c;
-			int  n_idx     = backbone->segment.atoms[i].n;
-			int n_next_idx = backbone->segment.atoms[i + 1].n;
-
-			md_float3_t c_prev = xyz[c_prev_idx];
-            md_float3_t n      = xyz[n_idx];
-            md_float3_t ca     = xyz[ca_idx];
-            md_float3_t c      = xyz[c_idx];
-            md_float3_t n_next = xyz[n_next_idx];
-
-            md_float3_t d[4] = {
-                md_float3_sub(n, c_prev),
-                md_float3_sub(ca, n),
-                md_float3_sub(c, ca),
-                md_float3_sub(n_next, c),
-            };
-
-            md_geom_min_image((float*)d, 0, MD_COUNTOF(d), cell);
-
-            backbone_angles[i].phi = md_float3_dihedral_angle(d[0], d[1], d[2]);
-            backbone_angles[i].psi = md_float3_dihedral_angle(d[1], d[2], d[3]);
+            float a[3];
+            segment_dihedrals(a, &atoms[i - 1], &atoms[i], &atoms[i + 1], xyz, cell);
+            backbone_angles[i].phi = a[0];
+            backbone_angles[i].psi = a[1];
         }
     }
 
     return true;
+}
+
+uint32_t md_backbone_segment_dihedrals(float out[3], size_t seg_idx, const md_float3_t* xyz, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone) {
+    out[0] = out[1] = out[2] = 0.0f;
+    if (!xyz || !backbone || !backbone->segment.atoms || seg_idx >= backbone->segment.count || !backbone->range.offset) return 0;
+    // The range it is in: the last that begins at or before it
+    size_t lo = 0, hi = backbone->range.count;
+    while (hi - lo > 1) {
+        const size_t mid = (lo + hi) / 2;
+        if (backbone->range.offset[mid] <= seg_idx) lo = mid;
+        else hi = mid;
+    }
+    if (lo >= backbone->range.count || md_protein_backbone_range_is_trace(backbone, lo)) return 0;
+    const uint32_t beg = backbone->range.offset[lo], end = backbone->range.offset[lo + 1];
+    if (seg_idx < beg || seg_idx >= end) return 0;
+    const md_amino_acid_atoms_t* atoms = backbone->segment.atoms;
+    return segment_dihedrals(out, seg_idx > beg ? &atoms[seg_idx - 1] : NULL, &atoms[seg_idx], seg_idx + 1 < end ? &atoms[seg_idx + 1] : NULL, xyz, cell);
 }
 
 // ### THE BACKBONE OF A STATE ###

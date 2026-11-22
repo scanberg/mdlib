@@ -204,6 +204,19 @@ size_t md_system_protein_segment_atoms(md_atom_idx_t out[], size_t cap, const st
 // Backbone angles (phi, psi) from the coordinates of a frame. A trace has none: its segments are left 0.
 bool md_backbone_angles_compute(md_backbone_angles_t backbone_angles[], size_t capacity, const struct md_float3_t* xyz, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone);
 
+// The dihedrals of one segment from the coordinates of a frame, radians in (-pi, pi], as IUPAC defines them: phi about
+// N-CA (C of the segment before, N, CA, C), psi about CA-C (N, CA, C, N of the segment after) and omega about the
+// peptide bond to the segment after (CA, C, N, CA of it), so a cis peptide bond before a proline is the omega of the
+// residue before it. Writes phi, psi and omega to out and returns which of them the segment has: phi where a segment
+// comes before it in its range, psi and omega where one comes after; none for a segment of a trace. Those it has not
+// are 0. Unlike md_backbone_angles_compute, the ends of a range and short ranges have what they have.
+enum {
+    MD_BACKBONE_PHI   = 1,
+    MD_BACKBONE_PSI   = 2,
+    MD_BACKBONE_OMEGA = 4,
+};
+uint32_t md_backbone_segment_dihedrals(float out[3], size_t seg_idx, const struct md_float3_t* xyz, const md_unitcell_t* cell, const md_protein_backbone_data_t* backbone);
+
 // Ramachandran type (General / Glycine / Proline / Preproline, as MolProbity assigns them) from the residue names of
 // sys->protein_backbone, or for segments without a residue (res_idx -1) from their bonds. Writes min(capacity, segment count) types; the rest of the capacity is left UNKNOWN, as are the
 // segments of traces, which have no phi and psi.
