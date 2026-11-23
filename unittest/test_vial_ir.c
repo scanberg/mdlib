@@ -2065,6 +2065,44 @@ UTEST(vial_ir, hover_values) {
     md_arena_allocator_destroy(alloc);
 }
 
+// What is a matrix to be shown as one: two dimensions that both run over selections, or a builtin's heatmap; not
+// positions, components or what has a dimension of anything else
+UTEST(vial_ir, matrix_outputs) {
+    int64_t nf = 0;
+    const md_system_t* sys = vial_ir__run_p(&nf);
+    ASSERT_TRUE(sys != NULL);
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
+    const char* src =
+        "cm   = contacts(residue)\n"
+        "freq = mean(contacts(residue), axis='frame')\n"
+        "c    = residue.com\n"
+        "dm   = distance(c[:, None], c[None, :])\n"
+        "near = dm < 8.0\n"
+        "cl   = distance(residue[:, None], residue, between='closest')\n"
+        "pp   = distance(residue[0].xyz[:, None], residue[1].xyz)\n"
+        "bba  = backbone_angles(residue)\n"
+        "xyz  = particle.xyz\n"
+        "tab  = ones((4, 5))\n";
+    const md_vial_compile_desc_t cd = {.sys = sys, .run = MD_STR_LIT("run")};
+    md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &cd, alloc);
+    ASSERT_TRUE(prog != NULL);
+    const char* yes[] = {"cm", "freq", "dm", "near", "cl", "pp"};
+    const char* no[]  = {"c", "bba", "xyz", "tab"};
+    const md_vial_output_t* o;
+    const size_t n = md_vial_outputs(prog, &o);
+    for (size_t k = 0; k < sizeof(yes) / sizeof(yes[0]) + sizeof(no) / sizeof(no[0]); ++k) {
+        const bool want = k < sizeof(yes) / sizeof(yes[0]);
+        const char* name = want ? yes[k] : no[k - sizeof(yes) / sizeof(yes[0])];
+        const md_vial_output_t* found = NULL;
+        for (size_t i = 0; i < n; ++i) if (md_str_eq(o[i].name, md_str_from_cstr(name))) found = &o[i];
+        ASSERT_TRUE(found != NULL);
+        EXPECT_EQ(want, (found->flags & MD_VIAL_OUTPUT_MATRIX) != 0);
+        if (want != ((found->flags & MD_VIAL_OUTPUT_MATRIX) != 0)) printf("  %s: %s\n", name, found->type);
+    }
+    md_vial_program_free(prog);
+    md_arena_allocator_destroy(alloc);
+}
+
 // A matrix of truths per frame published as the frames each entry is true in, not as an attribute of every frame: each
 // frame as the interpreter gives it, from frames evaluated on several threads, and taken over by a later evaluation
 UTEST(vial_ir, matrix_pairs) {

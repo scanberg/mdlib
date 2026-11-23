@@ -149,8 +149,9 @@ enum {
     // times structures for an sdf)
     MD_VIAL_OUTPUT_VOLUME       = 1 << 3,
     MD_VIAL_OUTPUT_SDF          = 1 << 4,   // a volume in the frame of its structures, which drawing it places (md_vial_pose_t)
-    // A matrix: two dimensions, its rows' labels <path>/labels and its columns' <path>/column_labels where they are
-    // known. Truths per frame are kept as the frames each entry is true in (md_vial_eval_pairs), and have no <path>.
+    // A matrix, to be shown as one: numbers of two dimensions that both run over selections (distances between each of
+    // two sets of residues), or from a builtin that plots as a heatmap (contacts); not positions or components,
+    // float[n][3]. Its rows' labels <path>/labels and its columns' <path>/column_labels where they are known. Truths per frame are kept as the frames each entry is true in (md_vial_eval_pairs), and have no <path>.
     MD_VIAL_OUTPUT_MATRIX       = 1 << 5,
 };
 

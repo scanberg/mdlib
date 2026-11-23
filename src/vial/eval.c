@@ -661,6 +661,16 @@ static const vial_sets_t* dim_sets(const vial_ir_t* ir, const vial_type_t* t, ui
     return ss;
 }
 
+bool vial_value_is_matrix(const vial_ir_t* ir, vial_ssa_t v) {
+    if (!ir || !v || v >= md_array_size(ir->values)) return false;
+    const vial_type_t* t = &ir->values[v].type;
+    const bool number = t->dtype == VIAL_DT_BOOL || t->dtype == VIAL_DT_INT || t->dtype == VIAL_DT_FLOAT || t->dtype == VIAL_DT_FLOAT64;
+    if (!number || t->ndim != 2) return false;
+    const vial_builtin_t* b = value_builtin(ir, v);
+    if (b && b->plot) return b->plot == MD_VIAL_PLOT_HEATMAP;
+    return dim_sets(ir, t, 0) && dim_sets(ir, t, 1);
+}
+
 size_t md_vial_output_atoms(const md_vial_program_t* prog, md_str_t name, uint8_t dim, uint32_t index, uint32_t* out, size_t cap) {
     const vial_ir_t* ir = prog ? md_vial__run_ir(prog) : NULL;
     if (!ir) return 0;

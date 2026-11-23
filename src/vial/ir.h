@@ -228,3 +228,8 @@ uint32_t vial_ir_pairs(vial_ir_t* ir, md_allocator_i* alloc);
 // of ir, zeroed before the first call, and is shared by calls on the same ir. Never 0.
 struct md_system_t;
 uint64_t vial_ir_fingerprint(const vial_ir_t* ir, vial_ssa_t v, const struct md_system_t* sys, md_str_t run, uint64_t* memo);
+
+// Whether value v is a matrix to be shown as one (MD_VIAL_OUTPUT_MATRIX): numbers of two dimensions given by a builtin
+// that plots them as a heatmap, or, of one that does not say, whose two dimensions both run over selections, as hover
+// plots it. Not positions or a builtin's components, float[n][3]. In eval.c, beside how hover plots.
+bool vial_value_is_matrix(const vial_ir_t* ir, vial_ssa_t v);

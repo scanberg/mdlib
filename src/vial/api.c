@@ -133,7 +133,7 @@ static void collect_outputs(md_vial_program_t* prog) {
             if (o.stage == MD_VIAL_STAGE_FRAME || o.stage == MD_VIAL_STAGE_TRAJECTORY_PER_FRAME) o.flags |= MD_VIAL_OUTPUT_TEMPORAL;
             if (ty->period_end > ty->period_beg) o.flags |= MD_VIAL_OUTPUT_PERIODIC;
             if (vol) o.flags |= MD_VIAL_OUTPUT_VOLUME | (!strcmp(vol, "sdf") ? MD_VIAL_OUTPUT_SDF : 0);
-            if (number && ty->ndim == 2) o.flags |= MD_VIAL_OUTPUT_MATRIX;
+            if (rv && vial_value_is_matrix(&prog->run_ir, rv)) o.flags |= MD_VIAL_OUTPUT_MATRIX;
             if (rv) {
                 o.fingerprint = vial_ir_fingerprint(&prog->run_ir, rv, prog->check.sys, prog->check.run, memo);
                 if (distribution_of(&prog->run_ir, rv)) o.flags |= MD_VIAL_OUTPUT_DISTRIBUTION;
