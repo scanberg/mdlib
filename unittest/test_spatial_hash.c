@@ -1284,17 +1284,33 @@ static bool cell_has_pair(const cell_pairs_t* p, uint64_t key) {
     return p->count && bsearch(&key, p->keys, p->count, sizeof(uint64_t), cell_cmp_u64) != NULL;
 }
 
-// Squared minimum image distance, in double, along the periodic axes of cell (NULL: none). The cutoffs used here stay
-// below half the perpendicular width of the cell, so the nearest of the 27 images is the minimum image.
-static double cell_ref_d2(const float* a, const float* b, const md_unitcell_t* cell) {
-    double d[3] = { (double)b[0] - a[0], (double)b[1] - a[1], (double)b[2] - a[2] };
-    if (!cell) return d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+// The cell of the reference distances (NULL: none), its matrices taken out once rather than for every pair
+typedef struct cell_ref_t {
     double A[3][3], I[3][3];
-    md_unitcell_A_extract_double(A, cell);
-    md_unitcell_I_extract_double(I, cell);
-    const int pbc[3] = { (cell->flags & MD_UNITCELL_PBC_X) != 0, (cell->flags & MD_UNITCELL_PBC_Y) != 0, (cell->flags & MD_UNITCELL_PBC_Z) != 0 };
+    int    pbc[3];
+    bool   has_cell;
+} cell_ref_t;
+
+static cell_ref_t cell_ref_make(const md_unitcell_t* cell) {
+    cell_ref_t r = {0};
+    if (!cell) return r;
+    r.has_cell = true;
+    md_unitcell_A_extract_double(r.A, cell);
+    md_unitcell_I_extract_double(r.I, cell);
+    r.pbc[0] = (cell->flags & MD_UNITCELL_PBC_X) != 0;
+    r.pbc[1] = (cell->flags & MD_UNITCELL_PBC_Y) != 0;
+    r.pbc[2] = (cell->flags & MD_UNITCELL_PBC_Z) != 0;
+    return r;
+}
+
+// Squared minimum image distance, in double, along the periodic axes of the cell. The cutoffs used here stay below half
+// the perpendicular width of the cell, so the nearest of the 27 images is the minimum image.
+static double cell_ref_d2(const float* a, const float* b, const cell_ref_t* r) {
+    double d[3] = { (double)b[0] - a[0], (double)b[1] - a[1], (double)b[2] - a[2] };
+    if (!r->has_cell) return d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+    const int* pbc = r->pbc;
     double s[3];
-    for (int r = 0; r < 3; ++r) s[r] = I[0][r] * d[0] + I[1][r] * d[1] + I[2][r] * d[2];
+    for (int k = 0; k < 3; ++k) s[k] = r->I[0][k] * d[0] + r->I[1][k] * d[1] + r->I[2][k] * d[2];
     for (int k = 0; k < 3; ++k) if (pbc[k]) s[k] -= round(s[k]);
     double best = DBL_MAX;
     for (int iz = -1; iz <= 1; ++iz) for (int iy = -1; iy <= 1; ++iy) for (int ix = -1; ix <= 1; ++ix) {
@@ -1302,7 +1318,7 @@ static double cell_ref_d2(const float* a, const float* b, const md_unitcell_t* c
         if ((!pbc[0] && ix) || (!pbc[1] && iy) || (!pbc[2] && iz)) continue;
         double t[3] = { s[0] + o[0], s[1] + o[1], s[2] + o[2] };
         double c[3];
-        for (int r = 0; r < 3; ++r) c[r] = A[0][r] * t[0] + A[1][r] * t[1] + A[2][r] * t[2];
+        for (int k = 0; k < 3; ++k) c[k] = r->A[0][k] * t[0] + r->A[1][k] * t[1] + r->A[2][k] * t[2];
         best = MD_MIN(best, c[0] * c[0] + c[1] * c[1] + c[2] * c[2]);
     }
     return best;
@@ -1312,6 +1328,7 @@ static double cell_ref_d2(const float* a, const float* b, const md_unitcell_t* c
 // either way: the structure works in single precision.
 static bool cell_matches_reference(const float* xyz, const int32_t* idx, size_t count, const md_spatial_acc_t* acc, double cutoff, const md_unitcell_t* cell, bool src_idx) {
     cell_pairs_t got = cell_collect_pairs(acc, cutoff);
+    const cell_ref_t ref = cell_ref_make(cell);
     const double r_in  = (cutoff - 1.0e-3) * (cutoff - 1.0e-3);
     const double r_out = (cutoff + 1.0e-3) * (cutoff + 1.0e-3);
     size_t missing = 0, extra = 0, found = 0;
@@ -1321,7 +1338,7 @@ static bool cell_matches_reference(const float* xyz, const int32_t* idx, size_t 
         for (size_t b = a + 1; b < count; ++b) {
             const size_t ib = idx ? (size_t)idx[b] : b;
             const float* pb = xyz + 3 * ib;
-            const double d2 = cell_ref_d2(pa, pb, cell);
+            const double d2 = cell_ref_d2(pa, pb, &ref);
             if (d2 >= r_out) continue;
             const uint32_t ka = src_idx ? (uint32_t)ia : (uint32_t)a;
             const uint32_t kb = src_idx ? (uint32_t)ib : (uint32_t)b;
@@ -1339,6 +1356,36 @@ static bool cell_matches_reference(const float* xyz, const int32_t* idx, size_t 
     }
     free(got.keys);
     return missing == 0 && extra == 0;
+}
+
+// The pairs of two structures over the same points (no index) against each other: what only one of them reports has to
+// lie within 1e-3 A of the cutoff, where single precision may go either way. Linear in the pairs, where the brute force
+// reference is quadratic in the points (minutes at tens of thousands of points).
+static bool cell_matches_other(const float* xyz, const md_spatial_acc_t* acc, const md_spatial_acc_t* other, double cutoff, const md_unitcell_t* cell) {
+    cell_pairs_t a = cell_collect_pairs(acc, cutoff);
+    cell_pairs_t b = cell_collect_pairs(other, cutoff);
+    const cell_ref_t ref = cell_ref_make(cell);
+    const double r_in  = (cutoff - 1.0e-3) * (cutoff - 1.0e-3);
+    const double r_out = (cutoff + 1.0e-3) * (cutoff + 1.0e-3);
+    size_t dup = 0, differ = 0, outside = 0;
+    for (size_t k = 1; k < a.count; ++k) dup += a.keys[k] == a.keys[k - 1];
+    for (size_t k = 1; k < b.count; ++k) dup += b.keys[k] == b.keys[k - 1];
+    size_t i = 0, j = 0;
+    while (i < a.count || j < b.count) {
+        uint64_t key;
+        if (j == b.count || (i < a.count && a.keys[i] < b.keys[j]))      key = a.keys[i++];
+        else if (i == a.count || b.keys[j] < a.keys[i])                 key = b.keys[j++];
+        else { i++; j++; continue; }
+        differ += 1;
+        const double d2 = cell_ref_d2(xyz + 3 * (key >> 32), xyz + 3 * (key & 0xFFFFFFFFu), &ref);
+        outside += d2 < r_in || d2 >= r_out;
+    }
+    if (dup || outside) {
+        printf("against the other structure: %zu pairs reported twice, %zu of the %zu reported by one only not at the cutoff (of %zu, %zu)\n", dup, outside, differ, a.count, b.count);
+    }
+    free(a.keys);
+    free(b.keys);
+    return dup == 0 && outside == 0;
 }
 
 UTEST(spatial_acc_cells, matches_reference_randomized) {
@@ -1485,7 +1532,8 @@ UTEST(spatial_acc_cells, micrometre_box) {
 }
 
 // The cell extent from the cutoff: the cutoff where the points are dense, larger (at most 4x) where they are sparse,
-// and the same pairs either way
+// and the same pairs either way: those of the structure with cells of the cutoff, which matches_reference_randomized
+// holds to the brute force
 UTEST(spatial_acc_cells, cell_extent_from_cutoff) {
     srand(2718);
     const size_t count = 40000;     // past SPATIAL_ACC_OCCUPANCY_MIN_POINTS, so the extent is estimated
@@ -1518,7 +1566,14 @@ UTEST(spatial_acc_cells, cell_extent_from_cutoff) {
         }
         EXPECT_GE(cell_ext, cutoff);
         EXPECT_LE(cell_ext, cutoff * 4.0 * 1.01);
-        EXPECT_TRUE(cell_matches_reference(xyz, NULL, count, &acc, cutoff, &cell, false));
+
+        md_spatial_acc_t by_cutoff = { .alloc = md_get_heap_allocator() };
+        md_spatial_acc_desc_t desc_cutoff = desc;
+        desc_cutoff.cell_ext = cutoff;
+        md_spatial_acc_init(&by_cutoff, &desc_cutoff);
+        EXPECT_EQ(cutoff, md_spatial_acc_cell_ext(&by_cutoff));
+        EXPECT_TRUE(cell_matches_other(xyz, &acc, &by_cutoff, cutoff, &cell));
+        md_spatial_acc_free(&by_cutoff);
         md_spatial_acc_free(&acc);
     }
 

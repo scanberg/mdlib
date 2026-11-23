@@ -1195,25 +1195,39 @@ static void iso_api_free(iso_api_case_t* c) {
     memset(c, 0, sizeof(*c));
 }
 
-// Dense Surface Nets over the cache's whole lattice, double precision: what the cache must reproduce.
-static void iso_dense_counts(const md_gto_iso_field_t* field, const md_gto_iso_cache_info_t* info, double iso, int out_nv[2], int out_nq[2]) {
+// Dense Surface Nets over the cache's whole lattice, double precision: what the cache must reproduce. The lattice keeps
+// the corners it has evaluated, so every iso value after the first costs only the Surface Nets.
+typedef struct iso_dense_t {
+    iso_lattice_t lat;
+    iso_leaf_t*   cells;
+    int           num_cells;
+} iso_dense_t;
+
+static void iso_dense_init(iso_dense_t* d, const md_gto_iso_field_t* field, const md_gto_iso_cache_info_t* info) {
     const int N = (int)info->cells_per_axis;
-    iso_leaf_t* dense = (iso_leaf_t*)malloc(sizeof(iso_leaf_t) * (size_t)N * N * N);
-    size_t nd = 0;
-    for (int z = 0; z < N; ++z) for (int y = 0; y < N; ++y) for (int x = 0; x < N; ++x) dense[nd++] = (iso_leaf_t){x, y, z, 3};
-    iso_lattice_t lat = {.f = &field->f, .h = info->cell_size};
-    memcpy(lat.origin, info->origin, sizeof(lat.origin));
-    iso_map_init(&lat.corner_map, (uint32_t)((N + 1) * (N + 1) * (N + 1)));
+    d->cells = (iso_leaf_t*)malloc(sizeof(iso_leaf_t) * (size_t)N * N * N);
+    d->num_cells = 0;
+    for (int z = 0; z < N; ++z) for (int y = 0; y < N; ++y) for (int x = 0; x < N; ++x) d->cells[d->num_cells++] = (iso_leaf_t){x, y, z, 3};
+    d->lat = (iso_lattice_t){.f = &field->f, .h = info->cell_size};
+    memcpy(d->lat.origin, info->origin, sizeof(d->lat.origin));
+    iso_map_init(&d->lat.corner_map, (uint32_t)((N + 1) * (N + 1) * (N + 1)));
+}
+
+static void iso_dense_counts(iso_dense_t* d, double iso, int out_nv[2], int out_nq[2]) {
     for (int s = 0; s < 2; ++s) {
         iso_mesh_t m;
-        iso_surface_nets(&m, &lat, dense, (int)nd, s == 0 ? 1 : -1, iso);
+        iso_surface_nets(&m, &d->lat, d->cells, d->num_cells, s == 0 ? 1 : -1, iso);
         out_nv[s] = iso_mesh_nv(&m);
         out_nq[s] = (int)(md_array_size(m.quad) / 4);
         iso_mesh_free(&m);
     }
-    iso_map_free(&lat.corner_map);
-    md_array_free(lat.corner_val, md_get_heap_allocator());
-    free(dense);
+}
+
+static void iso_dense_free(iso_dense_t* d) {
+    iso_map_free(&d->lat.corner_map);
+    md_array_free(d->lat.corner_val, md_get_heap_allocator());
+    free(d->cells);
+    memset(d, 0, sizeof(*d));
 }
 
 // An md_gto_iso_mesh_t sheet as an iso_mesh_t, for the metrics.
@@ -1259,13 +1273,15 @@ UTEST(gto_iso_api, cache_serves_its_interval_exactly) {
         EXPECT_FALSE(md_gto_iso_mesh_extract(&bad, cache, &(md_gto_iso_mesh_desc_t){.iso = 0.2}, md_get_heap_allocator()));
 
         static const double isos[3] = {0.02, 0.05, 0.1};
+        iso_dense_t dense;
+        iso_dense_init(&dense, c.field, &info);
         for (int k = 0; k < 3; ++k) {
             md_gto_iso_mesh_t raw;
             t0 = md_tick_now();
             ASSERT_TRUE(md_gto_iso_mesh_extract(&raw, cache, &(md_gto_iso_mesh_desc_t){.iso = isos[k]}, md_get_heap_allocator()));
             const double t_raw = iso_seconds_since(t0);
             int dnv[2], dnq[2];
-            iso_dense_counts(c.field, &info, isos[k], dnv, dnq);
+            iso_dense_counts(&dense, isos[k], dnv, dnq);
             printf("     iso %.2f raw: %u + %u vertices (dense lattice %d + %d), %u + %u triangles (dense %d + %d), %.3fs\n", isos[k],
                 raw.sheet_vertex_count[0], raw.sheet_vertex_count[1], dnv[0], dnv[1],
                 raw.sheet_index_count[0] / 3, raw.sheet_index_count[1] / 3, 2 * dnq[0], 2 * dnq[1], t_raw);
@@ -1275,6 +1291,7 @@ UTEST(gto_iso_api, cache_serves_its_interval_exactly) {
             }
             md_gto_iso_mesh_free(&raw);
         }
+        iso_dense_free(&dense);
         md_gto_iso_cache_destroy(cache);
         iso_api_free(&c);
     }
@@ -1771,11 +1788,13 @@ UTEST(gto_iso_density, cache_serves_its_interval_exactly) {
             info.num_bricks, info.cells_per_axis, info.seconds_octree, info.seconds_corners);
 
         const double isos[3] = {dc->iso_min, sqrt(dc->iso_min * dc->iso_max), dc->iso_max};
+        iso_dense_t dense;
+        iso_dense_init(&dense, field, &info);
         for (int k = 0; k < 3; ++k) {
             md_gto_iso_mesh_t raw;
             ASSERT_TRUE(md_gto_iso_mesh_extract(&raw, cache, &(md_gto_iso_mesh_desc_t){.iso = isos[k]}, md_get_heap_allocator()));
             int dnv[2], dnq[2];
-            iso_dense_counts(field, &info, isos[k], dnv, dnq);
+            iso_dense_counts(&dense, isos[k], dnv, dnq);
             printf("     iso %.4f: %u + %u vertices (dense lattice %d + %d), %u + %u triangles (dense %d + %d)\n", isos[k],
                 raw.sheet_vertex_count[0], raw.sheet_vertex_count[1], dnv[0], dnv[1],
                 raw.sheet_index_count[0] / 3, raw.sheet_index_count[1] / 3, 2 * dnq[0], 2 * dnq[1]);
@@ -1785,6 +1804,7 @@ UTEST(gto_iso_density, cache_serves_its_interval_exactly) {
             }
             md_gto_iso_mesh_free(&raw);
         }
+        iso_dense_free(&dense);
         md_gto_iso_cache_destroy(cache);
         md_gto_iso_field_destroy(field);
         iso_dens_prod_free(&p);
@@ -2656,12 +2676,14 @@ UTEST(gto_iso_lol, cache_is_dense_surface_nets_and_meshes_close) {
                c->file, c->elf ? "ELF" : "LOL", c->iso_min, c->iso_max, c->h, info.num_bricks, info.cells_per_axis, 100.0 * 125.0 * info.num_bricks / lattice,
                info.seconds_octree, info.seconds_corners, t_cache);
         const double isos[3] = {c->iso_min, 0.5 * (c->iso_min + c->iso_max), c->iso_max};
+        iso_dense_t dense;
+        iso_dense_init(&dense, fld, &info);
         for (int k = 0; k < 3; ++k) {
             md_gto_iso_mesh_t raw, q;
             ASSERT_TRUE(md_gto_iso_mesh_extract(&raw, cache, &(md_gto_iso_mesh_desc_t){.iso = isos[k]}, md_get_heap_allocator()));
             t0 = md_tick_now();
             int dnv[2], dnq[2];
-            iso_dense_counts(fld, &info, isos[k], dnv, dnq);
+            iso_dense_counts(&dense, isos[k], dnv, dnq);
             const double t_dense = iso_seconds_since(t0);
             ASSERT_TRUE(md_gto_iso_mesh_extract(&q, cache, &(md_gto_iso_mesh_desc_t){.iso = isos[k], .project_iterations = 8, .relax_iterations = 3}, md_get_heap_allocator()));
             printf("     iso %.2f: %u vertices (dense lattice %d, %.1fs), %u triangles (dense %d); sheet - %u\n", isos[k],
@@ -2690,6 +2712,7 @@ UTEST(gto_iso_lol, cache_is_dense_surface_nets_and_meshes_close) {
             md_gto_iso_mesh_free(&raw);
             md_gto_iso_mesh_free(&q);
         }
+        iso_dense_free(&dense);
         md_gto_iso_cache_destroy(cache);
         iso_lol_src_free(&l);
     }
@@ -4697,9 +4720,10 @@ UTEST(gto_iso_gpu_lib, taylor_brick_mo_experiment) {
 // ---------------------------------------------------------------------------------------------
 // TEST: the flood against the exact corners, over iso values up to where the
 // pieces are atoms' small blobs: the meshes' vertex and triangle counts. The default (flood 1: SCF
-// densities, marked as having their maxima at the atoms) must match exactly; the flood forced on the
-// attachment and detachment densities (flood 2), and without the atoms' bricks as seeds, for what they
-// miss. Amide by default; GTO_ISO_FLOOD_SWEEP_FILES=h2o.h5,amide.h5,mol.h5 for more systems.
+// densities, marked as having their maxima at the atoms) must match exactly. With GTO_ISO_FLOOD_SWEEP=1
+// also the flood forced on the attachment and detachment densities (flood 2), and without the atoms'
+// bricks as seeds, for what they miss (reported only: twice the extractions, nothing asserted).
+// Amide by default; GTO_ISO_FLOOD_SWEEP_FILES=h2o.h5,amide.h5,mol.h5 for more systems.
 // ---------------------------------------------------------------------------------------------
 
 UTEST(gto_iso_gpu_lib, flood_sweep) {
@@ -4713,6 +4737,8 @@ UTEST(gto_iso_gpu_lib, flood_sweep) {
     const double isos[] = {0.0025, 0.02, 0.1, 0.3, 1.0, 3.0};
     const int kinds[] = {ISO_D_SCF, ISO_D_ATTACH, ISO_D_DETACH};
     const char* kname[] = {"scf", "attach", "detach"};
+    const bool forced = getenv("GTO_ISO_FLOOD_SWEEP") && getenv("GTO_ISO_FLOOD_SWEEP")[0] == '1';
+    const int num_modes = forced ? 4 : 2;
     long worse_atoms = 0, worse_forced = 0, worse_plain = 0;
     for (char* fname = strtok(flist, ","); fname; fname = strtok(NULL, ",")) {
         iso_dens_src_t s;
@@ -4728,7 +4754,7 @@ UTEST(gto_iso_gpu_lib, flood_sweep) {
             ASSERT_TRUE(set != NULL);
             for (int ii = 0; ii < (int)(sizeof(isos) / sizeof(isos[0])); ++ii) {
                 uint32_t nv[4] = {0}, nt[4] = {0};
-                for (int mode = 0; mode < 4; ++mode) {      // exact, the default, flood forced, forced without the atoms
+                for (int mode = 0; mode < num_modes; ++mode) {      // exact, the default, flood forced, forced without the atoms
                     md_gto_iso_gpu_switches_t sw = sw0;
                     sw.flood = mode == 0 ? 0 : mode == 1 ? 1 : 2;
                     md_gto_iso_gpu_switches_set(&sw);
@@ -4744,10 +4770,14 @@ UTEST(gto_iso_gpu_lib, flood_sweep) {
                 isog_flood_atoms = 1;
                 const bool ok1 = nv[1] == nv[0] && nt[1] == nt[0], ok2 = nv[2] == nv[0] && nt[2] == nt[0], ok3 = nv[3] == nv[0] && nt[3] == nt[0];
                 worse_atoms += !ok1;
-                worse_forced += !ok2;
-                worse_plain += !ok3;
-                printf("  %-14s %-6s iso %-7g exact %6u v %6u t | default %6u v%s | forced %6u v%s | forced, no atom seeds %6u v%s\n", fname, kname[ki], isos[ii],
-                       nv[0], nt[0], nv[1], ok1 ? "" : " DIFFERS", nv[2], ok2 ? "" : " MISSED", nv[3], ok3 ? "" : " MISSED");
+                if (forced) {
+                    worse_forced += !ok2;
+                    worse_plain += !ok3;
+                    printf("  %-14s %-6s iso %-7g exact %6u v %6u t | default %6u v%s | forced %6u v%s | forced, no atom seeds %6u v%s\n", fname, kname[ki], isos[ii],
+                           nv[0], nt[0], nv[1], ok1 ? "" : " DIFFERS", nv[2], ok2 ? "" : " MISSED", nv[3], ok3 ? "" : " MISSED");
+                } else {
+                    printf("  %-14s %-6s iso %-7g exact %6u v %6u t | default %6u v%s\n", fname, kname[ki], isos[ii], nv[0], nt[0], nv[1], ok1 ? "" : " DIFFERS");
+                }
             }
             md_gto_iso_gpu_set_destroy(g.s, set);
             md_gto_iso_field_destroy(field);
@@ -4756,7 +4786,8 @@ UTEST(gto_iso_gpu_lib, flood_sweep) {
         iso_dens_src_free(&s);
     }
     md_gto_iso_gpu_switches_set(&sw0);
-    printf("  cases where the default differs from the exact mesh: %ld; the flood forced: %ld, and without the atom seeds: %ld\n", worse_atoms, worse_forced, worse_plain);
+    if (forced) printf("  cases where the default differs from the exact mesh: %ld; the flood forced: %ld, and without the atom seeds: %ld\n", worse_atoms, worse_forced, worse_plain);
+    else        printf("  cases where the default differs from the exact mesh: %ld (GTO_ISO_FLOOD_SWEEP=1: the flood forced too)\n", worse_atoms);
     EXPECT_EQ(worse_atoms, 0);
     md_gto_iso_gpu_shutdown();
     iso_gpu_free(&g);

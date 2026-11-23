@@ -7,10 +7,15 @@
 
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 // Enclosures of the electrostatic potential over boxes (md_gto_int_potential_box): that they hold
 // what the potential is inside them, and how much of a lattice they leave to evaluate for the
 // isosurfaces V = +-iso, against the cells that surface actually crosses.
+//
+// The culling reports (culling_*) are an EXPERIMENT and assert nothing: each evaluates the potential at
+// every point of a full lattice, one at a time - minutes, most of the suite's time on CI. On demand:
+//   GTO_INT_BOX_REPORT=1 ./md_unittest --filter='gto_int_box.*'
 
 typedef struct {
     md_gto_basis_t basis;
@@ -253,10 +258,14 @@ static void box_test_cull_report(const char* file, double iso, double h, double 
     qm_test_free(&t);
 }
 
+static bool box_test_report(void) { const char* e = getenv("GTO_INT_BOX_REPORT"); return e && e[0] == '1'; }
+
 UTEST(gto_int_box, culling_h2o) {
+    if (!box_test_report()) UTEST_SKIP("set GTO_INT_BOX_REPORT=1 (EXPERIMENT, minutes)");
     box_test_cull_report(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5", 0.05, 0.2, 8.0);
 }
 
 UTEST(gto_int_box, culling_amide) {
+    if (!box_test_report()) UTEST_SKIP("set GTO_INT_BOX_REPORT=1 (EXPERIMENT, minutes)");
     box_test_cull_report(MD_UNITTEST_DATA_DIR "/vlx/amide.h5", 0.05, 0.3, 8.0);
 }

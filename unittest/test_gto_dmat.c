@@ -723,8 +723,9 @@ UTEST(gto_localization, matches_cpu) {
 // A grid of one layer is evaluated in blocks of 32x16x1 voxels: what they give is the first layer of the same grid
 // eight layers deep, in blocks of 8x8x8, within the difference of what the two screen out. A turned grid at a plane's
 // spacing, as a plane's is; the density (packed and dmat), orbitals (1: shell, 4: shell of 8, 12: GEMM) and ELF, LOL.
-// With the times of one layer in 32x16x1 blocks and in 8x8x8 ones (MD_GTO_GPU_NO_2D), each a second launch: on
-// llvmpipe 5-9x faster for the density and the orbitals.
+// With GTO_PLANE_TIMES=1, the times of one layer in 32x16x1 blocks and in 8x8x8 ones (MD_GTO_GPU_NO_2D), each a
+// second launch: on llvmpipe 5-9x faster for the density and the orbitals. Without it each grid is launched once, and
+// the one layer by the 8x8x8 kernels, which is only timed, not at all.
 typedef struct plane_pair_t {
     md_grid_t        g3, g2;
     md_gpu_texture_t t3, t2;
@@ -798,7 +799,9 @@ static void plane_pair_free(plane_pair_t* p, md_gpu_stream_t st) {
 }
 
 UTEST(gto_gpu, plane_matches_volume) {
-    printf("  (the kernels' times, for measurements: " MD_GTO_GPU_PLANE_REVISION ")\n");
+    const bool timed = getenv("GTO_PLANE_TIMES") && getenv("GTO_PLANE_TIMES")[0] == '1';
+    const int num_k = timed ? 3 : 2;   // 8 layers, one layer, and (timed) one layer by the 3D kernels
+    if (timed) printf("  (the kernels' times, for measurements: " MD_GTO_GPU_PLANE_REVISION ")\n");
     static const char* files[] = {"h2o.h5", "mol.h5"};
     for (int fi = 0; fi < 2; ++fi) {
         dm_src_t s;
@@ -814,8 +817,8 @@ UTEST(gto_gpu, plane_matches_volume) {
         // the density
         {
             for (int use_dm = 0; use_dm < 2; ++use_dm) {
-                double ms[3];
-                for (int k = 0; k < 3; ++k) {
+                double ms[3] = {0, 0, 0};
+                for (int k = 0; k < num_k; ++k) {
                     if (k == 2) md_os_env_set("MD_GTO_GPU_NO_2D", "1");   // one layer again, by the 3D kernels: what it cost before
                     md_gto_gpu_density_desc_t d = {
                         .basis = g.basis, .atom_xyz = g.atoms, .coeff = use_dm ? 0 : g.coeff, .dmat = use_dm ? dm : NULL,
@@ -823,17 +826,21 @@ UTEST(gto_gpu, plane_matches_volume) {
                         .op = MD_GTO_OP_SET,
                     };
                     if (k == 2) plane_pair_read(&pp, g.s);   // (what is compared: the 2D kernels')
-                    md_gto_gpu_density_launch(g.s, &d);      // once to make its kernels, then timed
+                    md_gto_gpu_density_launch(g.s, &d);      // once to make its kernels, then (timed) again
                     md_gpu_stream_sync(g.s);
-                    const md_tick_t t0 = md_tick_now();
-                    md_gto_gpu_density_launch(g.s, &d);
-                    md_gpu_stream_sync(g.s);
-                    ms[k] = md_tick_to_milliseconds(md_tick_now() - t0);
+                    if (timed) {
+                        const md_tick_t t0 = md_tick_now();
+                        md_gto_gpu_density_launch(g.s, &d);
+                        md_gpu_stream_sync(g.s);
+                        ms[k] = md_tick_to_milliseconds(md_tick_now() - t0);
+                    }
                     if (k == 2) md_os_env_set("MD_GTO_GPU_NO_2D", NULL);
                 }
+                if (!timed) plane_pair_read(&pp, g.s);
                 rel = plane_pair_diff(&pp, &m);
-                printf("  %-8s density, %s: max |plane - layer| / max = %.2e (max %.3g); 1 layer %.1f ms (3D kernels %.1f ms)\n",
-                       files[fi], use_dm ? "dmat  " : "packed", rel, m, ms[1], ms[2]);
+                printf("  %-8s density, %s: max |plane - layer| / max = %.2e (max %.3g)", files[fi], use_dm ? "dmat  " : "packed", rel, m);
+                if (timed) printf("; 1 layer %.1f ms (3D kernels %.1f ms)", ms[1], ms[2]);
+                printf("\n");
                 EXPECT_LT(rel, 1.0e-5);
                 EXPECT_GT(m, 1.0e-3);
             }
@@ -848,25 +855,29 @@ UTEST(gto_gpu, plane_matches_volume) {
             float* dst = (float*)md_gpu_upload_begin(g.s, c, md_gto_gpu_coeff_size_mo(n, s.num_ao));
             md_gto_gpu_coeff_pack_mo(dst, rows, NULL, n, s.num_ao);
             md_gpu_upload_end(g.s);
-            double ms[3];
-            for (int k = 0; k < 3; ++k) {
+            double ms[3] = {0, 0, 0};
+            for (int k = 0; k < num_k; ++k) {
                 if (k == 2) { plane_pair_read(&pp, g.s); md_os_env_set("MD_GTO_GPU_NO_2D", "1"); }
                 md_gto_gpu_orbital_desc_t d = {
                     .basis = g.basis, .atom_xyz = g.atoms, .coeff = c, .out_tex = k ? pp.t2 : pp.t3, .grid = k ? &pp.g2 : &pp.g3,
                     .sample_offset = {0.5f, 0.5f, 0.5f}, .num_orbitals = n,
                     .eval_mode = n == 1 ? MD_GTO_EVAL_MODE_PSI : MD_GTO_EVAL_MODE_PSI_SQUARED, .op = MD_GTO_OP_SET,
                 };
-                md_gto_gpu_orbital_launch(g.s, &d);     // once to make its kernels, then timed
+                md_gto_gpu_orbital_launch(g.s, &d);     // once to make its kernels, then (timed) again
                 md_gpu_stream_sync(g.s);
-                const md_tick_t t0 = md_tick_now();
-                md_gto_gpu_orbital_launch(g.s, &d);
-                md_gpu_stream_sync(g.s);
-                ms[k] = md_tick_to_milliseconds(md_tick_now() - t0);
+                if (timed) {
+                    const md_tick_t t0 = md_tick_now();
+                    md_gto_gpu_orbital_launch(g.s, &d);
+                    md_gpu_stream_sync(g.s);
+                    ms[k] = md_tick_to_milliseconds(md_tick_now() - t0);
+                }
                 if (k == 2) md_os_env_set("MD_GTO_GPU_NO_2D", NULL);
             }
+            if (!timed) plane_pair_read(&pp, g.s);
             rel = plane_pair_diff(&pp, &m);
-            printf("  %-8s %zu orbital%s: max |plane - layer| / max = %.2e (max %.3g); 1 layer %.1f ms (3D kernels %.1f ms)\n",
-                   files[fi], n, n == 1 ? " " : "s", rel, m, ms[1], ms[2]);
+            printf("  %-8s %zu orbital%s: max |plane - layer| / max = %.2e (max %.3g)", files[fi], n, n == 1 ? " " : "s", rel, m);
+            if (timed) printf("; 1 layer %.1f ms (3D kernels %.1f ms)", ms[1], ms[2]);
+            printf("\n");
             // the shell kernel screens by |C| |phi| per block: other blocks, other shells at the cutoff (the basis's, 1e-6):
             // a difference of that order, not relative to the values (2.2e-6 measured, mol, one orbital)
             EXPECT_LT(rel * m, 1.0e-5);
@@ -890,18 +901,23 @@ UTEST(gto_gpu, plane_matches_volume) {
     for (int kind = 0; kind < 2; ++kind) {
         const md_gto_gpu_localization_t kd = kind ? MD_GTO_GPU_LOL : MD_GTO_GPU_ELF;
         double ms[3] = {0, 0, 0};
-        float* v2b = (float*)malloc(sizeof(float) * n2);
-        md_os_env_set("MD_GTO_GPU_NO_2D", "1");
-        const bool ok3 = loc_eval_gpu(v2b, &ls, &g2, kd, true, 1.0e-4, &ms[2]);
-        md_os_env_set("MD_GTO_GPU_NO_2D", NULL);
-        free(v2b);
-        if (!ok3 || !loc_eval_gpu(v3, &ls, &g3, kd, true, 1.0e-4, &ms[0]) || !loc_eval_gpu(v2, &ls, &g2, kd, true, 1.0e-4, &ms[1])) {
+        bool ok3 = true;
+        if (timed) {
+            float* v2b = (float*)malloc(sizeof(float) * n2);
+            md_os_env_set("MD_GTO_GPU_NO_2D", "1");
+            ok3 = loc_eval_gpu(v2b, &ls, &g2, kd, true, 1.0e-4, &ms[2]);
+            md_os_env_set("MD_GTO_GPU_NO_2D", NULL);
+            free(v2b);
+        }
+        if (!ok3 || !loc_eval_gpu(v3, &ls, &g3, kd, true, 1.0e-4, timed ? &ms[0] : NULL) || !loc_eval_gpu(v2, &ls, &g2, kd, true, 1.0e-4, timed ? &ms[1] : NULL)) {
             free(v3); free(v2); loc_free(&ls);
             UTEST_SKIP("no GPU device");
         }
         double d = 0.0;
         for (size_t i = 0; i < n2; ++i) d = fmax(d, fabs((double)v2[i] - (double)v3[i]));
-        printf("  mol.h5   %s: max |plane - layer| = %.2e; 1 layer %.1f ms (3D kernels %.1f ms)\n", kind ? "LOL" : "ELF", d, 1000.0 * ms[1], 1000.0 * ms[2]);
+        printf("  mol.h5   %s: max |plane - layer| = %.2e", kind ? "LOL" : "ELF", d);
+        if (timed) printf("; 1 layer %.1f ms (3D kernels %.1f ms)", 1000.0 * ms[1], 1000.0 * ms[2]);
+        printf("\n");
         EXPECT_LT(d, kind ? 1.0e-5 : 1.0e-3);
     }
     free(v3); free(v2);
