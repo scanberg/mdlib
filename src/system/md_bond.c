@@ -1251,11 +1251,14 @@ void md_bond_merge(md_bond_data_t* out, const md_bond_list_t* given, const md_bo
         }
     }
 
-    // The bonds of the first range, then the interactions: of each the inferred, the given and the user's
+    // The bonds of the first range, then the interactions: of each the given, the inferred and the user's, the most
+    // stable first, so that a bond's index changes only when bonds as stable as it or more do (md_bond_data_t)
+    static const int by_stability[3] = { 1, 0, 2 };
     md_array_ensure(out->pairs, num[0] + num[1] + num[2], alloc);
     md_array_ensure(out->flags, num[0] + num[1] + num[2], alloc);
     for (int range = 0; range < 2; ++range) {
-        for (int k = 0; k < 3; ++k) {
+        for (int s = 0; s < 3; ++s) {
+            const int k = by_stability[s];
             for (size_t i = 0; i < num[k]; ++i) {
                 if (!keep[k][i] || md_bond_is_interaction(lists[k]->flags[i]) != (range == 1)) continue;
                 md_array_push_no_grow(out->pairs, lists[k]->pairs[i]);

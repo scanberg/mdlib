@@ -1036,18 +1036,14 @@ UTEST(bonds, infer_bonds_replaces_only_inferred) {
     md_bond_merge(&merged, &given, NULL, &inferred, NULL, sys.atom.count, alloc);
     sys.bond = merged;
 
-    // Inferred 0-1 and 2-3 (1-2 is given), then the four given bonds in their order
+    // The four given bonds in their order, then the inferred 0-1 and 2-3 (1-2 is given): the most stable first
     ASSERT_EQ(sys.bond.count, 6u);
-    size_t num_inferred = 0;
-    for (size_t i = 0; i < sys.bond.count; ++i) {
-        if (md_bond_origin(sys.bond.flags[i]) == MD_BOND_ORIGIN_INFERRED) num_inferred += 1;
-    }
-    EXPECT_EQ(num_inferred, 2u);
     for (size_t i = 0; i < 4; ++i) {
-        EXPECT_EQ(sys.bond.pairs[2 + i].idx[0], kept_pairs[i].idx[0]);
-        EXPECT_EQ(sys.bond.pairs[2 + i].idx[1], kept_pairs[i].idx[1]);
-        EXPECT_EQ((int)sys.bond.flags[2 + i], (int)kept_flags[i]);
+        EXPECT_EQ(sys.bond.pairs[i].idx[0], kept_pairs[i].idx[0]);
+        EXPECT_EQ(sys.bond.pairs[i].idx[1], kept_pairs[i].idx[1]);
+        EXPECT_EQ((int)sys.bond.flags[i], (int)kept_flags[i]);
     }
+    for (size_t i = 4; i < 6; ++i) EXPECT_EQ(MD_BOND_ORIGIN_INFERRED, md_bond_origin(sys.bond.flags[i]));
 
     // Atoms whose bonds are given complete get none inferred between them: of 0, 1, 2 the inferred 0-1 goes
     const uint8_t complete[5] = {1, 1, 1, 0, 0};
@@ -1058,7 +1054,7 @@ UTEST(bonds, infer_bonds_replaces_only_inferred) {
     EXPECT_NE(-1, md_bond_find(&partial, 2, 3));
 
     // The user's edits: the inferred 2-3 and the given 3-4 removed, and a bond of 1-2 added in place of the one given.
-    // The inferred first, then the given, then the user's.
+    // The given first, then the inferred, then the user's.
     md_bond_list_t edits = {0};
     const md_bond_flags_t user = md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_USER);
     md_bond_list_push(&edits, 3, 2, md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_INFERRED) | MD_BOND_FLAG_INACTIVE, alloc);
@@ -1067,7 +1063,7 @@ UTEST(bonds, infer_bonds_replaces_only_inferred) {
     md_bond_data_t edited = {0};
     md_bond_merge(&edited, &given, &edits, &inferred, NULL, sys.atom.count, alloc);
     ASSERT_EQ(4u, edited.count);
-    const md_atom_pair_t edited_pairs[] = {{{0, 1}}, {{0, 4}}, {{2, 4}}, {{2, 1}}};
+    const md_atom_pair_t edited_pairs[] = {{{0, 4}}, {{2, 4}}, {{0, 1}}, {{2, 1}}};
     for (size_t i = 0; i < 4; ++i) {
         EXPECT_EQ(edited.pairs[i].idx[0], edited_pairs[i].idx[0]);
         EXPECT_EQ(edited.pairs[i].idx[1], edited_pairs[i].idx[1]);
@@ -1085,6 +1081,48 @@ UTEST(bonds, infer_bonds_replaces_only_inferred) {
     EXPECT_EQ(sys.bond.count, 4u);
 
     md_vm_arena_destroy(alloc);
+}
+
+// A bond's index changes only when bonds as stable as it or more do: the given first, then the inferred, then the
+// user's, in each range. Inferred again, the given keep theirs; a bond added, the given and the inferred keep theirs.
+UTEST(bonds, indices_by_stability) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
+    const size_t n = 20;
+    const md_bond_flags_t hb = md_bond_flags_set_kind(MD_BOND_FLAG_NONE, MD_BOND_KIND_HYDROGEN);
+    const md_bond_flags_t inf = md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_INFERRED);
+    const md_bond_flags_t user = md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_USER);
+    md_bond_list_t given = {0}, inferred_a = {0}, inferred_b = {0}, edits = {0};
+    md_bond_list_push(&given, 10, 11, MD_BOND_FLAG_NONE, alloc);
+    md_bond_list_push(&given, 12, 13, MD_BOND_FLAG_NONE, alloc);
+    md_bond_list_push(&given, 14, 15, hb, alloc);                  // An interaction the file gives
+    for (int i = 0; i < 6; ++i) md_bond_list_push(&inferred_a, i, i + 1, inf, alloc);
+    // Inferred again: one bond fewer at the start, one more at the end
+    for (int i = 1; i < 8; ++i) md_bond_list_push(&inferred_b, i, i + 1, inf, alloc);
+
+    md_bond_data_t a = {0}, b = {0}, c = {0};
+    md_bond_merge(&a, &given, NULL, &inferred_a, NULL, n, alloc);
+    md_bond_merge(&b, &given, NULL, &inferred_b, NULL, n, alloc);
+    ASSERT_EQ(8u, a.count);
+    ASSERT_EQ(1u, a.interaction_count);
+    // The given first, in their order, whatever is inferred
+    for (size_t i = 0; i < 2; ++i) {
+        EXPECT_EQ(a.pairs[i].idx[0], given.pairs[i].idx[0]);
+        EXPECT_EQ(b.pairs[i].idx[0], given.pairs[i].idx[0]);
+    }
+    EXPECT_EQ(MD_BOND_ORIGIN_INFERRED, md_bond_origin(a.flags[2]));
+    EXPECT_EQ(14, a.pairs[a.count].idx[0]);
+
+    // A bond added: the given and the inferred keep their indices; the interactions move on by one
+    md_bond_list_push(&edits, 16, 17, user, alloc);
+    md_bond_merge(&c, &given, &edits, &inferred_a, NULL, n, alloc);
+    ASSERT_EQ(a.count + 1, c.count);
+    for (size_t i = 0; i < a.count; ++i) {
+        EXPECT_EQ(a.pairs[i].idx[0], c.pairs[i].idx[0]);
+        EXPECT_EQ(a.pairs[i].idx[1], c.pairs[i].idx[1]);
+    }
+    EXPECT_EQ(16, c.pairs[a.count].idx[0]);
+    EXPECT_EQ(14, c.pairs[c.count].idx[0]);
+    md_arena_allocator_destroy(alloc);
 }
 
 // The bonds a user adds are apart from those the data gives (md_system_t::bond_edit): a topology's many bonds are not
