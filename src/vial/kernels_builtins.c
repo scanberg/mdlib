@@ -3170,6 +3170,15 @@ static bool keyword_filter(vial_kctx_t* k, uint8_t key, const vial_val_t* v, via
 // ends in it of the kinds, orders and origins given (vial_select_bonds), its particles as one-particle sets [n][2]
 static bool k_bond(vial_kctx_t* k, const bargs_t* ba, vial_val_t* out) {
     if (!k->in->sys) return vial_rt_fail(k, "R0103", "bond needs a system");
+    if (k->op && k->op->sub == 1) {
+        // `bond` written bare: every bond stored, in the system's order
+        vial_sets_t* all = vial_select_stored_bonds(k->in->sys, k->alloc);
+        vial_val_t o = {.dtype = VIAL_DT_SET, .sets = all, .ndim = 2};
+        o.dims[0] = all->count / 2;
+        o.dims[1] = 2;
+        *out = o;
+        return true;
+    }
     const vial_sets_t* within = NULL;
     vial_filter_t filters[3];
     size_t nf = 0;

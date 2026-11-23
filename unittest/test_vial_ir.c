@@ -2103,6 +2103,45 @@ UTEST(vial_ir, matrix_outputs) {
     md_arena_allocator_destroy(alloc);
 }
 
+// `bond` bare is every bond the system stores, of every kind, in its order: a user's elastic bond after the inferred in
+// the first range, a user's hydrogen bond in the second; bond() the covalent bonds alone
+UTEST(vial_ir, bond_stored) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
+    md_system_t sys = {.alloc = alloc};
+    md_system_state_t state = {.alloc = alloc};
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL));
+    md_system_infer(&sys, &state, NULL);
+    const size_t strong = sys.bond.count;
+    ASSERT_TRUE(md_system_bond_insert(&sys, 0, 20, md_bond_flags_set_kind(MD_BOND_FLAG_NONE, MD_BOND_KIND_ELASTIC)));
+    ASSERT_TRUE(md_system_bond_insert(&sys, 3, 30, md_bond_flags_set_kind(MD_BOND_FLAG_NONE, MD_BOND_KIND_HYDROGEN)));
+    md_system_infer(&sys, &state, NULL);
+    ASSERT_EQ(strong + 1, sys.bond.count);
+    ASSERT_EQ(1u, sys.bond.interaction_count);
+    char src[512];
+    snprintf(src, sizeof(src),
+        "n = len(bond)\n"
+        "m = len(bond())\n"
+        "e = count(particle(bond[%zu]) and (particle[0:1] or particle[20:21]))\n"
+        "h = count(particle(bond[%zu]) and (particle[3:4] or particle[30:31]))\n"
+        "l = count(particle(bond[-1]) and particle[30:31])\n", strong, strong + 1);
+    const md_vial_compile_desc_t cd = {.sys = &sys};
+    md_vial_program_t* prog = md_vial_compile(md_str_from_cstr(src), &cd, alloc);
+    ASSERT_TRUE(prog != NULL);
+    char n_all[32], n_strong[32];
+    snprintf(n_all, sizeof(n_all), "%zu", strong + 2);
+    snprintf(n_strong, sizeof(n_strong), "%zu", strong);
+    const char* want[] = {n_all, n_strong, "2", "2", "1"};
+    for (uint32_t l = 1; l <= 5; ++l) {
+        md_vial__result_t r;
+        memset(&r, 0, sizeof(r));
+        ASSERT_TRUE(md_vial__line_result(prog, l, &r));
+        EXPECT_TRUE(r.has_value);
+        EXPECT_STREQ(want[l - 1], r.value);
+    }
+    md_vial_program_free(prog);
+    md_arena_allocator_destroy(alloc);
+}
+
 // A matrix of truths per frame published as the frames each entry is true in, not as an attribute of every frame: each
 // frame as the interpreter gives it, from frames evaluated on several threads, and taken over by a later evaluation
 UTEST(vial_ir, matrix_pairs) {

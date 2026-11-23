@@ -1740,6 +1740,22 @@ vial_sets_t* vial_select_bonds(const vial_sys_t* s, const vial_sets_t* within, c
     return r;
 }
 
+vial_sets_t* vial_select_stored_bonds(const vial_sys_t* s, md_allocator_i* alloc) {
+    const md_bond_data_t* bd = &s->sys->bond;
+    const uint32_t n2 = (uint32_t)(2 * (bd->count + bd->interaction_count));
+    vial_sets_t* r = md_alloc(alloc, sizeof(vial_sets_t));
+    memset(r, 0, sizeof(*r));
+    r->count = n2;
+    r->idx = md_alloc(alloc, (n2 + 1) * sizeof(uint32_t));
+    r->offset = md_alloc(alloc, (n2 + 1) * sizeof(uint32_t));
+    for (uint32_t i = 0; i < n2 / 2; ++i) {
+        r->idx[2 * i]     = (uint32_t)bd->pairs[i].idx[0];
+        r->idx[2 * i + 1] = (uint32_t)bd->pairs[i].idx[1];
+    }
+    for (uint32_t k = 0; k <= n2; ++k) r->offset[k] = k;
+    return r;
+}
+
 vial_sets_t* vial_select_predefined(vial_sys_t* s, md_str_t name, md_allocator_i* alloc) {
     if (md_str_eq(name, MD_STR_LIT("system"))) return vial_sets_all(s->num_atoms, alloc);
     const md_system_t* sys = s->sys;

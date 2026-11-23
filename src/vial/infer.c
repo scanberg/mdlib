@@ -384,6 +384,13 @@ static T infer_name(infer_t* x, vial_node_id id) {
     case VIAL_SYM_BUILTIN: {
         T t;
         if (s->builtin && vx_name_sets(x, id, s->builtin, &t)) return t;
+        if (s->builtin && !(s->builtin->flags & (VIAL_BUILTIN_SELECTOR | VIAL_BUILTIN_VALUE))) {
+            // A function's name as a value, len[0] or d = distance: nothing it could be, said rather than left empty
+            const md_str_t nm = text(x, id);
+            char fix[96];
+            snprintf(fix, sizeof(fix), "%.*s(...)", (int)MD_MIN(nm.len, 64), nm.ptr);
+            diag(x, "E0319", id, "`%.*s` is a function: call it, %s", (int)nm.len, nm.ptr, fix);
+        }
         return err();
     }
     case VIAL_SYM_STORED: {
@@ -807,6 +814,37 @@ static T infer_compare(infer_t* x, vial_node_id id) {
     return result;
 }
 
+// Bonds, as pairs of one-particle sets: and, or and not would take each end of a bond apart, so a bond to a water under
+// `and not water` keeps its other end. Said, with bond(s, ...) for the bonds with both ends in a set (E0319): the fix
+// where the bonds are a call of bond() without a set and the other operand of an `and` is one.
+static bool is_bonds(const T* t) {
+    return (t->flags & VIAL_TYPE_BONDS) && t->dtype == VIAL_DT_SET && t->ndim >= 1 &&
+           t->dims[t->ndim - 1].kind == VIAL_EXT_STATIC && t->dims[t->ndim - 1].n == 2;
+}
+
+static void report_bonds_logic(infer_t* x, vial_node_id op, vial_node_id bonds, const char* word) {
+    static const char* msg = "`%s` on bonds takes each end apart: a bond with one end in the other set keeps that end alone. "
+                             "The bonds with both ends in a set are bond(s, ...)";
+    char fix[512] = "";
+    const uint32_t n = num_children(x, op);
+    if (!strcmp(word, "and") && n == 2 && kind_of(x, bonds) == VIAL_N_CALL && md_str_eq(text(x, child(x, bonds, 0)), MD_STR_LIT("bond"))) {
+        // bond(kw...) and s -> bond(s, kw...), when the call has no set of its own
+        bool has_set = false;
+        for (uint32_t i = 1; i < num_children(x, bonds); ++i) {
+            const vial_node_id a = child(x, bonds, i);
+            if (a && (kind_of(x, a) != VIAL_N_KWARG || md_str_eq(text(x, child(x, a, 0)), MD_STR_LIT("s")))) has_set = true;
+        }
+        const vial_node_id other = child(x, op, child(x, op, 0) == bonds ? 1 : 0);
+        const md_str_t call = text(x, bonds), os = text(x, other);
+        const char* open = memchr(call.ptr, '(', call.len);
+        if (!has_set && open && call.len >= 2 && call.ptr[call.len - 1] == ')') {
+            const md_str_t inner = {open + 1, (size_t)(call.ptr + call.len - 1 - (open + 1))};
+            snprintf(fix, sizeof(fix), "bond(%.*s%s%.*s)", (int)os.len, os.ptr, inner.len ? ", " : "", (int)inner.len, inner.ptr);
+        }
+    }
+    diag_fix(x, "E0319", op, fix[0] ? fix : NULL, msg, word);
+}
+
 static T infer_boolop(infer_t* x, vial_node_id id) {
     const uint32_t n = num_children(x, id);
     T t = err();
@@ -818,6 +856,10 @@ static T infer_boolop(infer_t* x, vial_node_id id) {
         if (vial_type_is_error(&c)) return err();
         if (c.dtype != VIAL_DT_BOOL && c.dtype != VIAL_DT_SET) {
             diag(x, "E0319", cn, "`%s` takes bools or sets; this is %s", sub_of(x, id) == VIAL_KW_AND ? "and" : "or", dtype_word(&c));
+            return err();
+        }
+        if (is_bonds(&c)) {
+            report_bonds_logic(x, id, cn, sub_of(x, id) == VIAL_KW_AND ? "and" : "or");
             return err();
         }
         if (i == 0) { t = c; }
@@ -874,6 +916,10 @@ static T infer_not(infer_t* x, vial_node_id id) {
     if (vial_type_is_error(&a)) return a;
     if (a.dtype != VIAL_DT_BOOL && a.dtype != VIAL_DT_SET) {
         diag(x, "E0319", id, "`not` takes bools or sets; this is %s", dtype_word(&a));
+        return err();
+    }
+    if (is_bonds(&a)) {
+        report_bonds_logic(x, id, on, "not");
         return err();
     }
     const vial_value_t v = value_of(x, on);
@@ -1074,6 +1120,15 @@ static T infer_subscript(infer_t* x, vial_node_id id) {
     const vial_node_id on = child(x, id, 0), in = child(x, id, 1);
     const T a = infer(x, on);
     if (vial_type_is_error(&a)) { if (in) infer(x, in); return err(); }
+    if ((a.flags & VIAL_TYPE_BONDS) && in && kind_of(x, on) == VIAL_N_CALL && num_children(x, on) == 1 && kind_of(x, in) == VIAL_N_INT &&
+        md_str_eq(text(x, child(x, on, 0)), MD_STR_LIT("bond"))) {
+        // bond()[4]: the fifth of the covalent bonds, which bond() is without kind=, read as the system's bond 4
+        const md_str_t it = text(x, in);
+        char fix[64];
+        snprintf(fix, sizeof(fix), "bond[%.*s]", (int)MD_MIN(it.len, 32), it.ptr);
+        diag_fix(x, "W0612", id, fix, "bond() is the covalent bonds, numbered among themselves; the system's bond %.*s is %s, and "
+            "bond(kind='covalent')[%.*s] says the covalent one", (int)it.len, it.ptr, fix, (int)it.len, it.ptr);
+    }
     if (a.dtype == VIAL_DT_SET && vx_is_particles_view(x, on) && !vx_view_bare(x, on)) return vx_view_at(x, id, on, in, &a);
     if (a.dtype == VIAL_DT_SET && in && kind_of(x, in) == VIAL_N_LIST && num_children(x, in) && kind_of(x, child(x, in, 0)) == VIAL_N_STRING) {
         return vx_named_list(x, id, on, in, &a);
@@ -1367,7 +1422,9 @@ static T infer_subscript(infer_t* x, vial_node_id id) {
             if (v.kind == VIAL_VAL_SETS) {
                 const T st = vx_sets_type(x, v.sets, id);
                 t.flags = (t.flags & ~(VIAL_TYPE_ONE_PARTICLE | VIAL_TYPE_EMPTY)) | (st.flags & (VIAL_TYPE_ONE_PARTICLE | VIAL_TYPE_EMPTY));
-                if (t.ndim >= 1 && st.ndim >= 1) {
+                // Its first dimension, of the positions taken, where the item keeps it (a slice, a list); an int removes it,
+                // and what is left is the rest, as typed: bond()[1] is set[2], one bond's two particles
+                if (t.ndim == a.ndim && t.ndim >= 1 && st.ndim >= 1) {
                     t.dims[0] = st.dims[0];
                     if (inner > 1) t.dims[0].n = v.sets->count / inner;
                 }

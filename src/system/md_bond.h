@@ -220,6 +220,12 @@ typedef struct md_bond_conn_data_t {
 // in place; no bond is added or removed here, but by the edits of the core (md_system_bond_insert, md_system_bond_remove)
 // and inference again. md_bond_find finds a bond of the graph, md_bond_find_interaction one of the second range. Bonds computed for a frame
 // (bonds formed, hydrogen bonds found) are never here: they are a bond set of their own (md_bond_delta_t, the script).
+//
+// Within each range the bonds come by how stable they are: those given (the files and the topology, in their order),
+// then the inferred (by their atoms, whatever the threads of the search), then the user's (in the order of the edits).
+// So a bond's index changes only when bonds as stable as it or more do: a given bond's only when the files do or an
+// edit removes a given one before it, an inferred bond's when the bonds are inferred again, a user's when bonds are
+// edited; the interactions follow the whole first range, so a bond added to it moves them on by one.
 typedef struct md_bond_data_t {
     size_t count;                   // Bonds of the first range: the graph, the elastic and the metallic bonds
     size_t interaction_count;       // Interactions, the second range
