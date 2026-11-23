@@ -322,6 +322,12 @@ UTEST_F(vial_fuzz, found) {
         "for r in residue(chain='A', kind='amino_acid')[0:3]:\n    return sqrt(sum(w * d2) / sum(w))\n",
         "for i in range(3):\n    return 1\n",
         "for i in range(2):\n    for j in range(2):\n        return j\n",
+        // A particle's name in a message as written, and the name of an unclosed string taken on to the quote on the
+        // next line: messages of more than one line (W0601, W0609)
+        "rs = residue[1:6]\nbb = rs[['N', 'CA', 'C\n        ']]\n",
+        "x = residue['''C\nA''']\n",
+        "x = residue[['''C\nA''', 'CA']]\n",
+        "x = residue[0]['''C\nA''']\n",
     };
     md_allocator_i* scratch = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     for (size_t i = 0; i < MD_COUNTOF(inputs); ++i) {

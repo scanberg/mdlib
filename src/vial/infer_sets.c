@@ -566,8 +566,10 @@ static T selector_call(infer_t* x, vial_node_id call, md_str_t name) {
             bool ok = false;
             for (size_t k = 0; k < MD_COUNTOF(strands) && !ok; ++k) ok = md_str_eq(f->expr[j].s, md_str_from_cstr(strands[k]));
             if (ok) continue;
+            char ex[VIAL_EXCERPT_MAX + 4];
+            const md_str_t e = vial_excerpt(ex, sizeof(ex), f->expr[j].s);
             vx_diag_fix(x, "E0206", call, NULL, "'%.*s' is not a kind of polymer; the kinds are polymer, peptide, nucleic, dna and rna",
-                (int)f->expr[j].s.len, f->expr[j].s.ptr);
+                (int)e.len, e.ptr);
             failed = true;
             break;
         }
@@ -776,6 +778,8 @@ T vx_named(infer_t* x, vial_node_id id, vial_node_id on, vial_node_id in, const 
         return vial_type_error();
     }
     const md_str_t name = nv.s;
+    char nx[VIAL_EXCERPT_MAX + 4];
+    const md_str_t ne = vial_excerpt(nx, sizeof(nx), name);     // As the messages quote it: one line
     const bool glob = vx_name_is_glob(name);
     const bool said = vial_diag_at(x->diags, x->t->nodes[in].span.beg);    // an f-string, refused already
     T t = *a;
@@ -790,10 +794,10 @@ T vx_named(infer_t* x, vial_node_id id, vial_node_id on, vial_node_id in, const 
         if (res->count) {
             char fix[96];
             snprintf(fix, sizeof(fix), "residue('%.*s')", (int)MD_MIN(name.len, 60), name.ptr);
-            vx_diag_fix(x, "W0601", in, fix, "no particle is named '%.*s'; a subscript names particles, and residues of that name are %s",
-                (int)name.len, name.ptr, fix);
+            vx_diag_fix(x, "W0601", in, fix, "no particle is named '%.*s'; a subscript names particles, and residues of that name are residue('%.*s')",
+                (int)ne.len, ne.ptr, (int)ne.len, ne.ptr);
         } else {
-            vx_diag_fix(x, "W0601", in, NULL, "no particle is named '%.*s'", (int)name.len, name.ptr);
+            vx_diag_fix(x, "W0601", in, NULL, "no particle is named '%.*s'", (int)ne.len, ne.ptr);
         }
     }
     const vial_value_t av = vx_value_of(x, on);
@@ -824,14 +828,14 @@ T vx_named(infer_t* x, vial_node_id id, vial_node_id on, vial_node_id in, const 
             else snprintf(what, sizeof(what), "%u %s several", several, several == 1 ? "has" : "have");
             if (av.sets->single) {
                 if (none) {
-                    vx_diag_fix(x, "W0609", id, NULL, "the set has no particle named '%.*s', so its point is missing", (int)name.len, name.ptr);
+                    vx_diag_fix(x, "W0609", id, NULL, "the set has no particle named '%.*s', so its point is missing", (int)ne.len, ne.ptr);
                 } else {
                     vx_diag_fix(x, "W0609", id, NULL, "the set has %u particles named '%.*s', and a name picks one per set: subscript its units, "
-                        "such as residue(s)['%.*s']", first_size, (int)name.len, name.ptr, (int)name.len, name.ptr);
+                        "such as residue(s)['%.*s']", first_size, (int)ne.len, ne.ptr, (int)ne.len, ne.ptr);
                 }
             } else {
                 vx_diag_fix(x, "W0609", id, NULL, "a particle named '%.*s' is one per set in %u of %u sets; %s, and %s missing",
-                    (int)name.len, name.ptr, r->count - none - several, r->count, what, none + several == 1 ? "its entry is" : "their entries are");
+                    (int)ne.len, ne.ptr, r->count - none - several, r->count, what, none + several == 1 ? "its entry is" : "their entries are");
             }
         }
     }
@@ -1064,7 +1068,11 @@ T vx_named_list(infer_t* x, vial_node_id id, vial_node_id on, vial_node_id in, c
     const vial_sets_t** named = md_alloc(x->alloc, m * sizeof(vial_sets_t*));
     for (uint32_t j = 0; j < m; ++j) {
         named[j] = vx_named_particles(x, names[j]);
-        if (vial_sets_size(named[j], 0) == 0) vx_diag_fix(x, "W0601", vx_child(x, in, j), NULL, "no particle is named '%.*s'", (int)names[j].len, names[j].ptr);
+        if (vial_sets_size(named[j], 0) == 0) {
+            char ex[VIAL_EXCERPT_MAX + 4];
+            const md_str_t e = vial_excerpt(ex, sizeof(ex), names[j]);
+            vx_diag_fix(x, "W0601", vx_child(x, in, j), NULL, "no particle is named '%.*s'", (int)e.len, e.ptr);
+        }
     }
     const vial_value_t av = vx_value_of(x, on);
     if (av.kind != VIAL_VAL_SETS || t.stage != VIAL_STAGE_STATIC) return t;
@@ -1090,7 +1098,8 @@ T vx_named_list(infer_t* x, vial_node_id id, vial_node_id on, vial_node_id in, c
     }
     if (lacking) {
         t.flags |= VIAL_TYPE_MISSING;
-        const md_str_t n0 = names[first_bad];
+        char ex[VIAL_EXCERPT_MAX + 4];
+        const md_str_t n0 = vial_excerpt(ex, sizeof(ex), names[first_bad]);
         if (s->single) {
             vx_diag_fix(x, "W0609", id, NULL, "the set has no particle named '%.*s', or several, so its point is missing", (int)n0.len, n0.ptr);
         } else {

@@ -346,6 +346,8 @@ static md_str_t string_value(infer_t* x, vial_node_id id) {
         i += triple ? 3 : 1;
         while (i < s.len) {
             if (s.ptr[i] == '\\' && i + 1 < s.len) { md_array_push(out, s.ptr[i + 1], x->alloc); i += 2; continue; }
+            // Unclosed: one quote ends at its line, as the lexer has it (E0102), not at a quote on the next
+            if (!triple && (s.ptr[i] == '\n' || s.ptr[i] == '\r')) break;
             if (s.ptr[i] == q && (!triple || (i + 2 < s.len && s.ptr[i + 1] == q && s.ptr[i + 2] == q))) { i += triple ? 3 : 1; break; }
             md_array_push(out, s.ptr[i], x->alloc);
             ++i;
