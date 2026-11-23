@@ -671,6 +671,29 @@ UTEST(vial_check, glob) {
     EXPECT_FALSE(vial_is_glob(MD_STR_LIT("CA")));
 }
 
+// and, or and not on bonds would take each end apart: bond(s, ...) is the bonds with both ends in s, offered where the
+// bonds are a call of bond() without a set
+UTEST_F(vial_check, bond_logic) {
+    const md_system_t* T = vial_test_system('T');
+    ASSERT_TRUE(T != NULL);
+    const char* msg = "on bonds takes each end apart: a bond with one end in the other set keeps that end alone. "
+                      "The bonds with both ends in a set are bond(s, ...)";
+    char want[512];
+    snprintf(want, sizeof(want), "E0319 1: `and` %s | bond(not water, kind='ionic')\n", msg);
+    EXPECT_DIAGS_ON(T, "b = bond(kind='ionic') and not water\n", want);
+    snprintf(want, sizeof(want), "E0319 1: `and` %s | bond(protein)\n", msg);
+    EXPECT_DIAGS_ON(T, "b = protein and bond()\n", want);
+    snprintf(want, sizeof(want), "E0319 2: `and` %s\n", msg);
+    EXPECT_DIAGS_ON(T, "hb = bond(kind='ionic')\nb = hb and protein\n", want);
+    snprintf(want, sizeof(want), "E0319 1: `or` %s\n", msg);
+    EXPECT_DIAGS_ON(T, "b = formed() or protein\n", want);
+    snprintf(want, sizeof(want), "E0319 1: `not` %s\n", msg);
+    EXPECT_DIAGS_ON(T, "b = not bond()\n", want);
+    // One end of each, a column, is a set like any other
+    EXPECT_DIAGS_ON(T, "b = bond()[:, 0] and protein\n", "");
+    EXPECT_TYPE_ON(T, "b = bond(not water, kind='ionic')\n", 1, "set[?][2], frame");
+}
+
 // bond(): kind=, order= and origin= with and/or/not; the strong bonds, covalent and coordinate, by default
 UTEST_F(vial_check, bond_keywords) {
     const md_system_t* T = vial_test_system('T');

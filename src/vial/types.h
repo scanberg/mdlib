@@ -68,6 +68,7 @@ enum {
     VIAL_TYPE_OVERLAP      = 1 << 4,    // an array of sets whose sets may share particles
     VIAL_TYPE_PERIODIC     = 1 << 5,    // period_beg, period_end and seam hold its period
     VIAL_TYPE_DRAWN        = 1 << 6,    // shown() attached a drawing
+    VIAL_TYPE_BONDS        = 1 << 7,    // bonds as pairs of one-particle sets, [n][2], as bond(), formed() and broken() give
 };
 
 typedef struct vial_type_t {

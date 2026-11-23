@@ -807,6 +807,37 @@ static T infer_compare(infer_t* x, vial_node_id id) {
     return result;
 }
 
+// Bonds, as pairs of one-particle sets: and, or and not would take each end of a bond apart, so a bond to a water under
+// `and not water` keeps its other end. Said, with bond(s, ...) for the bonds with both ends in a set (E0319): the fix
+// where the bonds are a call of bond() without a set and the other operand of an `and` is one.
+static bool is_bonds(const T* t) {
+    return (t->flags & VIAL_TYPE_BONDS) && t->dtype == VIAL_DT_SET && t->ndim >= 1 &&
+           t->dims[t->ndim - 1].kind == VIAL_EXT_STATIC && t->dims[t->ndim - 1].n == 2;
+}
+
+static void report_bonds_logic(infer_t* x, vial_node_id op, vial_node_id bonds, const char* word) {
+    static const char* msg = "`%s` on bonds takes each end apart: a bond with one end in the other set keeps that end alone. "
+                             "The bonds with both ends in a set are bond(s, ...)";
+    char fix[512] = "";
+    const uint32_t n = num_children(x, op);
+    if (!strcmp(word, "and") && n == 2 && kind_of(x, bonds) == VIAL_N_CALL && md_str_eq(text(x, child(x, bonds, 0)), MD_STR_LIT("bond"))) {
+        // bond(kw...) and s -> bond(s, kw...), when the call has no set of its own
+        bool has_set = false;
+        for (uint32_t i = 1; i < num_children(x, bonds); ++i) {
+            const vial_node_id a = child(x, bonds, i);
+            if (a && (kind_of(x, a) != VIAL_N_KWARG || md_str_eq(text(x, child(x, a, 0)), MD_STR_LIT("s")))) has_set = true;
+        }
+        const vial_node_id other = child(x, op, child(x, op, 0) == bonds ? 1 : 0);
+        const md_str_t call = text(x, bonds), os = text(x, other);
+        const char* open = memchr(call.ptr, '(', call.len);
+        if (!has_set && open && call.len >= 2 && call.ptr[call.len - 1] == ')') {
+            const md_str_t inner = {open + 1, (size_t)(call.ptr + call.len - 1 - (open + 1))};
+            snprintf(fix, sizeof(fix), "bond(%.*s%s%.*s)", (int)os.len, os.ptr, inner.len ? ", " : "", (int)inner.len, inner.ptr);
+        }
+    }
+    diag_fix(x, "E0319", op, fix[0] ? fix : NULL, msg, word);
+}
+
 static T infer_boolop(infer_t* x, vial_node_id id) {
     const uint32_t n = num_children(x, id);
     T t = err();
@@ -818,6 +849,10 @@ static T infer_boolop(infer_t* x, vial_node_id id) {
         if (vial_type_is_error(&c)) return err();
         if (c.dtype != VIAL_DT_BOOL && c.dtype != VIAL_DT_SET) {
             diag(x, "E0319", cn, "`%s` takes bools or sets; this is %s", sub_of(x, id) == VIAL_KW_AND ? "and" : "or", dtype_word(&c));
+            return err();
+        }
+        if (is_bonds(&c)) {
+            report_bonds_logic(x, id, cn, sub_of(x, id) == VIAL_KW_AND ? "and" : "or");
             return err();
         }
         if (i == 0) { t = c; }
@@ -874,6 +909,10 @@ static T infer_not(infer_t* x, vial_node_id id) {
     if (vial_type_is_error(&a)) return a;
     if (a.dtype != VIAL_DT_BOOL && a.dtype != VIAL_DT_SET) {
         diag(x, "E0319", id, "`not` takes bools or sets; this is %s", dtype_word(&a));
+        return err();
+    }
+    if (is_bonds(&a)) {
+        report_bonds_logic(x, id, on, "not");
         return err();
     }
     const vial_value_t v = value_of(x, on);

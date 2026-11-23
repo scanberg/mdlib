@@ -1495,7 +1495,7 @@ static T call_bonds(infer_t* x, vial_node_id call) {
         return err();
     }
     T t = vial_type_scalar(VIAL_DT_SET);
-    t.flags |= VIAL_TYPE_ONE_PARTICLE;
+    t.flags |= VIAL_TYPE_ONE_PARTICLE | VIAL_TYPE_BONDS;
     t.stage = st.stage;
     const vial_value_t sv = sn ? vx_value_of(x, sn) : (vial_value_t){0};
     const bool all = !sn || st.dtype == VIAL_DT_NONE;
@@ -1619,7 +1619,7 @@ static T call_bond_changes(infer_t* x, vial_node_id call, const char* fname) {
         }
     }
     T t = vial_type_scalar(VIAL_DT_SET);
-    t.flags |= VIAL_TYPE_ONE_PARTICLE;
+    t.flags |= VIAL_TYPE_ONE_PARTICLE | VIAL_TYPE_BONDS;
     t.stage = VIAL_STAGE_FRAME;
     vial_type_push_dim(&t, (vial_extent_t){.kind = VIAL_EXT_DYNAMIC, .id = (uint32_t)call});
     vial_type_push_dim(&t, vial_extent_static(2));
