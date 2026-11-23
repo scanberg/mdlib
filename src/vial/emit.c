@@ -787,8 +787,10 @@ void vx_emit(infer_t* x, vial_node_id id, const T* t) {
         const uint32_t sym = x->n->ref[id];
         const vial_symbol_t* s = vial_names_symbol(x->n, id);
         if (s && s->kind == VIAL_SYM_BUILTIN && s->builtin) {
-            // A selector written bare, all its units, or a predefined set, selected when evaluated
-            r = vial_ir_op1(x->ir, VIAL_IR_BUILTIN, 0, vial_builtin_index(s->builtin), NULL, 0, t, vx_span(x, id));
+            // A selector written bare, all its units, or a predefined set, selected when evaluated; `bond` bare, every
+            // bond stored (sub 1), where bond() is the covalent ones
+            const uint16_t bare = strcmp(s->builtin->name, "bond") == 0 ? 1 : 0;
+            r = vial_ir_op1(x->ir, VIAL_IR_BUILTIN, bare, vial_builtin_index(s->builtin), NULL, 0, t, vx_span(x, id));
             break;
         }
         if (t->dtype == VIAL_DT_DEF) {

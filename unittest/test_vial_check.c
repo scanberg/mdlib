@@ -694,6 +694,35 @@ UTEST_F(vial_check, bond_logic) {
     EXPECT_TYPE_ON(T, "b = bond(not water, kind='ionic')\n", 1, "set[?][2], frame");
 }
 
+// `bond` bare is every bond the system stores, in its order, so bond[i] is its bond i, a pair; bond() is a selection,
+// numbered among itself. A function's name as a value is said, not left empty.
+UTEST_F(vial_check, bond_numbers) {
+    const md_system_t* T = vial_test_system('T');
+    ASSERT_TRUE(T != NULL);
+    char want[64];
+    snprintf(want, sizeof(want), "int, static = %zu", T->bond.count + T->bond.interaction_count);
+    EXPECT_TYPE_ON(T, "n = len(bond)\n", 1, want);
+    EXPECT_TYPE_ON(T, "b = bond\n", 1, "set[7085][2], static");
+    EXPECT_TYPE_ON(T, "b = bond[7]\n", 1, "set[2], static");
+    EXPECT_TYPE_ON(T, "b = bond[0:3]\n", 1, "set[3][2], static");
+    EXPECT_TYPE_ON(T, "b = bond()[1]\n", 1, "set[2], static");
+    EXPECT_TYPE_ON(T, "d = distance(bond[7][0], bond[7][1])\n", 1, u8"float Å, frame");
+    // bond[i] is the system's bond i: its two particles, both in a set of those two alone
+    for (int i = 7; i < 7000; i += 1999) {
+        const md_atom_pair_t p = T->bond.pairs[i];
+        char src[192];
+        snprintf(src, sizeof(src), "n = count(particle(bond[%d]) and (particle[%d:%d] or particle[%d:%d]))\n", i, p.idx[0], p.idx[0] + 1,
+                 p.idx[1], p.idx[1] + 1);
+        EXPECT_TYPE_ON(T, src, 1, "int, static = 2");
+    }
+    EXPECT_DIAGS_ON(T, "b = bond()[4]\n", "W0612 1: bond() is the covalent bonds, numbered among themselves; the system's bond 4 is bond[4], "
+        "and bond(kind='covalent')[4] says the covalent one | bond[4]\n");
+    EXPECT_DIAGS_ON(T, "b = bond(kind='covalent')[4]\n", "");
+    EXPECT_DIAGS_ON(T, "b = bond()[1:3]\n", "");
+    EXPECT_DIAGS("x = len[0]\n", "E0319 1: `len` is a function: call it, len(...)\n");
+    EXPECT_DIAGS("x = sqrt\n", "E0319 1: `sqrt` is a function: call it, sqrt(...)\n");
+}
+
 // bond(): kind=, order= and origin= with and/or/not; the strong bonds, covalent and coordinate, by default
 UTEST_F(vial_check, bond_keywords) {
     const md_system_t* T = vial_test_system('T');

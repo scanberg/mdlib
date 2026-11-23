@@ -384,6 +384,13 @@ static T infer_name(infer_t* x, vial_node_id id) {
     case VIAL_SYM_BUILTIN: {
         T t;
         if (s->builtin && vx_name_sets(x, id, s->builtin, &t)) return t;
+        if (s->builtin && !(s->builtin->flags & (VIAL_BUILTIN_SELECTOR | VIAL_BUILTIN_VALUE))) {
+            // A function's name as a value, len[0] or d = distance: nothing it could be, said rather than left empty
+            const md_str_t nm = text(x, id);
+            char fix[96];
+            snprintf(fix, sizeof(fix), "%.*s(...)", (int)MD_MIN(nm.len, 64), nm.ptr);
+            diag(x, "E0319", id, "`%.*s` is a function: call it, %s", (int)nm.len, nm.ptr, fix);
+        }
         return err();
     }
     case VIAL_SYM_STORED: {
@@ -1113,6 +1120,15 @@ static T infer_subscript(infer_t* x, vial_node_id id) {
     const vial_node_id on = child(x, id, 0), in = child(x, id, 1);
     const T a = infer(x, on);
     if (vial_type_is_error(&a)) { if (in) infer(x, in); return err(); }
+    if ((a.flags & VIAL_TYPE_BONDS) && in && kind_of(x, on) == VIAL_N_CALL && num_children(x, on) == 1 && kind_of(x, in) == VIAL_N_INT &&
+        md_str_eq(text(x, child(x, on, 0)), MD_STR_LIT("bond"))) {
+        // bond()[4]: the fifth of the covalent bonds, which bond() is without kind=, read as the system's bond 4
+        const md_str_t it = text(x, in);
+        char fix[64];
+        snprintf(fix, sizeof(fix), "bond[%.*s]", (int)MD_MIN(it.len, 32), it.ptr);
+        diag_fix(x, "W0612", id, fix, "bond() is the covalent bonds, numbered among themselves; the system's bond %.*s is %s, and "
+            "bond(kind='covalent')[%.*s] says the covalent one", (int)it.len, it.ptr, fix, (int)it.len, it.ptr);
+    }
     if (a.dtype == VIAL_DT_SET && vx_is_particles_view(x, on) && !vx_view_bare(x, on)) return vx_view_at(x, id, on, in, &a);
     if (a.dtype == VIAL_DT_SET && in && kind_of(x, in) == VIAL_N_LIST && num_children(x, in) && kind_of(x, child(x, in, 0)) == VIAL_N_STRING) {
         return vx_named_list(x, id, on, in, &a);
@@ -1406,7 +1422,9 @@ static T infer_subscript(infer_t* x, vial_node_id id) {
             if (v.kind == VIAL_VAL_SETS) {
                 const T st = vx_sets_type(x, v.sets, id);
                 t.flags = (t.flags & ~(VIAL_TYPE_ONE_PARTICLE | VIAL_TYPE_EMPTY)) | (st.flags & (VIAL_TYPE_ONE_PARTICLE | VIAL_TYPE_EMPTY));
-                if (t.ndim >= 1 && st.ndim >= 1) {
+                // Its first dimension, of the positions taken, where the item keeps it (a slice, a list); an int removes it,
+                // and what is left is the rest, as typed: bond()[1] is set[2], one bond's two particles
+                if (t.ndim == a.ndim && t.ndim >= 1 && st.ndim >= 1) {
                     t.dims[0] = st.dims[0];
                     if (inner > 1) t.dims[0].n = v.sets->count / inner;
                 }

@@ -665,6 +665,24 @@ bool vx_name_stored(infer_t* x, vial_node_id id, uint32_t stored, T* out) {
 
 bool vx_name_sets(infer_t* x, vial_node_id id, const vial_builtin_t* b, T* out) {
     const md_str_t name = md_str_from_cstr(b->name);
+    if (md_str_eq(name, MD_STR_LIT("bond"))) {
+        // Written bare: every bond the system stores, in its order, so that bond[i] is its bond i; bond() is a selection,
+        // the covalent bonds by default, numbered among themselves
+        T t = vial_type_scalar(VIAL_DT_SET);
+        t.flags |= VIAL_TYPE_ONE_PARTICLE | VIAL_TYPE_BONDS;
+        if (!x->sys) {
+            vial_type_push_dim(&t, (vial_extent_t){.kind = VIAL_EXT_UNKNOWN, .id = (uint32_t)id});
+            vial_type_push_dim(&t, vial_extent_static(2));
+            *out = t;
+            return true;
+        }
+        const vial_sets_t* s = vial_select_stored_bonds(x->sys, x->alloc);
+        vial_type_push_dim(&t, vial_extent_static(s->count / 2));
+        vial_type_push_dim(&t, vial_extent_static(2));
+        vx_set_value(x, id, sets_value(s));
+        *out = t;
+        return true;
+    }
     if (b->flags & VIAL_BUILTIN_SELECTOR) {
         uint8_t pkind = 0;
         const uint8_t level = selector_level(name, &pkind);
