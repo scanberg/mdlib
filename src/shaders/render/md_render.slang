@@ -95,6 +95,9 @@ static const uint F_CIRCLE       = 1u << 25;  // POLYGONS: the circle inside eac
 static const uint F_FADE_KEY     = 1u << 26;  // SPHERES, CAPSULES: each point's fade by the point fade_key gives
 static const uint F_ID_VISIBLE0  = 1u << 27;  // SPHERES, CAPSULES, POLYGONS: visible by their ids (id_visible0, 1)
 static const uint F_ID_VISIBLE1  = 1u << 28;
+static const uint F_SHAPED       = 1u << 29;  // CAPSULES: flat, tapered or in pixels (capsule_shape)
+static const uint F_FLAT         = 1u << 30;  // ... flat ends (capped_cone_hit)
+static const uint F_RADIUS_PX    = 1u << 31;  // ... radius cap_px pixels at each end
 
 // md_render_kind_t
 static const uint KIND_SPHERES  = 1u;
@@ -185,7 +188,8 @@ struct Batch {
     uint*   fade_key;           // F_FADE_KEY: per point, the point that stands for it in the fade
     uint*   id_visible0;        // F_ID_VISIBLE0, 1: bitsets over the elements' ids, ANDed
     uint*   id_visible1;
-    uint    _bpad0, _bpad1;
+    float   cap_end;            // CAPSULES shaped (F_SHAPED): the radius at the second point (as s0 at the first)
+    float   cap_px;             // ... F_RADIUS_PX: the radius in pixels at either
 };
 
 // The per-view lists the cull writes and everything after it reads. Cluster
@@ -406,10 +410,45 @@ float sphere_radius(Batch b, uint pi) {
     return r * b.s0 + b.s1;
 }
 
+// A capsule's own factor on its radius (radius_scale)
+float capsule_scale(Batch b, uint e) {
+    return (b.flags & F_RADIUS_SCALE) != 0u ? b.radius_scale[gated(b, F_RADIUS_SCALE, e)] : 1.0;
+}
+
 float capsule_radius(Batch b, uint e) {
-    float r = b.s0;
-    if ((b.flags & F_RADIUS_SCALE) != 0u) r *= b.radius_scale[gated(b, F_RADIUS_SCALE, e)];
-    return r;
+    return b.s0 * capsule_scale(b, e);
+}
+
+// Clip-space w of view-space point p, and the world size of a pixel there
+float w_clip(ViewData v, float3 p) {
+    return v.proj0.w * p.x + v.proj1.w * p.y + v.proj2.w * p.z + v.proj3.w;
+}
+
+float pixel_size(ViewData v, float w) {
+    return 2.0 * v.viewport.w * w / abs(v.proj1.y);
+}
+
+// A shaped capsule's radii at its two ends (F_SHAPED), view space: the
+// batch's radius at a and cap_end at c, times k (its scale, the instance's,
+// a fade's); with F_RADIUS_PX, cap_px pixels times k at each, the capsule
+// first cut short at the near plane (false: wholly in front of it).
+bool capsule_shape(ViewData v, Batch b, float k, inout float3 a, inout float3 c, out float2 rr) {
+    rr = float2(b.s0, b.cap_end) * k;
+    if ((b.flags & F_RADIUS_PX) == 0u) return true;
+    bool fa = a.z > v.near_z, fc = c.z > v.near_z;
+    if (fa && fc) return false;
+    if (fa) a = lerp(c, a, (v.near_z - c.z) / (a.z - c.z));
+    if (fc) c = lerp(a, c, (v.near_z - a.z) / (c.z - a.z));
+    float px = b.cap_px * k;
+    rr = float2(pixel_size(v, w_clip(v, a)), pixel_size(v, w_clip(v, c))) * px;
+    return true;
+}
+
+// The larger of a capsule's radii per unit of its factor (capsule_scale):
+// in pixels, any (the cluster's pad is the view's, cluster_sphere)
+float capsule_reach(Batch b) {
+    if ((b.flags & F_RADIUS_PX) != 0u) return b.cap_px;
+    return (b.flags & F_SHAPED) != 0u ? max(b.s0, b.cap_end) : b.s0;
 }
 
 // ---------------------------------------------------------------------------
@@ -690,7 +729,8 @@ struct Geo {
     uint   st;                  // state bits
     float3 a;
     float3 b;
-    float  r;
+    float  r;                   // capsules: the larger of rr
+    float2 rr;                  // capsules: the radii at a and b (shaped: capsule_shape)
 };
 
 // Fading with distance (md_render_batch_t.fade). A band is a ramp in
@@ -1088,7 +1128,11 @@ void spline_take_capsule(Ray r, inout SplineHit h, float3 pa, float3 pb, float r
 // A round cone: the balls of radius ra at pa to rb at pb, the radius linear
 // between (their hull). Quilez's intersector, the body's root taken whatever
 // the sign of its leading term (steep rays along a tapering cone); with one
-// ball inside the other, the balls alone. Unit r.d.
+// ball inside the other, the balls alone. Unit r.d. His products of dot
+// products that are a cross product's square (|ba|^2 |oa|^2 - (ba.oa)^2,
+// and the like) are taken as that square: a difference of two squares of
+// the distance to the eye loses a long thin cone far away to rounding (a
+// cell's edges in pixels).
 struct ConeHit {
     float  t;                   // < 0: none
     float3 n;
@@ -1101,12 +1145,14 @@ ConeHit round_cone_hit(Ray r, float3 pa, float3 pb, float ra, float rb) {
     float3 ba = pb - pa, oa = r.o - pa, ob = r.o - pb;
     float  rr = ra - rb;
     float  m0 = dot(ba, ba), m1 = dot(ba, oa), m2 = dot(ba, r.d), m3 = dot(r.d, oa);
-    float  m5 = dot(oa, oa), m6 = dot(ob, r.d), m7 = dot(ob, ob);
+    float  m6 = dot(ob, r.d);
     float  d2 = m0 - rr * rr;
     if (d2 > 0.0) {
-        float k2 = d2 - m2 * m2;
-        float k1 = d2 * m3 - m1 * m2 + m2 * rr * ra;
-        float k0 = d2 * m5 - m1 * m1 + m1 * rr * ra * 2.0 - m0 * ra * ra;
+        float3 cd = cross(ba, r.d), co = cross(ba, oa);
+        float3 q  = oa * rr - ba * ra;
+        float k2 = dot(cd, cd) - rr * rr;                       // d2 - m2^2
+        float k1 = dot(cd, co) - rr * rr * m3 + m2 * rr * ra;   // d2 m3 - m1 m2 + m2 rr ra
+        float k0 = dot(co, co) - dot(q, q);                     // d2 m5 - m1^2 + 2 m1 rr ra - m0 ra^2
         float hh = k1 * k1 - k0 * k2;
         if (hh >= 0.0 && abs(k2) > 1e-12 * m0) {
             float t = (-sqrt(hh) - k1) / k2;
@@ -1114,8 +1160,9 @@ ConeHit round_cone_hit(Ray r, float3 pa, float3 pb, float ra, float rb) {
             if (y > 0.0 && y < d2 && t >= 0.0) { h.t = t; h.n = normalize(d2 * (oa + t * r.d) - ba * y); return h; }
         }
     }
-    float h1 = m3 * m3 - m5 + ra * ra;
-    float h2 = m6 * m6 - m7 + rb * rb;
+    float3 ca = cross(r.d, oa), cb = cross(r.d, ob);
+    float h1 = ra * ra - dot(ca, ca);                           // m3^2 - m5 + ra^2
+    float h2 = rb * rb - dot(cb, cb);
     if (h1 > 0.0) {
         float t = -m3 - sqrt(h1);
         if (t >= 0.0) { h.t = t; h.n = (oa + t * r.d) / ra; }
@@ -1125,6 +1172,64 @@ ConeHit round_cone_hit(Ray r, float3 pa, float3 pb, float ra, float rb) {
         if (t >= 0.0 && (h.t < 0.0 || t < h.t)) { h.t = t; h.n = (ob + t * r.d) / rb; }
     }
     return h;
+}
+
+// A capped cone: radius ra at pa to rb at pb, linear between, flat ends (a
+// cylinder, a truncated cone, a cone). In the axis' frame (u along it), the
+// ray's parts across it (wp, dp) apart from those along it: no difference
+// of squares of the distance to the eye. Unit r.d.
+ConeHit capped_cone_hit(Ray r, float3 pa, float3 pb, float ra, float rb) {
+    ConeHit h;
+    h.t = -1.0;
+    h.n = float3(0.0, 0.0, 1.0);
+    float3 ba = pb - pa;
+    float  L  = length(ba);
+    if (!(L > 0.0)) return h;
+    float3 u  = ba / L;
+    float3 w  = r.o - pa;
+    float  wy = dot(w, u), dy = dot(r.d, u);
+    float3 wp = w - u * wy, dp = r.d - u * dy;
+    // An end, from outside its plane: the first hit if within its disc (the
+    // side lies beyond the plane)
+    if (wy < 0.0 && dy > 0.0) {
+        float  t = -wy / dy;
+        float3 q = wp + dp * t;
+        if (dot(q, q) <= ra * ra) { h.t = t; h.n = -u; return h; }
+    } else if (wy > L && dy < 0.0) {
+        float  t = (L - wy) / dy;
+        float3 q = wp + dp * t;
+        if (dot(q, q) <= rb * rb) { h.t = t; h.n = u; return h; }
+    }
+    // The side: |wp + t dp| = e - sl dy t, e the radius at the origin's
+    // place along the axis; both roots (a steep ray along a cone, or from
+    // inside it), the nearest ahead between the ends. The ends a little
+    // beyond them (ye): a ray through a cone's tip meets the side there
+    // alone, a double root whose y rounds to either side of the end.
+    float sl = (ra - rb) / L;
+    float e  = ra - sl * wy;
+    float A  = dot(dp, dp) - sl * sl * dy * dy;
+    float B  = dot(wp, dp) + sl * dy * e;
+    float C  = dot(wp, wp) - e * e;
+    float D  = B * B - A * C;
+    if (D < 0.0) return h;
+    float q  = -(B + (B >= 0.0 ? sqrt(D) : -sqrt(D)));
+    float t0 = q / A, t1 = C / q;                       // a 0 / 0 or x / 0 misses below
+    float y0 = wy + t0 * dy, y1 = wy + t1 * dy;
+    float ye = 1e-5 * (abs(wy) + L);
+    bool  k0 = t0 >= 0.0 && y0 >= -ye && y0 <= L + ye;
+    bool  k1 = t1 >= 0.0 && y1 >= -ye && y1 <= L + ye;
+    if (k1 && (!k0 || t1 < t0)) { t0 = t1; k0 = true; }
+    if (!k0) return h;
+    float3 m  = wp + dp * t0;                           // across the axis, its radius long
+    float  ml = length(m);
+    h.t = t0;
+    h.n = ml > 0.0 ? normalize(m / ml + u * sl) : u * sign(sl);
+    return h;
+}
+
+// A shaped capsule (capsule_shape): flat ends or round
+ConeHit shaped_hit(Ray r, float3 pa, float3 pb, float2 rr, bool flat) {
+    return flat ? capped_cone_hit(r, pa, pb, rr.x, rr.y) : round_cone_hit(r, pa, pb, rr.x, rr.y);
 }
 
 // A rim: the round cone along a piece's edge, between the rim's points pa
@@ -1395,6 +1500,7 @@ Geo element_geo(ViewData v, Batch b, uint inst, uint e, bool fade) {
     g.a    = float3(0.0);
     g.b    = float3(0.0);
     g.r    = 0.0;
+    g.rr   = float2(0.0);
     if (!id_visible(b, e)) return g;
     Mat   T = load_transform(b.transforms, inst);
     float s = length(T.c0.xyz);
@@ -1419,7 +1525,8 @@ Geo element_geo(ViewData v, Batch b, uint inst, uint e, bool fade) {
         uint a1 = attr_of(b, p1);
         if (!attr_visible(b, a0) || !attr_visible(b, a1)) return g;
         g.st = st_meet(attr_state(b, a0), attr_state(b, a1));
-        g.r  = capsule_radius(b, e) * s;
+        bool shaped = (b.flags & F_SHAPED) != 0u;
+        g.r  = shaped ? capsule_scale(b, e) * s : capsule_radius(b, e) * s;   // shaped: the factor, the radii from it below
         g.a  = mulp(M(v, view), mulp(T, load_pos(b, p0)));
         g.b  = mulp(M(v, view), mulp(T, load_pos(b, p1)));
         float3 side = (b.flags & F_DISPLACED) != 0u ? capsule_side(v, T, s, b, e, g.a, g.b) : float3(0.0);
@@ -1438,6 +1545,11 @@ Geo element_geo(ViewData v, Batch b, uint inst, uint e, bool fade) {
             }
         }
         if ((b.flags & F_DISPLACED) != 0u) capsule_displace(b, e, side, g.r, g.a, g.b);   // by its radius as drawn
+        g.rr = float2(g.r);
+        if (shaped && g.r > 0.0 && !g.faded) {
+            if (!capsule_shape(v, b, g.r, g.a, g.b, g.rr)) return g;
+            g.r = max(g.rr.x, g.rr.y);
+        }
     } else {
         return g;
     }
@@ -1456,6 +1568,7 @@ Geo spline_geo(ViewData v, Batch b, uint inst, uint e, bool fade) {
     g.a     = float3(0.0);
     g.b     = float3(0.0);
     g.r     = 0.0;
+    g.rr    = float2(0.0);
     uint ie = b.index[e];
     uint ai = attr_of(b, ie & SPLINE_POINT);
     if (!attr_visible(b, ai)) return g;
@@ -2056,7 +2169,7 @@ SplineHit poly_hit(Ray r, PolyPart pp) {
 // Its bounding sphere: as a capsule of length 0
 Geo poly_geo_part(ViewData v, Batch b, uint inst, uint e, bool fade, out PolyPart pp) {
     Geo g;
-    g.ok = false; g.faded = false; g.kind = 3u; g.st = 0u; g.a = float3(0.0); g.b = float3(0.0); g.r = 0.0;
+    g.ok = false; g.faded = false; g.kind = 3u; g.st = 0u; g.a = float3(0.0); g.b = float3(0.0); g.r = 0.0; g.rr = float2(0.0);
     pp = poly_part(v, b, inst, e, fade);
     uint st;
     if (!poly_visible(b, e, st)) return g;
@@ -2381,7 +2494,7 @@ LocalElem element_local(Batch b, uint e, bool geo) {
         l.factor = ((b.flags & F_RADIUS_SCALE) != 0u) ? b.radius_scale[gated(b, F_RADIUS_SCALE, e)] : 1.0;
         if ((b.flags & F_DISPLACED) != 0u) l.factor *= 1.0 + abs(b.cap_offset);    // off its points in any direction
         if (geo) { l.a = load_pos(b, p0); l.b = load_pos(b, p1); }
-        l.ok = capsule_radius(b, e) > 0.0;
+        l.ok = l.factor * capsule_reach(b) > 0.0;
     }
     return l;
 }
@@ -2545,8 +2658,16 @@ ClusterSphere cluster_sphere(ViewData v, Batch b, uint inst, uint c) {
     float s  = length(T.c0.xyz);
     float3 ctr = 0.5 * (lo.xyz + hi.xyz);
     float3 ext = 0.5 * (hi.xyz - lo.xyz);
-    float pad = b.kind == KIND_SPHERES ? lo.w * b.s0 + b.s1 : b.kind == KIND_SPLINES ? lo.w : lo.w * b.s0;
+    float pad = b.kind == KIND_SPHERES ? lo.w * b.s0 + b.s1 : b.kind == KIND_SPLINES ? lo.w : lo.w * capsule_reach(b);
     cs.c   = mulp(M(v, view), mulp(T, ctr));
+    if (b.kind == KIND_CAPSULES && (b.flags & F_RADIUS_PX) != 0u) {
+        // in pixels: as wide as a pixel is where the sphere is deepest (w at
+        // its centre and along w's gradient), the pad's own reach included
+        float gw = length(float3(v.proj0.w, v.proj1.w, v.proj2.w));
+        float pw = pixel_size(v, 1.0) * b.cap_px * lo.w;            // the pad per unit w, batch space
+        float wm = w_clip(v, cs.c) + length(ext) * s * gw;
+        pad = max(wm, 0.0) / max(1.0 - pw * s * gw, 0.5) * pw;
+    }
     cs.r   = (length(ext) + max(pad, 0.0)) * s;
     cs.pad = max(pad, 0.0) * s;
     return cs;
@@ -2661,13 +2782,13 @@ void cull_clusters(uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
 // phase 2, for few elements) and have no compute raster.
 void element_pass<let SPL : int>(Batch* batches, ViewData v, Lists L, uint phase, bool state_only, bool valid, uint slot, uint inst, uint e, bool plain) {
     Geo   g;
-    g.ok = false; g.faded = false; g.kind = 0u; g.st = 0u; g.a = float3(0.0); g.b = float3(0.0); g.r = 0.0;
+    g.ok = false; g.faded = false; g.kind = 0u; g.st = 0u; g.a = float3(0.0); g.b = float3(0.0); g.r = 0.0; g.rr = float2(0.0);
     uint ent = 0u;                      // the list entry: global work index
-    bool dashed = false;                // dashed capsules: no compute raster
+    bool hw_only = false;               // dashed or shaped capsules: no compute raster
     if (valid) {
         Batch b = batches[slot];
         ent = b.work_offset + inst * b.count + e;
-        dashed = (b.flags & F_DASHED) != 0u;
+        hw_only = (b.flags & (F_DASHED | F_SHAPED)) != 0u;
         // the fade: not for the state lists, which do not depend on the
         // camera (the mask's raster applies it), nor in a cluster it does
         // not touch (plain)
@@ -2687,7 +2808,7 @@ void element_pass<let SPL : int>(Batch* batches, ViewData v, Lists L, uint phase
         } else if (SPL == 0 && !state_only && v.occlusion != 0u && ext > v.occl_min_px && hiz_occluded(v, MD_ARGS.hiz, bd, phase == 1u)) {
             out = OUT_OCCLUDED;
         } else {
-            out = (SPL == 0 && v.compute_raster != 0u && !bd.near_clip && ext <= v.small_px && !dashed) ? OUT_SMALL : OUT_HW;
+            out = (SPL == 0 && v.compute_raster != 0u && !bd.near_clip && ext <= v.small_px && !hw_only) ? OUT_SMALL : OUT_HW;
         }
     }
     if (SPL != 0) {
@@ -3224,6 +3345,8 @@ struct CapsuleV {
     nointerpolation float4 pa    : PA;      // view space, w: radius
     nointerpolation float4 pb    : PB;      // w: dashed, the dash (0: solid)
     nointerpolation float  per   : PER;     // dashed, the period
+    nointerpolation float  rb    : RB;      // shaped: the radius at pb
+    nointerpolation uint   shape : SHAPE;   // 0: round caps, one radius; 1: shaped, round; 2: shaped, flat
     nointerpolation uint2  idv   : IDV;
     nointerpolation uint   state : STATE;
 };
@@ -3243,6 +3366,8 @@ CapsuleV capsule_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
     o.pa    = float4(0.0);
     o.pb    = float4(0.0);
     o.per   = 0.0;
+    o.rb    = 0.0;
+    o.shape = 0u;
     o.idv   = uint2(0u);
     o.state = 0u;
 
@@ -3256,9 +3381,11 @@ CapsuleV capsule_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
     float2 dp = float2(0.0);
     if ((b.flags & F_DASHED) != 0u) dp = dash_pattern(b, length(g.b - g.a), length(load_transform(b.transforms, el.inst).c0.xyz));
     o.pos   = corner;
-    o.pa    = float4(g.a, g.r);
+    o.pa    = float4(g.a, g.rr.x);
     o.pb    = float4(g.b, dp.x);
     o.per   = dp.y;
+    o.rb    = g.rr.y;
+    o.shape = (b.flags & F_SHAPED) == 0u ? 0u : (b.flags & F_FLAT) != 0u ? 2u : 1u;
     o.idv   = ent;
     o.state = g.st;
     return o;
@@ -3288,6 +3415,7 @@ float4 capsule_box_corner(ViewData v, Geo g, uint c) {
 
 float capsule_fragment_hit(Ray r, CapsuleV i) {
     float3 n;
+    if (i.shape != 0u) return shaped_hit(r, i.pa.xyz, i.pb.xyz, float2(i.pa.w, i.rb), i.shape == 2u).t;
     return i.pb.w > 0.0 ? dash_hit(r, i.pa.xyz, i.pb.xyz, i.pa.w, i.pb.w, i.per, n) : capsule_hit(r, i.pa.xyz, i.pb.xyz, i.pa.w);
 }
 
@@ -3576,7 +3704,8 @@ Hit eval_hit<let SPL : int>(ViewData v, Batch* batches, uint2 idv, float2 pix, f
         float3 w1p = mulp(Tp, l1 - load_vel(b, p1) * v.dt);
         float3 pa  = mulp(M(v, view), w0);
         float3 pb  = mulp(M(v, view), w1);
-        float  rad = capsule_radius(b, h.element) * s;
+        bool   shaped = (b.flags & F_SHAPED) != 0u;
+        float  rad = shaped ? capsule_scale(b, h.element) * s : capsule_radius(b, h.element) * s;   // as element_geo
         float3 side = (b.flags & F_DISPLACED) != 0u ? capsule_side(v, T, s, b, h.element, pa, pb) : float3(0.0);
         float3 qa  = pa, qb = pb;               // a dash's: trimmed
         bool   dashed = (b.flags & F_DASHED) != 0u && dash_trim(b, p0, p1, s, rad, qa, qb);
@@ -3592,9 +3721,18 @@ Hit eval_hit<let SPL : int>(ViewData v, Batch* batches, uint2 idv, float2 pix, f
         }
         float3 dn  = float3(0.0);
         float  t;
+        bool   shaped_hit_ok = false;
         if (dashed) {
             float2 dp = dash_pattern(b, length(qb - qa), s);
             t = dash_hit(r, qa, qb, rad, dp.x, dp.y, dn);
+        } else if (shaped) {
+            float3 sa = pa, sb = pb;                // as element_geo: cut at the near plane
+            float2 rr;
+            capsule_shape(v, b, rad, sa, sb, rr);
+            ConeHit ch = shaped_hit(r, sa, sb, rr, (b.flags & F_FLAT) != 0u);
+            t  = ch.t;
+            dn = ch.n;
+            shaped_hit_ok = t >= 0.0;
         } else {
             t = capsule_hit(r, pa, pb, rad);
         }
@@ -3609,7 +3747,7 @@ Hit eval_hit<let SPL : int>(ViewData v, Batch* batches, uint2 idv, float2 pix, f
         }
         h.p_view   = r.o + r.d * t;
         float k    = capsule_param(h.p_view, pa, pb);
-        h.n_view   = dashed ? dn : normalize(h.p_view - lerp(pa, pb, k));
+        h.n_view   = dashed || shaped_hit_ok ? dn : normalize(h.p_view - lerp(pa, pb, k));
         h.p_world  = mulp(M(v, inv_view), h.p_view);
         h.p_world_prev = h.p_world - lerp(w0 - w0p, w1 - w1p, k);
         uint   a0  = attr_of(b, p0);
@@ -3628,7 +3766,7 @@ Hit eval_hit<let SPL : int>(ViewData v, Batch* batches, uint2 idv, float2 pix, f
             // not through spline_geo, which crashed lavapipe's pick kernel)
             SplinePart sp = spline_part(v, b, h.instance, h.element, true);
             Geo        g;
-            g.ok = true; g.faded = false; g.kind = 1u; g.st = 0u;
+            g.ok = true; g.faded = false; g.kind = 1u; g.st = 0u; g.rr = float2(0.0);
             spline_bounds(sp, g.a, g.b, g.r);                // as element_geo: the same pieces
             SplineHit  sh = spline_hit(r, sp, spline_pieces(v, sp, g));
             if (sh.t < 0.0) {                               // a rounding miss at the silhouette: the nearest point to its control point

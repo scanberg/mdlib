@@ -139,6 +139,9 @@ enum {
     F_FADE_KEY     = 1u << 26,
     F_ID_VISIBLE0  = 1u << 27,
     F_ID_VISIBLE1  = 1u << 28,
+    F_SHAPED       = 1u << 29,
+    F_FLAT         = 1u << 30,
+    F_RADIUS_PX    = 1u << 31,
 };
 
 typedef struct gpu_batch_t {
@@ -166,7 +169,7 @@ typedef struct gpu_batch_t {
     float         spl_scale;                                      /* SPLINES: of the profile */
     md_gpu_addr_t fade_key;                                       /* F_FADE_KEY: the point standing for each point */
     md_gpu_addr_t id_visible0, id_visible1;                       /* F_ID_VISIBLE0, 1: bitsets over the ids */
-    uint32_t      _bpad0, _bpad1;
+    float         cap_end, cap_px;                                /* CAPSULES shaped: the second radius, the radius in pixels */
 } gpu_batch_t;
 _Static_assert(sizeof(gpu_batch_t) == 368, "Batch mirror");
 
@@ -666,6 +669,10 @@ static void canonical_geometry(md_render_batch_t* out, const md_render_batch_t* 
         out->style.capsules.offset       = c->offset;
         out->style.capsules.side         = c->offset != 0.0f ? c->side : 0;
         out->style.capsules.trim         = c->offset != 0.0f ? c->trim : 0.0f;
+        out->style.capsules.flat         = c->flat;
+        out->style.capsules.tapered      = c->tapered;
+        out->style.capsules.end_radius   = c->tapered ? c->end_radius : 0.0f;
+        out->style.capsules.radius_px    = c->radius_px;
     } else if (b->kind == MD_RENDER_SPLINES) {
         out->style.splines = b->style.splines;
     } else if (b->kind == MD_RENDER_POLYGONS) {
@@ -805,6 +812,19 @@ static bool validate(const md_render_frame_t* f) {
             }
             if (c->dash_length < 0.0f || c->gap_length < 0.0f) {
                 MD_LOG_ERROR("md_render: batch %u: dash and gap lengths are not negative", i);
+                return false;
+            }
+            const bool shaped = c->flat || c->tapered || c->radius_px != 0.0f;
+            if (shaped && (c->dash_length > 0.0f || c->offset != 0.0f)) {
+                MD_LOG_ERROR("md_render: batch %u: shaped capsules (flat, tapered, radius_px) are neither dashed nor displaced", i);
+                return false;
+            }
+            if (!(c->radius_px >= 0.0f && isfinite(c->radius_px)) || (c->tapered && !(c->end_radius >= 0.0f && isfinite(c->end_radius)))) {
+                MD_LOG_ERROR("md_render: batch %u: radius_px and end_radius are finite and >= 0", i);
+                return false;
+            }
+            if (c->tapered && c->radius_px != 0.0f) {
+                MD_LOG_ERROR("md_render: batch %u: a capsule's radius in pixels is not tapered", i);
                 return false;
             }
         }
@@ -1048,6 +1068,16 @@ static void fill_batch(gpu_batch_t* g, const md_render_batch_t* b, uint32_t n_in
             g->cap_side   = b->style.capsules.side;
             g->cap_trim   = b->style.capsules.trim;
             if (g->cap_side) f |= F_SIDE;
+        }
+        const md_render_capsule_style_t* cs = &b->style.capsules;
+        if (cs->flat || cs->tapered || cs->radius_px > 0.0f) {
+            f |= F_SHAPED;
+            if (cs->flat) f |= F_FLAT;
+            g->cap_end = cs->tapered ? cs->end_radius : cs->radius;
+            if (cs->radius_px > 0.0f) {
+                f |= F_RADIUS_PX;
+                g->cap_px = cs->radius_px;
+            }
         }
     } else if (b->kind == MD_RENDER_SPLINES) {
         g->s0        = b->style.splines.radius;

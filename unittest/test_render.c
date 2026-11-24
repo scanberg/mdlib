@@ -2029,6 +2029,270 @@ UTEST(render, capsules_dashed_match_their_cylinders) {
     f_close(&fx);
 }
 
+/* ---- Shaped capsules ------------------------------------------------------- */
+
+/* A capped cone (flat ends) or a round cone (the hull of its end balls),
+   radius ra at a to rb at b: the exact signed distance (Quilez's) */
+typedef struct {
+    double   a[3], b[3], ra, rb;
+    bool     flat;
+    uint32_t key, linear;
+} cone_ref_t;
+
+static double cone_ref_sdf(const cone_ref_t* k, const double p[3]) {
+    double ba[3] = { k->b[0] - k->a[0], k->b[1] - k->a[1], k->b[2] - k->a[2] };
+    double pa[3] = { p[0] - k->a[0], p[1] - k->a[1], p[2] - k->a[2] };
+    double baba = dot3(ba, ba), papa = dot3(pa, pa), y = dot3(pa, ba);
+    if (k->flat) {
+        double rba = k->rb - k->ra, paba = y / baba;
+        double x2 = papa - paba * paba * baba, x = sqrt(x2 > 0 ? x2 : 0);
+        double cax = fmax(0.0, x - (paba < 0.5 ? k->ra : k->rb)), cay = fabs(paba - 0.5) - 0.5;
+        double kk = rba * rba + baba;
+        double f = (rba * (x - k->ra) + paba * baba) / kk;
+        f = f < 0 ? 0 : f > 1 ? 1 : f;
+        double cbx = x - k->ra - f * rba, cby = paba - f;
+        double sg = (cbx < 0.0 && cay < 0.0) ? -1.0 : 1.0;
+        return sg * sqrt(fmin(cax * cax + cay * cay * baba, cbx * cbx + cby * cby * baba));
+    }
+    double rr = k->ra - k->rb, a2 = baba - rr * rr, il2 = 1.0 / baba, z = y - baba;
+    double q[3] = { pa[0] * baba - ba[0] * y, pa[1] * baba - ba[1] * y, pa[2] * baba - ba[2] * y };
+    double x2 = dot3(q, q), y2 = y * y * baba, z2 = z * z * baba;
+    double kk = (rr > 0 ? 1 : rr < 0 ? -1 : 0) * rr * rr * x2;
+    if ((z > 0 ? 1 : z < 0 ? -1 : 0) * a2 * z2 > kk) return sqrt(x2 + z2) * il2 - k->rb;
+    if ((y > 0 ? 1 : y < 0 ? -1 : 0) * a2 * y2 < kk) return sqrt(x2 + y2) * il2 - k->ra;
+    return (sqrt(x2 * a2 * il2) + y * rr) * il2 - k->ra;
+}
+
+/* The least distance along the ray (convex: unimodal in t), in pixels at
+   its depth (px: a pixel's size per unit depth) */
+static double cone_ref_ray_min(const cone_ref_t* k, ray_t r, double px) {
+    double c[3] = { 0.5 * (k->a[0] + k->b[0]), 0.5 * (k->a[1] + k->b[1]), 0.5 * (k->a[2] + k->b[2]) };
+    double ab[3] = { k->b[0] - k->a[0], k->b[1] - k->a[1], k->b[2] - k->a[2] };
+    double R = 0.5 * sqrt(dot3(ab, ab)) + fmax(k->ra, k->rb);
+    double oc[3] = { c[0] - r.o[0], c[1] - r.o[1], c[2] - r.o[2] }, tc = dot3(oc, r.d);
+    double lo = fmax(tc - R, 0.0), hi = fmax(tc + R, 0.0);
+    const double g = 0.5 * (sqrt(5.0) - 1.0);
+    for (int it = 0; it < 90; ++it) {
+        double t1 = hi - g * (hi - lo), t2 = lo + g * (hi - lo);
+        double p1[3] = { r.o[0] + r.d[0] * t1, r.o[1] + r.d[1] * t1, r.o[2] + r.d[2] * t1 };
+        double p2[3] = { r.o[0] + r.d[0] * t2, r.o[1] + r.d[1] * t2, r.o[2] + r.d[2] * t2 };
+        if (cone_ref_sdf(k, p1) < cone_ref_sdf(k, p2)) hi = t2; else lo = t1;
+    }
+    double t = 0.5 * (lo + hi), p[3] = { r.o[0] + r.d[0] * t, r.o[1] + r.d[1] * t, r.o[2] + r.d[2] * t };
+    return cone_ref_sdf(k, p) / (px * fmax(-p[2], 1e-6));
+}
+
+/* How far p is from a flat cone's rims (where its normal jumps), world units */
+static double cone_ref_rim_dist(const cone_ref_t* k, const double p[3]) {
+    if (!k->flat) return 1e30;
+    double ab[3] = { k->b[0] - k->a[0], k->b[1] - k->a[1], k->b[2] - k->a[2] }, L = sqrt(dot3(ab, ab));
+    double u[3] = { ab[0] / L, ab[1] / L, ab[2] / L };
+    double pa[3] = { p[0] - k->a[0], p[1] - k->a[1], p[2] - k->a[2] }, y = dot3(pa, u);
+    double q[3] = { pa[0] - u[0] * y, pa[1] - u[1] * y, pa[2] - u[2] * y }, x = sqrt(dot3(q, q));
+    return fmin(hypot(y, x - k->ra), hypot(y - L, x - k->rb));
+}
+
+UTEST(render, capsules_shaped_match_their_cones) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    const uint32_t W = 192, H = 144;
+    cam_t c = { .tan_half = 0.4f, .aspect = (float)W / H, .n = 0.1f };
+    md_render_camera_t cam = make_camera(&c);
+    const double pxd = 2.0 * c.tan_half / H;           /* a pixel per unit depth */
+
+    /* Cylinders (a second instance turned and scaled 1.3), cones pointing
+       across, away and at the eye, a truncated cone, round tapered cones,
+       lines in pixels (round and flat ends; one long and receding, one
+       through the near plane and behind the eye) */
+    enum { NB = 6 };
+    static const float pos[NB][3][2][3] = {
+        { { { -5.0f, 3.0f, -14.0f }, { -1.0f, 3.2f, -14.0f } },         /* flat cylinders */
+          { {  0.5f, 3.0f, -13.0f }, {  4.5f, 1.5f, -16.0f } },
+          { { -4.8f, 0.5f, -12.0f }, { -4.5f, 0.8f, -16.5f } } },        /* nearly along the view: an end faces it */
+        { { { -2.5f, -0.5f, -14.0f }, { -0.5f, 0.3f, -14.0f } },        /* cones */
+          { {  0.5f, -1.5f, -12.0f }, {  0.8f, -1.2f, -15.0f } },        /* pointing away: its base faces the eye */
+          { {  2.6f, -0.6f, -15.0f }, {  2.1f, -0.1f, -12.0f } } },      /* pointing at the eye */
+        { { { -5.0f, -3.0f, -14.0f }, { -2.0f, -2.5f, -15.0f } },       /* a truncated cone */
+          { { -1.5f, -3.2f, -13.0f }, { -1.2f, -3.0f, -16.0f } },
+          { { -3.5f, 4.0f, -18.0f }, { -2.0f, 4.5f, -18.0f } } },
+        { { {  0.0f, -3.0f, -13.0f }, {  3.0f, -3.5f, -15.0f } },       /* round, tapered */
+          { {  3.5f,  2.5f, -12.0f }, {  3.8f,  2.8f, -16.0f } },
+          { {  4.5f, -1.0f, -14.0f }, {  4.9f, -1.1f, -14.2f } } },      /* short: the cone between the balls steep */
+        { { { -5.5f, -4.5f, -20.0f }, {  5.5f, -4.2f, -30.0f } },       /* in pixels, round ends */
+          { {  1.0f, -0.5f, -20.0f }, {  0.3f, -0.2f,   2.0f } },        /* through the near plane */
+          { { -6.0f,  5.0f, -60.0f }, { 60.0f, 9.0f, -80.0f } } },       /* long, thin, far */
+        { { { -6.0f,  4.2f, -25.0f }, {  6.0f,  4.5f, -18.0f } },       /* in pixels, flat ends */
+          { { -1.0f,  1.5f, -10.0f }, { -1.0f,  1.5f, -30.0f } },        /* along the view */
+          { {  2.0f,  1.0f, -11.0f }, {  2.8f,  1.4f, -11.5f } } },
+    };
+    static const struct { bool flat, tapered; float radius, end_radius, px; } st[NB] = {
+        { true,  false, 0.35f, 0.0f,  0.0f },
+        { true,  true,  0.6f,  0.0f,  0.0f },
+        { true,  true,  0.5f,  0.2f,  0.0f },
+        { false, true,  0.45f, 0.15f, 0.0f },
+        { false, false, 0.0f,  0.0f,  1.5f },
+        { true,  false, 0.0f,  0.0f,  1.25f },
+    };
+    float xf[32] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    {   /* about (0, 0, -14): turned 30 degrees about y, scaled 1.3, moved back and down */
+        const double ang = 30 * 3.14159265358979 / 180, sc = 1.3, ctr[3] = { 0, 0, -14 }, mv[3] = { 0.5, -1.0, -6.0 };
+        float m[9] = { (float)(sc * cos(ang)), 0, (float)(-sc * sin(ang)), 0, (float)sc, 0, (float)(sc * sin(ang)), 0, (float)(sc * cos(ang)) };
+        for (int i = 0; i < 9; ++i) xf[16 + 4 * (i / 3) + i % 3] = m[i];
+        for (int i = 0; i < 3; ++i) xf[28 + i] = (float)(ctr[i] + mv[i] - (m[i] * ctr[0] + m[3 + i] * ctr[1] + m[6 + i] * ctr[2]));
+    }
+    md_render_batch_t b[NB];
+    cone_ref_t ref[NB * 3 * 2];
+    int nref = 0;
+    for (int k = 0; k < NB; ++k) {
+        memset(&b[k], 0, sizeof(b[k]));
+        b[k].key = 60u + (uint32_t)k; b[k].kind = MD_RENDER_CAPSULES; b[k].count = 3; b[k].points.count = 6;
+        b[k].points.position = f_buf(&fx, pos[k], sizeof(pos[k]));
+        b[k].style.capsules.radius     = st[k].radius;
+        b[k].style.capsules.flat       = st[k].flat;
+        b[k].style.capsules.tapered    = st[k].tapered;
+        b[k].style.capsules.end_radius = st[k].end_radius;
+        b[k].style.capsules.radius_px  = st[k].px;
+        if (k == 0) { b[k].transform = xf; b[k].transform_count = 2; }
+        for (int in = 0; in < (k == 0 ? 2 : 1); ++in) {
+            const float* m = xf + 16 * in;
+            const double s = sqrt((double)m[0] * m[0] + (double)m[1] * m[1] + (double)m[2] * m[2]);
+            for (int e = 0; e < 3; ++e) {
+                cone_ref_t* q = &ref[nref++];
+                for (int j = 0; j < 2; ++j) for (int i = 0; i < 3; ++i) {
+                    const float* v = pos[k][e][j];
+                    (j ? q->b : q->a)[i] = (double)m[i] * v[0] + (double)m[4 + i] * v[1] + (double)m[8 + i] * v[2] + m[12 + i];
+                }
+                q->flat = st[k].flat;
+                q->key = b[k].key; q->linear = (uint32_t)(in * 3 + e);
+                if (st[k].px > 0) {
+                    /* cut at the near plane, cap_px pixels at each end's depth */
+                    double zn = -c.n;
+                    if (q->a[2] > zn) { double t = (zn - q->b[2]) / (q->a[2] - q->b[2]); for (int i = 0; i < 3; ++i) q->a[i] = q->b[i] + (q->a[i] - q->b[i]) * t; }
+                    if (q->b[2] > zn) { double t = (zn - q->a[2]) / (q->b[2] - q->a[2]); for (int i = 0; i < 3; ++i) q->b[i] = q->a[i] + (q->b[i] - q->a[i]) * t; }
+                    q->ra = st[k].px * pxd * -q->a[2] * s;
+                    q->rb = st[k].px * pxd * -q->b[2] * s;
+                } else {
+                    q->ra = st[k].radius * s;
+                    q->rb = (st[k].tapered ? st[k].end_radius : st[k].radius) * s;
+                }
+            }
+        }
+    }
+    md_render_frame_t f = frame_of(W, H, cam, b, NB);
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+
+    md_render_targets_t tg = md_render_view_targets(fx.view);
+    uint32_t* id = malloc(W * H * 8);
+    float*    dp = malloc(W * H * 4);
+    uint32_t* nb = malloc(W * H * 4);
+    ASSERT_TRUE(f_read(&fx, tg.id, id, W * H * 8) && f_read(&fx, tg.depth, dp, W * H * 4) && f_read(&fx, tg.normal, nb, W * H * 4));
+    int bad = 0, covered = 0, judged = 0, nerr = 0, ends = 0;
+    int per_key[NB] = {0};
+    double worst = 0, margin_worst = 0;
+    double* errs = malloc(W * H * sizeof(double));
+    const double M = 0.1;                  /* pixels: the coverage judged this far from the silhouette */
+    for (uint32_t y = 0; y < H; ++y) {
+        for (uint32_t x = 0; x < W; ++x) {
+            uint32_t i = y * W + x;
+            ray_t r = pixel_ray(&c, W, H, x + 0.5, y + 0.5);
+            double mmin = 1e30;
+            for (int k = 0; k < nref; ++k) mmin = fmin(mmin, cone_ref_ray_min(&ref[k], r, pxd));
+            uint32_t iy = id[2 * i + 1];
+            if (iy == 0) {
+                if (mmin < -M) { bad++; if (bad < 8) printf("    pixel (%u, %u): empty, %.3f px inside a cone\n", x, y, -mmin); }
+                continue;
+            }
+            covered++;
+            if (mmin > M) { bad++; if (bad < 8) printf("    pixel (%u, %u): covered, %.3f px off every cone\n", x, y, mmin); continue; }
+            if (mmin > 0) margin_worst = fmax(margin_worst, mmin);
+            double zv = -c.n / dp[i], tp = zv / r.d[2];
+            double P[3] = { r.o[0] + r.d[0] * tp, r.o[1] + r.d[1] * tp, r.o[2] + r.d[2] * tp };
+            double pxw = -P[2] * pxd;
+            int who = -1;
+            double best = 1e30, second = 1e30;
+            for (int k = 0; k < nref; ++k) {
+                double sd = cone_ref_sdf(&ref[k], P);
+                if (sd < best) { second = best; best = sd; who = k; } else if (sd < second) second = sd;
+            }
+            worst = fmax(worst, fabs(best) / pxw);
+            if (fabs(best) > 0.05 * pxw) { bad++; if (bad < 8) printf("    pixel (%u, %u): %.3f px off the cones\n", x, y, best / pxw); continue; }
+            if (second - best > pxw) {
+                judged++;
+                uint32_t key = (iy >> 20) - 1u;     /* the slot: batches in order */
+                if (id[2 * i] != ref[who].linear || key != ref[who].key - 60u) {
+                    bad++; if (bad < 8) printf("    pixel (%u, %u): batch %u element %u, expected %u, %u\n", x, y, key, id[2 * i], ref[who].key - 60u, ref[who].linear);
+                    continue;
+                }
+                per_key[key]++;
+                /* the normal: the distance's gradient, away from a flat end's rim */
+                double g[3], ng[3];
+                for (int k = 0; k < 3; ++k) {
+                    double a[3] = { P[0], P[1], P[2] }, bq[3] = { P[0], P[1], P[2] };
+                    a[k] += 1e-6; bq[k] -= 1e-6;
+                    g[k] = (cone_ref_sdf(&ref[who], a) - cone_ref_sdf(&ref[who], bq)) / 2e-6;
+                }
+                double gl = sqrt(dot3(g, g));
+                if (cone_ref_rim_dist(&ref[who], P) > 0.7 * pxw && fabs(dot3(g, r.d)) > 0.3 * gl) {
+                    oct_decode(nb[i], ng);
+                    double cs = dot3(g, ng) / gl;
+                    errs[nerr++] = acos(cs > 1 ? 1 : cs < -1 ? -1 : cs) * 180.0 / 3.14159265358979;
+                    double ab[3] = { ref[who].b[0] - ref[who].a[0], ref[who].b[1] - ref[who].a[1], ref[who].b[2] - ref[who].a[2] };
+                    ends += ref[who].flat && fabs(dot3(g, ab)) > 0.999 * gl * sqrt(dot3(ab, ab));
+                }
+            }
+        }
+    }
+    qsort(errs, (size_t)nerr, sizeof(double), cmp_double);
+    double p50 = nerr ? errs[nerr / 2] : 0, p99 = nerr ? errs[(nerr * 99) / 100] : 0;
+    printf("    %d pixels covered, %d clear (by batch %d %d %d %d %d %d); the farthest %.4f px from the cones, %.4f px outside; normals over %d (%d on flat ends): median %.3f, 99th %.3f degrees\n",
+           covered, judged, per_key[0], per_key[1], per_key[2], per_key[3], per_key[4], per_key[5], worst, margin_worst, nerr, ends, p50, p99);
+    EXPECT_EQ(0, bad);
+    EXPECT_GT(covered, 2000);
+    EXPECT_GT(judged, covered * 3 / 4);
+    for (int k = 0; k < NB; ++k) EXPECT_GT(per_key[k], 40);
+    EXPECT_GT(ends, 30);
+    EXPECT_LT(p50, 0.2);
+    EXPECT_LT(p99, 1.0);
+    free(errs);
+
+    /* Picks: near each end of the first cylinder (its nearer point's
+       attribute), and on the long line in pixels */
+    for (int end = 0; end < 2; ++end) {
+        const cone_ref_t* q = &ref[0];
+        double s = end ? 0.85 : 0.15, p[3];
+        for (int k = 0; k < 3; ++k) p[k] = q->a[k] + (q->b[k] - q->a[k]) * s;
+        uint32_t px = (uint32_t)((p[0] / -p[2] / (c.tan_half * c.aspect) * 0.5 + 0.5) * W);
+        uint32_t py = (uint32_t)((0.5 - p[1] / -p[2] / c.tan_half * 0.5) * H);
+        md_render_pick_t pk;
+        ASSERT_TRUE(f_pick(&fx, px, py, &pk));
+        EXPECT_EQ(60u, (unsigned)pk.key);
+        EXPECT_EQ(0u, pk.element);
+        EXPECT_EQ((uint32_t)end, pk.attr);
+    }
+    {
+        const cone_ref_t* q = &ref[3 * 2 + 3 * 3];      /* batch 4's first */
+        double p[3];
+        for (int k = 0; k < 3; ++k) p[k] = q->a[k] + (q->b[k] - q->a[k]) * 0.7;
+        double sx = (p[0] / -p[2] / (c.tan_half * c.aspect) * 0.5 + 0.5) * W, sy = (0.5 - p[1] / -p[2] / c.tan_half * 0.5) * H;
+        md_render_pick_t pk;
+        ASSERT_TRUE(f_pick(&fx, (uint32_t)sx, (uint32_t)sy, &pk));
+        EXPECT_EQ(64u, (unsigned)pk.key);
+        EXPECT_EQ(0u, pk.element);
+    }
+
+    /* Refused: shaped and dashed, tapered in pixels, a negative radius in pixels */
+    for (int k = 0; k < 3; ++k) {
+        md_render_batch_t x = b[k == 0 ? 0 : k == 1 ? 4 : 5];
+        if (k == 0) { x.style.capsules.dash_length = 0.3f; x.style.capsules.gap_length = 0.2f; }
+        if (k == 1) { x.style.capsules.tapered = true; x.style.capsules.end_radius = 0.1f; }
+        if (k == 2) x.style.capsules.radius_px = -1.0f;
+        md_render_frame_t fr = frame_of(W, H, cam, &x, 1);
+        EXPECT_FALSE(md_render_view_draw(fx.gfx, fx.view, &fr, NULL));
+    }
+    free(id); free(dp); free(nb);
+    f_close(&fx);
+}
+
 static uint16_t float_to_half(float f);
 
 /* md_render.h's side of a displaced capsule, in double: pa, pb in view space,

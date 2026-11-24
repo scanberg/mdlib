@@ -20,7 +20,8 @@ The model, in full
 
         SPHERES     one point each
         CAPSULES    two points: a cylinder between them, round caps
-                    (dashed, displaced)
+                    (dashed, displaced); or flat ends, tapered (cones),
+                    a radius in pixels (lines)
         POLYGONS    3..8 points around: a rounded slab
         SPLINES     chains of control points, swept stadium
         EXTERNAL    no primitives: a reserved id range for
@@ -28,8 +29,8 @@ The model, in full
 
     Every primitive is raycast exactly; nothing is tessellated. Where a
     sphere and a capsule are the same surface (licorice joints), the sphere
-    wins, whatever the order of the batches. Not yet: triangle meshes, flat
-    caps, capsules across a periodic boundary, transparency (below).
+    wins, whatever the order of the batches. Not yet: triangle meshes,
+    capsules across a periodic boundary, transparency (below).
 
   * Points carry positions and, optionally, a VELOCITY. Through an optional
     index they also carry ATTRIBUTES (usually per atom): a colour or a palette
@@ -261,6 +262,23 @@ typedef struct md_render_capsule_style_t {
     float           offset;
     md_gpu_addr_t   side;
     float           trim;
+
+    /* Shaped: cylinders and cones, and lines as wide on screen all along.
+       `flat`: flat ends, not round (cylinders, truncated cones; the sharp
+       edges of an arrow). `tapered`: the radius at the second point is
+       end_radius (times the capsule's radius_scale, as the first's): a
+       truncated cone, a cone where it is 0; with round ends the hull of
+       the two balls. `radius_px` > 0: instead of the radii, at each end the
+       world radius of that many pixels at its depth, so that a capsule is as
+       wide on screen all along (a cell's edges; round ends close the joints
+       of a polyline); a capsule that reaches past the near plane is cut
+       short there. Not tapered. The radius_scale, the instance's scale and
+       a fade's shrink multiply either. Not dashed or displaced. Only the
+       hardware raster draws them (no compute raster for small ones). */
+    bool            flat;
+    bool            tapered;
+    float           end_radius;
+    float           radius_px;
 } md_render_capsule_style_t;
 
 /* SPLINES: a profile swept along a uniform cubic B-spline through control
