@@ -55,6 +55,7 @@ written on one and read on another needs no queue-family ownership transfer.
 #include <core/md_os.h>
 
 #include <core/md_str.h>
+#include <core/md_platform.h>
 
 #define VOLK_IMPLEMENTATION
 #include <volk.h>
@@ -299,6 +300,13 @@ typedef struct md_gpu_texture {
     uint32_t              attach_view_count, attach_view_cap;
     bool                  external;        /* a swapchain image: md_gpu owns
                                               neither the image nor memory */
+    /* MD_GPU_TEX_SHARED: the semaphores GL and md_gpu order each other by
+       (VK_NULL_HANDLE where the device cannot export them: release waits on
+       the host), the Win32 handles exported once and closed with the
+       texture, and whether a release awaits its acquire. */
+    VkSemaphore           share_ready, share_done;
+    void*                 share_win32[3];  /* memory, ready, done          */
+    bool                  share_out;
     char                  label[64];
 } md_gpu_texture;
 
@@ -514,6 +522,12 @@ typedef struct md_gpu_device {
 
     bool            is_discrete;
     uint32_t        adapter_index;
+    /* Sharing textures with OpenGL (MD_GPU_TEX_SHARED): how memory is
+       exported (NONE: not at all), whether semaphores are too, and the
+       UUIDs GL names its GPU by */
+    md_gpu_share_kind_t share_kind;
+    bool            share_semaphores;
+    uint8_t         device_uuid[16], driver_uuid[16];
     uint64_t        warned_storage_read;   /* md_gpu_format_t bits already warned about */
     bool            validation;
     bool            debug_utils;        /* VK_EXT_debug_utils enabled: object names and labels for GPU tools */
@@ -611,6 +625,67 @@ static bool md_vk_image_memory(md_gpu_device_t dev, VkImage image, VkDeviceMemor
     if (!md_vk_check(vkAllocateMemory(dev->device, &mai, NULL, out_mem), "vkAllocateMemory (image)")) return false;
     if (out_size) *out_size = req.size;
     return md_vk_check(vkBindImageMemory(dev->device, image, *out_mem, 0), "vkBindImageMemory");
+}
+
+/* ---- Sharing textures with OpenGL: handle types and memory ---------------- */
+
+static VkExternalMemoryHandleTypeFlagBits md_vk_share_memory_type(md_gpu_share_kind_t kind) {
+    return kind == MD_GPU_SHARE_WIN32 ? VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT : VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+}
+
+static VkExternalSemaphoreHandleTypeFlagBits md_vk_share_semaphore_type(md_gpu_share_kind_t kind) {
+    return kind == MD_GPU_SHARE_WIN32 ? VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT : VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT;
+}
+
+/* VK_KHR_external_memory_win32 and _semaphore_win32 live in vulkan_win32.h,
+   which needs windows.h: their two queries, as the surface code mirrors its
+   create info, through the device's proc address. A handle is a HANDLE. */
+typedef struct md_vk_get_win32_info_t {
+    VkStructureType sType;
+    const void*     pNext;
+    uint64_t        object;        /* VkDeviceMemory or VkSemaphore */
+    uint32_t        handle_type;
+} md_vk_get_win32_info_t;
+typedef VkResult (VKAPI_PTR *md_vk_get_win32_fn)(VkDevice device, const md_vk_get_win32_info_t* info, void** handle);
+
+static bool md_vk_get_win32(md_gpu_device_t dev, bool semaphore, uint64_t object, void** out) {
+    const char* name = semaphore ? "vkGetSemaphoreWin32HandleKHR" : "vkGetMemoryWin32HandleKHR";
+    md_vk_get_win32_fn fn = (md_vk_get_win32_fn)vkGetDeviceProcAddr(dev->device, name);
+    if (!fn) return md_gpu_fail("%s is unavailable", name);
+    md_vk_get_win32_info_t gi = { semaphore ? VK_STRUCTURE_TYPE_SEMAPHORE_GET_WIN32_HANDLE_INFO_KHR : VK_STRUCTURE_TYPE_MEMORY_GET_WIN32_HANDLE_INFO_KHR,
+                                  NULL, object,
+                                  semaphore ? (uint32_t)VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT : (uint32_t)VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT };
+    *out = NULL;
+    return md_vk_check(fn(dev->device, &gi, out), name);
+}
+
+/* The memory of a shared texture: its own, dedicated to it and exportable */
+static bool md_vk_image_memory_shared(md_gpu_device_t dev, VkImage image, VkDeviceMemory* out_mem, uint64_t* out_size) {
+    VkMemoryRequirements req;
+    vkGetImageMemoryRequirements(dev->device, image, &req);
+    uint32_t types[VK_MAX_MEMORY_TYPES];
+    uint32_t n = md_vk_memory_types(dev, req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, 0, types);
+    if (n == 0) n = md_vk_memory_types(dev, req.memoryTypeBits, 0, 0, 0, types);   /* UMA */
+    if (n == 0) return md_gpu_fail("no memory type for a shared image");
+    VkMemoryDedicatedAllocateInfo ded = {VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO};
+    ded.image = image;
+    VkExportMemoryAllocateInfo exp = {VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO, &ded};
+    exp.handleTypes = md_vk_share_memory_type(dev->share_kind);
+    VkMemoryAllocateInfo mai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, &exp};
+    mai.allocationSize  = req.size;
+    mai.memoryTypeIndex = types[0];
+    if (!md_vk_check(vkAllocateMemory(dev->device, &mai, NULL, out_mem), "vkAllocateMemory (shared image)")) return false;
+    if (out_size) *out_size = req.size;
+    return md_vk_check(vkBindImageMemory(dev->device, image, *out_mem, 0), "vkBindImageMemory (shared)");
+}
+
+static VkSemaphore md_vk_share_semaphore(md_gpu_device_t dev) {
+    VkExportSemaphoreCreateInfo es = {VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO};
+    es.handleTypes = md_vk_share_semaphore_type(dev->share_kind);
+    VkSemaphoreCreateInfo sci = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, &es};
+    VkSemaphore sem = VK_NULL_HANDLE;
+    if (!md_vk_check(vkCreateSemaphore(dev->device, &sci, NULL, &sem), "vkCreateSemaphore (shared)")) return VK_NULL_HANDLE;
+    return sem;
 }
 
 static void md_vk_set_sharing(md_gpu_device_t dev, VkSharingMode* mode, uint32_t* count, const uint32_t** families) {
@@ -1604,7 +1679,7 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
 
     /* Swapchains, when the instance can make surfaces and the device can
        present through a graphics queue. */
-    const char* dev_exts[4];
+    const char* dev_exts[8];
     uint32_t    dev_ext_count = 0;
     /* Float atomics, exactly as the probe found them. */
     if (caps.float_atomics) {
@@ -1620,6 +1695,38 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
     if (caps.graphics && surface_ext_count > 0 && md_vk_device_ext_available(dev->phys, VK_KHR_SWAPCHAIN_EXTENSION_NAME)) {
         dev_exts[dev_ext_count++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
         dev->supports_present = true;
+    }
+    /* Textures shared with OpenGL (MD_GPU_TEX_SHARED): their memory exported,
+       and the semaphores that order the two APIs where the device exports
+       those too (without them, md_gpu_texture_share_release waits on the
+       host). The UUIDs GL names its GPU by. */
+    {
+        VkPhysicalDeviceIDProperties idp = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES};
+        VkPhysicalDeviceProperties2 p2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &idp};
+        vkGetPhysicalDeviceProperties2(dev->phys, &p2);
+        md_memcpy(dev->device_uuid, idp.deviceUUID, 16);
+        md_memcpy(dev->driver_uuid, idp.driverUUID, 16);
+#if MD_PLATFORM_WINDOWS
+        const char* mem_ext = "VK_KHR_external_memory_win32";
+        const char* sem_ext = "VK_KHR_external_semaphore_win32";
+        const md_gpu_share_kind_t kind = MD_GPU_SHARE_WIN32;
+#else
+        const char* mem_ext = VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME;
+        const char* sem_ext = VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME;
+        const md_gpu_share_kind_t kind = MD_GPU_SHARE_FD;
+#endif
+        if (!MD_PLATFORM_OSX && md_vk_device_ext_available(dev->phys, mem_ext)) {
+            dev_exts[dev_ext_count++] = mem_ext;
+            dev->share_kind = kind;
+            VkPhysicalDeviceExternalSemaphoreInfo esi = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_SEMAPHORE_INFO};
+            esi.handleType = md_vk_share_semaphore_type(kind);
+            VkExternalSemaphoreProperties esp = {VK_STRUCTURE_TYPE_EXTERNAL_SEMAPHORE_PROPERTIES};
+            vkGetPhysicalDeviceExternalSemaphoreProperties(dev->phys, &esi, &esp);
+            if (md_vk_device_ext_available(dev->phys, sem_ext) && (esp.externalSemaphoreFeatures & VK_EXTERNAL_SEMAPHORE_FEATURE_EXPORTABLE_BIT)) {
+                dev_exts[dev_ext_count++] = sem_ext;
+                dev->share_semaphores = true;
+            }
+        }
     }
     /* The compiled kernels' statistics (registers, shared memory, ...), for profiling, where the
        driver reports them: md_gpu_kernel_info's stats. */
@@ -1762,6 +1869,9 @@ bool md_gpu_device_info(md_gpu_device_t dev, md_gpu_device_info_t* info) {
     info->preferred_group_multiple = dev->subgroup_size;
     info->supports_graphics        = dev->supports_graphics;
     info->supports_present         = dev->supports_present;
+    info->supports_sharing         = dev->share_kind != MD_GPU_SHARE_NONE;
+    md_memcpy(info->device_uuid, dev->device_uuid, 16);
+    md_memcpy(info->driver_uuid, dev->driver_uuid, 16);
     info->vendor_id                = dev->props.vendorID;
     info->device_id                = dev->props.deviceID;
     info->type                     = md_vk_device_type(dev->props.deviceType);
@@ -2949,6 +3059,9 @@ static void md_vk_texture_free(md_gpu_device_t dev, md_gpu_texture_t t) {
         if (t->image)  vkDestroyImage(dev->device, t->image, NULL);
         if (t->memory) vkFreeMemory(dev->device, t->memory, NULL);
     }
+    if (t->share_ready) vkDestroySemaphore(dev->device, t->share_ready, NULL);
+    if (t->share_done)  vkDestroySemaphore(dev->device, t->share_done, NULL);
+    for (int i = 0; i < 3; ++i) md_os_handle_close(t->share_win32[i]);
     md_free(dev->alloc, t, sizeof(*t));
 }
 
@@ -2994,6 +3107,16 @@ static bool md_vk_texture_image_info(md_gpu_device_t dev, const md_gpu_texture_d
     }
     if (d.depth_or_layers == 0) d.depth_or_layers = 1;
     if (d.mip_levels == 0) d.mip_levels = 1;
+    if (d.usage & MD_GPU_TEX_SHARED) {
+        if (dev->share_kind == MD_GPU_SHARE_NONE) {
+            return md_gpu_fail("%s '%s': SHARED, but this device cannot export memory (VK_KHR_external_memory_fd / _win32)", what, label);
+        }
+        if (d.type != MD_GPU_TEX_2D || d.mip_levels != 1) return md_gpu_fail("%s '%s': SHARED needs a 2D texture of one mip", what, label);
+        if (d.format != MD_GPU_FORMAT_RGBA8_UNORM && d.format != MD_GPU_FORMAT_RGBA8_SRGB && d.format != MD_GPU_FORMAT_RGBA16_FLOAT &&
+            d.format != MD_GPU_FORMAT_RG16_FLOAT && d.format != MD_GPU_FORMAT_R32_FLOAT) {
+            return md_gpu_fail("%s '%s': SHARED takes RGBA8_UNORM, RGBA8_SRGB, RGBA16_FLOAT, RG16_FLOAT or R32_FLOAT, not %s", what, label, fi.name);
+        }
+    }
 
     *ici = (VkImageCreateInfo){VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     ici->imageType     = d.type == MD_GPU_TEX_3D ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
@@ -3007,7 +3130,7 @@ static bool md_vk_texture_image_info(md_gpu_device_t dev, const md_gpu_texture_d
     ici->tiling        = VK_IMAGE_TILING_OPTIMAL;
     ici->usage         = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     if (d.usage & MD_GPU_TEX_STORAGE) ici->usage |= VK_IMAGE_USAGE_STORAGE_BIT;
-    if (d.usage & MD_GPU_TEX_SAMPLED) ici->usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
+    if (d.usage & (MD_GPU_TEX_SAMPLED | MD_GPU_TEX_SHARED)) ici->usage |= VK_IMAGE_USAGE_SAMPLED_BIT;   /* GL samples a shared one */
     if (d.usage & MD_GPU_TEX_RENDER_TARGET) {
         ici->usage |= fi.depth ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     }
@@ -3116,8 +3239,40 @@ static md_gpu_texture_t md_vk_texture_create(md_gpu_stream_t s, const md_gpu_tex
     md_snprintf(t->label, sizeof(t->label), "%s", label);
     t->desc.label = t->label;
 
+    const bool shared = (d.usage & MD_GPU_TEX_SHARED) != 0;
+    VkExternalMemoryImageCreateInfo emi = {VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO};
+    if (shared) {
+        if (at) { md_gpu_fail("%s '%s': a SHARED texture has memory of its own, it cannot be placed", what, label); goto fail; }
+        emi.handleTypes = md_vk_share_memory_type(dev->share_kind);
+        ici.pNext = &emi;
+        /* That the driver can export an image of this kind at all */
+        VkPhysicalDeviceExternalImageFormatInfo eif = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO};
+        eif.handleType = md_vk_share_memory_type(dev->share_kind);
+        VkPhysicalDeviceImageFormatInfo2 ifi = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2, &eif};
+        ifi.format = ici.format; ifi.type = ici.imageType; ifi.tiling = ici.tiling; ifi.usage = ici.usage;
+        VkExternalImageFormatProperties eip = {VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES};
+        VkImageFormatProperties2 ifp2 = {VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2, &eip};
+        if (vkGetPhysicalDeviceImageFormatProperties2(dev->phys, &ifi, &ifp2) != VK_SUCCESS ||
+            !(eip.externalMemoryProperties.externalMemoryFeatures & VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT)) {
+            md_gpu_fail("%s '%s': the device cannot export %s images with this usage", what, label, fi.name);
+            goto fail;
+        }
+    }
     if (!md_vk_check(vkCreateImage(dev->device, &ici, NULL, &t->image), "vkCreateImage")) goto fail;
-    if (!at) {
+    if (shared) {
+        if (!md_vk_image_memory_shared(dev, t->image, &t->memory, &t->bytes)) goto fail;
+        if (dev->share_semaphores) {
+            t->share_ready = md_vk_share_semaphore(dev);
+            t->share_done  = md_vk_share_semaphore(dev);
+            if (!t->share_ready || !t->share_done) goto fail;
+        }
+        if (dev->share_kind == MD_GPU_SHARE_WIN32) {
+            /* NT handles, exported once and closed with the texture */
+            if (!md_vk_get_win32(dev, false, (uint64_t)(uintptr_t)t->memory, &t->share_win32[0])) goto fail;
+            if (t->share_ready && (!md_vk_get_win32(dev, true, (uint64_t)(uintptr_t)t->share_ready, &t->share_win32[1]) ||
+                                   !md_vk_get_win32(dev, true, (uint64_t)(uintptr_t)t->share_done,  &t->share_win32[2]))) goto fail;
+        }
+    } else if (!at) {
         if (!md_vk_image_memory(dev, t->image, &t->memory, &t->bytes)) goto fail;
     } else {
         /* Placed: the texture's pages lie inside [at, at + placement size) of
@@ -3245,6 +3400,122 @@ md_gpu_sampled_tex_t md_gpu_texture_sampled(md_gpu_texture_t t) {
     md_gpu_sampled_tex_t h = {0};
     if (t) h.handle = t->sampled_slot;
     return h;
+}
+
+/* ---- Sharing textures with OpenGL ---------------------------------------------- */
+
+static bool md_vk_share_check(md_gpu_stream_t s, md_gpu_texture_t t, const char* what) {
+    if (!t) return md_gpu_fail("%s: null texture", what);
+    if (!(t->desc.usage & MD_GPU_TEX_SHARED)) return md_gpu_fail("%s: texture '%s' was not created SHARED", what, t->label);
+    if (s) {
+        if (t->device != s->device) return md_gpu_fail("%s: texture '%s' belongs to another device", what, t->label);
+        if (s->upload_open) return md_gpu_fail("%s: stream '%s' has an open upload", what, s->label);
+        if (!md_vk_not_in_pass(s, what)) return false;
+    }
+    return true;
+}
+
+/* The hand-over to GL (release) or back (acquire): a queue family ownership
+   transfer with VK_QUEUE_FAMILY_EXTERNAL, the layout GENERAL on both sides.
+   An image shared CONCURRENT across md_gpu's families names IGNORED for its
+   own side. */
+static bool md_vk_share_barrier(md_gpu_stream_t s, md_gpu_texture_t t, bool release) {
+    if (!md_vk_stream_ensure_cmd(s)) return false;
+    const uint32_t own = s->device->share_family_count > 1 ? VK_QUEUE_FAMILY_IGNORED : s->family;
+    VkImageMemoryBarrier2 b = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+    if (release) {
+        b.srcStageMask  = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        b.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT | VK_ACCESS_2_MEMORY_READ_BIT;
+        b.srcQueueFamilyIndex = own;
+        b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
+    } else {
+        b.dstStageMask  = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        b.dstAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT | VK_ACCESS_2_MEMORY_READ_BIT;
+        b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
+        b.dstQueueFamilyIndex = own;
+    }
+    b.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    b.image = t->image;
+    b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    b.subresourceRange.levelCount = 1;
+    b.subresourceRange.layerCount = 1;
+    VkDependencyInfo di = {VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    di.imageMemoryBarrierCount = 1;
+    di.pImageMemoryBarriers    = &b;
+    vkCmdPipelineBarrier2(s->open, &di);
+    md_vk_mark_work(s);
+    return true;
+}
+
+bool md_gpu_texture_share(md_gpu_texture_t t, md_gpu_texture_share_t* out) {
+    if (!out) return md_gpu_fail("md_gpu_texture_share: null argument");
+    md_memset(out, 0, sizeof(*out));
+    if (!md_vk_share_check(NULL, t, "md_gpu_texture_share")) return false;
+    md_gpu_device_t dev = t->device;
+    out->kind        = dev->share_kind;
+    out->memory_size = t->bytes;
+    out->format      = t->desc.format;
+    out->width       = t->desc.width;
+    out->height      = t->desc.height;
+    md_memcpy(out->device_uuid, dev->device_uuid, 16);
+    md_memcpy(out->driver_uuid, dev->driver_uuid, 16);
+    if (dev->share_kind == MD_GPU_SHARE_WIN32) {
+        out->memory = (uint64_t)(uintptr_t)t->share_win32[0];
+        out->ready  = (uint64_t)(uintptr_t)t->share_win32[1];
+        out->done   = (uint64_t)(uintptr_t)t->share_win32[2];
+        return true;
+    }
+    /* Fds: new ones on every call, each taken over by the import */
+    VkMemoryGetFdInfoKHR mgi = {VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR};
+    mgi.memory     = t->memory;
+    mgi.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+    int fd = -1;
+    if (!md_vk_check(vkGetMemoryFdKHR(dev->device, &mgi, &fd), "vkGetMemoryFdKHR")) return false;
+    out->memory = (uint64_t)fd;
+    if (t->share_ready) {
+        VkSemaphoreGetFdInfoKHR sgi = {VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR};
+        sgi.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT;
+        int ready = -1, done = -1;
+        sgi.semaphore = t->share_ready;
+        if (!md_vk_check(vkGetSemaphoreFdKHR(dev->device, &sgi, &ready), "vkGetSemaphoreFdKHR")) return false;
+        sgi.semaphore = t->share_done;
+        if (!md_vk_check(vkGetSemaphoreFdKHR(dev->device, &sgi, &done), "vkGetSemaphoreFdKHR")) return false;
+        out->ready = (uint64_t)ready;
+        out->done  = (uint64_t)done;
+    }
+    return true;
+}
+
+bool md_gpu_texture_share_acquire(md_gpu_stream_t s, md_gpu_texture_t t) {
+    if (!s) return md_gpu_fail("md_gpu_texture_share_acquire: null stream");
+    if (!md_vk_share_check(s, t, "md_gpu_texture_share_acquire")) return false;
+    if (!t->share_out) return true;                  /* never handed over, or back already */
+    if (t->share_done) {
+        /* GL's `done` ahead of what follows only: what is recorded goes first */
+        if (!md_vk_stream_submit(s)) return false;
+        if (s->bin_wait_count >= 4) return md_gpu_fail("md_gpu_texture_share_acquire: too many waits pending on stream '%s'", s->label);
+        s->bin_waits[s->bin_wait_count++] = t->share_done;
+    }
+    if (!md_vk_share_barrier(s, t, false)) return false;
+    t->share_out = false;
+    return true;
+}
+
+bool md_gpu_texture_share_release(md_gpu_stream_t s, md_gpu_texture_t t) {
+    if (!s) return md_gpu_fail("md_gpu_texture_share_release: null stream");
+    if (!md_vk_share_check(s, t, "md_gpu_texture_share_release")) return false;
+    if (t->share_out) return md_gpu_fail("md_gpu_texture_share_release: '%s' was released and not acquired since", t->label);
+    if (!md_vk_share_barrier(s, t, true)) return false;
+    if (t->share_ready) {
+        if (s->bin_signal_count >= 4) return md_gpu_fail("md_gpu_texture_share_release: too many signals pending on stream '%s'", s->label);
+        s->bin_signals[s->bin_signal_count++] = t->share_ready;
+        if (!md_vk_stream_submit(s)) return false;
+    } else {
+        md_gpu_stream_sync(s);                       /* no semaphore to wait on: GL reads once this returns */
+    }
+    t->share_out = true;
+    return true;
 }
 
 /* ---- Samplers ------------------------------------------------------------------ */

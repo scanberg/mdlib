@@ -95,6 +95,7 @@ destruction.
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
+#import <IOSurface/IOSurface.h>
 #include <TargetConditionals.h>
 #include <objc/message.h>
 
@@ -288,6 +289,8 @@ typedef struct md_gpu_texture {
     bool                  resident;          /* in the residency set itself (placed textures are, through their heap) */
     bool                  external;          /* a drawable's texture; not the caller's */
     bool                  placed;            /* in a DEVICE chunk's heap, the caller's memory */
+    IOSurfaceRef          share_surface;     /* MD_GPU_TEX_SHARED: the IOSurface GL opens too (+1) */
+    bool                  share_out;         /* released, not acquired since */
     char                  label[64];
 } md_gpu_texture;
 
@@ -1428,6 +1431,7 @@ static void md_mtl_texture_free(md_gpu_device_t dev, md_gpu_texture_t t) {
         if (t->resident) md_mtl_end_residency(dev, t->texture);
         MD_MTL_RELEASE(t->texture);
     }
+    if (t->share_surface) CFRelease(t->share_surface);
     md_free(dev->alloc, t, sizeof(*t));
 }
 
@@ -1461,6 +1465,13 @@ static bool md_mtl_texture_validate(const md_gpu_texture_desc_t* desc, const cha
     }
     if (d.depth_or_layers == 0) d.depth_or_layers = 1;
     if (d.mip_levels == 0) d.mip_levels = 1;
+    if (d.usage & MD_GPU_TEX_SHARED) {
+        if (d.type != MD_GPU_TEX_2D || d.mip_levels != 1) return md_gpu_fail("%s '%s': SHARED needs a 2D texture of one mip", what, label);
+        if (d.format != MD_GPU_FORMAT_RGBA8_UNORM && d.format != MD_GPU_FORMAT_RGBA8_SRGB && d.format != MD_GPU_FORMAT_RGBA16_FLOAT &&
+            d.format != MD_GPU_FORMAT_RG16_FLOAT && d.format != MD_GPU_FORMAT_R32_FLOAT) {
+            return md_gpu_fail("%s '%s': SHARED takes RGBA8_UNORM, RGBA8_SRGB, RGBA16_FLOAT, RG16_FLOAT or R32_FLOAT, not %s", what, label, fi.name);
+        }
+    }
     *out_d  = d;
     *out_fi = fi;
     return true;
@@ -1525,7 +1536,26 @@ static md_gpu_texture_t md_mtl_texture_create(md_gpu_stream_t s, const md_gpu_te
     @autoreleasepool {
         MTLTextureDescriptor* td = md_mtl_texture_descriptor(&d, fi);
         id<MTLTexture> tex = nil;
-        if (!at) {
+        if (d.usage & MD_GPU_TEX_SHARED) {
+            /* In an IOSurface, which GL opens too (CGLTexImageIOSurface2D) */
+            if (at) ok = md_gpu_fail("%s '%s': a SHARED texture has memory of its own, it cannot be placed", what, label);
+            const size_t bpe = md_gpu_format_texel_size(d.format);
+            if (ok) {
+                const size_t row = IOSurfaceAlignProperty(kIOSurfaceBytesPerRow, (size_t)d.width * bpe);
+                NSDictionary* props = @{ (__bridge NSString*)kIOSurfaceWidth:           @(d.width),
+                                         (__bridge NSString*)kIOSurfaceHeight:          @(d.height),
+                                         (__bridge NSString*)kIOSurfaceBytesPerElement: @(bpe),
+                                         (__bridge NSString*)kIOSurfaceBytesPerRow:     @(row) };
+                t->share_surface = IOSurfaceCreate((__bridge CFDictionaryRef)props);
+                if (!t->share_surface) ok = md_gpu_fail("texture '%s': IOSurfaceCreate failed (%ux%u, %s)", label, d.width, d.height, fi.name);
+            }
+            if (ok) {
+                td.storageMode = MTLStorageModeManaged;
+                td.usage |= MTLTextureUsageShaderRead;
+                tex = [dev->device newTextureWithDescriptor:td iosurface:t->share_surface plane:0];
+                if (!tex) ok = md_gpu_fail("texture '%s': newTextureWithDescriptor:iosurface: failed for %s", label, fi.name);
+            }
+        } else if (!at) {
             tex = [dev->device newTextureWithDescriptor:td];
             if (!tex) ok = md_gpu_fail("texture '%s': newTextureWithDescriptor failed for %s", label, fi.name);
         } else {
@@ -1643,6 +1673,37 @@ md_gpu_storage_tex_t md_gpu_texture_storage(md_gpu_texture_t t, uint32_t mip) {
     md_gpu_storage_tex_t h = {0};
     if (t && t->storage_handles && mip < t->desc.mip_levels) h.handle = t->storage_handles[mip];
     return h;
+}
+
+/* ---- Sharing textures with OpenGL: an IOSurface, GL unable to wait on Metal ---- */
+
+bool md_gpu_texture_share(md_gpu_texture_t t, md_gpu_texture_share_t* out) {
+    if (!out) return md_gpu_fail("md_gpu_texture_share: null argument");
+    md_memset(out, 0, sizeof(*out));
+    if (!t) return md_gpu_fail("md_gpu_texture_share: null texture");
+    if (!t->share_surface) return md_gpu_fail("md_gpu_texture_share: texture '%s' was not created SHARED", t->label);
+    out->kind   = MD_GPU_SHARE_IOSURFACE;
+    out->memory = (uint64_t)(uintptr_t)t->share_surface;
+    out->format = t->desc.format;
+    out->width  = t->desc.width;
+    out->height = t->desc.height;
+    return true;
+}
+
+bool md_gpu_texture_share_acquire(md_gpu_stream_t s, md_gpu_texture_t t) {
+    if (!s || !t) return md_gpu_fail("md_gpu_texture_share_acquire: null argument");
+    if (!t->share_surface) return md_gpu_fail("md_gpu_texture_share_acquire: texture '%s' was not created SHARED", t->label);
+    t->share_out = false;   /* GL's end of the read waited until GL was done */
+    return true;
+}
+
+bool md_gpu_texture_share_release(md_gpu_stream_t s, md_gpu_texture_t t) {
+    if (!s || !t) return md_gpu_fail("md_gpu_texture_share_release: null argument");
+    if (!t->share_surface) return md_gpu_fail("md_gpu_texture_share_release: texture '%s' was not created SHARED", t->label);
+    if (t->share_out) return md_gpu_fail("md_gpu_texture_share_release: '%s' was released and not acquired since", t->label);
+    md_gpu_stream_sync(s);  /* GL cannot wait on Metal: done on return */
+    t->share_out = true;
+    return true;
 }
 
 md_gpu_sampled_tex_t md_gpu_texture_sampled(md_gpu_texture_t t) {
@@ -3474,6 +3535,7 @@ bool md_gpu_device_info(md_gpu_device_t dev, md_gpu_device_info_t* info) {
     info->preferred_group_multiple = dev->make_grid_kernel ? (uint32_t)dev->make_grid_kernel->pso.threadExecutionWidth : 32;
     info->supports_graphics        = true;
     info->supports_present         = dev->can_present;
+    info->supports_sharing         = true;   /* IOSurface; no UUIDs: GL on a Mac opens it on any GPU */
     md_snprintf(info->name, sizeof(info->name), "%s", [[dev->device name] UTF8String]);
     info->vendor_id                = md_mtl_vendor_id(info->name);
     info->type                     = md_mtl_device_type(dev->device);

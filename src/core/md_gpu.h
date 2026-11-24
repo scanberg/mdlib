@@ -374,6 +374,11 @@ typedef struct md_gpu_device_info_t {
     uint32_t vendor_id;                  /* PCI vendor id: 0x10DE NVIDIA, 0x1002 AMD,
                                             0x8086 Intel, 0x106B Apple; 0 unknown */
     uint32_t device_id;                  /* PCI device id, 0 unknown */
+    uint8_t  device_uuid[16];            /* as GL_DEVICE_UUID_EXT names the GPU of a
+                                            GL context (Vulkan); zero on Metal    */
+    uint8_t  driver_uuid[16];            /* as GL_DRIVER_UUID_EXT (Vulkan); zero on
+                                            Metal                                 */
+    bool     supports_sharing;           /* MD_GPU_TEX_SHARED textures can be made */
     md_gpu_device_type_t type;
     uint32_t adapter_index;              /* index in md_gpu_enumerate_adapters */
     char     name[256];
@@ -764,6 +769,12 @@ enum {
                                             Combines with SAMPLED, and with
                                             STORAGE for colour formats the
                                             device can write                 */
+    MD_GPU_TEX_SHARED        = 1u << 3,  /* read by an OpenGL context: see
+                                            "Sharing a texture with OpenGL".
+                                            2D, one mip, RGBA8_UNORM,
+                                            RGBA8_SRGB, RGBA16_FLOAT,
+                                            RG16_FLOAT or R32_FLOAT; its own
+                                            memory (not placed)               */
 };
 
 typedef struct md_gpu_texture_desc_t {
@@ -836,6 +847,59 @@ const md_gpu_texture_desc_t* md_gpu_texture_desc(md_gpu_texture_t tex);
    addresses a single mip level; the sampled handle covers all of them. */
 md_gpu_storage_tex_t md_gpu_texture_storage(md_gpu_texture_t tex, uint32_t mip);
 md_gpu_sampled_tex_t md_gpu_texture_sampled(md_gpu_texture_t tex);
+
+/* ---- Sharing a texture with OpenGL -------------------------------------------
+   A texture md_gpu writes and an OpenGL context reads: md_gpu's finished
+   frame composed into a host's GL scene, or, while an application moves to
+   md_gpu, what md_gpu drew read by its remaining GL passes. md_gpu exports
+   native handles and never links OpenGL; md_gpu_gl.h imports them.
+
+     Vulkan (Windows, Linux): the texture's memory is exported (an opaque fd,
+       or a Win32 handle) and imported with GL_EXT_memory_object. Two binary
+       semaphores order the two APIs on the GPU: `ready`, which release
+       signals and GL waits on before it reads, and `done`, which GL signals
+       when it has read and acquire waits on before md_gpu writes again. The
+       texture stays in the GENERAL layout (GL_LAYOUT_GENERAL_EXT).
+     Metal (macOS): an IOSurface both open. GL cannot wait on Metal, so
+       release waits on the host until the work is done, and GL's end of a
+       read (md_gpu_gl_end_read) until GL is done.
+
+   Every frame: acquire, write, release, then in GL begin_read, read,
+   end_read. Strictly in turn: an acquire waits for the `done` of the
+   previous release, so a release GL never reads stalls the next acquire.
+   The GL context must run on the device's GPU: device_uuid and driver_uuid
+   against GL's (md_gpu_gl_import checks). */
+
+typedef enum md_gpu_share_kind_t {
+    MD_GPU_SHARE_NONE = 0,
+    MD_GPU_SHARE_FD,                     /* opaque POSIX fd                  */
+    MD_GPU_SHARE_WIN32,                  /* opaque Win32 (NT) handle         */
+    MD_GPU_SHARE_IOSURFACE,              /* IOSurfaceRef                     */
+} md_gpu_share_kind_t;
+
+typedef struct md_gpu_texture_share_t {
+    md_gpu_share_kind_t kind;
+    uint64_t memory;        /* FD: a new fd per call, which GL's import takes
+                               over (close it if not imported). WIN32 and
+                               IOSURFACE: the texture's own, valid while it
+                               lives                                          */
+    uint64_t memory_size;   /* bytes (Vulkan)                                 */
+    uint64_t ready, done;   /* the semaphores, as `memory`; 0 on Metal         */
+    md_gpu_format_t format;
+    uint32_t width, height;
+    uint8_t  device_uuid[16], driver_uuid[16];
+} md_gpu_texture_share_t;
+
+/* The handles of an MD_GPU_TEX_SHARED texture, for md_gpu_gl_import. */
+bool md_gpu_texture_share(md_gpu_texture_t tex, md_gpu_texture_share_t* out);
+
+/* Before md_gpu writes the texture again: GL has read it (the previous
+   release's `done`). On a GRAPHICS or COMPUTE stream, outside a pass. */
+bool md_gpu_texture_share_acquire(md_gpu_stream_t stream, md_gpu_texture_t tex);
+
+/* After md_gpu wrote it: what was issued into `stream` before is submitted,
+   and GL may read once it is done (`ready`; on Metal, on return). */
+bool md_gpu_texture_share_release(md_gpu_stream_t stream, md_gpu_texture_t tex);
 
 /* ---- Samplers -----------------------------------------------------------------
    Samplers are immutable values: the same desc returns the same handle, the

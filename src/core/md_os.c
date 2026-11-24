@@ -528,6 +528,14 @@ void* md_os_module_handle(void) {
 #endif
 }
 
+void md_os_handle_close(void* handle) {
+#if MD_PLATFORM_WINDOWS
+    if (handle) CloseHandle((HANDLE)handle);
+#else
+    (void)handle;
+#endif
+}
+
 size_t md_path_write_user_dir(char* buf, size_t buf_cap) {
     MD_ASSERT(buf);
     if (buf_cap == 0) {

@@ -401,7 +401,7 @@ if (MD_ENABLE_GPU)
     # directory as a -F search path, and headers found through -F are not system headers, so every SDK header warns
     # under -Wall -Wextra -Wpedantic. The path can also point into a different SDK than the one the compiler uses.
     # By name, the compiler and linker take them from the active SDK, as system frameworks.
-    list(APPEND MD_LIBS "-framework Metal" "-framework Foundation" "-framework QuartzCore")   # QuartzCore: CAMetalLayer, for surfaces
+    list(APPEND MD_LIBS "-framework Metal" "-framework Foundation" "-framework QuartzCore" "-framework IOSurface")   # QuartzCore: CAMetalLayer, for surfaces; IOSurface: textures shared with OpenGL
     list(APPEND MD_CORE_FILES src/core/md_gpu_metal.m)
     set_source_files_properties(src/core/md_gpu_metal.m PROPERTIES LANGUAGE OBJC)
   else()
@@ -413,7 +413,7 @@ if (MD_ENABLE_GPU)
   endif()
 
   # Backend-independent parts: errors, the memory behind md_gpu_malloc and the temp scopes, and its sub-allocator.
-  list(APPEND MD_CORE_FILES src/core/md_gpu_error.c src/core/md_gpu_heap.c src/core/md_gpu_tlsf.c)
+  list(APPEND MD_CORE_FILES src/core/md_gpu_error.c src/core/md_gpu_heap.c src/core/md_gpu_tlsf.c src/core/md_gpu_gl.c)   # md_gpu_gl: the GL side of shared textures, through the caller's loader
   # Long evaluations as bounded submissions, sized by their measured GPU time.
   list(APPEND MD_CORE_FILES src/core/md_gpu_pieces.c)
 

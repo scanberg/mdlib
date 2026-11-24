@@ -80,6 +80,10 @@ bool md_os_env_set(const char* name, const char* value);
 // Win32 window and surface APIs take as the instance (HINSTANCE). NULL on other systems.
 void* md_os_module_handle(void);
 
+// Closes a Windows kernel object handle (HANDLE) the process owns, such as a shared memory or semaphore handle a
+// graphics API exported. Nothing on other systems, and nothing for NULL.
+void md_os_handle_close(void* handle);
+
 // ### PATH ###
 // Paths, those that ask the file system included, are in md_path.h.
 
