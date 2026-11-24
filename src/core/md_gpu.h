@@ -371,12 +371,6 @@ typedef struct md_gpu_device_info_t {
     uint32_t preferred_group_multiple;   /* warp / SIMD width */
     bool     supports_graphics;          /* GRAPHICS streams and rendering */
     bool     supports_present;           /* surfaces can be created        */
-    bool     supports_atomic_int64;      /* 64-bit integer atomic min/max on
-                                            device memory (Vulkan
-                                            shaderBufferInt64Atomics; Metal
-                                            Apple8+). Use them without a
-                                            return value: Metal has no fetch
-                                            form for 64-bit min/max          */
     uint32_t vendor_id;                  /* PCI vendor id: 0x10DE NVIDIA, 0x1002 AMD,
                                             0x8086 Intel, 0x106B Apple; 0 unknown */
     uint32_t device_id;                  /* PCI device id, 0 unknown */
@@ -405,6 +399,10 @@ typedef struct md_gpu_device_info_t {
     bool     int64;                      /* 64-bit integer arithmetic               */
     bool     atomic_int64;               /* every 64-bit integer atomic on device
                                             memory, add and compare-exchange included */
+    bool     atomic_int64_min_max;       /* InterlockedMin/Max on 64-bit integers in
+                                            device memory, the value they return
+                                            unused: Metal has them from Apple8, with
+                                            no fetch form. atomic_int64 implies it */
     bool     atomic_float_add;           /* InterlockedAdd on float in device memory */
     bool     atomic_float_min_max;       /* InterlockedMin/Max on float in device memory */
     bool     timestamps;                 /* md_gpu_sync_gpu_seconds measures work on

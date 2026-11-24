@@ -150,9 +150,9 @@ static inline bool scene_load(scene_t* sc, const scene_desc_t* d) {
         }
         sc->state = cs;
     }
-    if (!md_system_infer(&sc->sys, &sc->state, MD_SYSTEM_INFER_ALL, NULL)) { fprintf(stderr, "md_system_infer failed\n"); return false; }
+    if (!md_system_infer(&sc->sys, &sc->state, NULL)) { fprintf(stderr, "md_system_infer failed\n"); return false; }
     sc->n = (uint32_t)sc->sys.atom.count;
-    printf("%s: %u atoms, %zu bonds\n", d->structure, sc->n, (size_t)(sc->sys.bond.count + sc->sys.bond.noncovalent_count));
+    printf("%s: %u atoms, %zu bonds\n", d->structure, sc->n, (size_t)(sc->sys.bond.count + sc->sys.bond.interaction_count));
     return true;
 }
 

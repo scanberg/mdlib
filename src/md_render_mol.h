@@ -135,8 +135,7 @@ extern "C" {
 
 /* Bonds are drawn by kind (md_bond_kind_t), each kind on its own: the
    topology's bonds are grouped by MD_RENDER_MOL_BOND_KIND(kind), the three
-   bits of the kind (two of the eight values are no kind, and stay empty),
-   and a representation chooses which kinds it draws with a mask of them:
+   bits of the kind, and a representation chooses which kinds it draws with a mask of them:
    MD_RENDER_MOL_BONDS(MD_BOND_KIND_HYDROGEN). */
 #define MD_RENDER_MOL_BOND_KIND(kind)   ((uint32_t)(kind) >> 5)
 #define MD_RENDER_MOL_BOND_KIND_COUNT   8
@@ -165,8 +164,10 @@ typedef struct md_render_mol_bond_style_t {
    thicker, the more of its length covered, the longer its dashes.
                     radius    dash    gap     covered
      COORDINATE     0.70 r    2.0 r   0.8 r   71 %    nearly a stick
+     IONIC          0.55 r    1.5 r   0.8 r   65 %
      HYDROGEN       0.45 r    0.9 r   0.9 r   50 %    even dashes
-     INTERACTION    0.35 r    0.5 r   1.1 r   31 %    dotted
+     HALOGEN        0.45 r    1.6 r   1.6 r   50 %    as strong, longer dashes
+     CONTACT        0.35 r    0.5 r   1.1 r   31 %    dotted
      the others     1.00 r    solid
    All in the atoms' colours. md_gl's dashes for those others, to dash every
    kind: 1.00 r, 2.4 r, 0.6 r (80 %). Copy it to change it. */

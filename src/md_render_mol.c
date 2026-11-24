@@ -22,16 +22,16 @@
 _Static_assert(MD_BOND_FLAG_KIND_MASK == (MD_RENDER_MOL_BOND_KIND_COUNT - 1) << 5, "md_bond_kind_t is no longer bits 5-7");
 #define COVALENT MD_RENDER_MOL_BOND_KIND(MD_BOND_KIND_COVALENT)
 
-/* md_gl's BOND DASHES; the two values that are no kind as the others */
+/* md_gl's BOND DASHES, and the ionic and halogen bonds between them */
 const md_render_mol_bond_style_t md_render_mol_bond_styles[MD_RENDER_MOL_BOND_KIND_COUNT] = {
-    [MD_RENDER_MOL_BOND_KIND(MD_BOND_KIND_COVALENT)]    = { 1.00f, 0.0f, 0.0f, 0 },
-    [MD_RENDER_MOL_BOND_KIND(MD_BOND_KIND_COORDINATE)]  = { 0.70f, 2.0f, 0.8f, 0 },
-    [2]                                                 = { 1.00f, 0.0f, 0.0f, 0 },
-    [3]                                                 = { 1.00f, 0.0f, 0.0f, 0 },
-    [MD_RENDER_MOL_BOND_KIND(MD_BOND_KIND_ELASTIC)]     = { 1.00f, 0.0f, 0.0f, 0 },
-    [MD_RENDER_MOL_BOND_KIND(MD_BOND_KIND_METALLIC)]    = { 1.00f, 0.0f, 0.0f, 0 },
-    [MD_RENDER_MOL_BOND_KIND(MD_BOND_KIND_INTERACTION)] = { 0.35f, 0.5f, 1.1f, 0 },
-    [MD_RENDER_MOL_BOND_KIND(MD_BOND_KIND_HYDROGEN)]    = { 0.45f, 0.9f, 0.9f, 0 },
+    [MD_RENDER_MOL_BOND_KIND(MD_BOND_KIND_COVALENT)]   = { 1.00f, 0.0f, 0.0f, 0 },
+    [MD_RENDER_MOL_BOND_KIND(MD_BOND_KIND_COORDINATE)] = { 0.70f, 2.0f, 0.8f, 0 },
+    [MD_RENDER_MOL_BOND_KIND(MD_BOND_KIND_ELASTIC)]    = { 1.00f, 0.0f, 0.0f, 0 },
+    [MD_RENDER_MOL_BOND_KIND(MD_BOND_KIND_METALLIC)]   = { 1.00f, 0.0f, 0.0f, 0 },
+    [MD_RENDER_MOL_BOND_KIND(MD_BOND_KIND_CONTACT)]    = { 0.35f, 0.5f, 1.1f, 0 },
+    [MD_RENDER_MOL_BOND_KIND(MD_BOND_KIND_HYDROGEN)]   = { 0.45f, 0.9f, 0.9f, 0 },
+    [MD_RENDER_MOL_BOND_KIND(MD_BOND_KIND_IONIC)]      = { 0.55f, 1.5f, 0.8f, 0 },
+    [MD_RENDER_MOL_BOND_KIND(MD_BOND_KIND_HALOGEN)]    = { 0.45f, 1.6f, 1.6f, 0 },
 };
 
 static uint64_t align256(uint64_t x) { return (x + 255u) & ~(uint64_t)255u; }
@@ -824,7 +824,7 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
     memset(out, 0, sizeof(*out));
     md_render_mol_topo_t* T = &out->layout;
     const uint32_t n      = (uint32_t)sys->atom.count;
-    const uint32_t nb_sys = (uint32_t)(sys->bond.count + sys->bond.noncovalent_count);
+    const uint32_t nb_sys = (uint32_t)(sys->bond.count + sys->bond.interaction_count);
     T->topology_version = sys->topology_version;
     T->atom_count       = n;
 

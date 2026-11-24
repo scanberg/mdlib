@@ -3474,11 +3474,6 @@ bool md_gpu_device_info(md_gpu_device_t dev, md_gpu_device_info_t* info) {
     info->preferred_group_multiple = dev->make_grid_kernel ? (uint32_t)dev->make_grid_kernel->pso.threadExecutionWidth : 32;
     info->supports_graphics        = true;
     info->supports_present         = dev->can_present;
-    /* 64-bit atomic min/max on device buffers: Apple8 (M2/A15) and later.
-       UNVERIFIED on hardware; Metal has no fetch form for them, see md_gpu.h. */
-    if (@available(macOS 13.0, *)) {
-        info->supports_atomic_int64 = [dev->device supportsFamily:MTLGPUFamilyApple8];
-    }
     md_snprintf(info->name, sizeof(info->name), "%s", [[dev->device name] UTF8String]);
     info->vendor_id                = md_mtl_vendor_id(info->name);
     info->type                     = md_mtl_device_type(dev->device);
@@ -3500,6 +3495,7 @@ bool md_gpu_device_info(md_gpu_device_t dev, md_gpu_device_info_t* info) {
     info->float64              = false;                      /* no double on Metal GPUs */
     info->int64                = true;
     info->atomic_int64         = [d supportsFamily:MTLGPUFamilyApple9];   /* Apple8: 64-bit min/max only */
+    info->atomic_int64_min_max = [d supportsFamily:MTLGPUFamilyApple8];   /* no fetch form, see md_gpu.h */
     info->atomic_float_add     = apple7;
     info->atomic_float_min_max = false;                      /* add and exchange only */
     info->timestamps           = true;                       /* command buffer GPU times */

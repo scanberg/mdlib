@@ -427,7 +427,7 @@ static int run_clusters(int argc, char** argv) {
     if (has_ext(structure, ".gro"))      ok = md_gro_system_init_from_file(&sys, &state, path, NULL);
     else if (has_ext(structure, ".pdb")) ok = md_pdb_system_init_from_file(&sys, &state, path, NULL);
     if (!ok) { fprintf(stderr, "could not load %s (gro or pdb)\n", structure); return 1; }
-    md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL);
+    md_system_infer(&sys, &state, NULL);
 
     const md_str_t run = MD_STR_LIT("bench");
     size_t num_frames = 1;
@@ -1145,7 +1145,7 @@ static int run_gpu(int argc, char** argv) {
     if (!s || !r || !kernels) { fprintf(stderr, "md_render could not start\n"); return 1; }
 
     printf("mdlib %s\n", MD_BENCH_SOURCE_REV);
-    printf("device: %s (%s), 64-bit atomics: %s\n", info.name, info.driver, info.supports_atomic_int64 ? "yes" : "no (no compute raster)");
+    printf("device: %s (%s), 64-bit atomics: %s\n", info.name, info.driver, info.atomic_int64_min_max ? "yes" : "no (no compute raster)");
     printf("target %ux%u, %u draws per measurement, wall time per draw including the sync, ms (best / median)\n", W, H, reps);
     /* what the driver made of the kernels (registers, ...), where it says */
     {
@@ -1543,7 +1543,7 @@ static int run_heavy(int argc, char** argv) {
     if (!s || !r || !kernels) { fprintf(stderr, "md_render could not start\n"); return 1; }
 
     printf("mdlib %s\n", MD_BENCH_SOURCE_REV);
-    printf("device: %s (%s), 64-bit atomics: %s\n", info.name, info.driver, info.supports_atomic_int64 ? "yes" : "no (no compute raster)");
+    printf("device: %s (%s), 64-bit atomics: %s\n", info.name, info.driver, info.atomic_int64_min_max ? "yes" : "no (no compute raster)");
     printf("target %ux%u, %u draws per measurement, wall time per draw including the sync, ms (best / median)\n", W, H, reps);
     {
         const char* kn; md_gpu_kernel_info_t ki;
@@ -1573,7 +1573,7 @@ static int run_heavy(int argc, char** argv) {
         md_str_t path = md_str_from_cstr(path_buf);
         const md_io_format_info_t* fmt = md_io_format_info(md_io_format_from_file(path));
         if (!fmt || !fmt->system_init || !fmt->system_init(&sys, &state, path, NULL) ||
-            !md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL)) {
+            !md_system_infer(&sys, &state, NULL)) {
             fprintf(stderr, "could not load '%s' (--data DIR: the folder of the test structures)\n", path_buf);
             md_vm_arena_destroy(alloc);
             continue;
@@ -1652,7 +1652,7 @@ static int run_heavy(int argc, char** argv) {
         for (int k = 0; k < 3; ++k) lip_tubes += topo.lipid_tube_count[k];
         printf("=== %s (%s): %u atoms, %zu bonds; cartoon: %u residues in %u pieces, %u nucleotides, %u lipids (%u tail control points); "
                "bond orders: %u double, %u triple, %u ring circles, %u partners\n",
-               scenes[si].name, scenes[si].file, n, (size_t)(sys.bond.count + sys.bond.noncovalent_count), topo.backbone_count, topo.backbone_chain_count,
+               scenes[si].name, scenes[si].file, n, (size_t)(sys.bond.count + sys.bond.interaction_count), topo.backbone_count, topo.backbone_chain_count,
                topo.nucleic_count, lipids, lip_tubes, topo.order_count[0], topo.order_count[1], aromatic, topo.partner_count);
         printf("    spacefill's residues: %u points for %u atoms not of small molecules (%u of small molecules)\n",
                topo.residue_point_count, topo.point_count - topo.small_atom_count, topo.small_atom_count);

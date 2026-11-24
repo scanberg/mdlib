@@ -1762,7 +1762,6 @@ bool md_gpu_device_info(md_gpu_device_t dev, md_gpu_device_info_t* info) {
     info->preferred_group_multiple = dev->subgroup_size;
     info->supports_graphics        = dev->supports_graphics;
     info->supports_present         = dev->supports_present;
-    info->supports_atomic_int64    = dev->caps.int64_atomics;
     info->vendor_id                = dev->props.vendorID;
     info->device_id                = dev->props.deviceID;
     info->type                     = md_vk_device_type(dev->props.deviceType);
@@ -1780,6 +1779,7 @@ bool md_gpu_device_info(md_gpu_device_t dev, md_gpu_device_info_t* info) {
     info->float64              = dev->caps.float64;
     info->int64                = dev->caps.shader_int64;
     info->atomic_int64         = dev->caps.int64_atomics;
+    info->atomic_int64_min_max = dev->caps.int64_atomics;
     info->atomic_float_add     = dev->caps.atomic_float.shaderBufferFloat32AtomicAdd;
     info->atomic_float_min_max = dev->caps.atomic_float2.shaderBufferFloat32AtomicMinMax;
     info->timestamps           = dev->ts_bits_compute > 0;

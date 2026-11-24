@@ -305,7 +305,7 @@ md_render_ctx_t md_render_create(md_gpu_device_t device, const md_render_desc_t*
     r->polygon_vis  = make_pipeline(device, md_shader_md_render_polygon_vs_shader(), md_shader_md_render_polygon_fs_shader(),      PIPE_VIS,  "md_render.polygon");
     r->polygon_mask = make_pipeline(device, md_shader_md_render_polygon_vs_shader(), md_shader_md_render_polygon_mask_fs_shader(), PIPE_MASK, "md_render.polygon_mask");
     r->merge        = make_pipeline(device, md_shader_md_render_merge_vs_shader(),   md_shader_md_render_merge_fs_shader(),        PIPE_VIS,  "md_render.merge");
-    r->atomic_int64 = info.supports_atomic_int64;
+    r->atomic_int64 = info.atomic_int64_min_max;
     r->vendor_id    = info.vendor_id;
 
     md_gpu_kernel_desc_t kd;

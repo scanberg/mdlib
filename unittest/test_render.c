@@ -2902,7 +2902,7 @@ UTEST(render, culling_and_compute_raster_change_nothing) {
     ASSERT_TRUE(md_render_view_stats(fx.view, &st));
     EXPECT_EQ((uint64_t)(d.n_sph + d.n_cap), st.elements);
     EXPECT_EQ(0u, st.occlusion_retested);
-    if (info.supports_atomic_int64) EXPECT_GT(st.compute[0], 0u);
+    if (info.atomic_int64_min_max) EXPECT_GT(st.compute[0], 0u);
     int covered = 0;
     EXPECT_EQ(0, compare_views(&fx, fx.view, ref, W, H, &covered));
     EXPECT_GT(covered, (int)(W * H / 2));
@@ -3202,7 +3202,7 @@ UTEST(render, radius_tables_change_nothing) {
     md_gpu_stream_sync(fx.gfx);
     ASSERT_TRUE(md_render_view_stats(fx.view, &st));
     EXPECT_GT(st.hardware[0] + st.hardware[1], 0u);
-    if (info.supports_atomic_int64) EXPECT_GT(st.compute[0] + st.compute[1], 0u);
+    if (info.atomic_int64_min_max) EXPECT_GT(st.compute[0] + st.compute[1], 0u);
     EXPECT_EQ(0, compare_views(&fx, fx.view, ref, W, H, &covered));
     EXPECT_GT(covered, (int)(W * H / 20));
     /* again, the positions announced as changed: a refit, and phase 1
@@ -3634,8 +3634,8 @@ UTEST(render, mol_licorice_emit_and_pick) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(ethanol_pdb), NULL));
-    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
-    ASSERT_EQ(8u, (uint32_t)(sys.bond.count + sys.bond.noncovalent_count));
+    ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
+    ASSERT_EQ(8u, (uint32_t)(sys.bond.count + sys.bond.interaction_count));
 
     uint64_t content[MD_RENDER_CONTENT_COUNT] = {0};
 
@@ -3765,7 +3765,7 @@ static int check_topo_image(const md_system_t* sys, const md_render_mol_topo_t* 
     int bad = 0;
     #define FAIL(...) do { if (bad++ < 6) { printf("    "); printf(__VA_ARGS__); printf("\n"); } } while (0)
     const uint32_t n = T->atom_count, np = T->point_count, nb = T->bond_count;
-    const uint32_t nb_sys = (uint32_t)(sys->bond.count + sys->bond.noncovalent_count);
+    const uint32_t nb_sys = (uint32_t)(sys->bond.count + sys->bond.interaction_count);
     #define RES(a) (!resident || md_bitset_test(*resident, (a)))
     const uint32_t* order = (const uint32_t*)(img + T->atom_order);
     const uint32_t* coff  = (const uint32_t*)(img + T->atom_cluster_offset);
@@ -3844,7 +3844,7 @@ static bool load_system(md_system_t* sys, md_system_state_t* state, const char* 
     md_str_t path = md_str_from_cstr(file);
     bool ok = md_str_ends_with(path, MD_STR_LIT(".gro")) ? md_gro_system_init_from_file(sys, state, path, NULL)
             : md_pdb_system_init_from_file(sys, state, path, NULL);
-    return ok && md_system_infer(sys, state, MD_SYSTEM_INFER_ALL, NULL);
+    return ok && md_system_infer(sys, state, NULL);
 }
 
 static uint8_t* read_block(fix_t* fx, md_gpu_addr_t base, uint64_t size);
@@ -4329,7 +4329,7 @@ UTEST(render, mol_clusters_follow_the_solvent) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(load_system(&sys, &state, MD_UNITTEST_DATA_DIR "/tryptophan-md.gro"));
-    const uint32_t n = (uint32_t)sys.atom.count, nb = (uint32_t)(sys.bond.count + sys.bond.noncovalent_count);
+    const uint32_t n = (uint32_t)sys.atom.count, nb = (uint32_t)(sys.bond.count + sys.bond.interaction_count);
     uint64_t content[MD_RENDER_CONTENT_COUNT] = {0};
 
     md_temp_scope_t temp = md_temp_begin();
@@ -5698,7 +5698,7 @@ UTEST(render, mol_chain_gaps) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/9gfu.cif"), NULL));
-    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
     uint32_t brk[64], nbrk = 0;
     for (uint32_t i = 0; i + 1 < sys.residue.count && nbrk < 64; ++i) {
         if (md_system_residue_flags(&sys, i) & MD_RESIDUE_FLAG_BREAK_AFTER) brk[nbrk++] = i;
@@ -5759,7 +5759,7 @@ UTEST(render, mol_chain_gaps) {
         md_system_t ns = { .alloc = a2 };
         md_system_state_t nst = { .alloc = a2 };
         ASSERT_TRUE(md_mmcif_system_init_from_str(&ns, &nst, (md_str_t){ cut, m }, NULL));
-        ASSERT_TRUE(md_system_infer(&ns, &nst, MD_SYSTEM_INFER_ALL, NULL));
+        ASSERT_TRUE(md_system_infer(&ns, &nst, NULL));
         int32_t* c4 = malloc((ns.residue.count + 1) * sizeof(int32_t));
         for (size_t i = 0; i < ns.residue.count; ++i) c4[i] = -1;
         const md_nucleic_backbone_data_t* NB = &ns.nucleic_backbone;
@@ -6354,7 +6354,7 @@ UTEST(render, mol_bond_orders) {
         md_system_t ys = { .alloc = a2 };
         md_system_state_t yst = { .alloc = a2 };
         ASSERT_TRUE(md_pdb_system_init_from_str(&ys, &yst, (md_str_t){ octynal_pdb, sizeof(octynal_pdb) - 1 }, NULL));
-        ASSERT_TRUE(md_system_infer(&ys, &yst, MD_SYSTEM_INFER_ALL, NULL));
+        ASSERT_TRUE(md_system_infer(&ys, &yst, NULL));
         md_temp_scope_t t2 = md_temp_begin();
         md_render_mol_plan_t yp;
         ASSERT_TRUE(md_render_mol_plan(&yp, &ys, NULL, t2));
@@ -6591,7 +6591,7 @@ UTEST(render, mol_ribbons) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/9gfu.cif"), NULL));
-    ASSERT_TRUE(md_system_infer(&sys, &state, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
     uint64_t content[MD_RENDER_CONTENT_COUNT] = {0};
     md_temp_scope_t temp = md_temp_begin();
     md_render_mol_plan_t plan;
