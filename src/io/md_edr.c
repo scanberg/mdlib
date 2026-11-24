@@ -1301,8 +1301,8 @@ static bool edr_infer_role(md_system_t* sys, md_group_role_t role, const md_str_
     }
     if (ok) {
         for (size_t i = 0; i < n; ++i) {
-            if (i == rest)      idx[i] = (uint32_t)md_system_group_add(sys, MD_STR_LIT("rest"), rest_atoms);
-            else if (owned[i])  idx[i] = (uint32_t)md_system_group_add(sys, names[i], atoms[i]);
+            if (i == rest)      idx[i] = (uint32_t)md_system_group_add(sys, MD_STR_LIT("rest"), rest_atoms, MD_GROUP_ORIGIN_GIVEN);
+            else if (owned[i])  idx[i] = (uint32_t)md_system_group_add(sys, names[i], atoms[i], MD_GROUP_ORIGIN_GIVEN);
         }
         md_system_group_set_role(sys, role, idx, n);
         MD_LOG_INFO("EDR: %zu %s groups of the system, as the energy file names them", n, what);

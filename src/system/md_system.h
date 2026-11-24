@@ -134,15 +134,22 @@ bool md_system_assemblies_init(md_system_t* sys, const md_assembly_gen_t* gen, s
 
 // GROUPS (md_group_data_t)
 
-// Adds a group of atoms, a copy of atoms, and returns its index. A group of the same name and atoms is not added again:
-// its index is returned. A group gains roles from md_system_group_set_role alone. Atoms past the system's are left out.
-// A group added gives the groups a new version (md_group_data_t::version); the topology's is left as it is.
-size_t md_system_group_add(md_system_t* sys, md_str_t name, md_bitset_t atoms);
+// Adds a group of atoms, a copy of atoms, of an origin, after the groups there are, and returns its index. A group of
+// the same name, atoms and origin is not added again: its index is returned (a user's group is never one of the data's,
+// nor the other way round). A group gains roles from md_system_group_set_role alone. Atoms past the system's are left
+// out. A group added gives the groups a new version (md_group_data_t::version); the topology's is left as it is.
+size_t md_system_group_add(md_system_t* sys, md_str_t name, md_bitset_t atoms, md_group_origin_t origin);
 
 // Sets the groups of a role, in its order, replacing what it had: indices of groups, which gain the role (the bit of
-// their roles) while those it had before and not now lose it. The only writer of the roles and their order. Gives the
-// groups a new version (md_group_data_t::version).
+// their roles) while those it had before and not now lose it. The only writer of the roles and their order. A role is
+// of the data: an index of a user's group is left out, as one out of range is. Gives the groups a new version.
 void md_system_group_set_role(md_system_t* sys, md_group_role_t role, const uint32_t* group_idx, size_t count);
+
+// The user's groups changed: false (logged), and nothing changed, for an index out of range or of a group of the data.
+// Each gives the groups a new version. Removing a group moves those after it one index down, in the order they were.
+bool md_system_group_set_atoms(md_system_t* sys, size_t group_idx, md_bitset_t atoms);   // A copy; atoms past the system's left out
+bool md_system_group_rename(md_system_t* sys, size_t group_idx, md_str_t name);
+bool md_system_group_remove(md_system_t* sys, size_t group_idx);
 
 
 // RESIDUES (md_residue_data_t)

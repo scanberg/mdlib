@@ -7,11 +7,12 @@
 
 struct md_bitset_t;
 
-// Named groups of atoms the data gives (GROMACS index groups) and the roles they had.
+// Named groups of atoms, the data's (GROMACS index groups) and the user's, and the roles they had.
 
-// GROUPS. Named sets of atoms the data gives, the way GROMACS has them: the index groups grompp was given (a tpr keeps
-// those the simulation used) or an index file (.ndx). They are not of the hierarchy: a group holds any atoms, whole
-// molecules or parts of them, and groups may overlap. Inference neither reads nor writes them.
+// GROUPS. Named sets of atoms, the way GROMACS has them. The data gives some: the index groups grompp was given (a tpr
+// keeps those the simulation used) or an index file (.ndx). The user makes others (md_group_origin_t), which the
+// application keeps (a workspace) and adds again after loading. They are not of the hierarchy: a group holds any atoms,
+// whole molecules or parts of them, and groups may overlap. Inference neither reads nor writes them.
 //
 // Nor are they of the topology. A group is atom indices, which are the system's for its life, so a change of the
 // topology (the bonds, what is inferred of them) leaves the groups as they are, and a change of the groups leaves
@@ -36,7 +37,15 @@ typedef enum md_group_role_t {
     MD_GROUP_ROLE_COUNT,
 } md_group_role_t;
 
-// A consumer reads a group's name, atoms and roles: whether a group is one of a role's is a bit of its roles, and a
+// Where a group comes from. The data's are as the data gives them: only the user's are changed or removed
+// (md_system_group_set_atoms, md_system_group_rename, md_system_group_remove), and only the data's have roles.
+typedef enum md_group_origin_t {
+    MD_GROUP_ORIGIN_GIVEN = 0,          // The data's: a topology (tpr), an index file, GROMACS' default groups an energy file names
+    MD_GROUP_ORIGIN_USER,               // The user's: made by hand, kept by the application
+    MD_GROUP_ORIGIN_COUNT,
+} md_group_origin_t;
+
+// A consumer reads a group's name, atoms, origin and roles: whether a group is one of a role's is a bit of its roles, and a
 // role no group has is one the data does not give. The order of a role's groups is read through
 // md_system_group_role_order; md_system_group_set_role keeps both, so they always agree.
 typedef struct md_group_data_t {
@@ -47,6 +56,7 @@ typedef struct md_group_data_t {
     md_str_t*    name;                  // [count]
     struct md_bitset_t* atoms;          // [count] Each its own words, in the system's allocator
     uint32_t*    roles;                 // [count] Bit r: the group is one of role r's (md_group_role_t)
+    uint8_t*     origin;                // [count] md_group_origin_t
 
     // The groups of each role in its order, which md_system_group_role_order gives: the groups of role r are
     // group[offset[r] .. offset[r + 1]]. A role the data does not give, or gives as one group of every atom it never

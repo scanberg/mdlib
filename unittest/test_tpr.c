@@ -785,19 +785,19 @@ UTEST(system, groups_roles) {
 
     const uint64_t topology = md_system_topology_changed(&sys);
     EXPECT_EQ(0u, sys.group.version);
-    const size_t a = md_system_group_add(&sys, MD_STR_LIT("Protein"), md_bitset_range(0, 150));
+    const size_t a = md_system_group_add(&sys, MD_STR_LIT("Protein"), md_bitset_range(0, 150), MD_GROUP_ORIGIN_GIVEN);
     // The groups have a version of their own: the topology's is left as it is
     const uint64_t v_a = sys.group.version;
     EXPECT_NE(0u, v_a);
     EXPECT_EQ(topology, sys.topology_version);
-    const size_t b = md_system_group_add(&sys, MD_STR_LIT("rest"), md_bitset_range(150, 200));
-    const size_t c = md_system_group_add(&sys, MD_STR_LIT("Odd"), odd_set);
+    const size_t b = md_system_group_add(&sys, MD_STR_LIT("rest"), md_bitset_range(150, 200), MD_GROUP_ORIGIN_GIVEN);
+    const size_t c = md_system_group_add(&sys, MD_STR_LIT("Odd"), odd_set, MD_GROUP_ORIGIN_GIVEN);
     EXPECT_NE(v_a, sys.group.version);
     const uint64_t v_c = sys.group.version;
-    const size_t a2 = md_system_group_add(&sys, MD_STR_LIT("Protein"), md_bitset_range(0, 150));
+    const size_t a2 = md_system_group_add(&sys, MD_STR_LIT("Protein"), md_bitset_range(0, 150), MD_GROUP_ORIGIN_GIVEN);
     EXPECT_EQ(v_c, sys.group.version);                                                          // Added again: nothing changed
-    const size_t d = md_system_group_add(&sys, MD_STR_LIT("rest"), md_bitset_range(0, 10));     // Same name, other atoms
-    const size_t e = md_system_group_add(&sys, MD_STR_LIT("Far"), md_bitset_range(190, 400));    // Cut to the atoms
+    const size_t d = md_system_group_add(&sys, MD_STR_LIT("rest"), md_bitset_range(0, 10), MD_GROUP_ORIGIN_GIVEN);     // Same name, other atoms
+    const size_t e = md_system_group_add(&sys, MD_STR_LIT("Far"), md_bitset_range(190, 400), MD_GROUP_ORIGIN_GIVEN);    // Cut to the atoms
     EXPECT_EQ(a, a2);
     EXPECT_NE(b, d);
     EXPECT_EQ(5u, sys.group.count);
@@ -835,7 +835,7 @@ UTEST(system, groups_roles) {
     EXPECT_STREQ("energy", md_group_role_name(MD_GROUP_ROLE_ENERGY));
 
     // Adding a group again gives it no role, and the roles and their order agree: a bit for each group in the order
-    EXPECT_EQ(a, md_system_group_add(&sys, MD_STR_LIT("Protein"), md_bitset_range(0, 150)));
+    EXPECT_EQ(a, md_system_group_add(&sys, MD_STR_LIT("Protein"), md_bitset_range(0, 150), MD_GROUP_ORIGIN_GIVEN));
     EXPECT_EQ(1u << MD_GROUP_ROLE_ENERGY, sys.group.roles[a]);
     for (int role = 0; role < MD_GROUP_ROLE_COUNT; ++role) {
         size_t n;
@@ -851,6 +851,89 @@ UTEST(system, groups_roles) {
     EXPECT_EQ(0u, none);
 
     md_bitset_free(&odd_set, alloc);
+    sys.atom.count = 0;
+    md_system_free(&sys);
+}
+
+// The user's groups: never one of the data's, of no role, and changed and removed as the data's are not
+UTEST(system, groups_user) {
+    md_allocator_i* alloc = md_get_heap_allocator();
+    md_system_t sys = { .alloc = alloc };
+    sys.atom.count = 200;
+    const uint64_t topology = md_system_topology_changed(&sys);
+
+    const size_t protein = md_system_group_add(&sys, MD_STR_LIT("Protein"), md_bitset_range(0, 150), MD_GROUP_ORIGIN_GIVEN);
+    const size_t rest    = md_system_group_add(&sys, MD_STR_LIT("rest"), md_bitset_range(150, 200), MD_GROUP_ORIGIN_GIVEN);
+    const uint32_t energy[] = { (uint32_t)protein, (uint32_t)rest };
+    md_system_group_set_role(&sys, MD_GROUP_ROLE_ENERGY, energy, 2);
+
+    // The same name and atoms as one of the data's, and still a group of its own; again of the user, the same one
+    const size_t mine = md_system_group_add(&sys, MD_STR_LIT("Protein"), md_bitset_range(0, 150), MD_GROUP_ORIGIN_USER);
+    EXPECT_NE(protein, mine);
+    EXPECT_EQ(MD_GROUP_ORIGIN_USER, sys.group.origin[mine]);
+    EXPECT_EQ(MD_GROUP_ORIGIN_GIVEN, sys.group.origin[protein]);
+    EXPECT_EQ(mine, md_system_group_add(&sys, MD_STR_LIT("Protein"), md_bitset_range(0, 150), MD_GROUP_ORIGIN_USER));
+    EXPECT_EQ(3u, sys.group.count);
+
+    // A role is of the data: the user's group is left out of it
+    const uint32_t tc[] = { (uint32_t)mine, (uint32_t)rest };
+    md_system_group_set_role(&sys, MD_GROUP_ROLE_TC, tc, 2);
+    size_t n;
+    const uint32_t* order = md_system_group_role_order(&sys.group, MD_GROUP_ROLE_TC, &n);
+    ASSERT_EQ(1u, n);
+    EXPECT_EQ(rest, order[0]);
+    EXPECT_EQ(0u, sys.group.roles[mine]);
+
+    // The user's changed, cut to the atoms, each a new version of the groups and none of the topology
+    uint64_t v = sys.group.version;
+    EXPECT_TRUE(md_system_group_set_atoms(&sys, mine, md_bitset_range(190, 400)));
+    EXPECT_TRUE(md_bitset_equal(md_bitset_range(190, 200), sys.group.atoms[mine]));
+    EXPECT_NE(v, sys.group.version);
+    v = sys.group.version;
+    EXPECT_TRUE(md_system_group_rename(&sys, mine, MD_STR_LIT("tail")));
+    EXPECT_TRUE(md_str_eq(MD_STR_LIT("tail"), sys.group.name[mine]));
+    EXPECT_NE(v, sys.group.version);
+    EXPECT_EQ(topology, sys.topology_version);
+
+    // The data's as it gave them, and an index out of range: nothing changes
+    v = sys.group.version;
+    EXPECT_FALSE(md_system_group_set_atoms(&sys, protein, md_bitset_range(0, 10)));
+    EXPECT_FALSE(md_system_group_rename(&sys, protein, MD_STR_LIT("P")));
+    EXPECT_FALSE(md_system_group_remove(&sys, protein));
+    EXPECT_FALSE(md_system_group_remove(&sys, 99));
+    EXPECT_EQ(v, sys.group.version);
+    EXPECT_EQ(150u, md_bitset_count(sys.group.atoms[protein]));
+    EXPECT_TRUE(md_str_eq(MD_STR_LIT("Protein"), sys.group.name[protein]));
+
+    // Removed: those after it one down in their order, the roles naming them by their new indices
+    const size_t other = md_system_group_add(&sys, MD_STR_LIT("other"), md_bitset_range(0, 5), MD_GROUP_ORIGIN_USER);
+    const size_t late  = md_system_group_add(&sys, MD_STR_LIT("Late"), md_bitset_range(10, 20), MD_GROUP_ORIGIN_GIVEN);
+    const uint32_t acc[] = { (uint32_t)late };
+    md_system_group_set_role(&sys, MD_GROUP_ROLE_ACC, acc, 1);
+    v = sys.group.version;
+    EXPECT_TRUE(md_system_group_remove(&sys, mine));
+    EXPECT_NE(v, sys.group.version);
+    ASSERT_EQ(4u, sys.group.count);
+    EXPECT_TRUE(md_str_eq(MD_STR_LIT("other"), sys.group.name[other - 1]));
+    EXPECT_EQ(MD_GROUP_ORIGIN_USER, sys.group.origin[other - 1]);
+    EXPECT_TRUE(md_str_eq(MD_STR_LIT("Late"), sys.group.name[late - 1]));
+    EXPECT_EQ(1u << MD_GROUP_ROLE_ACC, sys.group.roles[late - 1]);
+    order = md_system_group_role_order(&sys.group, MD_GROUP_ROLE_ACC, &n);
+    ASSERT_EQ(1u, n);
+    EXPECT_EQ(late - 1, order[0]);
+    order = md_system_group_role_order(&sys.group, MD_GROUP_ROLE_ENERGY, &n);
+    ASSERT_EQ(2u, n);
+    EXPECT_EQ(protein, order[0]);
+    EXPECT_EQ(rest, order[1]);
+
+    // A copy has the origins
+    md_system_t copy = { .alloc = alloc };
+    ASSERT_TRUE(md_system_copy(&copy, &sys));
+    ASSERT_EQ(4u, copy.group.count);
+    for (size_t i = 0; i < copy.group.count; ++i) EXPECT_EQ(sys.group.origin[i], copy.group.origin[i]);
+    copy.atom.count = 0;
+    md_system_free(&copy);
+
     sys.atom.count = 0;
     md_system_free(&sys);
 }

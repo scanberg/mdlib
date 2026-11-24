@@ -4923,10 +4923,10 @@ UTEST(vial_ir, attr_draws_groups) {
     md_system_state_t st = {.alloc = alloc};
     ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/inside-md-pullout.gro"), NULL));
     ASSERT_GE(sys.atom.count, 1000u);
-    md_system_group_add(&sys, MD_STR_LIT("CA"),      md_bitset_range(0, 10));
-    md_system_group_add(&sys, MD_STR_LIT("Protein"), md_bitset_range(10, 300));
-    md_system_group_add(&sys, MD_STR_LIT("AIN"),     md_bitset_range(300, 400));
-    md_system_group_add(&sys, MD_STR_LIT("SOL"),     md_bitset_range(400, 900));
+    md_system_group_add(&sys, MD_STR_LIT("CA"),      md_bitset_range(0, 10), MD_GROUP_ORIGIN_GIVEN);
+    md_system_group_add(&sys, MD_STR_LIT("Protein"), md_bitset_range(10, 300), MD_GROUP_ORIGIN_GIVEN);
+    md_system_group_add(&sys, MD_STR_LIT("AIN"),     md_bitset_range(300, 400), MD_GROUP_ORIGIN_GIVEN);
+    md_system_group_add(&sys, MD_STR_LIT("SOL"),     md_bitset_range(400, 900), MD_GROUP_ORIGIN_GIVEN);
     ASSERT_TRUE(md_edr_system_supplement_from_file(&sys, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/inside-md-pullout.edr"), &(md_load_desc_t){ .run = MD_STR_LIT("run/md") }));
     size_t er_n;
     md_system_group_role_order(&sys.group, MD_GROUP_ROLE_ENERGY, &er_n);
@@ -4989,7 +4989,7 @@ UTEST(vial_ir, group_fingerprints) {
     md_system_t sys = {.alloc = alloc};
     md_system_state_t st = {.alloc = alloc};
     ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/nb_fswitch_rf.tpr"), NULL));
-    md_system_group_add(&sys, MD_STR_LIT("Odd"), md_bitset_range(0, 3));
+    md_system_group_add(&sys, MD_STR_LIT("Odd"), md_bitset_range(0, 3), MD_GROUP_ORIGIN_GIVEN);
     const char* src =
         "g = count(group('Odd'))\n"
         "d = distance(com(group('Odd')), com(particle[0:4]))\n"
@@ -5001,7 +5001,7 @@ UTEST(vial_ir, group_fingerprints) {
     const uint64_t topology = sys.topology_version;
 
     // Another group of the name: group('Odd') selects both now
-    md_system_group_add(&sys, MD_STR_LIT("Odd"), md_bitset_range(5, 9));
+    md_system_group_add(&sys, MD_STR_LIT("Odd"), md_bitset_range(5, 9), MD_GROUP_ORIGIN_GIVEN);
     EXPECT_EQ(topology, sys.topology_version);
     md_vial_program_t* after = md_vial_compile(md_str_from_cstr(src), &cd, alloc);
     ASSERT_TRUE(after != NULL);

@@ -1360,6 +1360,10 @@ UTEST_F(vial_check, groups) {
     EXPECT_DIAGS_ON(&sys, "g = group(role='tcoupl')\n",
         "E0206 1: 'tcoupl' is not a role of groups; the roles are tc, energy, acc, freeze, user1, user2, comm, compressed-x, orire-fit and qmmm\n");
     EXPECT_DIAGS_ON(&sys, "g = group(kind='x')\n", "E0202 1: `group` takes no keyword `kind`; it takes name, role and scope\n");
+    // The user's groups are selected as the data's are, and a name need not be one a script could bind
+    md_bitset_t mine = md_bitset_range(1, 3);
+    md_system_group_add(&sys, MD_STR_LIT("my sel-1"), mine, MD_GROUP_ORIGIN_USER);
+    EXPECT_TYPE_ON(&sys, "n = count(group('my sel-1')[0])\n", 1, "int, static = 2");
     md_system_free(&sys);
 }
 
