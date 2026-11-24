@@ -54,7 +54,8 @@ UTEST(ndx, supplement_tpr_system) {
     md_system_state_t state = { .alloc = arena };
     ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &state, MD_STR_LIT(TPR_DIR "nb_fswitch_rf.tpr"), NULL));
     ASSERT_EQ(2u, sys.group.count);
-    const uint64_t version = sys.topology_version;
+    const uint64_t topology = sys.topology_version;
+    const uint64_t groups = sys.group.version;
 
     md_ndx_data_t data = {0};
     ASSERT_TRUE(md_ndx_data_parse_file(&data, MD_STR_LIT(TPR_DIR "nb_index.ndx"), arena));
@@ -62,13 +63,15 @@ UTEST(ndx, supplement_tpr_system) {
     ASSERT_TRUE(md_ndx_system_supplement(&sys, &data));
     EXPECT_EQ(2u, sys.group.count);                                     // Merged: same names, same atoms
     EXPECT_EQ(1u << MD_GROUP_ROLE_ENERGY, sys.group.roles[0]);
-    EXPECT_NE(version, sys.topology_version);
+    EXPECT_EQ(groups, sys.group.version);                               // Nothing new
 
     // Another index file of the system adds what is new to it
     md_ndx_data_t more = {0};
     ASSERT_TRUE(md_ndx_data_parse_str(&more, MD_STR_LIT("[ CHN ]\n1 2 3\n[ first_and_last ]\n1 19\n"), arena));
     ASSERT_TRUE(md_ndx_system_supplement(&sys, &more));
     ASSERT_EQ(4u, sys.group.count);
+    EXPECT_NE(groups, sys.group.version);
+    EXPECT_EQ(topology, sys.topology_version);                          // Groups are not of the topology
     EXPECT_TRUE(md_str_eq(MD_STR_LIT("CHN"), sys.group.name[2]));       // A name twice, of other atoms
     EXPECT_EQ(0u, sys.group.roles[2]);
     EXPECT_EQ(2u, md_bitset_count(sys.group.atoms[3]));

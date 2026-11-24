@@ -23,13 +23,18 @@
 extern "C" {
 #endif
 
-// One counter for every system, so that a version is never handed out twice: a consumer which kept the version of a
-// system that has since been freed and loaded anew cannot take the new topology for the one it saw.
-static volatile uint64_t topology_version_counter = 0;
+// One counter for every system and for both its topology and its groups, so that a version is never handed out twice:
+// a consumer which kept the version of a system that has since been freed and loaded anew cannot take the new topology
+// (or groups) for the one it saw.
+static volatile uint64_t version_counter = 0;
+
+static uint64_t next_version(void) {
+    return md_atomic_fetch_add64(&version_counter, 1) + 1;
+}
 
 uint64_t md_system_topology_changed(md_system_t* sys) {
     MD_ASSERT(sys);
-    sys->topology_version = md_atomic_fetch_add64(&topology_version_counter, 1) + 1;
+    sys->topology_version = next_version();
     return sys->topology_version;
 }
 
@@ -84,6 +89,7 @@ static void md_system_groups_free(md_system_t* sys) {
 
 static void groups_copy(md_group_data_t* dst, const md_group_data_t* src, md_allocator_i* alloc) {
     md_memset(dst, 0, sizeof(md_group_data_t));
+    dst->version = src->version;
     if (!src->count) return;
     dst->count = src->count;
     md_array_resize(dst->name, src->count, alloc);
@@ -118,9 +124,9 @@ size_t md_system_group_add(md_system_t* sys, md_str_t name, md_bitset_t atoms) {
         md_array_push(g->atoms, md_bitset_copy(atoms, sys->alloc), sys->alloc);
         md_array_push(g->roles, 0, sys->alloc);
         g->count += 1;
+        g->version = next_version();
     }
     md_temp_end(temp);
-    md_system_topology_changed(sys);
     return idx;
 }
 
@@ -150,7 +156,7 @@ void md_system_group_set_role(md_system_t* sys, md_group_role_t role, const uint
     for (uint32_t r = role + 1; r <= MD_GROUP_ROLE_COUNT; ++r) {
         offset[r] = (uint32_t)(offset[r] - (end - beg) + n);
     }
-    md_system_topology_changed(sys);
+    g->version = next_version();
 }
 
 static int compare_u64(const void* a, const void* b) {

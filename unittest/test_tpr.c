@@ -759,6 +759,7 @@ UTEST(tpr, groups) {
     md_system_t copy = { .alloc = md_get_heap_allocator() };
     ASSERT_TRUE(md_system_copy(&copy, &sys));
     ASSERT_EQ(2u, copy.group.count);
+    EXPECT_EQ(sys.group.version, copy.group.version);                   // The same groups
     EXPECT_TRUE(md_str_eq(MD_STR_LIT("SOL"), copy.group.name[sol]));
     EXPECT_NE(copy.group.name[sol].ptr, g->name[sol].ptr);
     EXPECT_TRUE(md_bitset_equal(g->atoms[sol], copy.group.atoms[sol]));
@@ -782,10 +783,19 @@ UTEST(system, groups_roles) {
     for (uint32_t i = 0; i < 100; ++i) odd[i] = 2 * i + 1;
     md_bitset_t odd_set = md_bitset_from_indices(odd, 100, alloc);
 
+    const uint64_t topology = md_system_topology_changed(&sys);
+    EXPECT_EQ(0u, sys.group.version);
     const size_t a = md_system_group_add(&sys, MD_STR_LIT("Protein"), md_bitset_range(0, 150));
+    // The groups have a version of their own: the topology's is left as it is
+    const uint64_t v_a = sys.group.version;
+    EXPECT_NE(0u, v_a);
+    EXPECT_EQ(topology, sys.topology_version);
     const size_t b = md_system_group_add(&sys, MD_STR_LIT("rest"), md_bitset_range(150, 200));
     const size_t c = md_system_group_add(&sys, MD_STR_LIT("Odd"), odd_set);
+    EXPECT_NE(v_a, sys.group.version);
+    const uint64_t v_c = sys.group.version;
     const size_t a2 = md_system_group_add(&sys, MD_STR_LIT("Protein"), md_bitset_range(0, 150));
+    EXPECT_EQ(v_c, sys.group.version);                                                          // Added again: nothing changed
     const size_t d = md_system_group_add(&sys, MD_STR_LIT("rest"), md_bitset_range(0, 10));     // Same name, other atoms
     const size_t e = md_system_group_add(&sys, MD_STR_LIT("Far"), md_bitset_range(190, 400));    // Cut to the atoms
     EXPECT_EQ(a, a2);
@@ -796,8 +806,11 @@ UTEST(system, groups_roles) {
 
     const uint32_t tc[] = { (uint32_t)a, (uint32_t)b };
     const uint32_t en[] = { (uint32_t)c, (uint32_t)a, (uint32_t)d };
+    const uint64_t v_before_roles = sys.group.version;
     md_system_group_set_role(&sys, MD_GROUP_ROLE_ENERGY, en, 3);
+    EXPECT_NE(v_before_roles, sys.group.version);
     md_system_group_set_role(&sys, MD_GROUP_ROLE_TC, tc, 2);
+    EXPECT_EQ(topology, sys.topology_version);
     size_t r_n;
     const uint32_t* r = md_system_group_role_order(&sys.group, MD_GROUP_ROLE_TC, &r_n);
     ASSERT_EQ(2u, r_n);

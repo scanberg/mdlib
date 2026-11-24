@@ -4980,6 +4980,53 @@ UTEST(vial_ir, attr_draws_groups) {
 }
 
 
+// Groups change without the topology (md_group_data_t::version): an output that reads group() is another once they
+// have, so an evaluation does not take its values over from one before; an output that does not read them is the same.
+// A static group() is selected when compiling, its particles in its fingerprint; one of a scope that changes per frame
+// is selected when evaluated, and only the version of the groups tells it apart.
+UTEST(vial_ir, group_fingerprints) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(8));
+    md_system_t sys = {.alloc = alloc};
+    md_system_state_t st = {.alloc = alloc};
+    ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/nb_fswitch_rf.tpr"), NULL));
+    md_system_group_add(&sys, MD_STR_LIT("Odd"), md_bitset_range(0, 3));
+    const char* src =
+        "g = count(group('Odd'))\n"
+        "d = distance(com(group('Odd')), com(particle[0:4]))\n"
+        "p = distance(com(particle[0:3]), com(particle[0:4]))\n"
+        "w = count(group('Odd', scope=within(100.0, of=particle[0:3])))\n";
+    const md_vial_compile_desc_t cd = {.sys = &sys};
+    md_vial_program_t* before = md_vial_compile(md_str_from_cstr(src), &cd, alloc);
+    ASSERT_TRUE(before != NULL);
+    const uint64_t topology = sys.topology_version;
+
+    // Another group of the name: group('Odd') selects both now
+    md_system_group_add(&sys, MD_STR_LIT("Odd"), md_bitset_range(5, 9));
+    EXPECT_EQ(topology, sys.topology_version);
+    md_vial_program_t* after = md_vial_compile(md_str_from_cstr(src), &cd, alloc);
+    ASSERT_TRUE(after != NULL);
+
+    const md_vial_output_t* ob;
+    const md_vial_output_t* oa;
+    const size_t nb = md_vial_outputs(before, &ob);
+    const size_t na = md_vial_outputs(after, &oa);
+    const uint64_t gb = vial_ir__fp(ob, nb, "g"), ga = vial_ir__fp(oa, na, "g");
+    const uint64_t db = vial_ir__fp(ob, nb, "d"), da = vial_ir__fp(oa, na, "d");
+    const uint64_t pb = vial_ir__fp(ob, nb, "p"), pa = vial_ir__fp(oa, na, "p");
+    const uint64_t wb = vial_ir__fp(ob, nb, "w"), wa = vial_ir__fp(oa, na, "w");
+    EXPECT_NE(0u, db);
+    EXPECT_NE(0u, wb);
+    EXPECT_NE(wb, wa);
+    EXPECT_NE(0u, pb);
+    EXPECT_NE(gb, ga);
+    EXPECT_NE(db, da);
+    EXPECT_EQ(pb, pa);
+
+    md_vial_program_free(before);
+    md_vial_program_free(after);
+    md_arena_allocator_destroy(alloc);
+}
+
 // What hover shows of a set or an array of sets: described, its shape and what each set is, not "set of n" set by set
 UTEST(vial_ir, sets_described) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));

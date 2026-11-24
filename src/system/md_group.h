@@ -13,6 +13,10 @@ struct md_bitset_t;
 // those the simulation used) or an index file (.ndx). They are not of the hierarchy: a group holds any atoms, whole
 // molecules or parts of them, and groups may overlap. Inference neither reads nor writes them.
 //
+// Nor are they of the topology. A group is atom indices, which are the system's for its life, so a change of the
+// topology (the bonds, what is inferred of them) leaves the groups as they are, and a change of the groups leaves
+// topology_version as it is: they have a version of their own, which what reads groups keys on.
+//
 // A ROLE is what the simulation used groups for, an mdp option naming them: tc-grps, energygrps and so on. The groups of
 // a role are a partition of the atoms, in the order the option names them, the atoms named by none of them in a group of
 // their own named 'rest'. The order is kept: a script takes a role's groups in it, and it tells apart the pairs of an
@@ -36,6 +40,9 @@ typedef enum md_group_role_t {
 // role no group has is one the data does not give. The order of a role's groups is read through
 // md_system_group_role_order; md_system_group_set_role keeps both, so they always agree.
 typedef struct md_group_data_t {
+    // A new one with every change of the groups, never handed out twice (as topology_version): 0 for none ever made
+    uint64_t version;
+
     size_t count;
     md_str_t*    name;                  // [count]
     struct md_bitset_t* atoms;          // [count] Each its own words, in the system's allocator
