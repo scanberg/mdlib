@@ -1351,19 +1351,26 @@ UTEST_F(vial_check, groups) {
     EXPECT_TYPE_ON(&sys, "g = group\n", 1, "set[6], static");
     EXPECT_TYPE_ON(&sys, "n = len(group(role='energy'))\n", 1, "int, static = 2");
     EXPECT_TYPE_ON(&sys, "n = count(group(role='energy')[0])\n", 1, "int, static = 4");     // SOL first: the role's order
-    EXPECT_TYPE_ON(&sys, "n = count(group('CHN')[0])\n", 1, "int, static = 15");
-    EXPECT_TYPE_ON(&sys, "n = len(group('Odd'))\n", 1, "int, static = 2");
+    // A group by one name is one set: the particles of every group of that name
+    EXPECT_TYPE_ON(&sys, "g = group('CHN')\n", 1, "set, static");
+    EXPECT_TYPE_ON(&sys, "n = count(group('CHN'))\n", 1, "int, static = 15");
+    EXPECT_TYPE_ON(&sys, "n = count(group(name='CHN'))\n", 1, "int, static = 15");
+    EXPECT_TYPE_ON(&sys, "n = count(group('Odd'))\n", 1, "int, static = 5");                  // Both Odd, 1 3 5 and 2 4
+    EXPECT_TYPE_ON(&sys, "n = count(group('SOL', role='energy'))\n", 1, "int, static = 4");
+    // A pattern, several names, a role or a set: a set per group
+    EXPECT_TYPE_ON(&sys, "n = len(group('Od*'))\n", 1, "int, static = 2");
+    EXPECT_TYPE_ON(&sys, "n = len(group(name=['CHN', 'SOL']))\n", 1, "int, static = 2");
     EXPECT_TYPE_ON(&sys, "n = len(group('*d*'))\n", 1, "int, static = 3");                   // Ends and both Odd
     EXPECT_TYPE_ON(&sys, "n = len(group(particle(name='S1')))\n", 1, "int, static = 3");      // SOL, Ends, Z_first hold the last atom's
-    EXPECT_TYPE_ON(&sys, "n = len(group('Ends')[0].residue)\n", 1, "int, static = 2");             // CHN1 and SON7, each cut to its one atom
-    EXPECT_TYPE_ON(&sys, "n = count(group('CHN')[0].group('Ends')[0])\n", 1, "int, static = 1");
+    EXPECT_TYPE_ON(&sys, "n = len(group('Ends').residue)\n", 1, "int, static = 2");                // CHN1 and SON7, each cut to its one atom
+    EXPECT_TYPE_ON(&sys, "n = count(group('CHN').group('Ends'))\n", 1, "int, static = 1");
     EXPECT_DIAGS_ON(&sys, "g = group(role='tcoupl')\n",
         "E0206 1: 'tcoupl' is not a role of groups; the roles are tc, energy, acc, freeze, user1, user2, comm, compressed-x, orire-fit and qmmm\n");
     EXPECT_DIAGS_ON(&sys, "g = group(kind='x')\n", "E0202 1: `group` takes no keyword `kind`; it takes name, role and scope\n");
     // The user's groups are selected as the data's are, and a name need not be one a script could bind
     md_bitset_t mine = md_bitset_range(1, 3);
     md_system_group_add(&sys, MD_STR_LIT("my sel-1"), mine, MD_GROUP_ORIGIN_USER);
-    EXPECT_TYPE_ON(&sys, "n = count(group('my sel-1')[0])\n", 1, "int, static = 2");
+    EXPECT_TYPE_ON(&sys, "n = count(group('my sel-1'))\n", 1, "int, static = 2");
     md_system_free(&sys);
 }
 

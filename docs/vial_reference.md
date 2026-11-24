@@ -283,7 +283,7 @@ Names are singular, as every function's is, whatever the shape of what they give
 | `fragment(...)` | `set[n]`, one per fragment | a chemical piece of a molecule, by its name: a ring system (`phenyl`, `indolyl`), a functional group (`carboxylate`, `hydroxyl`), a piece of a backbone (`peptide`, `alpha carbon`, `ribose`), an alkyl or a linker (`methyl`, `C3 linker`), a lipid tail; every atom is in one. Fragments are no level of residues: a peptide group is the C and O of one residue and the N of the next. Labelled by its name and the residue its first particle is in, `phenyl/TYR24/A`. See Fragments |
 | `molecule(...)` | `set[n]`, one per molecule | what the bonds hold together, or a topology's molecule |
 | `chain(...)` | `set[n]`, one per chain | everything filed under one author chain id; E0207 where the data gives none |
-| `group(...)` | `set[n]`, one per group | a named set of particles the data gives: the index groups of a GROMACS tpr or .ndx file. Groups are no level of the structure: one holds any particles, and groups overlap. See Groups |
+| `group(...)` | `set[n]`, one per group; `set` by one name | a named set of particles: the index groups of a GROMACS tpr or .ndx file, and the user's own. Groups are no level of the structure: one holds any particles, and groups overlap. See Groups |
 
 ### Keywords
 
@@ -490,9 +490,10 @@ ends   = label(fragment('ammonium' or 'carboxylate'))     # -> str[2]
 
 ### Groups
 
-A group is a named set of particles that the data gives rather than the structure: a GROMACS index group, from the tpr of a run (the groups the mdp named) or from an .ndx file. A group may hold whole molecules, parts of residues or particles scattered over the system, and groups overlap; `group` keeps them as they are, so it is the selector to reach for when a set was defined for the simulation and is to be analyzed as such.
+A group is a named set of particles that the data or the user gives rather than the structure: a GROMACS index group, from the tpr of a run (the groups the mdp named) or from an .ndx file, or a selection the user stored. A group may hold whole molecules, parts of residues or particles scattered over the system, and groups overlap; `group` keeps them as they are, so it is the selector to reach for when a set was defined for the simulation, or by hand, and is to be analyzed as such.
 
-- `group('SOL')` is the groups of that name, `set[1]`, or more where several share it: each role of a tpr leaves the particles it did not name in a group `rest` of its own, so `group('rest')` may be two different sets. `group` alone is every group, in the order they were read.
+- `group('SOL')` is the group of that name, one `set`: a name is the handle on a set. Where several groups share the name it is the particles of all of them; each role of a tpr leaves the particles it did not name in a group `rest` of its own, so `group('rest', role='tc')` picks one. A name need not be one a script could bind: `group('Protein-H')`.
+- A pattern or several names give a set per group: `group('Prot*')`, `group(name=['Protein', 'SOL'])`. `group` alone is every group, in the order they were read.
 - `role=` keeps the groups the simulation used for that: `group(role='energy')` is the energy groups in the order of `energygrps`, which is the order an energy file names their pairs in (`Coul-SR:Protein-SOL`). Where `role=` names one role, the groups come in its order.
 - `group(s)` is the groups that hold any particle of `s`, whole; `s.group` is each group cut to `s`, as for any selector.
 - An index file says what groups are, not what they were used for: its groups have no role. One read both from a tpr and from its index file is one group.
@@ -500,9 +501,9 @@ A group is a named set of particles that the data gives rather than the structur
 ```python
 # on a run of a tpr with energygrps = Protein SOL and tc-grps = Protein Non-Protein
 eg   = group(role='energy')                            # -> set[n]: Protein, then SOL
-prot = group('Protein')                                # -> set[n]: one group, with both roles
+prot = group('Protein')                                # -> set: one group, with both roles
 d    = distance(eg[0], eg[1], between='closest')       # -> float Å, frame: the closest approach of the two
-lys  = group('Protein').residue(name='LYS')            # -> set[n]: the lysines, each within the group
+lys  = group('Protein').residue(name='LYS')            # -> set: the lysines' particles within the group
 ```
 
 ### Predefined names

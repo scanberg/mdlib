@@ -5014,6 +5014,7 @@ UTEST(vial_ir, group_fingerprints) {
     const uint64_t db = vial_ir__fp(ob, nb, "d"), da = vial_ir__fp(oa, na, "d");
     const uint64_t pb = vial_ir__fp(ob, nb, "p"), pa = vial_ir__fp(oa, na, "p");
     const uint64_t wb = vial_ir__fp(ob, nb, "w"), wa = vial_ir__fp(oa, na, "w");
+    for (size_t i = 0; i < na; ++i) EXPECT_TRUE(strchr(oa[i].type, '[') == NULL);     // group('Odd') is one set, of both groups
     EXPECT_NE(0u, db);
     EXPECT_NE(0u, wb);
     EXPECT_NE(wb, wa);
@@ -5021,6 +5022,16 @@ UTEST(vial_ir, group_fingerprints) {
     EXPECT_NE(gb, ga);
     EXPECT_NE(db, da);
     EXPECT_EQ(pb, pa);
+
+    // Evaluated per frame, group('Odd') is one set too: both groups of the name, within the scope
+    md_vial_filter_t flt;
+    const md_vial_filter_desc_t fd = {.sys = &sys, .state = &st};
+    ASSERT_TRUE(md_vial_filter(&flt, MD_STR_LIT("group('Odd', scope=within(100.0, of=particle[0:3]))"), &fd, alloc));
+    EXPECT_TRUE(flt.dynamic);
+    EXPECT_EQ(0, flt.ndim);
+    ASSERT_EQ(1u, flt.num_sets);
+    EXPECT_EQ(7u, flt.offsets[1] - flt.offsets[0]);
+    EXPECT_EQ(5u, flt.atoms[3]);
 
     md_vial_program_free(before);
     md_vial_program_free(after);
