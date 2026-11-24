@@ -1,6 +1,8 @@
 #pragma once
 
 #include <md_system.h>
+#include <md_element.h>
+#include <core/md_array.h>
 #include <core/md_log.h>
 
 // For the readers (md_io.h, LOAD). Not part of the interface.
@@ -20,10 +22,17 @@ static inline bool md_io_onto_atoms(const md_system_t* sys, md_str_t path) {
 }
 
 // A system known by its atom count alone (md_io.h, LOAD: coordinates without names, as a restart has them): N atoms
-// without types or residues, of which state holds the coordinates
+// without residues, of which state holds the coordinates. Each of one type, of no element: what reads the atoms through
+// their types finds one (type 0 is the unknown, as every loader has it, of no size; this one is drawn at the size of an
+// atom of no element). It names them no more than their count does: a system of named atoms they join takes the names.
 static inline void md_io_points_system(md_system_t* sys, size_t num_atoms) {
     md_system_reset(sys);
     sys->atom.count = num_atoms;
+    md_particle_type_find_or_add(&sys->atom.type, MD_STR_LIT("Unk"), 0, 0.0f, 0.0f, 0, 0, sys->alloc);
+    const md_particle_type_idx_t point = md_particle_type_add(&sys->atom.type, MD_STR_LIT("X"), (md_str_t){0}, 0, 0.0f,
+        md_atomic_number_vdw_radius(0), md_atomic_number_cpk_color(0), 0, sys->alloc);
+    md_array_resize(sys->atom.type_idx, num_atoms, sys->alloc);
+    for (size_t i = 0; i < num_atoms; ++i) sys->atom.type_idx[i] = point;
 }
 
 // Whether the system has the run, its frame axis "<run>/time": what a series is along

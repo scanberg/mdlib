@@ -132,6 +132,10 @@ UTEST(io, trajectory_alone) {
         EXPECT_TRUE(sys.atom.count > 0);
         EXPECT_EQ(sys.atom.count, state.num_atoms);
         EXPECT_TRUE(md_system_state_has_coords(&state));
+        // Every atom of a type, of no element, which has a size: drawn, and read through its type
+        ASSERT_TRUE(sys.atom.type_idx != NULL);
+        EXPECT_EQ(0, md_atom_atomic_number(&sys.atom, 0));
+        EXPECT_TRUE(md_atom_radius(&sys.atom, sys.atom.count - 1) > 0.0f);
         if (f->atom_count) EXPECT_EQ(f->atom_count(path), sys.atom.count);
         EXPECT_TRUE(f->publish_run(&sys, path, MD_STR_LIT("run/a"), 0));
         // A system of its own: not onto atoms
