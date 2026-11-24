@@ -72,6 +72,7 @@ static const uint F_ATTR_INDEX   = 1u << 3;
 static const uint F_VISIBLE0     = 1u << 4;
 static const uint F_VISIBLE1     = 1u << 5;
 static const uint F_MARKS        = 1u << 6;
+static const uint F_INDEX_MAP    = 1u << 7;
 static const uint F_ID           = 1u << 8;
 static const uint F_RADIUS_SCALE = 1u << 9;
 static const uint F_COLOR        = 1u << 10;
@@ -126,7 +127,7 @@ struct Batch {
     uint*   visible0;
     uint*   visible1;
     uint*   marks;              // uint8 per attribute: states (bits 0, 1), tag (2..4)
-    uint    _mpad0, _mpad1;     // (tint on 16 bytes)
+    uint*   index_map;          // F_INDEX_MAP: per value of the index, the point it stands for
     uint*   index;
     uint*   id;
     float*  radius_scale;
@@ -359,7 +360,8 @@ float mark_value(uint st, uint bit) {
 // Point k (0 or 1) of element e with `per` points per element
 uint point_of(Batch b, uint e, uint k, uint per) {
     uint i = e * per + k;
-    return ((b.flags & F_INDEX) != 0u) ? b.index[gated(b, F_INDEX, i)] : i;
+    uint v = ((b.flags & F_INDEX) != 0u) ? b.index[gated(b, F_INDEX, i)] : i;
+    return ((b.flags & F_INDEX_MAP) != 0u) ? b.index_map[gated(b, F_INDEX_MAP, v)] : v;
 }
 
 Mat load_transform(float4* t, uint inst) {

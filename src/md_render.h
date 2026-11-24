@@ -442,6 +442,12 @@ typedef struct md_render_batch_t {
        A subset of the points is an index range or a visibility bitset. */
     md_gpu_addr_t      index;
 
+    /* uint32 per value of `index` (or per index, without one): the point it
+       stands for, so an index can hold something else the points are of
+       (atoms, of points a regrouping keeps moving). 0: the index's values are
+       points. Not SPLINES. */
+    md_gpu_addr_t      index_map;
+
     /* uint32 per element, reported by picking instead of the element's index:
        the bond a capsule stands for. 0: the index. */
     md_gpu_addr_t      id;

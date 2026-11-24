@@ -169,6 +169,7 @@ struct Args {
     float vel_inv_dt;           // 1 / velocity_dt
     uint  vel_instance;         // the topology's instance: the stamp a last update's copy carries
     uint  _vpad;
+    uint* atom_point;           // sol_atom_point: per atom of the system, its point
 };
 MD_SHADER_ARGS(Args);
 
@@ -584,6 +585,16 @@ float3 mi(CellP c, float3 d) {
     d.xy -= n1 * float2(c.bx, c.by);
     d.x  -= round(d.x * c.r.x) * c.ax;
     return d;
+}
+
+// Each atom's point, of the order the copy was just gathered in: the index map
+// of the caller's pairs (md_render_mol_rep_t.pairs), whose index holds atoms
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void sol_atom_point(uint3 tid : SV_DispatchThreadID) {
+    Args a = MD_ARGS;
+    uint n = a.atom_count;
+    for (uint p = tid.x; p < n; p += grid_threads(n)) a.atom_point[a.atom_order[p]] = p;
 }
 
 // The velocities from the positions (md_render_mol_atoms_t.velocity_dt): each

@@ -710,6 +710,8 @@ typedef enum md_render_mol_rep_type_t {
     MD_RENDER_MOL_REP_CARTOON,     /* the protein backbone (see the update and
                                       md_render_mol_cartoon_profile), the nucleic
                                       acids                                          */
+    MD_RENDER_MOL_REP_PAIRS,       /* sticks between the atoms of the caller's pairs
+                                      (`pairs`), no atoms                            */
 } md_render_mol_rep_type_t;
 
 typedef struct md_render_mol_rep_t {
@@ -729,6 +731,7 @@ typedef struct md_render_mol_rep_t {
         struct { float radius; } licorice;
         struct { float ball_scale; float stick_radius; } ball_and_stick;
         struct { float radius; } bonds;
+        struct { float radius; } pairs;
         /* md_gl's: a ribbon along the protein backbone, oriented as the
            cartoon (the update's axes), of half width and half thickness (the
            edges rounded: a stadium); 0: md_gl's, 1 and 0.1 */
@@ -756,6 +759,18 @@ typedef struct md_render_mol_rep_t {
        emit; NULL: md_render_mol_bond_styles. */
     uint32_t                          bond_kinds;
     const md_render_mol_bond_style_t* bond_style;
+
+    /* PAIRS: the caller's, in its memory: uint32 atom indices, two per pair,
+       those of bond kind k (MD_RENDER_MOL_BOND_KIND, drawn in bond_style[k])
+       at pair_offset[k] .. pair_offset[k + 1] (MD_RENDER_MOL_BOND_KIND_COUNT +
+       1 entries, read by emit). Through the per-frame block's points (each
+       atom's, of the last update's order): their velocities, regroups, and
+       the atoms' colours, visibility and marks. The atoms must be resident
+       (md_render_mol_plan): one that is not stands at point 0. pair_id: uint32 per pair, optional, what a pick of it
+       reports (MD_RENDER_MOL_HIT_PAIR); 0: its index within its kind. */
+    md_gpu_addr_t                     pairs;
+    md_gpu_addr_t                     pair_id;
+    const uint32_t*                   pair_offset;
 
     /* Dashed lines over the breaks of the chains (md_gl's chain gaps):
        CARTOON from end to end of the cartoon, 0.14 (0.7 of the coil at a
@@ -817,6 +832,7 @@ enum {
     MD_RENDER_MOL_PART_LIPID_TUBES = MD_RENDER_MOL_PART_LIPID_SPHERES + 2,  /* + 0 chains, 1 ring systems, 2 slabs */
     MD_RENDER_MOL_PART_RESIDUES = MD_RENDER_MOL_PART_LIPID_TUBES + 3,       /* spacefill's residues' spheres */
     MD_RENDER_MOL_PART_SMALL_ATOMS,     /* spacefill's atoms of small molecules, apart with residues */
+    MD_RENDER_MOL_PART_PAIRS,           /* + MD_RENDER_MOL_BOND_KIND: the caller's pairs */
 };
 
 /* Appends the batches that draw `rep` to out[0 .. cap). Returns how many it
@@ -843,6 +859,8 @@ typedef enum md_render_mol_hit_kind_t {
                                       spine atom)                                     */
     MD_RENDER_MOL_HIT_RESIDUE,     /* a residue's sphere (spacefill's `residues`):
                                       residue, and the atom it stands for            */
+    MD_RENDER_MOL_HIT_PAIR,        /* a stick of PAIRS: `bond` its pair_id (or its
+                                      index within its kind)                         */
 } md_render_mol_hit_kind_t;
 
 typedef struct md_render_mol_hit_t {
@@ -854,7 +872,8 @@ typedef struct md_render_mol_hit_t {
                                       its ring's or stick's atom nearest the hit, the
                                       gap's end nearer the hit, the ring's atom
                                       nearest the hit                                */
-    uint32_t bond;                 /* index in sys->bond; UINT32_MAX for others       */
+    uint32_t bond;                 /* index in sys->bond (PAIR: the pair's id);
+                                      UINT32_MAX for others                          */
     uint32_t segment;              /* index in sys->protein_backbone.segment of a
                                       BACKBONE hit, in sys->nucleic_backbone.segment
                                       of a NUCLEOTIDE hit; UINT32_MAX for others      */

@@ -117,6 +117,7 @@ enum {
     F_VISIBLE0     = 1u << 4,
     F_VISIBLE1     = 1u << 5,
     F_MARKS        = 1u << 6,
+    F_INDEX_MAP    = 1u << 7,
     F_ID           = 1u << 8,
     F_RADIUS_SCALE = 1u << 9,
     F_COLOR        = 1u << 10,
@@ -142,9 +143,7 @@ typedef struct gpu_batch_t {
     uint32_t      kind, count, instance_count, flags;
     uint32_t      stride, vel_stride, attr_count, color_mode;
     md_gpu_addr_t position, velocity, radius, attr_index, color, palette_index, palette;
-    md_gpu_addr_t visible0, visible1, marks;
-    uint32_t      _mpad0, _mpad1;                                 /* (tint on 16 bytes) */
-    md_gpu_addr_t index, id, radius_scale;
+    md_gpu_addr_t visible0, visible1, marks, index_map, index, id, radius_scale;
     md_gpu_addr_t transforms, transforms_prev;
     float         s0, s1;
     uint32_t      uniform_color, palette_count;
@@ -645,6 +644,7 @@ static void canonical_geometry(md_render_batch_t* out, const md_render_batch_t* 
     out->points.visible[1]      = b->points.visible[1];
     out->points.marks           = b->points.marks;      /* an address: the mask pass draws from it */
     out->index           = b->index;
+    out->index_map       = b->index_map;
     out->id              = b->id;
     out->cluster_offset  = b->cluster_offset;
     out->cluster_count   = b->cluster_offset ? b->cluster_count : 0;
@@ -756,6 +756,10 @@ static bool validate(const md_render_frame_t* f) {
         case MD_RENDER_SPLINES:
             if (b->count && !b->index) {
                 MD_LOG_ERROR("md_render: batch %u: splines need an index (control points and their flags)", i);
+                return false;
+            }
+            if (b->index_map) {
+                MD_LOG_ERROR("md_render: batch %u: splines take no index map", i);
                 return false;
             }
             break;
@@ -962,7 +966,7 @@ static bool gpu_realloc(md_gpu_stream_t s, md_gpu_addr_t* addr, size_t* cap, siz
    that speculates loads out of branches would do the same. */
 static void no_null(gpu_batch_t* g, md_gpu_addr_t zero) {
     md_gpu_addr_t* opt[] = { &g->position, &g->velocity, &g->radius, &g->attr_index, &g->color, &g->palette_index, &g->palette,
-                             &g->visible0, &g->visible1, &g->marks, &g->index, &g->id, &g->radius_scale,
+                             &g->visible0, &g->visible1, &g->marks, &g->index_map, &g->index, &g->id, &g->radius_scale,
                              &g->radius_table, &g->cluster_offset, &g->spl_axis, &g->spl_profile, &g->cap_side, &g->fade_key };
     for (size_t i = 0; i < sizeof(opt) / sizeof(opt[0]); ++i) if (!*opt[i]) *opt[i] = zero;
 }
@@ -997,11 +1001,13 @@ static void fill_batch(gpu_batch_t* g, const md_render_batch_t* b, uint32_t n_in
     g->visible1       = p->visible[1];
     g->marks          = p->marks;
     g->index          = b->index;
+    g->index_map      = b->index_map;
     g->id             = b->id;
     g->transforms      = xf;
     g->transforms_prev = xf_prev;
     uint32_t f = 0;
     if (b->index)          f |= F_INDEX;
+    if (b->index_map)      f |= F_INDEX_MAP;
     if (p->velocity)       f |= F_VELOCITY;
     if (g->radius)         f |= F_RADIUS;
     if (g->radius_table)   f |= F_RADIUS_TABLE;

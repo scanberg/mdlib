@@ -5186,6 +5186,146 @@ UTEST(render, mol_velocity_derived) {
     f_close(&fx);
 }
 
+/* The caller's pairs (PAIRS) draw what the topology's bonds draw (BONDS)
+   when they are those bonds: through the per-frame block's points (the
+   index map from atoms), so through a regroup that moves molecules a jump
+   carried to other cells, with the same derived velocities; a pick reports
+   the pair's id */
+UTEST(render, mol_pairs_draw_what_bonds_draw) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(load_system(&sys, &state, MD_UNITTEST_DATA_DIR "/tryptophan-md.gro"));
+    const uint32_t n = (uint32_t)sys.atom.count;
+    uint64_t content[MD_RENDER_CONTENT_COUNT] = {0};
+    md_temp_scope_t temp = md_temp_begin();
+    md_render_mol_plan_t plan;
+    ASSERT_TRUE(md_render_mol_plan(&plan, &sys, NULL, temp));
+    md_render_mol_topo_t topo;
+    ASSERT_TRUE(md_render_mol_write(fx.gfx, &topo, &plan, md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, plan.size).gpu, content));
+    md_temp_end(temp);
+    md_render_mol_ctx_t kernels = md_render_mol_create(fx.dev, NULL);
+    ASSERT_TRUE(kernels != NULL);
+    md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size_velocity).gpu;
+
+    /* the covalent bonds as the caller's pairs, their ids reversed */
+    const uint32_t kv = MD_RENDER_MOL_BOND_KIND(MD_BOND_KIND_COVALENT);
+    uint32_t np = 0;
+    uint32_t* pairs = malloc(sys.bond.count * 8);
+    for (size_t i = 0; i < sys.bond.count; ++i) {
+        if (MD_RENDER_MOL_BOND_KIND(md_bond_kind(sys.bond.flags[i])) != kv) continue;
+        pairs[2 * np] = sys.bond.pairs[i].idx[0]; pairs[2 * np + 1] = sys.bond.pairs[i].idx[1]; np++;
+    }
+    ASSERT_GT(np, 1000u);
+    uint32_t* ids = malloc(np * 4);
+    for (uint32_t i = 0; i < np; ++i) ids[i] = np - 1 - i;
+    uint32_t offset[MD_RENDER_MOL_BOND_KIND_COUNT + 1];
+    for (uint32_t k = 0; k <= MD_RENDER_MOL_BOND_KIND_COUNT; ++k) offset[k] = k <= kv ? 0 : np;
+
+    float cell[9];
+    md_render_mol_frame_cell(cell, &state.unitcell);
+    float* x = malloc((size_t)n * 12);
+    memcpy(x, state.xyz, (size_t)n * 12);
+    md_gpu_addr_t P = f_buf(&fx, x, (size_t)n * 12);
+    md_render_mol_atoms_t atoms = {0};
+    atoms.position = P;
+    memcpy(atoms.cell, cell, sizeof(cell));
+    atoms.velocity_dt = 1.0f;
+
+    md_render_mol_rep_t rp = {0}, rb = {0};
+    rp.key = 7; rp.type = MD_RENDER_MOL_REP_PAIRS; rp.params.pairs.radius = 0.25f;
+    rp.pairs = f_buf(&fx, pairs, (size_t)np * 8); rp.pair_id = f_buf(&fx, ids, (size_t)np * 4); rp.pair_offset = offset;
+    rb.key = 8; rb.type = MD_RENDER_MOL_REP_BONDS; rb.params.bonds.radius = 0.25f; rb.bond_kinds = MD_RENDER_MOL_BONDS(MD_BOND_KIND_COVALENT);
+
+    float lo[3] = { 1e30f, 1e30f, 1e30f }, hi[3] = { -1e30f, -1e30f, -1e30f };
+    for (uint32_t i = 0; i < n; ++i) for (int k = 0; k < 3; ++k) { lo[k] = fminf(lo[k], x[3 * i + k]); hi[k] = fmaxf(hi[k], x[3 * i + k]); }
+    const uint32_t W = 192, H = 192;
+    cam_t c = { .ortho = true, .half_h = 0.6f * fmaxf(hi[0] - lo[0], hi[1] - lo[1]) + 2.0f, .aspect = 1.0f, .n = 0.0f, .far_ = 1000.0f };
+    md_render_camera_t cam = make_camera(&c);
+    cam.view[12] = -0.5f * (lo[0] + hi[0]); cam.view[13] = -0.5f * (lo[1] + hi[1]); cam.view[14] = -(hi[2] + 40.0f);
+    md_render_view_t vb = md_render_view_create(fx.r, "bonds");
+    ASSERT_TRUE(vb != NULL);
+    float* dp = malloc(W * H * 4); float* db = malloc(W * H * 4);
+    uint32_t* mp = malloc(W * H * 4); uint32_t* mb = malloc(W * H * 4);
+
+    for (int step = 0; step < 2; ++step) {
+        if (step == 1) {
+            /* every atom a little further, every fifth small molecule across the cell too */
+            for (uint32_t i = 0; i < n; ++i) { x[3 * i + 0] += 0.3f; x[3 * i + 1] -= 0.1f * (float)(i % 3); }
+            const md_molecule_data_t* M = &sys.molecule;
+            for (size_t m = 0; m < M->count; ++m) {
+                if (M->offset[m + 1] - M->offset[m] > MD_RENDER_MOL_SMALL || m % 5) continue;
+                for (uint32_t s = M->offset[m]; s < M->offset[m + 1]; ++s) for (int k = 0; k < 3; ++k) x[3 * M->atom_idx[s] + k] += cell[k];
+            }
+            md_gpu_upload(fx.gfx, P, x, (size_t)n * 12);
+        }
+        ASSERT_TRUE(md_render_mol_update(kernels, fx.gfx, &topo, dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, content));
+        md_render_batch_t bp[8], bb[8];
+        const uint32_t np_b = md_render_mol_emit(&topo, dyn, &atoms, &rp, bp, 8);
+        const uint32_t nb_b = md_render_mol_emit(&topo, dyn, &atoms, &rb, bb, 8);
+        ASSERT_EQ(1u, np_b);
+        ASSERT_EQ(1u, nb_b);
+        EXPECT_EQ((uint64_t)(7 << 8 | (MD_RENDER_MOL_PART_PAIRS + kv)), bp[0].key);
+        EXPECT_TRUE(bp[0].points.velocity != 0);
+        md_render_frame_t fp = frame_of(W, H, cam, bp, 1), fb = frame_of(W, H, cam, bb, 1);
+        memcpy(fp.content, content, sizeof(content)); memcpy(fb.content, content, sizeof(content));
+        fp.time = fb.time = (double)step;
+        ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &fp, NULL));
+        ASSERT_TRUE(md_render_view_draw(fx.gfx, vb, &fb, NULL));
+        ASSERT_TRUE(f_read(&fx, md_render_view_targets(fx.view).depth, dp, W * H * 4) && f_read(&fx, md_render_view_targets(vb).depth, db, W * H * 4));
+        ASSERT_TRUE(f_read(&fx, md_render_view_targets(fx.view).motion, mp, W * H * 4) && f_read(&fx, md_render_view_targets(vb).motion, mb, W * H * 4));
+        int covered = 0, depth_off = 0, motion_off = 0, moving = 0;
+        for (uint32_t i = 0; i < W * H; ++i) {
+            covered += db[i] > 0.0f;
+            depth_off += dp[i] != db[i];
+            motion_off += db[i] > 0.0f && mp[i] != mb[i];
+            moving += db[i] > 0.0f && mb[i] != 0;
+        }
+        printf("    step %d: %d pixels of bonds, %d moving; %d of another depth, %d of another motion\n", step, covered, moving, depth_off, motion_off);
+        EXPECT_GT(covered, (int)(W * H / 20));
+        EXPECT_EQ(0, depth_off);
+        EXPECT_EQ(0, motion_off);
+        if (step == 1) EXPECT_GT(moving, covered / 2);
+    }
+
+    /* a pick on a pair: its id, the pair the topology's bond there joins */
+    uint32_t px = W, py = H;
+    for (uint32_t i = 0; i < W * H && px == W; ++i) if (dp[i] > 0.0f && (i % W) > W / 3 && (i / W) > H / 3) { px = i % W; py = i / W; }
+    ASSERT_LT(px, W);
+    md_render_pick_t pk;
+    md_render_mol_hit_t hp, hb;
+    ASSERT_TRUE(f_pick(&fx, px, py, &pk));
+    ASSERT_TRUE(md_render_mol_decode_pick(&pk, &hp));
+    EXPECT_EQ(MD_RENDER_MOL_HIT_PAIR, hp.kind);
+    EXPECT_EQ(7u, (unsigned)hp.rep_key);
+    ASSERT_LT(hp.bond, np);
+    const uint32_t pi = np - 1 - hp.bond;                      /* the id's pair */
+    EXPECT_TRUE(hp.atom == pairs[2 * pi] || hp.atom == pairs[2 * pi + 1]);
+    ASSERT_TRUE(md_render_view_pick(fx.gfx, vb, px, py));
+    md_gpu_stream_sync(fx.gfx);
+    ASSERT_TRUE(md_render_view_pick_result(vb, &pk));
+    ASSERT_TRUE(md_render_mol_decode_pick(&pk, &hb));
+    EXPECT_EQ(MD_RENDER_MOL_HIT_BOND, hb.kind);
+    const md_atom_pair_t bp2 = sys.bond.pairs[hb.bond];
+    EXPECT_TRUE((bp2.idx[0] == pairs[2 * pi] && bp2.idx[1] == pairs[2 * pi + 1]) || (bp2.idx[1] == pairs[2 * pi] && bp2.idx[0] == pairs[2 * pi + 1]));
+
+    /* refused: no pairs, or no offsets */
+    md_render_mol_rep_t bad = rp;
+    bad.pair_offset = NULL;
+    EXPECT_EQ(0u, md_render_mol_emit(&topo, dyn, &atoms, &bad, NULL, 0));
+
+    free(dp); free(db); free(mp); free(mb); free(x); free(pairs); free(ids);
+    md_render_view_destroy(fx.gfx, vb);
+    md_gpu_free(fx.gfx, P);
+    md_gpu_free(fx.gfx, dyn);
+    md_gpu_free(fx.gfx, topo.base);
+    md_render_mol_destroy(kernels);
+    md_vm_arena_destroy(alloc);
+    f_close(&fx);
+}
+
 UTEST(render, mol_frames_interpolate) {
     frames_case(utest_result, false);
 }
