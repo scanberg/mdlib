@@ -2239,8 +2239,7 @@ static void gto_gemm_execute(md_gpu_stream_t stream, gto_density_gemm_args_t* ap
     p.waited_ms = md_tick_to_milliseconds(md_tick_now() - p.t_count0);
     gto_gemm_plan_t* P = gto_gemm_plan(&p);
     if (!P) return;
-    const md_gpu_ordering_t prev_ordering = md_gpu_stream_ordering(stream);
-    md_gpu_stream_set_ordering(stream, MD_GPU_ORDER_IMPLICIT);
+    const md_gpu_ordering_t prev_ordering = md_gpu_stream_set_ordering(stream, MD_GPU_ORDER_IMPLICIT);
     while (!gto_gemm_plan_issued(P)) {
         gto_gemm_issue_piece(P);
         md_gpu_stream_flush(stream);    /* a submission of its own */
@@ -2357,8 +2356,7 @@ static bool gto_gemm_run_pending(md_gpu_stream_t stream, gto_gemm_pending_t* pp)
     p.waited_ms = md_tick_to_milliseconds(md_tick_now() - p.t_count0);
     gto_gemm_plan_t* P = gto_gemm_plan(&p);
     if (!P) return false;
-    const md_gpu_ordering_t prev_ordering = md_gpu_stream_ordering(stream);
-    md_gpu_stream_set_ordering(stream, MD_GPU_ORDER_IMPLICIT);
+    const md_gpu_ordering_t prev_ordering = md_gpu_stream_set_ordering(stream, MD_GPU_ORDER_IMPLICIT);
     while (!gto_gemm_plan_issued(P)) {
         gto_gemm_issue_piece(P);
         md_gpu_stream_flush(stream);    /* a submission of its own */
@@ -2540,8 +2538,7 @@ bool md_gto_gpu_job_poll(md_gto_gpu_job_t* job, bool wait) {
         // every piece issued has passed and there is more: the GPU ran dry between the polls
         job->in_flight = MD_MIN(job->in_flight * 2, GTO_GEMM_JOB_IN_FLIGHT_MAX);
     }
-    const md_gpu_ordering_t prev_ordering = md_gpu_stream_ordering(job->stream);
-    md_gpu_stream_set_ordering(job->stream, MD_GPU_ORDER_IMPLICIT);
+    const md_gpu_ordering_t prev_ordering = md_gpu_stream_set_ordering(job->stream, MD_GPU_ORDER_IMPLICIT);
     while (!gto_gemm_plan_issued(job->plan) && (wait || job->mark_tail - job->mark_head < job->in_flight)) {
         gto_gemm_issue_piece(job->plan);
         gto_gemm_job_mark(job, job->plan->work_issued);     // a submission of its own

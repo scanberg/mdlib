@@ -653,6 +653,22 @@ static void md_mtl_mark_work(md_gpu_stream_t s) {
     md_atomic_store64(&s->position, s->next_value);
 }
 
+/* Caller holds device_mutex. */
+static void md_mtl_process_retires_locked(md_gpu_device_t dev, bool force) {
+    for (size_t i = 0; i < dev->retires.size;) {
+        md_mtl_retire_t* r = &dev->retires.data[i];
+        bool done = true;
+        for (uint32_t w = 0; w < r->wait_count && done && !force; ++w) {
+            if (md_mtl_stream_completed(r->waits[w].stream) < r->waits[w].value) done = false;
+        }
+        if (!done) { ++i; continue; }
+        md_mtl_retire_t e = *r;
+        MD_ARRAY_REMOVE(dev->retires, i);
+        md_mtl_texture_free(dev, (md_gpu_texture_t)e.object);
+        if (e.waits) md_free(dev->alloc, e.waits, e.wait_capacity * sizeof(md_mtl_wait_t));
+    }
+}
+
 /* Queue `object` for release once every stream has passed its current
    position. Caller holds device_mutex. Other streams' positions are read as
    they last published them: work that uses `object` was recorded before this
@@ -690,22 +706,10 @@ static void md_mtl_retire_locked(md_gpu_device_t dev, md_mtl_retire_kind_t kind,
         md_mtl_texture_free(dev, (md_gpu_texture_t)object);
         return;
     }
-}
-
-/* Caller holds device_mutex. */
-static void md_mtl_process_retires_locked(md_gpu_device_t dev, bool force) {
-    for (size_t i = 0; i < dev->retires.size;) {
-        md_mtl_retire_t* r = &dev->retires.data[i];
-        bool done = true;
-        for (uint32_t w = 0; w < r->wait_count && done && !force; ++w) {
-            if (md_mtl_stream_completed(r->waits[w].stream) < r->waits[w].value) done = false;
-        }
-        if (!done) { ++i; continue; }
-        md_mtl_retire_t e = *r;
-        MD_ARRAY_REMOVE(dev->retires, i);
-        md_mtl_texture_free(dev, (md_gpu_texture_t)e.object);
-        if (e.waits) md_free(dev->alloc, e.waits, e.wait_capacity * sizeof(md_mtl_wait_t));
-    }
+    /* Release whatever is done by now, this entry included if no stream has
+       work in flight: code that never calls md_gpu_device_poll does not pile
+       up destroyed textures. */
+    md_mtl_process_retires_locked(dev, false);
 }
 
 /* A stream is going away after being synchronised: drop every reference to
@@ -862,8 +866,11 @@ static void md_mtl_did_op(md_gpu_stream_t s) {
     md_mtl_mark_work(s);
 }
 
-void md_gpu_stream_set_ordering(md_gpu_stream_t s, md_gpu_ordering_t ordering) {
-    if (s) s->ordering = ordering;
+md_gpu_ordering_t md_gpu_stream_set_ordering(md_gpu_stream_t s, md_gpu_ordering_t ordering) {
+    if (!s) return MD_GPU_ORDER_IMPLICIT;
+    const md_gpu_ordering_t prev = s->ordering;
+    s->ordering = ordering;
+    return prev;
 }
 
 md_gpu_ordering_t md_gpu_stream_ordering(md_gpu_stream_t s) {
@@ -3199,13 +3206,6 @@ bool md_gpu_sync_on_complete(md_gpu_device_t dev, md_gpu_sync_t sync, md_gpu_hos
     const bool listed = MD_ARRAY_TRY_PUSH(dev->hostfns, h);
     md_mutex_unlock(&dev->device_mutex);
     return listed ? true : md_gpu_fail("out of memory");
-}
-
-bool md_gpu_launch_host_fn(md_gpu_stream_t s, md_gpu_host_fn fn, void* user) {
-    if (!s || !fn) return md_gpu_fail("md_gpu_launch_host_fn: null argument");
-    if (!md_mtl_not_in_pass(s, "md_gpu_launch_host_fn")) return false;
-    md_gpu_sync_t sync = md_gpu_stream_record(s);
-    return md_gpu_sync_on_complete(s->device, sync, fn, user);
 }
 
 /* Timeline values sampled once per poll pass, so that callbacks fire in

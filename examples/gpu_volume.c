@@ -85,8 +85,8 @@ typedef struct {
 static void on_readback_complete(void* user) {
     readback_t* rb = (readback_t*)user;
     rb->fired = 1;
-    /* Everything the stream had issued before md_gpu_launch_host_fn has
-       completed, so the host-readable copies are populated by now. */
+    /* Everything the stream had issued before it was recorded has completed,
+       so the host-readable copies are populated by now. */
     printf("  [callback] readback complete: %u voxels above threshold, "
            "first value %.4f\n", *rb->count, *rb->count ? rb->values[0] : 0.0f);
 }
@@ -217,7 +217,7 @@ int main(void) {
 
     CHECK(md_gpu_copy(compute, rb_count.gpu, count, sizeof(uint32_t)), "readback count");
     CHECK(md_gpu_copy(compute, rb_values.gpu, values, VOXELS * sizeof(float)), "readback values");
-    CHECK(md_gpu_launch_host_fn(compute, on_readback_complete, &rb), "host fn");
+    CHECK(md_gpu_sync_on_complete(dev, md_gpu_stream_record(compute), on_readback_complete, &rb), "host fn");
 
     /* In a real frame loop this is the only call you make; the callback fires
        on this thread, so touching OpenGL or ImGui from it is legal. */

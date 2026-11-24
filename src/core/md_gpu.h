@@ -49,7 +49,7 @@ Correspondence with CUDA
     cudaStreamWaitEvent         md_gpu_stream_wait
     cudaStreamSynchronize       md_gpu_stream_sync
     cudaEventQuery              md_gpu_sync_is_complete
-    cudaLaunchHostFunc          md_gpu_launch_host_fn
+    cudaLaunchHostFunc          md_gpu_sync_on_complete(dev, md_gpu_stream_record(s), fn, user)
     cudaSurfaceObject_t         md_gpu_storage_tex_t
     cudaTextureObject_t         md_gpu_sampled_tex_t
 
@@ -417,11 +417,14 @@ void md_gpu_device_destroy(md_gpu_device_t device);
 
 bool md_gpu_device_info(md_gpu_device_t device, md_gpu_device_info_t* out_info);
 
-/* Fires host callbacks whose sync point has completed and releases objects
-   whose deferred destruction has become safe. Callbacks run on the calling
-   thread and nowhere else. Returns the number of callbacks fired.
+/* Fires host callbacks whose sync point has completed, on the calling thread
+   and nowhere else, and releases destroyed objects and freed memory the GPU
+   is done with. Returns the number of callbacks fired.
 
-   Call once per frame. Cheap when there is nothing to do. */
+   Host callbacks fire only here. Destroyed objects and freed memory are also
+   released by later destroys and allocations, so code that registers no
+   callbacks need not call it. A frame loop calls it once per frame. Cheap
+   when there is nothing to do. */
 uint32_t md_gpu_device_poll(md_gpu_device_t device);
 
 /* =========================================================================
@@ -530,7 +533,13 @@ enum {
 };
 #define MD_GPU_STAGE_ALL (~(md_gpu_stage_flags_t)0)   /* every stage, present and future */
 
-void md_gpu_stream_set_ordering(md_gpu_stream_t stream, md_gpu_ordering_t ordering);
+/* Returns the mode the stream was in, so that code handed a stream in either
+   mode can switch and put it back:
+
+       const md_gpu_ordering_t prev = md_gpu_stream_set_ordering(s, MD_GPU_ORDER_IMPLICIT);
+       ...
+       md_gpu_stream_set_ordering(s, prev); */
+md_gpu_ordering_t md_gpu_stream_set_ordering(md_gpu_stream_t stream, md_gpu_ordering_t ordering);
 md_gpu_ordering_t md_gpu_stream_ordering(md_gpu_stream_t stream);
 
 /* Everything `producers` wrote before this point is visible to `consumers`
@@ -1459,13 +1468,13 @@ bool             md_gpu_surface_present(md_gpu_stream_t stream, md_gpu_surface_t
 
 typedef void (*md_gpu_host_fn)(void* user);
 
-/* cudaLaunchHostFunc: `fn` runs after all work issued into `stream` before
-   this call has completed. It runs inside md_gpu_device_poll(), on whichever
-   thread calls that -- so the caller picks the thread and there is no locking
-   in user code. */
-bool md_gpu_launch_host_fn(md_gpu_stream_t stream, md_gpu_host_fn fn, void* user);
+/* `fn` runs once `sync` has completed. It runs inside md_gpu_device_poll(), on
+   whichever thread calls that -- so the caller picks the thread and there is
+   no locking in user code. Callbacks fire in the order they were registered.
+   A none sync fires on the next poll. After everything issued into a stream
+   so far (cudaLaunchHostFunc):
 
-/* Same, keyed to an explicit sync point. A none sync fires on the next poll. */
+       md_gpu_sync_on_complete(dev, md_gpu_stream_record(s), fn, user); */
 bool md_gpu_sync_on_complete(md_gpu_device_t device, md_gpu_sync_t sync, md_gpu_host_fn fn, void* user);
 
 #ifdef __cplusplus

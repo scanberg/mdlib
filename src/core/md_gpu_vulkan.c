@@ -927,6 +927,23 @@ static void md_vk_retire_release(md_gpu_device_t dev, const md_vk_retire_t* e) {
     }
 }
 
+/* Release every retire entry whose waits have all completed (all of them when
+   `force`). Caller holds device_mutex. */
+static void md_vk_process_retires_locked(md_gpu_device_t dev, bool force) {
+    for (size_t i = 0; i < dev->retires.size;) {
+        md_vk_retire_t* r = &dev->retires.data[i];
+        bool done = true;
+        for (uint32_t w = 0; w < r->wait_count && done && !force; ++w) {
+            if (md_vk_stream_completed(r->waits[w].stream) < r->waits[w].value) done = false;
+        }
+        if (!done) { ++i; continue; }
+        md_vk_retire_t e = *r;
+        MD_ARRAY_REMOVE(dev->retires, i);
+        md_vk_retire_release(dev, &e);
+        if (e.waits) md_free(dev->alloc, e.waits, e.wait_capacity * sizeof(md_vk_wait_t));
+    }
+}
+
 /* Queue `r` for destruction once every stream has passed its current
    position. Caller holds device_mutex. Other streams' positions are read as
    they last published them: work that uses `r` was recorded before this call,
@@ -957,7 +974,12 @@ static void md_vk_retire_entry_locked(md_gpu_device_t dev, md_vk_retire_t r) {
         if (r.waits) md_free(dev->alloc, r.waits, n * sizeof(md_vk_wait_t));
         md_vk_device_wait_idle(dev);
         md_vk_retire_release(dev, &r);
+        return;
     }
+    /* Release whatever is done by now, this entry included if no stream has
+       work in flight: code that never calls md_gpu_device_poll does not pile
+       up destroyed objects. */
+    md_vk_process_retires_locked(dev, false);
 }
 
 static void md_vk_retire_locked(md_gpu_device_t dev, md_vk_retire_kind_t kind, void* object) {
@@ -965,23 +987,6 @@ static void md_vk_retire_locked(md_gpu_device_t dev, md_vk_retire_kind_t kind, v
     r.kind   = kind;
     r.object = object;
     md_vk_retire_entry_locked(dev, r);
-}
-
-/* Release every retire entry whose waits have all completed (all of them when
-   `force`). Caller holds device_mutex. */
-static void md_vk_process_retires_locked(md_gpu_device_t dev, bool force) {
-    for (size_t i = 0; i < dev->retires.size;) {
-        md_vk_retire_t* r = &dev->retires.data[i];
-        bool done = true;
-        for (uint32_t w = 0; w < r->wait_count && done && !force; ++w) {
-            if (md_vk_stream_completed(r->waits[w].stream) < r->waits[w].value) done = false;
-        }
-        if (!done) { ++i; continue; }
-        md_vk_retire_t e = *r;
-        MD_ARRAY_REMOVE(dev->retires, i);
-        md_vk_retire_release(dev, &e);
-        if (e.waits) md_free(dev->alloc, e.waits, e.wait_capacity * sizeof(md_vk_wait_t));
-    }
 }
 
 /* A stream is going away after having been synchronised: every wait on it is
@@ -2308,10 +2313,12 @@ static void md_vk_end_op(md_gpu_stream_t s, md_gpu_stage_flags_t producers) {
    everything before it, and, back in IMPLICIT, the next operation after
    everything in it -- which `written` already covers, as it is only cleared
    by a barrier md_gpu places. */
-void md_gpu_stream_set_ordering(md_gpu_stream_t s, md_gpu_ordering_t ordering) {
-    if (!s) return;
-    if (ordering == MD_GPU_ORDER_EXPLICIT && s->ordering == MD_GPU_ORDER_IMPLICIT) s->order_next = true;
+md_gpu_ordering_t md_gpu_stream_set_ordering(md_gpu_stream_t s, md_gpu_ordering_t ordering) {
+    if (!s) return MD_GPU_ORDER_IMPLICIT;
+    const md_gpu_ordering_t prev = s->ordering;
+    if (ordering == MD_GPU_ORDER_EXPLICIT && prev == MD_GPU_ORDER_IMPLICIT) s->order_next = true;
     s->ordering = ordering;
+    return prev;
 }
 
 md_gpu_ordering_t md_gpu_stream_ordering(md_gpu_stream_t s) {
@@ -5151,13 +5158,6 @@ bool md_gpu_sync_on_complete(md_gpu_device_t dev, md_gpu_sync_t sync, md_gpu_hos
     const bool listed = MD_ARRAY_TRY_PUSH(dev->hostfns, h);
     md_mutex_unlock(&dev->device_mutex);
     return listed ? true : md_gpu_fail("out of memory");
-}
-
-bool md_gpu_launch_host_fn(md_gpu_stream_t s, md_gpu_host_fn fn, void* user) {
-    if (!s || !fn) return md_gpu_fail("md_gpu_launch_host_fn: null argument");
-    if (!md_vk_not_in_pass(s, "md_gpu_launch_host_fn")) return false;
-    md_gpu_sync_t sync = md_gpu_stream_record(s);
-    return md_gpu_sync_on_complete(s->device, sync, fn, user);
 }
 
 /* Timeline values sampled once per poll pass.

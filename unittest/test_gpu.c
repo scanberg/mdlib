@@ -1180,8 +1180,9 @@ UTEST(gpu, explicit_ordering_with_stage_barriers) {
     uint32_t* host = (uint32_t*)malloc(2 * N * sizeof(uint32_t));
     ASSERT_TRUE(host != NULL);
 
-    md_gpu_stream_set_ordering(f.compute, MD_GPU_ORDER_EXPLICIT);
+    EXPECT_EQ((int)MD_GPU_ORDER_IMPLICIT, (int)md_gpu_stream_set_ordering(f.compute, MD_GPU_ORDER_EXPLICIT));
     EXPECT_EQ((int)MD_GPU_ORDER_EXPLICIT, (int)md_gpu_stream_ordering(f.compute));
+    EXPECT_EQ((int)MD_GPU_ORDER_EXPLICIT, (int)md_gpu_stream_set_ordering(f.compute, MD_GPU_ORDER_EXPLICIT));
 
     for (uint32_t r = 0; r < ROUNDS; ++r) {
         /* Two independent producers: no barrier between them. */
@@ -1444,6 +1445,48 @@ UTEST(gpu, texture_destroy_while_in_flight) {
 
     md_gpu_stream_sync(f.compute);
     md_gpu_device_poll(f.dev);
+    gpu_close(&f);
+}
+
+/* Code that never calls md_gpu_device_poll -- a compute library -- destroys
+   kernels and textures with their work still unsubmitted, in flight, or long
+   done. Each destroy releases what is finished by then and nothing that is
+   not; the validation layers flag a pipeline or image destroyed in use. */
+UTEST(gpu, destroy_without_poll) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
+
+    enum { D = 16, N = 4096, ITERS = 6 };
+    md_gpu_addr_t d = gpu_alloc(&f, f.compute, N * sizeof(uint32_t));
+    ASSERT_TRUE(d != 0);
+    for (int iter = 0; iter < ITERS; ++iter) {
+        md_gpu_kernel_desc_t kd = md_shader_gpu_test_fill_kernel();
+        md_gpu_kernel_t k = md_gpu_kernel_create(f.dev, &kd);
+        md_gpu_texture_t tex = gpu_volume(&f, f.compute, D, MD_GPU_TEX_STORAGE);
+        ASSERT_TRUE(k && tex);
+
+        fill_args_t fa = {0};
+        fa.n = N; fa.base = (uint32_t)iter * 100; fa.dst = d;
+        ASSERT_TRUE(MD_GPU_LAUNCH(f.compute, k, grid1(k, N), fa));
+        tex_args_t ta = {0};
+        ta.dim[0] = D; ta.dim[1] = D; ta.dim[2] = D;
+        ta.tex = md_gpu_texture_storage(tex, 0);
+        ta.scale = 1.0f;
+        ASSERT_TRUE(MD_GPU_LAUNCH(f.compute, f.k_tex_write, md_gpu_grid_for(f.k_tex_write, D, D, D), ta));
+
+        switch (iter % 3) {
+        case 0: break;                                    /* not even submitted */
+        case 1: md_gpu_stream_flush(f.compute); break;    /* in flight */
+        case 2: md_gpu_stream_sync(f.compute); break;     /* done: released at once */
+        }
+        md_gpu_kernel_destroy(k);
+        md_gpu_texture_destroy(tex);
+
+        uint32_t got[N];
+        ASSERT_TRUE(gpu_read(&f, f.compute, got, d, sizeof(got)));
+        for (int i = 0; i < N; ++i) ASSERT_EQ((uint32_t)(iter * 100 + i), got[i]);
+    }
+    md_gpu_free(f.compute, d);
     gpu_close(&f);
 }
 
@@ -2485,7 +2528,7 @@ UTEST(gpu, host_callback_fires_in_poll) {
     ASSERT_TRUE(md_gpu_copy(f.compute, rb.gpu, d, N * sizeof(uint32_t)));
 
     /* Nothing has run the callback yet -- it only fires inside device_poll. */
-    ASSERT_TRUE(md_gpu_launch_host_fn(f.compute, gpu_test_callback, &st));
+    ASSERT_TRUE(md_gpu_sync_on_complete(f.dev, md_gpu_stream_record(f.compute), gpu_test_callback, &st));
     EXPECT_EQ(0, st.fired);
 
     md_gpu_stream_sync(f.compute);
@@ -2524,7 +2567,7 @@ UTEST(gpu, host_callback_observes_preceding_copy) {
         cb_state_t st = {0};
         st.watch = (const uint32_t*)rb.cpu;
         ASSERT_TRUE(md_gpu_copy(f.compute, rb.gpu, d, N * sizeof(uint32_t)));
-        ASSERT_TRUE(md_gpu_launch_host_fn(f.compute, gpu_test_callback, &st));
+        ASSERT_TRUE(md_gpu_sync_on_complete(f.dev, md_gpu_stream_record(f.compute), gpu_test_callback, &st));
 
         while (!st.fired) md_gpu_device_poll(f.dev);
         EXPECT_EQ(1000u + iter, st.observed);

@@ -1213,8 +1213,6 @@ UTEST(gpu_render, copy_texture_subregion) {
    Rules and errors
    ========================================================================= */
 
-static void r_count_fn(void* user) { ++*(int*)user; }
-
 UTEST(gpu_render, inside_a_pass_only_draws_and_state_are_allowed) {
     rfix_t f;
     if (!r_open(&f)) UTEST_SKIP(r_skip_reason());
@@ -1250,8 +1248,6 @@ UTEST(gpu_render, inside_a_pass_only_draws_and_state_are_allowed) {
     EXPECT_TRUE(md_gpu_texture_create(f.gfx, &td) == NULL);
     EXPECT_FALSE(md_gpu_sync_is_valid(md_gpu_stream_record(f.gfx)));
     md_gpu_stream_wait(f.gfx, md_gpu_stream_record(res));
-    int fired = 0;
-    EXPECT_FALSE(md_gpu_launch_host_fn(f.gfx, r_count_fn, &fired));
     /* Memory and temp scopes record nothing and stay legal. */
     md_gpu_mem_t m = md_gpu_malloc(f.gfx, MD_GPU_MEM_DEVICE, 64);
     EXPECT_TRUE(m.gpu != 0);
@@ -1269,8 +1265,6 @@ UTEST(gpu_render, inside_a_pass_only_draws_and_state_are_allowed) {
     ASSERT_TRUE(md_gpu_render_end(f.gfx));
     EXPECT_FALSE(md_gpu_render_end(f.gfx));                        /* nothing open */
     md_gpu_free(f.gfx, m.gpu);
-    md_gpu_device_poll(f.dev);
-    EXPECT_EQ(0, fired);
 
     static uint32_t px[W * H];
     ASSERT_TRUE(r_read(&f, c, 0, 0, px, sizeof(px)));

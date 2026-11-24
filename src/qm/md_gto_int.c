@@ -2410,8 +2410,7 @@ static bool gto_int_job_run_step(md_gto_int_gpu_job_t* j, bool* full) {
 // Issues one piece: steps until it is full or everything is issued, then submits and marks it
 static void gto_int_job_piece(md_gto_int_gpu_job_t* j) {
     md_gpu_stream_t stream = j->stream;
-    const md_gpu_ordering_t prev_ordering = md_gpu_stream_ordering(stream);
-    md_gpu_stream_set_ordering(stream, MD_GPU_ORDER_IMPLICIT);   // every step reads what the one before wrote
+    const md_gpu_ordering_t prev_ordering = md_gpu_stream_set_ordering(stream, MD_GPU_ORDER_IMPLICIT);   // every step reads what the one before wrote
     bool ok = true, full = false;
     while (ok && !full && (j->stage == GTO_INT_JOB_SORT || j->stage == GTO_INT_JOB_RUN)) {
         ok = j->stage == GTO_INT_JOB_SORT ? gto_int_job_sort_step(j, &full) : gto_int_job_run_step(j, &full);
@@ -2767,8 +2766,7 @@ static bool gto_int_exact_grid(md_gpu_stream_t stream, const md_gto_int_gpu_char
 
     // Every dispatch below reads what the previous one wrote; say so whatever mode the caller's
     // stream is in, and leave it as it was.
-    const md_gpu_ordering_t prev_ordering = md_gpu_stream_ordering(stream);
-    md_gpu_stream_set_ordering(stream, MD_GPU_ORDER_IMPLICIT);
+    const md_gpu_ordering_t prev_ordering = md_gpu_stream_set_ordering(stream, MD_GPU_ORDER_IMPLICIT);
 
     gto_int_pacer_t pacer = gto_int_pacer(stream, budget);
     md_gpu_temp_t scope = md_gpu_temp_begin(stream);
@@ -2838,8 +2836,7 @@ static bool gto_int_exact_xyz(md_gpu_stream_t stream, const md_gto_int_gpu_charg
     a.points     = g->buffer + g->off_points;
     a.out        = desc->out_potential;
 
-    const md_gpu_ordering_t prev_ordering = md_gpu_stream_ordering(stream);
-    md_gpu_stream_set_ordering(stream, MD_GPU_ORDER_IMPLICIT);
+    const md_gpu_ordering_t prev_ordering = md_gpu_stream_set_ordering(stream, MD_GPU_ORDER_IMPLICIT);
 
     gto_int_pacer_t pacer = gto_int_pacer(stream, budget);
     md_gpu_temp_t scope = md_gpu_temp_begin(stream);
