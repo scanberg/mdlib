@@ -622,9 +622,12 @@ md_render_targets_t md_render_view_targets(md_render_view_t view);
        color    RGBA8_UNORM   rgb: the colour target's; a: the mask target's
                               four channels as bits over 255 (1 state 0
                               visible, 2 state 0 anywhere, 4 state 1 visible,
-                              8 state 1 anywhere), and bits 4..6 the tag of
-                              state 1 (visible, else anywhere). Coverage is
-                              depth > 0
+                              8 state 1 anywhere), bits 4..6 the tag of
+                              state 1 (visible, else anywhere), and 128 where
+                              the visible surface's batch has marks
+                              (points.marks): a surface of none has no state
+                              to be without (a compositor dimming what is not
+                              selected leaves it). Coverage is depth > 0
        surface  RGBA16_FLOAT  xy: the normal target's; zw: the motion target's
 
    Rows as the targets': the first is the top. As of the last draw; ordered in

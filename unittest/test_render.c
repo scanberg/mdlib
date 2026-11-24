@@ -3157,7 +3157,15 @@ UTEST(render, export_copies_the_targets) {
     b.points.color    = f_buf(&fx, col, sizeof(col));
     b.points.marks = f_marks(&fx, &sel, &hl, 32);
     b.style.spheres.radius_add = 1.2f;
-    md_render_frame_t f = frame_of(W, H, make_camera(&c), &b, 1);
+    /* and a sphere of a batch without marks: none of the states, nor the bit
+       of a batch with marks */
+    float pos2[3] = { -4.0f, 0, -12 };
+    md_render_batch_t bb[2] = { b, b };
+    bb[1].key = 2; bb[1].count = 1; bb[1].points.count = 1;
+    bb[1].points.position = f_buf(&fx, pos2, sizeof(pos2));
+    bb[1].points.velocity = 0;
+    bb[1].points.marks = 0;
+    md_render_frame_t f = frame_of(W, H, make_camera(&c), bb, 2);
     f.time = 0.0;
     ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
     f.time = 0.1;
@@ -3182,15 +3190,20 @@ UTEST(render, export_copies_the_targets) {
     uint32_t* d0 = malloc(n * 4); uint32_t* d1 = malloc(n * 4);
     uint32_t* c0 = malloc(n * 4); uint32_t* c1 = malloc(n * 4); uint32_t* m0 = malloc(n * 4);
     uint32_t* n0 = malloc(n * 4); uint32_t* v0 = malloc(n * 4); uint32_t* s1 = malloc(n * 8);
+    uint32_t* id = malloc(n * 8);
+    ASSERT_TRUE(f_read(&fx, t.id, id, n * 8));
     ASSERT_TRUE(f_read(&fx, t.depth, d0, n * 4) && f_read(&fx, xd, d1, n * 4));
     ASSERT_TRUE(f_read(&fx, t.color, c0, n * 4) && f_read(&fx, xc, c1, n * 4) && f_read(&fx, t.mask, m0, n * 4));
     ASSERT_TRUE(f_read(&fx, t.normal, n0, n * 4) && f_read(&fx, t.motion, v0, n * 4) && f_read(&fx, xs, s1, n * 8));
-    int bad_depth = 0, bad_color = 0, bad_mask = 0, bad_surface = 0, covered = 0, masked = 0, moving = 0;
+    int bad_depth = 0, bad_color = 0, bad_mask = 0, bad_surface = 0, covered = 0, masked = 0, moving = 0, unmarked = 0;
     for (size_t i = 0; i < n; ++i) {
         bad_depth += d0[i] != d1[i];
         bad_color += (c0[i] & 0xFFFFFFu) != (c1[i] & 0xFFFFFFu);
         uint32_t bits = 0;
         for (int k = 0; k < 4; ++k) bits |= ((m0[i] >> (8 * k)) & 0xFFu) >= 128u ? 1u << k : 0u;
+        const uint32_t slot = id[2 * i + 1] >> 20;     /* the batch + 1 */
+        if (slot == 1) bits |= 128u;
+        unmarked += slot == 2;
         bad_mask += (c1[i] >> 24) != bits;
         bad_surface += s1[2 * i] != n0[i] || s1[2 * i + 1] != v0[i];
         covered += d0[i] != 0;
@@ -3204,7 +3217,8 @@ UTEST(render, export_copies_the_targets) {
     EXPECT_GT(covered, 100);
     EXPECT_GT(masked, 20);
     EXPECT_GT(moving, 20);
-    free(d0); free(d1); free(c0); free(c1); free(m0); free(n0); free(v0); free(s1);
+    EXPECT_GT(unmarked, 20);
+    free(d0); free(d1); free(c0); free(c1); free(m0); free(n0); free(v0); free(s1); free(id);
     md_gpu_texture_destroy(xd); md_gpu_texture_destroy(xc); md_gpu_texture_destroy(xs);
     f_close(&fx);
 }

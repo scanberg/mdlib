@@ -3970,8 +3970,9 @@ void mask_visible(uint3 tid : SV_DispatchThreadID) {
 }
 
 // The targets into the caller's textures (md_render_view_export): the depth
-// (dst), the colour with the mask's channels as bits in its alpha (out_color),
-// the normal and the motion (out_surface)
+// (dst), the colour with the mask's channels as bits in its alpha and whether
+// the visible surface's batch has marks (out_color), the normal and the
+// motion (out_surface)
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void export_targets(uint3 tid : SV_DispatchThreadID) {
@@ -3985,7 +3986,9 @@ void export_targets(uint3 tid : SV_DispatchThreadID) {
         // The tag of state 1: the visible surface's, else the largest anywhere
         float  t1   = m.z > 0.5 ? m.z : m.w;
         uint   tag  = t1 > 0.5 ? uint(t1 * 15.0 + 0.5) - 8u : 0u;
-        a.out_color[px] = float4(a.color[px].rgb, float(bits | (tag << 4u)) / 255.0);
+        uint   slot = a.id.Load(int3(px, 0)).y >> 20;
+        uint   mk   = slot != 0u && (a.batches[slot - 1u].flags & F_MARKS) != 0u ? 128u : 0u;
+        a.out_color[px] = float4(a.color[px].rgb, float(bits | (tag << 4u) | mk) / 255.0);
     }
     if ((a.mode & 4u) != 0u) a.out_surface[px] = float4(a.normal[px], a.motion[px]);
 }
