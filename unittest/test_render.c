@@ -2772,6 +2772,158 @@ UTEST(render, masks_visible_and_hidden) {
     f_close(&fx);
 }
 
+/* The export copies the targets into the caller's textures, bit for bit:
+   depth, the colour with the mask's channels as bits in its alpha, the normal
+   and the motion together */
+UTEST(render, export_copies_the_targets) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    const uint32_t W = 64, H = 32;
+    cam_t c = { .tan_half = 0.4f, .aspect = 2.0f, .n = 0.1f };
+    /* Point 0 selected, behind point 1 which overlaps it; point 2 highlighted and moving */
+    float pos[9] = { -1.0f, 0, -20,   0.0f, 0, -12,   2.5f, 0, -10 };
+    float vel[9] = { 0 }; vel[6] = 3.0f; vel[7] = 1.0f;
+    uint32_t pv[6];
+    for (int i = 0; i < 3; ++i) md_render_pack_velocity(vel + 3 * i, pv + 2 * i);
+    uint32_t sel = 1u << 0, hl = 1u << 2;
+    uint32_t col[3] = { 0xFF2040E0u, 0xFF10C010u, 0xFFE0E0E0u };
+    md_render_batch_t b = {0};
+    b.key = 1; b.kind = MD_RENDER_SPHERES; b.count = 3; b.points.count = 3;
+    b.points.position = f_buf(&fx, pos, sizeof(pos));
+    b.points.velocity = f_buf(&fx, pv, sizeof(pv));
+    b.points.color    = f_buf(&fx, col, sizeof(col));
+    b.points.state[0] = f_buf(&fx, &sel, 4);
+    b.points.state[1] = f_buf(&fx, &hl, 4);
+    b.style.spheres.radius_add = 1.2f;
+    md_render_frame_t f = frame_of(W, H, make_camera(&c), &b, 1);
+    f.time = 0.0;
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+    f.time = 0.1;
+    f.camera.view[12] = 0.1f;                  /* and the camera moves: motion everywhere */
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+
+    md_gpu_texture_desc_t td = {0};
+    td.type = MD_GPU_TEX_2D; td.usage = MD_GPU_TEX_STORAGE; td.width = W; td.height = H;
+    td.format = MD_GPU_FORMAT_R32_FLOAT;    td.label = "export depth";   md_gpu_texture_t xd = md_gpu_texture_create(fx.gfx, &td);
+    td.format = MD_GPU_FORMAT_RGBA8_UNORM;  td.label = "export color";   md_gpu_texture_t xc = md_gpu_texture_create(fx.gfx, &td);
+    td.format = MD_GPU_FORMAT_RGBA16_FLOAT; td.label = "export surface"; md_gpu_texture_t xs = md_gpu_texture_create(fx.gfx, &td);
+    ASSERT_TRUE(xd && xc && xs);
+    md_render_export_t ex = { xd, xc, xs };
+    ASSERT_TRUE(md_render_view_export(fx.gfx, fx.view, &ex));
+
+    /* A texture of another size or format is refused */
+    md_render_export_t wrong = { xc, 0, 0 };
+    EXPECT_FALSE(md_render_view_export(fx.gfx, fx.view, &wrong));
+
+    md_render_targets_t t = md_render_view_targets(fx.view);
+    const size_t n = (size_t)W * H;
+    uint32_t* d0 = malloc(n * 4); uint32_t* d1 = malloc(n * 4);
+    uint32_t* c0 = malloc(n * 4); uint32_t* c1 = malloc(n * 4); uint32_t* m0 = malloc(n * 4);
+    uint32_t* n0 = malloc(n * 4); uint32_t* v0 = malloc(n * 4); uint32_t* s1 = malloc(n * 8);
+    ASSERT_TRUE(f_read(&fx, t.depth, d0, n * 4) && f_read(&fx, xd, d1, n * 4));
+    ASSERT_TRUE(f_read(&fx, t.color, c0, n * 4) && f_read(&fx, xc, c1, n * 4) && f_read(&fx, t.mask, m0, n * 4));
+    ASSERT_TRUE(f_read(&fx, t.normal, n0, n * 4) && f_read(&fx, t.motion, v0, n * 4) && f_read(&fx, xs, s1, n * 8));
+    int bad_depth = 0, bad_color = 0, bad_mask = 0, bad_surface = 0, covered = 0, masked = 0, moving = 0;
+    for (size_t i = 0; i < n; ++i) {
+        bad_depth += d0[i] != d1[i];
+        bad_color += (c0[i] & 0xFFFFFFu) != (c1[i] & 0xFFFFFFu);
+        uint32_t bits = 0;
+        for (int k = 0; k < 4; ++k) bits |= ((m0[i] >> (8 * k)) & 0xFFu) >= 128u ? 1u << k : 0u;
+        bad_mask += (c1[i] >> 24) != bits;
+        bad_surface += s1[2 * i] != n0[i] || s1[2 * i + 1] != v0[i];
+        covered += d0[i] != 0;
+        masked  += bits != 0;
+        moving  += v0[i] != 0;
+    }
+    EXPECT_EQ(0, bad_depth);
+    EXPECT_EQ(0, bad_color);
+    EXPECT_EQ(0, bad_mask);
+    EXPECT_EQ(0, bad_surface);
+    EXPECT_GT(covered, 100);
+    EXPECT_GT(masked, 20);
+    EXPECT_GT(moving, 20);
+    free(d0); free(d1); free(c0); free(c1); free(m0); free(n0); free(v0); free(s1);
+    md_gpu_texture_destroy(xd); md_gpu_texture_destroy(xc); md_gpu_texture_destroy(xs);
+    f_close(&fx);
+}
+
+/* A jitter the caller gives: the raster is that of the camera moved by it (as
+   md_render moves it for its own), the motion is without it, and the view
+   rasterises again when, and only when, it changes */
+UTEST(render, jitter_given) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    const uint32_t W = 48, H = 40;
+    cam_t c = { .tan_half = 0.4f, .aspect = (float)W / H, .n = 0.1f };
+    md_render_camera_t cam = make_camera(&c);
+    const double ctr[2][3] = { { 0.3, 0.1, -10 }, { -1.2, -0.4, -7 } };
+    const double rad[2]    = { 1.6, 0.9 };
+    float pos[6], radius[2];
+    for (int i = 0; i < 2; ++i) { for (int k = 0; k < 3; ++k) pos[3 * i + k] = (float)ctr[i][k]; radius[i] = (float)rad[i]; }
+    md_render_batch_t b = {0};
+    b.key = 3; b.kind = MD_RENDER_SPHERES; b.count = 2; b.points.count = 2;
+    b.points.position = f_buf(&fx, pos, sizeof(pos));
+    b.points.radius = f_buf(&fx, radius, sizeof(radius));
+    b.style.spheres.radius_scale = 1.0f;
+
+    md_render_view_t ref = md_render_view_create(fx.r, "jitter reference");
+    ASSERT_TRUE(ref != NULL);
+    const float off[2][2] = { { 0.31f, -0.27f }, { -0.42f, 0.18f } };
+    for (int j = 0; j < 2; ++j) {
+        md_render_frame_t f = frame_of(W, H, cam, &b, 1);
+        f.jitter = MD_RENDER_JITTER_GIVEN;
+        f.jitter_offset[0] = off[j][0];
+        f.jitter_offset[1] = off[j][1];
+        md_render_status_t st;
+        ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, &st));
+        EXPECT_TRUE((st.work & MD_RENDER_WORK_RASTER) != 0);
+        EXPECT_EQ(off[j][0], st.jitter[0]);
+        EXPECT_EQ(off[j][1], st.jitter[1]);
+        /* The same offset again: nothing to do */
+        ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, &st));
+        EXPECT_EQ(0u, st.work);
+
+        /* The reference: the camera moved as md_render moves it, unjittered */
+        md_render_frame_t g = frame_of(W, H, cam, &b, 1);
+        const float ndx = 2.0f * off[j][0] / (float)W, ndy = -2.0f * off[j][1] / (float)H;
+        for (int col = 0; col < 4; ++col) {
+            g.camera.proj[col * 4 + 0] += ndx * g.camera.proj[col * 4 + 3];
+            g.camera.proj[col * 4 + 1] += ndy * g.camera.proj[col * 4 + 3];
+        }
+        ASSERT_TRUE(md_render_view_draw(fx.gfx, ref, &g, NULL));
+        const size_t n = (size_t)W * H;
+        uint32_t* i0 = malloc(n * 8); uint32_t* i1 = malloc(n * 8);
+        float* p0 = malloc(n * 4); float* p1 = malloc(n * 4);
+        ASSERT_TRUE(f_read(&fx, md_render_view_targets(fx.view).id, i0, n * 8) && f_read(&fx, md_render_view_targets(ref).id, i1, n * 8));
+        ASSERT_TRUE(f_read(&fx, md_render_view_targets(fx.view).depth, p0, n * 4) && f_read(&fx, md_render_view_targets(ref).depth, p1, n * 4));
+        int bad = 0, covered = 0;
+        for (size_t i = 0; i < n; ++i) {
+            bad += i0[2 * i] != i1[2 * i] || (i0[2 * i + 1] >> 20 != 0) != (i1[2 * i + 1] >> 20 != 0) || p0[i] != p1[i];
+            covered += (i0[2 * i + 1] >> 20) != 0;
+        }
+        EXPECT_EQ(0, bad);
+        EXPECT_GT(covered, (int)(n / 10));
+        free(i0); free(i1); free(p0); free(p1);
+    }
+    /* Still geometry and camera: the motion of the second raster is without
+       the jitter's change, nothing (half-float 0, or -0 from rounding) */
+    uint32_t* mo = malloc((size_t)W * H * 4);
+    ASSERT_TRUE(f_read(&fx, md_render_view_targets(fx.view).motion, mo, (size_t)W * H * 4));
+    float worst = 0.0f;
+    for (size_t i = 0; i < (size_t)W * H; ++i) {
+        for (int k = 0; k < 2; ++k) {
+            uint32_t h = (mo[i] >> (16 * k)) & 0xFFFFu, sgn = h >> 15, e = (h >> 10) & 31u, m = h & 1023u, bits;
+            bits = e ? ((sgn << 31) | ((e + 112u) << 23) | (m << 13)) : (sgn << 31);
+            float v; memcpy(&v, &bits, 4);
+            worst = fmaxf(worst, fabsf(v));
+        }
+    }
+    EXPECT_LT(worst, 1e-3f);
+    free(mo);
+    md_render_view_destroy(fx.gfx, ref);
+    f_close(&fx);
+}
+
 UTEST(render, external_ids) {
     fix_t fx;
     if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());

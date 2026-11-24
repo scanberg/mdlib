@@ -486,6 +486,9 @@ typedef enum md_render_jitter_t {
                                       Sample 0 is unjittered (pixel centres)       */
     MD_RENDER_JITTER_ALWAYS,       /* every draw rasterises a new sample: TAA       */
     MD_RENDER_JITTER_NONE,         /* one unjittered raster per change              */
+    MD_RENDER_JITTER_GIVEN,        /* the caller's: frame.jitter_offset, a raster per
+                                      change of it (an application's own TAA sequence,
+                                      shared with what else it rasterises)         */
 } md_render_jitter_t;
 
 /* How a view rasterises. Every primitive is culled on the GPU each raster:
@@ -504,6 +507,9 @@ typedef struct md_render_frame_t {
     md_render_jitter_t       jitter;
     uint32_t                 samples;         /* STATIC: rasters a still view makes
                                                  before it stops; 0 is taken as 1     */
+    float                    jitter_offset[2];/* GIVEN: this raster's subpixel offset, in
+                                                 pixels, x right and y down; motion is
+                                                 without it, as without md_render's   */
     double                   time;            /* of the positions, in the velocities'
                                                  time unit                           */
     uint64_t                 content[MD_RENDER_CONTENT_COUNT];
@@ -550,6 +556,29 @@ typedef struct md_render_targets_t {
 } md_render_targets_t;
 
 md_render_targets_t md_render_view_targets(md_render_view_t view);
+
+/* ---- Export -----------------------------------------------------------------
+   The targets into textures of the caller's, of formats every share takes
+   (MD_GPU_TEX_SHARED, md_gpu_gl.h): for a compositor in another API to read
+   the view, a fetch of each per pixel. Each optional (0: not written),
+   STORAGE, of the targets' size:
+
+       depth    R32_FLOAT     the depth target (reverse Z, 0: nothing there)
+       color    RGBA8_UNORM   rgb: the colour target's; a: the mask target's
+                              four channels as bits over 255 (1 state 0
+                              visible, 2 state 0 anywhere, 4 state 1 visible,
+                              8 state 1 anywhere). Coverage is depth > 0
+       surface  RGBA16_FLOAT  xy: the normal target's; zw: the motion target's
+
+   Rows as the targets': the first is the top. As of the last draw; ordered in
+   `stream` like any other work. */
+typedef struct md_render_export_t {
+    md_gpu_texture_t depth;
+    md_gpu_texture_t color;
+    md_gpu_texture_t surface;
+} md_render_export_t;
+
+bool md_render_view_export(md_gpu_stream_t stream, md_render_view_t view, const md_render_export_t* dst);
 
 /* ---- Ids --------------------------------------------------------------------
        id.y  bits 31..20  1 + the batch's position in the frame (0: background)

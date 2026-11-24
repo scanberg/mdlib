@@ -265,6 +265,8 @@ static const uint C_COUNT      = 836;
 //   cull, finalize, raster_small: view, batches, lists, mode = phase (1, 2)
 //   resolve, mask_visible, pick: view, batches, the targets, size, px, py, pick_out
 //   hiz_reduce:  src (mip src_mip, src_w x src_h), dst (dst_w x dst_h)
+//   export_targets: the targets, src (depth), size, mode (bit 0 dst, 1 out_color,
+//                2 out_surface: which are written)
 struct Args {
     ViewData* view;
     Batch*    batches;
@@ -290,6 +292,8 @@ struct Args {
     uint      dst_w;
     uint      dst_h;
     uint      _pad0;
+    DescriptorHandle<RWTexture2D<float4>>  out_color;
+    DescriptorHandle<RWTexture2D<float4>>  out_surface;
 };
 MD_SHADER_ARGS(Args);
 
@@ -3794,6 +3798,24 @@ void mask_visible(uint3 tid : SV_DispatchThreadID) {
         }
     }
     a.mask[px] = m;
+}
+
+// The targets into the caller's textures (md_render_view_export): the depth
+// (dst), the colour with the mask's channels as bits in its alpha (out_color),
+// the normal and the motion (out_surface)
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void export_targets(uint3 tid : SV_DispatchThreadID) {
+    Args a = MD_ARGS;
+    if (tid.x >= a.width || tid.y >= a.height) return;
+    int2 px = int2(tid.xy);
+    if ((a.mode & 1u) != 0u) a.dst[px] = a.src.Load(int3(px, 0));
+    if ((a.mode & 2u) != 0u) {
+        float4 m    = a.mask[px];
+        uint   bits = (m.x > 0.5 ? 1u : 0u) | (m.y > 0.5 ? 2u : 0u) | (m.z > 0.5 ? 4u : 0u) | (m.w > 0.5 ? 8u : 0u);
+        a.out_color[px] = float4(a.color[px].rgb, float(bits) / 255.0);
+    }
+    if ((a.mode & 4u) != 0u) a.out_surface[px] = float4(a.normal[px], a.motion[px]);
 }
 
 // One pixel, decoded: id.x, id.y, element id, attr, position xyz, depth.

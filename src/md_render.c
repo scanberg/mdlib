@@ -180,8 +180,9 @@ typedef struct gpu_args_t {
     md_gpu_sampled_tex_t src, hiz;
     md_gpu_storage_tex_t dst;
     uint32_t             src_mip, src_w, src_h, dst_w, dst_h, _pad0;
+    md_gpu_storage_tex_t out_color, out_surface;
 } gpu_args_t;
-_Static_assert(sizeof(gpu_args_t) == 144, "Args mirror");
+_Static_assert(sizeof(gpu_args_t) == 160, "Args mirror");
 
 typedef struct gpu_lists_t {
     md_gpu_addr_t cvis, cocc, cst, hw0, hw1, st0, st1, small, occ, counters, vis64, hw2, st2, hw3, st3;
@@ -244,7 +245,7 @@ struct md_render {
     md_gpu_device_t   dev;
     md_allocator_i*   alloc;
     md_gpu_pipeline_t sphere_vis, sphere_mask, capsule_vis, capsule_mask, spline_vis, spline_mask, polygon_vis, polygon_mask, merge;
-    md_gpu_kernel_t   k_resolve, k_mask_visible, k_pick, k_cull, k_finalize, k_raster_small, k_hiz, k_refit, k_cull_clusters;
+    md_gpu_kernel_t   k_resolve, k_mask_visible, k_export, k_pick, k_cull, k_finalize, k_raster_small, k_hiz, k_refit, k_cull_clusters;
     /* the heavy twins (md_render.slang, kind_taken): run only for frames with splines or polygons */
     md_gpu_kernel_t   k_refit_heavy, k_cull_heavy, k_resolve_heavy, k_resolve_poly, k_spline_order;
     bool              atomic_int64;    /* the compute raster is possible */
@@ -311,6 +312,7 @@ md_render_ctx_t md_render_create(md_gpu_device_t device, const md_render_desc_t*
     md_gpu_kernel_desc_t kd;
     kd = md_shader_md_render_resolve_kernel();      r->k_resolve      = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_mask_visible_kernel(); r->k_mask_visible = md_gpu_kernel_create(device, &kd);
+    kd = md_shader_md_render_export_targets_kernel(); r->k_export     = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_pick_kernel();         r->k_pick         = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_cull_kernel();         r->k_cull         = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_finalize_kernel();     r->k_finalize     = md_gpu_kernel_create(device, &kd);
@@ -329,7 +331,7 @@ md_render_ctx_t md_render_create(md_gpu_device_t device, const md_render_desc_t*
 
     if (!r->sphere_vis || !r->sphere_mask || !r->capsule_vis || !r->capsule_mask || !r->spline_vis || !r->spline_mask ||
         !r->polygon_vis || !r->polygon_mask || !r->merge ||
-        !r->k_resolve || !r->k_mask_visible || !r->k_pick || !r->k_cull || !r->k_finalize || !r->k_hiz || !r->k_refit || !r->k_cull_clusters ||
+        !r->k_resolve || !r->k_mask_visible || !r->k_export || !r->k_pick || !r->k_cull || !r->k_finalize || !r->k_hiz || !r->k_refit || !r->k_cull_clusters ||
         !r->k_refit_heavy || !r->k_cull_heavy || !r->k_resolve_heavy || !r->k_resolve_poly || !r->k_spline_order) {
         MD_LOG_ERROR("md_render: pipeline or kernel creation failed: %s", md_gpu_last_error());
         md_render_destroy(r);
@@ -355,6 +357,7 @@ void md_render_destroy(md_render_ctx_t r) {
     if (r->k_spline_order)   md_gpu_kernel_destroy(r->k_spline_order);
     if (r->k_resolve)      md_gpu_kernel_destroy(r->k_resolve);
     if (r->k_mask_visible) md_gpu_kernel_destroy(r->k_mask_visible);
+    if (r->k_export)       md_gpu_kernel_destroy(r->k_export);
     if (r->k_pick)         md_gpu_kernel_destroy(r->k_pick);
     if (r->merge)          md_gpu_pipeline_destroy(r->merge);
     if (r->k_cull)         md_gpu_kernel_destroy(r->k_cull);
@@ -704,6 +707,10 @@ static bool validate(const md_render_frame_t* f) {
         MD_LOG_ERROR("md_render: batch_count without batches");
         return false;
     }
+    if (f->jitter == MD_RENDER_JITTER_GIVEN && !(isfinite(f->jitter_offset[0]) && isfinite(f->jitter_offset[1]))) {
+        MD_LOG_ERROR("md_render: a given jitter offset is not finite");
+        return false;
+    }
     uint64_t total = 0;
     for (uint32_t i = 0; i < f->batch_count; ++i) total += culled_kind(f->batches[i].kind)
         ? (uint64_t)f->batches[i].count * ((f->batches[i].transform && f->batches[i].transform_count) ? f->batches[i].transform_count : 1u) : 0u;
@@ -892,6 +899,8 @@ static change_t compare(const md_render_view_t v, const md_render_frame_t* f) {
     const md_render_frame_t* l = &v->last;
     if (f->width != l->width || f->height != l->height) return CHANGE_RASTER;
     if (memcmp(&f->camera, &l->camera, sizeof(f->camera)) != 0) return CHANGE_RASTER;
+    if (f->jitter == MD_RENDER_JITTER_GIVEN &&
+        (l->jitter != MD_RENDER_JITTER_GIVEN || memcmp(f->jitter_offset, l->jitter_offset, sizeof(f->jitter_offset)) != 0)) return CHANGE_RASTER;
     if (f->batch_count != l->batch_count) return CHANGE_RASTER;
     if (f->content[MD_RENDER_CONTENT_GEOMETRY] != l->content[MD_RENDER_CONTENT_GEOMETRY]) return CHANGE_RASTER;
     if (v->dbg_changed) return CHANGE_RASTER;
@@ -1633,7 +1642,10 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
         /* Jitter, in pixels. Sample 0 is pixel centres, so a view drawn once
            (or a test) sees exactly what its camera says. */
         float jx = 0.0f, jy = 0.0f;
-        if (f->jitter != MD_RENDER_JITTER_NONE && sample > 0) {
+        if (f->jitter == MD_RENDER_JITTER_GIVEN) {
+            jx = f->jitter_offset[0];
+            jy = f->jitter_offset[1];
+        } else if (f->jitter != MD_RENDER_JITTER_NONE && sample > 0) {
             jx = halton(sample, 2) - 0.5f;
             jy = halton(sample, 3) - 0.5f;
         }
@@ -1856,6 +1868,37 @@ md_render_targets_t md_render_view_targets(md_render_view_t v) {
     return t;
 }
 
+static bool export_dst_ok(const md_render_view_t v, md_gpu_texture_t t, md_gpu_format_t format, const char* what) {
+    if (!t) return true;
+    const md_gpu_texture_desc_t* d = md_gpu_texture_desc(t);
+    if (!d || d->type != MD_GPU_TEX_2D || d->format != format || !(d->usage & MD_GPU_TEX_STORAGE) || d->width != v->width || d->height != v->height) {
+        MD_LOG_ERROR("md_render_view_export: %s is to be a 2D STORAGE texture of %u x %u (R32_FLOAT, RGBA8_UNORM, RGBA16_FLOAT: depth, color, surface)",
+                     what, v->width, v->height);
+        return false;
+    }
+    return true;
+}
+
+bool md_render_view_export(md_gpu_stream_t s, md_render_view_t v, const md_render_export_t* dst) {
+    if (!s || !v || !dst) return false;
+    if (!v->has_raster) {
+        MD_LOG_ERROR("md_render_view_export: the view has not been drawn");
+        return false;
+    }
+    if (!export_dst_ok(v, dst->depth,   MD_GPU_FORMAT_R32_FLOAT,    "depth")  ||
+        !export_dst_ok(v, dst->color,   MD_GPU_FORMAT_RGBA8_UNORM,  "color")  ||
+        !export_dst_ok(v, dst->surface, MD_GPU_FORMAT_RGBA16_FLOAT, "surface")) return false;
+    if (!dst->depth && !dst->color && !dst->surface) return true;
+    gpu_args_t a = base_args(v);
+    a.src  = md_gpu_texture_sampled(v->t.depth);
+    a.mode = (dst->depth ? 1u : 0u) | (dst->color ? 2u : 0u) | (dst->surface ? 4u : 0u);
+    if (dst->depth)   a.dst         = md_gpu_texture_storage(dst->depth, 0);
+    if (dst->color)   a.out_color   = md_gpu_texture_storage(dst->color, 0);
+    if (dst->surface) a.out_surface = md_gpu_texture_storage(dst->surface, 0);
+    md_gpu_grid_t g = md_gpu_grid_for(v->r->k_export, v->width, v->height, 1);
+    return md_gpu_launch(s, v->r->k_export, g, &a, sizeof(a));
+}
+
 void md_render_encode_id(uint32_t batch_index, uint64_t linear, uint32_t out_id[2]) {
     out_id[0] = (uint32_t)(linear & 0xFFFFFFFFu);
     out_id[1] = ((batch_index + 1u) << 20) | (uint32_t)((linear >> 32) & 0xFFFFFu);
@@ -1978,7 +2021,7 @@ bool md_render_debug_kernel_info(md_render_ctx_t r, uint32_t i, const char** nam
     const struct { const char* n; md_gpu_kernel_t k; } ks[] = {
         { "refit", r->k_refit }, { "cull_clusters", r->k_cull_clusters }, { "cull", r->k_cull }, { "finalize", r->k_finalize },
         { "raster_small", r->k_raster_small }, { "hiz", r->k_hiz }, { "resolve", r->k_resolve },
-        { "mask_visible", r->k_mask_visible }, { "pick", r->k_pick },
+        { "mask_visible", r->k_mask_visible }, { "export_targets", r->k_export }, { "pick", r->k_pick },
         { "refit_heavy", r->k_refit_heavy }, { "cull_heavy", r->k_cull_heavy }, { "resolve_heavy", r->k_resolve_heavy }, { "resolve_poly", r->k_resolve_poly }, { "spline_order", r->k_spline_order },
     };
     if (i >= sizeof(ks) / sizeof(ks[0])) return false;
