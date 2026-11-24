@@ -4965,6 +4965,132 @@ static void frames_case(int* utest_result, bool partial) {
     f_close(&fx);
 }
 
+/* Velocities derived from the positions (velocity_dt): each atom's
+   displacement since the last update of the per-frame block, at the minimum
+   image, over the time between, in the point order of the copy, through a
+   regroup that moves the molecules a jump across the cell carried to other
+   cells; at rest at a block's first update */
+UTEST(render, mol_velocity_derived) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(load_system(&sys, &state, MD_UNITTEST_DATA_DIR "/tryptophan-md.gro"));
+    const uint32_t n = (uint32_t)sys.atom.count;
+    uint64_t content[MD_RENDER_CONTENT_COUNT] = {0};
+    md_temp_scope_t temp = md_temp_begin();
+    md_render_mol_plan_t plan;
+    ASSERT_TRUE(md_render_mol_plan(&plan, &sys, NULL, temp));
+    md_render_mol_topo_t topo;
+    ASSERT_TRUE(md_render_mol_write(fx.gfx, &topo, &plan, md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, plan.size).gpu, content));
+    md_temp_end(temp);
+    ASSERT_GT(topo.small_molecule_count, 100u);
+    md_render_mol_ctx_t kernels = md_render_mol_create(fx.dev, NULL);
+    ASSERT_TRUE(kernels != NULL);
+    md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size_velocity).gpu;
+
+    float cell[9];
+    md_render_mol_frame_cell(cell, &state.unitcell);
+    ASSERT_GT(cell[0], 1.0f);
+    float* x0 = malloc((size_t)n * 12);
+    memcpy(x0, state.xyz, (size_t)n * 12);
+    md_gpu_addr_t P = f_buf(&fx, x0, (size_t)n * 12);
+    md_render_mol_atoms_t atoms = {0};
+    atoms.position = P;
+    memcpy(atoms.cell, cell, sizeof(cell));
+    atoms.velocity_dt = 0.5f;
+    md_render_mol_rep_t rep = {0};
+    rep.key = 3; rep.type = MD_RENDER_MOL_REP_SPACEFILL; rep.params.spacefill.radius_scale = 1.0f;
+
+    /* the first update of the block: at rest */
+    ASSERT_TRUE(md_render_mol_update(kernels, fx.gfx, &topo, dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, content));
+    md_render_batch_t b;
+    ASSERT_EQ(1u, md_render_mol_emit(&topo, dyn, &atoms, &rep, &b, 1));
+    ASSERT_TRUE(b.points.velocity != 0);
+    {
+        uint8_t* blk = read_block(&fx, dyn, topo.dynamic_size_velocity);
+        const uint32_t* v = (const uint32_t*)(blk + (b.points.velocity - dyn));
+        int moving = 0;
+        for (uint32_t p = 0; p < n; ++p) moving += (v[2 * p] & 0x7FFF7FFFu) != 0 || (v[2 * p + 1] & 0x7FFFu) != 0;
+        EXPECT_EQ(0, moving);
+        free(blk);
+    }
+
+    /* every atom moved by its own small displacement, every fifth small
+       molecule as well across the cell (a jump by a and by -b) */
+    float* d  = malloc((size_t)n * 12);
+    float* x1 = malloc((size_t)n * 12);
+    for (uint32_t i = 0; i < n; ++i) {
+        d[3 * i + 0] =  0.20f * (float)(i % 7) / 7.0f;
+        d[3 * i + 1] = -0.10f * (float)(i % 5) / 5.0f;
+        d[3 * i + 2] =  0.05f * (float)(i % 3) / 3.0f;
+        for (int k = 0; k < 3; ++k) x1[3 * i + k] = x0[3 * i + k] + d[3 * i + k];
+    }
+    const md_molecule_data_t* M = &sys.molecule;
+    uint32_t jumped = 0;
+    for (size_t m = 0; m < M->count; ++m) {
+        const uint32_t sz = M->offset[m + 1] - M->offset[m];
+        if (sz > MD_RENDER_MOL_SMALL || m % 5) continue;
+        for (uint32_t s = M->offset[m]; s < M->offset[m + 1]; ++s) {
+            float* x = x1 + 3 * M->atom_idx[s];
+            for (int k = 0; k < 3; ++k) x[k] += cell[k] - cell[3 + k];
+        }
+        jumped++;
+    }
+    ASSERT_GT(jumped, 20u);
+    md_gpu_upload(fx.gfx, P, x1, (size_t)n * 12);
+    ASSERT_TRUE(md_render_mol_update(kernels, fx.gfx, &topo, dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, content));
+    ASSERT_EQ(1u, md_render_mol_emit(&topo, dyn, &atoms, &rep, &b, 1));
+    {
+        uint8_t* blk  = read_block(&fx, dyn, topo.dynamic_size_velocity);
+        uint8_t* topb = read_block(&fx, topo.base, topo.size);
+        const uint32_t* v     = (const uint32_t*)(blk + (b.points.velocity - dyn));
+        const float*    pts   = (const float*)(blk + (b.points.position - dyn));
+        const uint32_t* order = (const uint32_t*)(topb + (topo.atom_order - topo.base));
+        int wrong = 0, misplaced = 0;
+        double worst = 0.0;
+        for (uint32_t p = 0; p < topo.point_count; ++p) {
+            const uint32_t a = order[p];
+            const float got[3] = { half_bits_to_float(v[2 * p] & 0xFFFFu), half_bits_to_float(v[2 * p] >> 16), half_bits_to_float(v[2 * p + 1] & 0xFFFFu) };
+            for (int k = 0; k < 3; ++k) {
+                const double want = d[3 * a + k] / 0.5, err = fabs(got[k] - want);
+                worst = err > worst ? err : worst;
+                wrong += err > 2e-3 + 1e-3 * fabs(want);
+                misplaced += pts[4 * p + k] != x1[3 * a + k];
+            }
+        }
+        printf("    velocities derived: %u molecules jumped, worst error %.2g\n", jumped, worst);
+        EXPECT_EQ(0, wrong);
+        EXPECT_EQ(0, misplaced);
+        free(blk); free(topb);
+    }
+
+    /* a jump: at rest */
+    ASSERT_TRUE(md_render_mol_update(kernels, fx.gfx, &topo, dyn, &atoms, MD_RENDER_MOL_UPDATE_RESET_VELOCITY, content));
+    {
+        uint8_t* blk = read_block(&fx, dyn, topo.dynamic_size_velocity);
+        const uint32_t* v = (const uint32_t*)(blk + (b.points.velocity - dyn));
+        int moving = 0;
+        for (uint32_t p = 0; p < n; ++p) moving += (v[2 * p] & 0x7FFF7FFFu) != 0 || (v[2 * p + 1] & 0x7FFFu) != 0;
+        EXPECT_EQ(0, moving);
+        free(blk);
+    }
+
+    /* one source of velocities at a time */
+    md_render_mol_atoms_t both = atoms;
+    both.velocity = P;
+    EXPECT_FALSE(md_render_mol_update(kernels, fx.gfx, &topo, dyn, &both, 0, content));
+
+    free(d); free(x1); free(x0);
+    md_gpu_free(fx.gfx, P);
+    md_gpu_free(fx.gfx, dyn);
+    md_gpu_free(fx.gfx, topo.base);
+    md_render_mol_destroy(kernels);
+    md_vm_arena_destroy(alloc);
+    f_close(&fx);
+}
+
 UTEST(render, mol_frames_interpolate) {
     frames_case(utest_result, false);
 }

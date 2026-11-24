@@ -204,7 +204,8 @@ typedef struct md_render_mol_topo_t {
     uint64_t      dynamic_size;    /* bytes of the per-frame block: the copy that is
                                       drawn, and the update's scratch                */
     uint64_t      dynamic_size_velocity; /* ... when md_render_mol_atoms_t.velocity is
-                                      given: the velocities are copied too           */
+                                      given (the velocities are copied too), or
+                                      velocity_dt (derived)                          */
     uint32_t      atom_count;      /* the system's: per-atom arrays are this long     */
     uint32_t      point_count;     /* the resident atoms: what has a point, what
                                       frames hold (atom_count when all are)          */
@@ -459,6 +460,15 @@ typedef struct md_render_mol_atoms_t {
     md_gpu_addr_t velocity;        /* packed half3 per atom, optional (the same for
                                       update and emit: copied, or not); needs a
                                       per-frame block of topo.dynamic_size_velocity  */
+    float         velocity_dt;     /* > 0, instead: the velocities derived by the
+                                      update from the positions, each atom's
+                                      displacement since the last update of this
+                                      per-frame block at the minimum image of `cell`
+                                      (a jump across the cell moves it by what is
+                                      left), over velocity_dt (the time between the
+                                      two, in frame.time's units). At rest after no
+                                      update of this topology. The same for update
+                                      and emit; a block of dynamic_size_velocity    */
     md_gpu_addr_t radius;          /* float per atom, optional: instead of the types' */
     md_gpu_addr_t radius_table;    /* float per particle type [topo.type_count]: for
                                       MD_RENDER_MOL_UPDATE_RADII                      */
@@ -505,6 +515,9 @@ enum {
        orientation forgets the last update's (see below) and starts from the
        structure alone. */
     MD_RENDER_MOL_UPDATE_RESET_BACKBONE = 1u << 2,
+    /* With velocity_dt: the positions jumped, the velocities derived are at
+       rest this update (not the displacement from before the jump). */
+    MD_RENDER_MOL_UPDATE_RESET_VELOCITY = 1u << 3,
 };
 
 /* A regroup reorders the topology: every per-frame block gathered from it

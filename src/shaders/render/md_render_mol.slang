@@ -165,6 +165,10 @@ struct Args {
     uint  prt_count;            // partners
     uint  lip_count;            // control points of the sterols' slabs
     uint  res_count;            // the residues' points
+    uint  vel_derive;           // sol_velocity: the velocities from the positions (velocity_dt)
+    float vel_inv_dt;           // 1 / velocity_dt
+    uint  vel_instance;         // the topology's instance: the stamp a last update's copy carries
+    uint  _vpad;
 };
 MD_SHADER_ARGS(Args);
 
@@ -175,6 +179,7 @@ static const uint P_LO    = 6u;    // 3 floats
 static const uint P_INV   = 9u;    // 1 / edge
 static const uint P_DIM   = 10u;   // 3 uints
 static const uint P_EDGE  = 13u;
+static const uint P_STAMP = 16u;   // the topology instance of the update that gathered the copy
 
 uint grid_threads(uint n) { return 64u * min((n + 63u) / 64u, 65535u); }
 uint group_start(uint3 tid, uint gi) { return tid.x - gi; }
@@ -579,6 +584,32 @@ float3 mi(CellP c, float3 d) {
     d.xy -= n1 * float2(c.bx, c.by);
     d.x  -= round(d.x * c.r.x) * c.ax;
     return d;
+}
+
+// The velocities from the positions (md_render_mol_atoms_t.velocity_dt): each
+// point's displacement since the copy the last update of this per-frame block
+// gathered, at the minimum image of the cell (fpar0's words), over the time
+// between; before the gather writes the copy again. A small atom this update
+// regrouped finds its last point in src_point (has_src). Without a last update
+// of this topology (its stamp, params[P_STAMP]): at rest.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void sol_velocity(uint3 tid : SV_DispatchThreadID) {
+    Args a = MD_ARGS;
+    uint n = a.atom_count;
+    bool last = a.params[P_STAMP] == a.vel_instance;
+    CellP c = cell_p(a.fpar0);
+    for (uint p = tid.x; p < n; p += grid_threads(n)) {
+        float3 v = float3(0.0);
+        if (last) {
+            uint q    = (a.has_src != 0u && p >= a.static_atoms) ? a.src_point[p - a.static_atoms] : p;
+            uint atom = a.atom_order[p];
+            uint* x   = a.position + atom * (a.stride >> 2u);
+            float3 old = asfloat(loadAligned<16>((uint4*)a.points + q).xyz);
+            v = mi(c, float3(asfloat(x[0]), asfloat(x[1]), asfloat(x[2])) - old) * a.vel_inv_dt;
+        }
+        storeAligned<8>((uint2*)a.vel_out + p, uint2(md_float_to_half(v.x) | (md_float_to_half(v.y) << 16u), md_float_to_half(v.z)));
+    }
 }
 
 
