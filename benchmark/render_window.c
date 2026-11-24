@@ -1,8 +1,11 @@
 // md_render_window: md_render_snap's scene in a window, presented through
-// md_gpu's surface. For one question: does presentation work end to end on a
-// machine, locally or remotely (ThinLinc, VNC, VirtualGL), and at what frame
-// rate. It prints what it ran on and how it went; the picture is md_render_snap's
-// look at the targets, not viamd's shading.
+// md_gpu's surface, or (--gl) through OpenGL: md_gpu draws into a texture it
+// shares with the window's GL context (md_gpu_gl.h), which GL blits to the
+// window. For two questions: does presentation work end to end on a machine,
+// locally or remotely (ThinLinc, VNC, VirtualGL), and at what frame rate; and
+// does the sharing with GL work there. It prints what it ran on and how it
+// went; the picture is md_render_snap's look at the targets, not viamd's
+// shading.
 //
 //   md_render_window <structure> [options]
 //     --rep TYPE[:P]       as md_render_snap; repeatable (default spacefill)
@@ -17,6 +20,8 @@
 //     --present MODE       vsync, mailbox or immediate (default vsync)
 //     --format F           bgra8, srgb or rgba16f (default bgra8)
 //     --adapter NAME       the GPU, as MD_GPU_DEVICE: an index or part of its name
+//     --gl                 present through OpenGL, md_gpu's image shared with it
+//                          (--present: vsync, else none; --format does not apply)
 //     --frames N           exit after N presented frames
 //     --seconds S          exit after S seconds
 //
@@ -35,7 +40,9 @@
 
 #if MD_ENABLE_GPU
 
+#define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
+#include <core/md_gpu_gl.h>
 #if defined(_WIN32)
 #  define GLFW_EXPOSE_NATIVE_WIN32
 #elif defined(__APPLE__)
@@ -53,6 +60,64 @@ typedef struct compose_args_t {
     uint32_t             linear_out;
     uint32_t             _pad;
 } compose_args_t;
+
+/* The GL --gl needs, without GL headers: a blit of the shared texture to the window */
+typedef struct gl_fn_t {
+    const unsigned char* (*GetString)(unsigned);
+    void     (*GenFramebuffers)(int, unsigned*);
+    void     (*DeleteFramebuffers)(int, const unsigned*);
+    void     (*BindFramebuffer)(unsigned, unsigned);
+    void     (*FramebufferTexture2D)(unsigned, unsigned, unsigned, unsigned, int);
+    unsigned (*CheckFramebufferStatus)(unsigned);
+    void     (*BlitFramebuffer)(int, int, int, int, int, int, int, int, unsigned, unsigned);
+} gl_fn_t;
+enum { GL_RENDERER_ = 0x1F01, GL_VERSION_ = 0x1F02, GL_READ_FRAMEBUFFER_ = 0x8CA8, GL_DRAW_FRAMEBUFFER_ = 0x8CA9, GL_COLOR_ATTACHMENT0_ = 0x8CE0,
+       GL_FRAMEBUFFER_COMPLETE_ = 0x8CD5, GL_COLOR_BUFFER_BIT_ = 0x4000, GL_NEAREST_ = 0x2600 };
+
+static void* gl_loader(const char* name) {
+    GLFWglproc p = glfwGetProcAddress(name);
+    void* out;
+    memcpy(&out, &p, sizeof(out));   /* a function pointer as md_gpu_gl's loader returns it */
+    return out;
+}
+
+/* The texture md_gpu draws into and GL reads, at the window's size, and the
+   framebuffer GL blits it from */
+typedef struct gl_share_t {
+    md_gpu_texture_t    tex;
+    md_gpu_gl_texture_t gl;
+    unsigned            fbo;
+    uint32_t            width, height;
+} gl_share_t;
+
+static void gl_share_free(gl_share_t* g, const gl_fn_t* gl) {
+    if (g->fbo) gl->DeleteFramebuffers(1, &g->fbo);
+    md_gpu_gl_release(&g->gl);
+    if (g->tex) md_gpu_texture_destroy(g->tex);
+    memset(g, 0, sizeof(*g));
+}
+
+static bool gl_share_make(gl_share_t* g, const gl_fn_t* gl, md_gpu_stream_t s, uint32_t w, uint32_t h) {
+    gl_share_free(g, gl);
+    md_gpu_texture_desc_t td = {0};
+    td.type   = MD_GPU_TEX_2D;
+    td.format = MD_GPU_FORMAT_RGBA8_UNORM;
+    td.usage  = MD_GPU_TEX_RENDER_TARGET | MD_GPU_TEX_SHARED;
+    td.width  = w;
+    td.height = h;
+    td.label  = "md_render_window.shared";
+    g->tex = md_gpu_texture_create(s, &td);
+    if (!g->tex) { fprintf(stderr, "shared texture: %s\n", md_gpu_last_error()); return false; }
+    if (!md_gpu_gl_import(&g->gl, g->tex, gl_loader)) { fprintf(stderr, "md_gpu_gl_import failed (see the log)\n"); return false; }
+    gl->GenFramebuffers(1, &g->fbo);
+    gl->BindFramebuffer(GL_READ_FRAMEBUFFER_, g->fbo);
+    gl->FramebufferTexture2D(GL_READ_FRAMEBUFFER_, GL_COLOR_ATTACHMENT0_, g->gl.target, g->gl.name, 0);
+    const unsigned status = gl->CheckFramebufferStatus(GL_READ_FRAMEBUFFER_);
+    gl->BindFramebuffer(GL_READ_FRAMEBUFFER_, 0);
+    if (status != GL_FRAMEBUFFER_COMPLETE_) { fprintf(stderr, "the shared texture is no complete GL framebuffer (0x%x)\n", status); return false; }
+    g->width = w; g->height = h;
+    return true;
+}
 
 static uint32_t g_fb_w, g_fb_h;
 static bool     g_resized, g_refresh, g_toggle;
@@ -100,7 +165,7 @@ static int run(int argc, char** argv) {
     uint32_t W = 1280, H = 720;
     uint64_t max_frames = 0;
     double max_seconds = 0, zoom = 1.0, turn = 30.0;
-    bool still = false;
+    bool still = false, use_gl = false;
     const char* adapter = NULL;
     md_gpu_present_mode_t present = MD_GPU_PRESENT_VSYNC;
     md_gpu_format_t format = MD_GPU_FORMAT_BGRA8_UNORM;
@@ -114,6 +179,7 @@ static int run(int argc, char** argv) {
         else if (!strcmp(a, "--frames") && i + 1 < argc) max_frames = (uint64_t)atoll(argv[++i]);
         else if (!strcmp(a, "--seconds") && i + 1 < argc) max_seconds = atof(argv[++i]);
         else if (!strcmp(a, "--adapter") && i + 1 < argc) adapter = argv[++i];
+        else if (!strcmp(a, "--gl")) use_gl = true;
         else if (!strcmp(a, "--select") && i + 1 < argc) { long long x, y; if (sscanf(argv[++i], "%lld:%lld", &x, &y) != 2) return 2; sd.sel_beg = x; sd.sel_end = y; }
         else if (!strcmp(a, "--present") && i + 1 < argc) {
             const char* m = argv[++i];
@@ -143,9 +209,36 @@ static int run(int argc, char** argv) {
 #endif
     if (!glfwInit()) { fprintf(stderr, "glfwInit failed: no display?\n"); return 1; }
     printf("GLFW %s, platform %s\n", glfwGetVersionString(), platform_name(glfwGetPlatform()));
-    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    if (use_gl) {
+        glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_API);
+        glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+#if defined(__APPLE__)
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
+        glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
+#else
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 5);
+#endif
+    } else {
+        glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    }
     GLFWwindow* win = glfwCreateWindow((int)W, (int)H, "md_render_window", NULL, NULL);
-    if (!win) { fprintf(stderr, "could not create a window\n"); glfwTerminate(); return 1; }
+    if (!win) { fprintf(stderr, "could not create a window%s\n", use_gl ? " with a GL context" : ""); glfwTerminate(); return 1; }
+    gl_fn_t gl = {0};
+    if (use_gl) {
+        glfwMakeContextCurrent(win);
+        glfwSwapInterval(present == MD_GPU_PRESENT_VSYNC ? 1 : 0);
+        *(void**)&gl.GetString              = gl_loader("glGetString");
+        *(void**)&gl.GenFramebuffers        = gl_loader("glGenFramebuffers");
+        *(void**)&gl.DeleteFramebuffers     = gl_loader("glDeleteFramebuffers");
+        *(void**)&gl.BindFramebuffer        = gl_loader("glBindFramebuffer");
+        *(void**)&gl.FramebufferTexture2D   = gl_loader("glFramebufferTexture2D");
+        *(void**)&gl.CheckFramebufferStatus = gl_loader("glCheckFramebufferStatus");
+        *(void**)&gl.BlitFramebuffer        = gl_loader("glBlitFramebuffer");
+        if (!gl.GetString || !gl.GenFramebuffers || !gl.BlitFramebuffer) { fprintf(stderr, "the GL context lacks framebuffer objects\n"); return 1; }
+        printf("GL: %s, %s\n", (const char*)gl.GetString(GL_RENDERER_), (const char*)gl.GetString(GL_VERSION_));
+    }
     glfwSetFramebufferSizeCallback(win, on_fb_size);
     glfwSetWindowRefreshCallback(win, on_refresh);
     glfwSetKeyCallback(win, on_key);
@@ -163,16 +256,25 @@ static int run(int argc, char** argv) {
     if (!dev) { fprintf(stderr, "no GPU device: %s\n", md_gpu_last_error()); return 1; }
     md_gpu_device_info_t info;
     md_gpu_device_info(dev, &info);
-    printf("device: %s (%s), vendor 0x%04X, %s, present %s\n", info.name, info.driver, info.vendor_id,
-           info.is_discrete ? "discrete" : "integrated or software", info.supports_present ? "supported" : "NOT supported");
-    if (!info.supports_present) return 1;
+    printf("device: %s (%s), vendor 0x%04X, %s, present %s, sharing with GL %s\n", info.name, info.driver, info.vendor_id,
+           info.is_discrete ? "discrete" : "integrated or software", info.supports_present ? "supported" : "NOT supported",
+           info.supports_sharing ? "supported" : "NOT supported");
+    if (use_gl ? !info.supports_sharing : !info.supports_present) return 1;
     md_gpu_stream_t s = md_gpu_stream_default(dev, MD_GPU_STREAM_GRAPHICS);
     md_render_ctx_t r = md_render_create(dev, NULL);
     md_render_mol_ctx_t kernels = md_render_mol_create(dev, NULL);
     if (!s || !r || !kernels) { fprintf(stderr, "md_render could not start\n"); return 1; }
     if (!scene_upload(&sc, &sd, s, kernels)) return 1;
 
-    /* The surface, from the window's native handles */
+    /* The surface, from the window's native handles; or the texture shared with GL */
+    md_gpu_surface_t surf = NULL;
+    gl_share_t share = {0};
+    if (use_gl) {
+        if (!gl_share_make(&share, &gl, s, g_fb_w, g_fb_h)) return 1;
+        printf("shared texture: %ux%u RGBA8_UNORM, %s, GL %s\n", g_fb_w, g_fb_h,
+               share.gl.kind == MD_GPU_SHARE_IOSURFACE ? "IOSurface" : share.gl.kind == MD_GPU_SHARE_WIN32 ? "Win32 handle" : "fd",
+               share.gl.ready ? "waits on semaphores" : "waits on the host (no semaphores)");
+    }
     md_gpu_surface_desc_t sfd = {0};
 #if defined(_WIN32)
     sfd.system  = MD_GPU_WINDOW_WIN32;
@@ -190,14 +292,16 @@ static int run(int argc, char** argv) {
     sfd.format       = format;
     sfd.present_mode = present;
     sfd.label        = "md_render_window";
-    md_gpu_surface_t surf = md_gpu_surface_create(dev, &sfd);
-    if (!surf && format != MD_GPU_FORMAT_BGRA8_UNORM) {
-        fprintf(stderr, "surface in %s: %s; trying BGRA8_UNORM\n", format_name(format), md_gpu_last_error());
-        sfd.format = MD_GPU_FORMAT_BGRA8_UNORM;
+    if (!use_gl) {
         surf = md_gpu_surface_create(dev, &sfd);
+        if (!surf && format != MD_GPU_FORMAT_BGRA8_UNORM) {
+            fprintf(stderr, "surface in %s: %s; trying BGRA8_UNORM\n", format_name(format), md_gpu_last_error());
+            sfd.format = MD_GPU_FORMAT_BGRA8_UNORM;
+            surf = md_gpu_surface_create(dev, &sfd);
+        }
+        if (!surf) { fprintf(stderr, "no surface: %s\n", md_gpu_last_error()); return 1; }
+        printf("surface: %ux%u, %s asked, %s asked (md_gpu falls back to vsync where it must)\n", g_fb_w, g_fb_h, format_name(sfd.format), present_name(present));
     }
-    if (!surf) { fprintf(stderr, "no surface: %s\n", md_gpu_last_error()); return 1; }
-    printf("surface: %ux%u, %s asked, %s asked (md_gpu falls back to vsync where it must)\n", g_fb_w, g_fb_h, format_name(sfd.format), present_name(present));
 
     md_render_view_t view = md_render_view_create(r, "window");
     md_gpu_pipeline_t pipe = NULL;
@@ -219,7 +323,12 @@ static int run(int argc, char** argv) {
         const double now = glfwGetTime();
         if (max_seconds > 0 && now - t_start >= max_seconds) break;
         if (g_toggle) { g_toggle = false; still = !still; printf("%s\n", still ? "still" : "turning"); dirty = true; }
-        if (g_resized) { g_resized = false; md_gpu_surface_resize(surf, g_fb_w, g_fb_h); dirty = true; }
+        if (g_resized) {
+            g_resized = false;
+            if (surf) md_gpu_surface_resize(surf, g_fb_w, g_fb_h);
+            else if (g_fb_w && g_fb_h && !gl_share_make(&share, &gl, s, g_fb_w, g_fb_h)) { rc = 1; break; }
+            dirty = true;
+        }
         if (g_refresh) { g_refresh = false; dirty = true; }
         if (g_fb_w == 0 || g_fb_h == 0) continue;           /* minimised */
 
@@ -253,7 +362,9 @@ static int run(int argc, char** argv) {
         printed_idle = false;
 
         w0 = glfwGetTime();
-        md_gpu_texture_t back = md_gpu_surface_acquire(s, surf);
+        md_gpu_texture_t back = NULL;
+        if (surf) back = md_gpu_surface_acquire(s, surf);
+        else if (md_gpu_texture_share_acquire(s, share.tex)) back = share.tex;
         waited += glfwGetTime() - w0;
         if (!back) {
             if (++acquire_fail <= 3) fprintf(stderr, "acquire failed: %s\n", md_gpu_last_error());
@@ -273,7 +384,7 @@ static int run(int argc, char** argv) {
             pipe = md_gpu_pipeline_create(dev, &pd);
             pipe_format = bd->format;
             if (!pipe) { fprintf(stderr, "compose pipeline for %s: %s\n", format_name(bd->format), md_gpu_last_error()); rc = 1; break; }
-            printf("swapchain image: %ux%u %s\n", bd->width, bd->height, format_name(bd->format));
+            printf("%s: %ux%u %s\n", surf ? "swapchain image" : "shared image", bd->width, bd->height, bd->format == MD_GPU_FORMAT_RGBA8_UNORM ? "RGBA8_UNORM" : format_name(bd->format));
         }
         md_render_targets_t t = md_render_view_targets(view);
         compose_args_t ca = {0};
@@ -290,9 +401,22 @@ static int run(int argc, char** argv) {
         bool ok = md_gpu_render_begin(s, &rd);
         ok = ok && md_gpu_draw(s, pipe, 3, 1, &ca, sizeof(ca));
         ok = md_gpu_render_end(s) && ok;
-        ok = md_gpu_surface_present(s, surf) && ok;
+        if (surf) ok = md_gpu_surface_present(s, surf) && ok;
+        else      ok = md_gpu_texture_share_release(s, share.tex) && ok;
         if (!ok) { fprintf(stderr, "compose or present failed: %s\n", md_gpu_last_error()); rc = 1; break; }
         frame_done[presented % 2] = md_gpu_stream_record(s);
+        if (!surf) {
+            /* GL: md_gpu's image, flipped (its first row is the top), to the window */
+            w0 = glfwGetTime();
+            md_gpu_gl_begin_read(&share.gl);
+            gl.BindFramebuffer(GL_READ_FRAMEBUFFER_, share.fbo);
+            gl.BindFramebuffer(GL_DRAW_FRAMEBUFFER_, 0);
+            gl.BlitFramebuffer(0, 0, (int)share.width, (int)share.height, 0, (int)share.height, (int)share.width, 0, GL_COLOR_BUFFER_BIT_, GL_NEAREST_);
+            gl.BindFramebuffer(GL_READ_FRAMEBUFFER_, 0);
+            md_gpu_gl_end_read(&share.gl);
+            glfwSwapBuffers(win);
+            waited += glfwGetTime() - w0;
+        }
         md_gpu_device_poll(dev);
         dirty = false;
 
@@ -327,7 +451,8 @@ static int run(int argc, char** argv) {
 
     md_render_view_destroy(s, view);
     if (pipe) md_gpu_pipeline_destroy(pipe);
-    md_gpu_surface_destroy(surf);
+    if (surf) md_gpu_surface_destroy(surf);
+    gl_share_free(&share, &gl);
     md_gpu_stream_sync(s);
     md_render_mol_destroy(kernels);
     md_render_destroy(r);
@@ -342,7 +467,7 @@ int main(int argc, char** argv) {
     if (argc < 2) {
         fprintf(stderr, "usage: md_render_window <structure> [--rep TYPE[:P]] [--coords FILE] [--select A:B] [--res WxH]\n"
                         "                        [--still] [--turn DEG] [--zoom Z] [--present vsync|mailbox|immediate]\n"
-                        "                        [--format bgra8|srgb|rgba16f] [--adapter NAME] [--frames N] [--seconds S]\n");
+                        "                        [--format bgra8|srgb|rgba16f] [--adapter NAME] [--gl] [--frames N] [--seconds S]\n");
         return 2;
     }
     int rc = run(argc - 1, argv + 1);
