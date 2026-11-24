@@ -5326,6 +5326,196 @@ UTEST(render, mol_pairs_draw_what_bonds_draw) {
     f_close(&fx);
 }
 
+/* A representation's batches drawn into a view, its depth and motion read */
+static bool mol_draw(fix_t* fx, md_render_view_t v, const md_render_mol_topo_t* topo, md_gpu_addr_t dyn, const md_render_mol_atoms_t* atoms,
+                     const md_render_mol_rep_t* rep, md_render_camera_t cam, uint32_t W, uint32_t H, const uint64_t* content, double time,
+                     float* depth, uint32_t* motion) {
+    md_render_batch_t b[32];
+    const uint32_t n = md_render_mol_emit(topo, dyn, atoms, rep, b, 32);
+    if (n == 0 || n > 32) return false;
+    md_render_frame_t f = frame_of(W, H, cam, b, n);
+    memcpy(f.content, content, sizeof(f.content));
+    f.time = time;
+    return md_render_view_draw(fx->gfx, v, &f, NULL) && f_read(fx, md_render_view_targets(v).depth, depth, W * H * 4) &&
+           f_read(fx, md_render_view_targets(v).motion, motion, W * H * 4);
+}
+
+/* The bonds of a frame (md_bond_delta_t): a licorice whose bond mask hides
+   every third bond of the system (protein and water: through a regroup
+   that moves the waters' bonds) and draws them again as the caller's pairs
+   draws what the licorice of every bond draws, depth and motion; without
+   the pairs, less; a pick of a pair reports its id, never a hidden bond.
+   With the bond orders, the bonds hidden take their multiple sticks and
+   dashed partners along, the rings hidden their circles: all of them
+   hidden, what a licorice of no sticks draws */
+UTEST(render, mol_bond_mask_and_pairs) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(load_system(&sys, &state, MD_UNITTEST_DATA_DIR "/tryptophan-md.gro"));
+    const uint32_t n = (uint32_t)sys.atom.count;
+    uint64_t content[MD_RENDER_CONTENT_COUNT] = {0};
+    md_temp_scope_t temp = md_temp_begin();
+    md_render_mol_plan_t plan;
+    ASSERT_TRUE(md_render_mol_plan(&plan, &sys, NULL, temp));
+    md_render_mol_topo_t topo;
+    ASSERT_TRUE(md_render_mol_write(fx.gfx, &topo, &plan, md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, plan.size).gpu, content));
+    md_temp_end(temp);
+    ASSERT_GT(topo.small_bond_count, 100u);
+    ASSERT_GT(topo.order_count[0] + topo.aromatic_count[3] + topo.aromatic_count[2], 0u);
+    md_render_mol_ctx_t kernels = md_render_mol_create(fx.dev, NULL);
+    ASSERT_TRUE(kernels != NULL);
+    md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size_velocity).gpu;
+
+    /* every third covalent bond hidden, and as pairs */
+    const uint32_t nb = (uint32_t)(sys.bond.count + sys.bond.interaction_count), words = (nb + 31) / 32;
+    const uint32_t kv = MD_RENDER_MOL_BOND_KIND(MD_BOND_KIND_COVALENT);
+    uint32_t* mask = malloc(words * 4);
+    memset(mask, 0xFF, words * 4);
+    uint32_t* pairs = malloc((size_t)nb * 8);
+    uint32_t* ids   = malloc((size_t)nb * 4);
+    uint32_t np = 0;
+    for (uint32_t i = 0; i < (uint32_t)sys.bond.count; ++i) {
+        if (i % 3 || MD_RENDER_MOL_BOND_KIND(md_bond_kind(sys.bond.flags[i])) != kv) continue;
+        mask[i >> 5] &= ~(1u << (i & 31));
+        pairs[2 * np] = sys.bond.pairs[i].idx[0]; pairs[2 * np + 1] = sys.bond.pairs[i].idx[1]; ids[np++] = i;
+    }
+    ASSERT_GT(np, 1000u);
+    uint32_t offset[MD_RENDER_MOL_BOND_KIND_COUNT + 1];
+    for (uint32_t k = 0; k <= MD_RENDER_MOL_BOND_KIND_COUNT; ++k) offset[k] = k <= kv ? 0 : np;
+    uint32_t* none = calloc(words + 64, 4);     /* every bond and ring hidden */
+
+    float cell[9];
+    md_render_mol_frame_cell(cell, &state.unitcell);
+    float* x = malloc((size_t)n * 12);
+    memcpy(x, state.xyz, (size_t)n * 12);
+    md_gpu_addr_t P = f_buf(&fx, x, (size_t)n * 12);
+    md_render_mol_atoms_t atoms = {0};
+    atoms.position = P;
+    memcpy(atoms.cell, cell, sizeof(cell));
+    atoms.velocity_dt = 1.0f;
+
+    md_render_mol_rep_t full = {0};
+    full.key = 5; full.type = MD_RENDER_MOL_REP_LICORICE; full.params.licorice.radius = 0.25f;
+    md_render_mol_rep_t hidden = full, back = full;
+    hidden.bond_visible = back.bond_visible = f_buf(&fx, mask, words * 4);
+    back.pairs = f_buf(&fx, pairs, (size_t)np * 8); back.pair_id = f_buf(&fx, ids, (size_t)np * 4); back.pair_offset = offset;
+
+    float lo[3] = { 1e30f, 1e30f, 1e30f }, hi[3] = { -1e30f, -1e30f, -1e30f };
+    for (uint32_t i = 0; i < n; ++i) for (int k = 0; k < 3; ++k) { lo[k] = fminf(lo[k], x[3 * i + k]); hi[k] = fmaxf(hi[k], x[3 * i + k]); }
+    const uint32_t W = 192, H = 192;
+    cam_t c = { .ortho = true, .half_h = 0.6f * fmaxf(hi[0] - lo[0], hi[1] - lo[1]) + 2.0f, .aspect = 1.0f, .n = 0.0f, .far_ = 1000.0f };
+    md_render_camera_t cam = make_camera(&c);
+    cam.view[12] = -0.5f * (lo[0] + hi[0]); cam.view[13] = -0.5f * (lo[1] + hi[1]); cam.view[14] = -(hi[2] + 40.0f);
+    md_render_view_t vf = md_render_view_create(fx.r, "full"), vh = md_render_view_create(fx.r, "hidden");
+    ASSERT_TRUE(vf != NULL && vh != NULL);
+    float* df = malloc(W * H * 4); float* dh = malloc(W * H * 4); float* db = malloc(W * H * 4);
+    uint32_t* mf = malloc(W * H * 4); uint32_t* mh = malloc(W * H * 4); uint32_t* mb = malloc(W * H * 4);
+
+    /* a frame, then every atom a little further and every fifth small
+       molecule across the cell: regrouped */
+    for (int step = 0; step < 2; ++step) {
+        if (step == 1) {
+            for (uint32_t i = 0; i < n; ++i) { x[3 * i + 0] += 0.3f; x[3 * i + 1] -= 0.1f * (float)(i % 3); }
+            const md_molecule_data_t* M = &sys.molecule;
+            for (size_t m = 0; m < M->count; ++m) {
+                if (M->offset[m + 1] - M->offset[m] > MD_RENDER_MOL_SMALL || m % 5) continue;
+                for (uint32_t s = M->offset[m]; s < M->offset[m + 1]; ++s) for (int k = 0; k < 3; ++k) x[3 * M->atom_idx[s] + k] += cell[k];
+            }
+            md_gpu_upload(fx.gfx, P, x, (size_t)n * 12);
+        }
+        ASSERT_TRUE(md_render_mol_update(kernels, fx.gfx, &topo, dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, content));
+        ASSERT_TRUE(mol_draw(&fx, vf, &topo, dyn, &atoms, &full, cam, W, H, content, step, df, mf));
+        ASSERT_TRUE(mol_draw(&fx, vh, &topo, dyn, &atoms, &hidden, cam, W, H, content, step, dh, mh));
+        ASSERT_TRUE(mol_draw(&fx, fx.view, &topo, dyn, &atoms, &back, cam, W, H, content, step, db, mb));
+        /* the motion where the depth is the same, within a twentieth of a
+           pixel: a tie at a joint (two sticks' round ends, one a pair, the
+           other a bond of the system) goes to either (llvmpipe: from run to
+           run), whose motions there differ by a rounding (up to 0.007 seen) */
+        int covered = 0, hidden_off = 0, back_off = 0, motion_off = 0, moving = 0;
+        float worst = 0.0f;
+        for (uint32_t i = 0; i < W * H; ++i) {
+            covered    += df[i] > 0.0f;
+            hidden_off += dh[i] != df[i];
+            back_off   += db[i] != df[i];
+            moving     += df[i] > 0.0f && mf[i] != 0;
+            if (!(df[i] > 0.0f) || mb[i] == mf[i]) continue;
+            const float d = fmaxf(fabsf(half_bits_to_float(mb[i] & 0xFFFFu) - half_bits_to_float(mf[i] & 0xFFFFu)),
+                                  fabsf(half_bits_to_float(mb[i] >> 16) - half_bits_to_float(mf[i] >> 16)));
+            worst = fmaxf(worst, d);
+            motion_off += d > 0.05f;
+        }
+        printf("    step %d: %d pixels, %d moving; hidden: %d of another depth; given back as pairs: %d of another depth, %d of another motion (by %.2g at most)\n",
+               step, covered, moving, hidden_off, back_off, motion_off, worst);
+        EXPECT_GT(covered, (int)(W * H / 20));
+        EXPECT_GT(hidden_off, covered / 50);
+        EXPECT_EQ(0, back_off);
+        EXPECT_EQ(0, motion_off);
+        if (step == 1) EXPECT_GT(moving, covered / 2);
+    }
+
+    /* picks: a pair reports its id (a hidden bond), a bond never a hidden one */
+    int pair_hits = 0, bond_hits = 0, hidden_hits = 0;
+    for (uint32_t i = 0; i < W * H && pair_hits < 4; i += 37) {
+        if (!(db[i] > 0.0f)) continue;
+        md_render_pick_t pk;
+        md_render_mol_hit_t h;
+        if (!f_pick(&fx, i % W, i / W, &pk) || !md_render_mol_decode_pick(&pk, &h)) continue;
+        if (h.kind == MD_RENDER_MOL_HIT_PAIR) {
+            pair_hits++;
+            ASSERT_LT(h.bond, nb);
+            EXPECT_EQ(0u, (mask[h.bond >> 5] >> (h.bond & 31)) & 1u);
+            const md_atom_pair_t bp = sys.bond.pairs[h.bond];
+            EXPECT_TRUE(h.atom == (uint32_t)bp.idx[0] || h.atom == (uint32_t)bp.idx[1]);
+        } else if (h.kind == MD_RENDER_MOL_HIT_BOND) {
+            bond_hits++;
+            hidden_hits += h.bond < nb && !((mask[h.bond >> 5] >> (h.bond & 31)) & 1u);
+        }
+    }
+    printf("    picks: %d of pairs, %d of bonds, %d of hidden bonds\n", pair_hits, bond_hits, hidden_hits);
+    EXPECT_GT(pair_hits, 0);
+    EXPECT_GT(bond_hits, 0);
+    EXPECT_EQ(0, hidden_hits);
+
+    /* the orders: every bond and ring hidden, as no sticks at all */
+    md_render_mol_bond_style_t zero[MD_RENDER_MOL_BOND_KIND_COUNT];
+    memset(zero, 0, sizeof(zero));
+    md_render_mol_rep_t orders = full;
+    orders.bond_orders = true;
+    md_render_mol_rep_t sticks_none = orders, rings_kept = orders;
+    sticks_none.bond_style = zero;
+    orders.bond_visible = orders.ring_visible = rings_kept.bond_visible = f_buf(&fx, none, (words + 64) * 4);
+    ASSERT_TRUE(mol_draw(&fx, vf, &topo, dyn, &atoms, &sticks_none, cam, W, H, content, 2.0, df, mf));
+    ASSERT_TRUE(mol_draw(&fx, vh, &topo, dyn, &atoms, &orders, cam, W, H, content, 2.0, dh, mh));
+    ASSERT_TRUE(mol_draw(&fx, fx.view, &topo, dyn, &atoms, &rings_kept, cam, W, H, content, 2.0, db, mb));
+    int orders_off = 0, rings_off = 0;
+    for (uint32_t i = 0; i < W * H; ++i) { orders_off += dh[i] != df[i]; rings_off += db[i] != df[i]; }
+    printf("    bond orders, every bond hidden: %d pixels of another depth than no sticks; the rings kept: %d\n", orders_off, rings_off);
+    EXPECT_EQ(0, orders_off);
+    EXPECT_GT(rings_off, 0);
+
+    /* refused: pairs without offsets, or on a representation without sticks */
+    md_render_mol_rep_t bad = back;
+    bad.pair_offset = NULL;
+    EXPECT_EQ(0u, md_render_mol_emit(&topo, dyn, &atoms, &bad, NULL, 0));
+    bad = back;
+    bad.type = MD_RENDER_MOL_REP_SPACEFILL; bad.params.spacefill.radius_scale = 1.0f;
+    EXPECT_EQ(0u, md_render_mol_emit(&topo, dyn, &atoms, &bad, NULL, 0));
+
+    free(df); free(dh); free(db); free(mf); free(mh); free(mb);
+    free(x); free(mask); free(none); free(pairs); free(ids);
+    md_render_view_destroy(fx.gfx, vf);
+    md_render_view_destroy(fx.gfx, vh);
+    md_gpu_free(fx.gfx, P);
+    md_gpu_free(fx.gfx, dyn);
+    md_gpu_free(fx.gfx, topo.base);
+    md_render_mol_destroy(kernels);
+    md_vm_arena_destroy(alloc);
+    f_close(&fx);
+}
+
 UTEST(render, mol_frames_interpolate) {
     frames_case(utest_result, false);
 }

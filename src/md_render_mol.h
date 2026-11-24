@@ -711,7 +711,7 @@ typedef enum md_render_mol_rep_type_t {
                                       md_render_mol_cartoon_profile), the nucleic
                                       acids                                          */
     MD_RENDER_MOL_REP_PAIRS,       /* sticks between the atoms of the caller's pairs
-                                      (`pairs`), no atoms                            */
+                                      (`pairs`) alone, no atoms                      */
 } md_render_mol_rep_type_t;
 
 typedef struct md_render_mol_rep_t {
@@ -760,17 +760,34 @@ typedef struct md_render_mol_rep_t {
     uint32_t                          bond_kinds;
     const md_render_mol_bond_style_t* bond_style;
 
-    /* PAIRS: the caller's, in its memory: uint32 atom indices, two per pair,
-       those of bond kind k (MD_RENDER_MOL_BOND_KIND, drawn in bond_style[k])
-       at pair_offset[k] .. pair_offset[k + 1] (MD_RENDER_MOL_BOND_KIND_COUNT +
-       1 entries, read by emit). Through the per-frame block's points (each
-       atom's, of the last update's order): their velocities, regroups, and
-       the atoms' colours, visibility and marks. The atoms must be resident
-       (md_render_mol_plan): one that is not stands at point 0. pair_id: uint32 per pair, optional, what a pick of it
-       reports (MD_RENDER_MOL_HIT_PAIR); 0: its index within its kind. */
+    /* The caller's pairs of atoms, sticks as the bonds are: PAIRS's, and
+       LICORICE's, BALL_AND_STICK's and BONDS's besides the system's bonds
+       (those a frame formed: md_bond_delta_t), in the representation's stick
+       radius, kinds (bond_kinds) and styles, without bond orders. In the
+       caller's memory: uint32 atom indices, two per pair, those of bond kind
+       k (MD_RENDER_MOL_BOND_KIND) at pair_offset[k] .. pair_offset[k + 1]
+       (MD_RENDER_MOL_BOND_KIND_COUNT + 1 entries, read by emit). Through the
+       per-frame block's points (each atom's, of the last update's order):
+       their velocities, regroups, and the atoms' colours, visibility and
+       marks. The atoms must be resident (md_render_mol_plan): one that is
+       not stands at point 0. pair_id: uint32 per pair, optional, what a pick
+       of it reports (MD_RENDER_MOL_HIT_PAIR); 0: its index within its kind. */
     md_gpu_addr_t                     pairs;
     md_gpu_addr_t                     pair_id;
     const uint32_t*                   pair_offset;
+
+    /* The bonds and rings of the system shown, for a frame whose bonds are
+       not the system's (md_bond_delta_t: those broken; with bond_orders,
+       those whose order the frame changed): bitsets in the caller's memory
+       (uint32 words, bit i of word i / 32; md_render's id_visible). Of the
+       system's bonds (index in sys->bond, as picks report them: its
+       interactions after its bonds), LICORICE, BALL_AND_STICK and BONDS: a
+       bond whose bit is clear has no stick, and with bond_orders neither its
+       multiple sticks nor its dashed partner. Of sys->ring, with bond_orders:
+       a ring whose bit is clear has no circle. Not the caller's pairs. Part of
+       the geometry (MD_RENDER_CONTENT_GEOMETRY). 0: every one. */
+    md_gpu_addr_t                     bond_visible;
+    md_gpu_addr_t                     ring_visible;
 
     /* Dashed lines over the breaks of the chains (md_gl's chain gaps):
        CARTOON from end to end of the cartoon, 0.14 (0.7 of the coil at a

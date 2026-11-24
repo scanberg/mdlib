@@ -93,6 +93,7 @@ static const uint F_DISPLACED    = 1u << 23;  // CAPSULES: moved off their point
 static const uint F_SIDE         = 1u << 24;  // ... along cap_side
 static const uint F_CIRCLE       = 1u << 25;  // POLYGONS: the circle inside each (poly_inset, poly_dashes)
 static const uint F_FADE_KEY     = 1u << 26;  // SPHERES, CAPSULES: each point's fade by the point fade_key gives
+static const uint F_ID_VISIBLE   = 1u << 27;  // SPHERES, CAPSULES, POLYGONS: visible by their ids (id_visible)
 
 // md_render_kind_t
 static const uint KIND_SPHERES  = 1u;
@@ -181,7 +182,7 @@ struct Batch {
     float   cap_trim;           // CAPSULES displaced: their ends pulled in by this of their length
     float   spl_scale;          // SPLINES: the profile's a and r times this
     uint*   fade_key;           // F_FADE_KEY: per point, the point that stands for it in the fade
-    uint    _bpad0, _bpad1;
+    uint*   id_visible;         // F_ID_VISIBLE: bitset over the elements' ids
 };
 
 // The per-view lists the cull writes and everything after it reads. Cluster
@@ -333,6 +334,13 @@ bool attr_visible(Batch b, uint a) {
     if ((b.flags & F_VISIBLE0) != 0u && !test_bit(b.visible0, gated(b, F_VISIBLE0, a))) return false;
     if ((b.flags & F_VISIBLE1) != 0u && !test_bit(b.visible1, gated(b, F_VISIBLE1, a))) return false;
     return true;
+}
+
+// Element e by its id (F_ID_VISIBLE): what it stands for shown
+bool id_visible(Batch b, uint e) {
+    if ((b.flags & F_ID_VISIBLE) == 0u) return true;
+    uint id = ((b.flags & F_ID) != 0u) ? b.id[gated(b, F_ID, e)] : e;
+    return test_bit(b.id_visible, gated(b, F_ID_VISIBLE, id));
 }
 
 // The marks of attribute a: the state bits (0, 1) and the tag (2..4); 0 with
@@ -1382,6 +1390,7 @@ Geo element_geo(ViewData v, Batch b, uint inst, uint e, bool fade) {
     g.a    = float3(0.0);
     g.b    = float3(0.0);
     g.r    = 0.0;
+    if (!id_visible(b, e)) return g;
     Mat   T = load_transform(b.transforms, inst);
     float s = length(T.c0.xyz);
     if (b.kind == KIND_SPHERES) {
@@ -1781,7 +1790,7 @@ PolyPart poly_part(ViewData v, Batch b, uint inst, uint e, bool fade) {
 // Visible when all its corners are, its state bits all theirs
 bool poly_visible(Batch b, uint e, out uint st) {
     uint n = poly_n(b);
-    bool vis = true;
+    bool vis = id_visible(b, e);
     st = ST_ALL;
     for (uint k = 0u; k < n; ++k) {
         uint ai = attr_of(b, point_of(b, e, k, n));
@@ -2343,6 +2352,7 @@ struct LocalElem {
 LocalElem element_local(Batch b, uint e, bool geo) {
     LocalElem l;
     l.ok = false; l.st = 0u; l.a = float3(0.0); l.b = float3(0.0); l.factor = 0.0;
+    if (!id_visible(b, e)) return l;
     if (b.kind == KIND_SPHERES) {
         uint pi = point_of(b, e, 0u, 1u);
         uint ai = attr_of(b, pi);

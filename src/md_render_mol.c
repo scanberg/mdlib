@@ -2857,6 +2857,51 @@ static void put_gaps(md_render_batch_t* out, uint32_t cap, uint32_t* n, const md
     put(out, cap, n, &b);
 }
 
+/* The kinds' styles: each finite and >= 0 */
+static bool bond_styles_valid(const md_render_mol_bond_style_t* style) {
+    for (uint32_t c = 0; c < MD_RENDER_MOL_BOND_KIND_COUNT; ++c) {
+        const md_render_mol_bond_style_t* st = &style[c];
+        if (!(st->radius >= 0.0f && st->dash >= 0.0f && st->gap >= 0.0f && st->radius < FLT_MAX && st->dash < FLT_MAX && st->gap < FLT_MAX)) {
+            MD_LOG_ERROR("md_render_mol: bond_style[%u] is {radius %g, dash %g, gap %g}: each finite and >= 0", c, st->radius, st->dash, st->gap);
+            return false;
+        }
+    }
+    return true;
+}
+
+/* The caller's pairs (md_render_mol_rep_t.pairs) of the kinds in `kinds`:
+   sticks of `radius` times their kind's style, as the representation's
+   bonds. Their index holds atoms, mapped to points by the update's
+   (atom_point). */
+static void put_pairs(md_render_batch_t* out, uint32_t cap, uint32_t* n, const md_render_batch_t* base, const md_render_mol_topo_t* topo,
+                      md_gpu_addr_t dynamic, const md_render_mol_rep_t* rep, const md_render_mol_bond_style_t* style, uint32_t kinds,
+                      float radius, md_render_sphere_style_t dash_ends) {
+    const md_gpu_addr_t map = dynamic + dyn_of(topo).atom_point;
+    for (uint32_t c = 0; c < MD_RENDER_MOL_BOND_KIND_COUNT; ++c) {
+        const md_render_mol_bond_style_t* st = &style[c];
+        const uint32_t beg = rep->pair_offset[c], end = rep->pair_offset[c + 1];
+        if (!(kinds & (1u << c)) || st->radius == 0.0f || end <= beg) continue;
+        md_render_batch_t b = *base;
+        b.key       = (rep->key << 8) | (MD_RENDER_MOL_PART_PAIRS + c);
+        b.kind      = MD_RENDER_CAPSULES;
+        b.count     = end - beg;
+        b.index     = rep->pairs + (md_gpu_addr_t)beg * 8u;
+        b.index_map = map;
+        b.id        = rep->pair_id ? rep->pair_id + (md_gpu_addr_t)beg * 4u : 0;
+        b.style.capsules.radius = radius * st->radius;
+        if (st->dash > 0.0f) {
+            b.style.capsules.dash_length = radius * st->dash;
+            b.style.capsules.gap_length  = radius * st->gap;
+            b.style.capsules.dash_ends   = dash_ends;
+        }
+        if (st->color) {
+            b.color.mode    = MD_RENDER_COLOR_UNIFORM;
+            b.color.uniform = st->color;
+        }
+        put(out, cap, n, &b);
+    }
+}
+
 uint32_t md_render_mol_emit(const md_render_mol_topo_t* topo, md_gpu_addr_t dynamic, const md_render_mol_atoms_t* atoms,
                             const md_render_mol_rep_t* rep, md_render_batch_t* out, uint32_t cap) {
     if (!topo || !atoms || !rep || (cap && !out)) return 0;
@@ -2883,43 +2928,22 @@ uint32_t md_render_mol_emit(const md_render_mol_topo_t* topo, md_gpu_addr_t dyna
     uint32_t kinds = rep->bond_kinds;
     const uint32_t default_kinds = MD_RENDER_MOL_BONDS(MD_BOND_KIND_COVALENT) | MD_RENDER_MOL_BONDS(MD_BOND_KIND_COORDINATE);
 
-    if (rep->type == MD_RENDER_MOL_REP_PAIRS) {
-        /* the caller's pairs, by kind; their index holds atoms, mapped to
-           points by the update's (atom_point) */
-        if (!rep->pairs || !rep->pair_offset) {
-            MD_LOG_ERROR("md_render_mol: PAIRS without pairs or their offsets");
+    /* The caller's pairs: the sticks' types' */
+    const md_render_mol_rep_type_t t = rep->type;
+    if (rep->pairs && (!rep->pair_offset || !(t == MD_RENDER_MOL_REP_PAIRS || t == MD_RENDER_MOL_REP_LICORICE || t == MD_RENDER_MOL_REP_BALL_AND_STICK || t == MD_RENDER_MOL_REP_BONDS))) {
+        MD_LOG_ERROR("md_render_mol: pairs need their offsets, and a representation of sticks (PAIRS, LICORICE, BALL_AND_STICK, BONDS)");
+        return 0;
+    }
+    if (t == MD_RENDER_MOL_REP_PAIRS) {
+        if (!rep->pairs) {
+            MD_LOG_ERROR("md_render_mol: PAIRS without pairs");
             return 0;
         }
         const md_render_mol_bond_style_t* style = rep->bond_style ? rep->bond_style : md_render_mol_bond_styles;
-        const uint32_t pkinds = rep->bond_kinds ? rep->bond_kinds : MD_RENDER_MOL_BONDS_ALL;
-        const md_gpu_addr_t map = dynamic + dyn_of(topo).atom_point;
+        if (!bond_styles_valid(style)) return 0;
+        const md_render_sphere_style_t none = { 0.0f, 0.0f };
         uint32_t n = 0;
-        for (uint32_t c = 0; c < MD_RENDER_MOL_BOND_KIND_COUNT; ++c) {
-            const md_render_mol_bond_style_t* st = &style[c];
-            if (!(st->radius >= 0.0f && st->dash >= 0.0f && st->gap >= 0.0f && st->radius < FLT_MAX && st->dash < FLT_MAX && st->gap < FLT_MAX)) {
-                MD_LOG_ERROR("md_render_mol: bond_style[%u] is {radius %g, dash %g, gap %g}: each finite and >= 0", c, st->radius, st->dash, st->gap);
-                return 0;
-            }
-            const uint32_t beg = rep->pair_offset[c], end = rep->pair_offset[c + 1];
-            if (!(pkinds & (1u << c)) || st->radius == 0.0f || end <= beg) continue;
-            md_render_batch_t b = base;
-            b.key       = (rep->key << 8) | (MD_RENDER_MOL_PART_PAIRS + c);
-            b.kind      = MD_RENDER_CAPSULES;
-            b.count     = end - beg;
-            b.index     = rep->pairs + (md_gpu_addr_t)beg * 8u;
-            b.index_map = map;
-            b.id        = rep->pair_id ? rep->pair_id + (md_gpu_addr_t)beg * 4u : 0;
-            b.style.capsules.radius = rep->params.pairs.radius * st->radius;
-            if (st->dash > 0.0f) {
-                b.style.capsules.dash_length = rep->params.pairs.radius * st->dash;
-                b.style.capsules.gap_length  = rep->params.pairs.radius * st->gap;
-            }
-            if (st->color) {
-                b.color.mode    = MD_RENDER_COLOR_UNIFORM;
-                b.color.uniform = st->color;
-            }
-            put(out, cap, &n, &b);
-        }
+        put_pairs(out, cap, &n, &base, topo, dynamic, rep, style, kinds ? kinds : MD_RENDER_MOL_BONDS_ALL, rep->params.pairs.radius, none);
         return n;
     }
 
@@ -3105,14 +3129,8 @@ uint32_t md_render_mol_emit(const md_render_mol_topo_t* topo, md_gpu_addr_t dyna
        radius 0 is not drawn */
     const md_render_mol_bond_style_t* style = rep->bond_style ? rep->bond_style : md_render_mol_bond_styles;
     if (sticks) {
-        for (uint32_t c = 0; c < MD_RENDER_MOL_BOND_KIND_COUNT; ++c) {
-            const md_render_mol_bond_style_t* st = &style[c];
-            if (!(st->radius >= 0.0f && st->dash >= 0.0f && st->gap >= 0.0f && st->radius < FLT_MAX && st->dash < FLT_MAX && st->gap < FLT_MAX)) {
-                MD_LOG_ERROR("md_render_mol: bond_style[%u] is {radius %g, dash %g, gap %g}: each finite and >= 0", c, st->radius, st->dash, st->gap);
-                return 0;
-            }
-            if (st->radius == 0.0f) kinds &= ~(1u << c);
-        }
+        if (!bond_styles_valid(style)) return 0;
+        for (uint32_t c = 0; c < MD_RENDER_MOL_BOND_KIND_COUNT; ++c) if (style[c].radius == 0.0f) kinds &= ~(1u << c);
     }
     const md_render_mol_bond_style_t* cov = &style[COVALENT];
     uint32_t n = 0;
@@ -3127,6 +3145,7 @@ uint32_t md_render_mol_emit(const md_render_mol_topo_t* topo, md_gpu_addr_t dyna
             b.count = end - beg;
             b.index = topo->bond_pairs + (md_gpu_addr_t)beg * 8u;
             b.id    = topo->bond_ids   + (md_gpu_addr_t)beg * 4u;
+            b.id_visible     = rep->bond_visible;         /* and the multiple sticks, below */
             b.cluster_offset = topo->bond_cluster_offset[c];
             b.cluster_count  = topo->bond_cluster_count[c];
             b.style.capsules.radius = stick_radius * style[c].radius;
@@ -3187,6 +3206,7 @@ uint32_t md_render_mol_emit(const md_render_mol_topo_t* topo, md_gpu_addr_t dyna
                     bc.count = cnt;
                     bc.index = topo->aromatic_points[k] + (md_gpu_addr_t)first * nc * 4u;
                     bc.id    = topo->aromatic_ring[k]   + (md_gpu_addr_t)first * 4u;
+                    bc.id_visible = rep->ring_visible;
                     bc.style.polygons.corners = nc;
                     bc.style.polygons.radius  = tube;
                     bc.style.polygons.inset   = inset;
@@ -3210,6 +3230,7 @@ uint32_t md_render_mol_emit(const md_render_mol_topo_t* topo, md_gpu_addr_t dyna
                 bp.count = topo->partner_count;
                 bp.index = topo->partner_points;
                 bp.id    = topo->partner_bond;
+                bp.id_visible = rep->bond_visible;
                 bp.style.capsules.radius      = tube;
                 bp.style.capsules.offset      = inset / tube;
                 bp.style.capsules.side        = dynamic + dyn_of(topo).prt_side;
@@ -3220,6 +3241,7 @@ uint32_t md_render_mol_emit(const md_render_mol_topo_t* topo, md_gpu_addr_t dyna
             }
         }
         put_gaps(out, cap, &n, &base, topo, rep, 1, CHAIN_GAP_RADIUS_LINK * stick_radius, dash_ends);
+        if (rep->pairs) put_pairs(out, cap, &n, &base, topo, dynamic, rep, style, kinds, stick_radius, dash_ends);
     }
     if (spheres && topo->point_count) {
         md_render_batch_t b = base;

@@ -137,6 +137,7 @@ enum {
     F_SIDE         = 1u << 24,
     F_CIRCLE       = 1u << 25,
     F_FADE_KEY     = 1u << 26,
+    F_ID_VISIBLE   = 1u << 27,
 };
 
 typedef struct gpu_batch_t {
@@ -163,7 +164,7 @@ typedef struct gpu_batch_t {
     float         cap_trim;                                       /* CAPSULES displaced: their ends pulled in */
     float         spl_scale;                                      /* SPLINES: of the profile */
     md_gpu_addr_t fade_key;                                       /* F_FADE_KEY: the point standing for each point */
-    uint32_t      _bpad0, _bpad1;
+    md_gpu_addr_t id_visible;                                     /* F_ID_VISIBLE: bitset over the ids */
 } gpu_batch_t;
 _Static_assert(sizeof(gpu_batch_t) == 352, "Batch mirror");
 
@@ -646,6 +647,7 @@ static void canonical_geometry(md_render_batch_t* out, const md_render_batch_t* 
     out->index           = b->index;
     out->index_map       = b->index_map;
     out->id              = b->id;
+    out->id_visible      = b->id_visible;
     out->cluster_offset  = b->cluster_offset;
     out->cluster_count   = b->cluster_offset ? b->cluster_count : 0;
     if (b->kind == MD_RENDER_SPHERES) {
@@ -758,8 +760,8 @@ static bool validate(const md_render_frame_t* f) {
                 MD_LOG_ERROR("md_render: batch %u: splines need an index (control points and their flags)", i);
                 return false;
             }
-            if (b->index_map) {
-                MD_LOG_ERROR("md_render: batch %u: splines take no index map", i);
+            if (b->index_map || b->id_visible) {
+                MD_LOG_ERROR("md_render: batch %u: splines take no index map and no visibility by id", i);
                 return false;
             }
             break;
@@ -841,14 +843,15 @@ static uint32_t batch_clusters(const md_render_batch_t* b) {
 }
 
 /* Two batches whose cluster bounds are the same refit: the same points,
-   index, clusters, visibility, state and style; not the same key, ids,
-   velocities, colours or instances */
+   index, clusters, visibility, state and style; not the same key, ids (unless
+   they are what is visible), velocities, colours or instances */
 static bool bounds_shared(const md_render_batch_t* a, const md_render_batch_t* b) {
     md_render_batch_t x, y;
     canonical_geometry(&x, a);
     canonical_geometry(&y, b);
     x.key = y.key = 0;
-    x.id = y.id = 0;
+    if (!x.id_visible) x.id = 0;
+    if (!y.id_visible) y.id = 0;
     x.points.velocity = y.points.velocity = 0;
     x.points.velocity_stride = y.points.velocity_stride = 0;
     memset(&x.fade, 0, sizeof(x.fade));                     /* the bounds do not depend on it */
@@ -966,7 +969,7 @@ static bool gpu_realloc(md_gpu_stream_t s, md_gpu_addr_t* addr, size_t* cap, siz
    that speculates loads out of branches would do the same. */
 static void no_null(gpu_batch_t* g, md_gpu_addr_t zero) {
     md_gpu_addr_t* opt[] = { &g->position, &g->velocity, &g->radius, &g->attr_index, &g->color, &g->palette_index, &g->palette,
-                             &g->visible0, &g->visible1, &g->marks, &g->index_map, &g->index, &g->id, &g->radius_scale,
+                             &g->visible0, &g->visible1, &g->marks, &g->index_map, &g->index, &g->id, &g->id_visible, &g->radius_scale,
                              &g->radius_table, &g->cluster_offset, &g->spl_axis, &g->spl_profile, &g->cap_side, &g->fade_key };
     for (size_t i = 0; i < sizeof(opt) / sizeof(opt[0]); ++i) if (!*opt[i]) *opt[i] = zero;
 }
@@ -1003,11 +1006,13 @@ static void fill_batch(gpu_batch_t* g, const md_render_batch_t* b, uint32_t n_in
     g->index          = b->index;
     g->index_map      = b->index_map;
     g->id             = b->id;
+    g->id_visible     = b->id_visible;
     g->transforms      = xf;
     g->transforms_prev = xf_prev;
     uint32_t f = 0;
     if (b->index)          f |= F_INDEX;
     if (b->index_map)      f |= F_INDEX_MAP;
+    if (b->id_visible)     f |= F_ID_VISIBLE;
     if (p->velocity)       f |= F_VELOCITY;
     if (g->radius)         f |= F_RADIUS;
     if (g->radius_table)   f |= F_RADIUS_TABLE;

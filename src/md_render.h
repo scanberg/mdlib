@@ -452,6 +452,14 @@ typedef struct md_render_batch_t {
        the bond a capsule stands for. 0: the index. */
     md_gpu_addr_t      id;
 
+    /* A bitset (uint32 words, bit i of word i / 32) over the elements' ids
+       (`id`, else their index): an element whose bit is clear is not drawn,
+       picked or marked, as one of an attribute that is not visible. Of what
+       the elements stand for (the bonds of a frame, some of which broke).
+       Part of the geometry (MD_RENDER_CONTENT_GEOMETRY). 0: every one. Not
+       SPLINES. */
+    md_gpu_addr_t      id_visible;
+
     /* Clusters: the first level of the cull. Cluster c is the elements
        cluster_offset[c] .. cluster_offset[c + 1] (uint32 [cluster_count + 1],
        in element order, as `index` orders them), less cluster_offset[0] (a
