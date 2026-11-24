@@ -93,7 +93,8 @@ static const uint F_DISPLACED    = 1u << 23;  // CAPSULES: moved off their point
 static const uint F_SIDE         = 1u << 24;  // ... along cap_side
 static const uint F_CIRCLE       = 1u << 25;  // POLYGONS: the circle inside each (poly_inset, poly_dashes)
 static const uint F_FADE_KEY     = 1u << 26;  // SPHERES, CAPSULES: each point's fade by the point fade_key gives
-static const uint F_ID_VISIBLE   = 1u << 27;  // SPHERES, CAPSULES, POLYGONS: visible by their ids (id_visible)
+static const uint F_ID_VISIBLE0  = 1u << 27;  // SPHERES, CAPSULES, POLYGONS: visible by their ids (id_visible0, 1)
+static const uint F_ID_VISIBLE1  = 1u << 28;
 
 // md_render_kind_t
 static const uint KIND_SPHERES  = 1u;
@@ -182,7 +183,9 @@ struct Batch {
     float   cap_trim;           // CAPSULES displaced: their ends pulled in by this of their length
     float   spl_scale;          // SPLINES: the profile's a and r times this
     uint*   fade_key;           // F_FADE_KEY: per point, the point that stands for it in the fade
-    uint*   id_visible;         // F_ID_VISIBLE: bitset over the elements' ids
+    uint*   id_visible0;        // F_ID_VISIBLE0, 1: bitsets over the elements' ids, ANDed
+    uint*   id_visible1;
+    uint    _bpad0, _bpad1;
 };
 
 // The per-view lists the cull writes and everything after it reads. Cluster
@@ -336,11 +339,13 @@ bool attr_visible(Batch b, uint a) {
     return true;
 }
 
-// Element e by its id (F_ID_VISIBLE): what it stands for shown
+// Element e by its id (F_ID_VISIBLE0, 1): what it stands for shown
 bool id_visible(Batch b, uint e) {
-    if ((b.flags & F_ID_VISIBLE) == 0u) return true;
+    if ((b.flags & (F_ID_VISIBLE0 | F_ID_VISIBLE1)) == 0u) return true;
     uint id = ((b.flags & F_ID) != 0u) ? b.id[gated(b, F_ID, e)] : e;
-    return test_bit(b.id_visible, gated(b, F_ID_VISIBLE, id));
+    if ((b.flags & F_ID_VISIBLE0) != 0u && !test_bit(b.id_visible0, gated(b, F_ID_VISIBLE0, id))) return false;
+    if ((b.flags & F_ID_VISIBLE1) != 0u && !test_bit(b.id_visible1, gated(b, F_ID_VISIBLE1, id))) return false;
+    return true;
 }
 
 // The marks of attribute a: the state bits (0, 1) and the tag (2..4); 0 with

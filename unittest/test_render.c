@@ -12,6 +12,9 @@
 #include <md_infer.h>
 #include <md_backbone.h>
 #include <md_ring.h>
+#include <md_bond.h>
+#include <md_chem.h>
+#include <md_xyz.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_str.h>
 
@@ -5340,52 +5343,97 @@ static bool mol_draw(fix_t* fx, md_render_view_t v, const md_render_mol_topo_t* 
            f_read(fx, md_render_view_targets(v).motion, motion, W * H * 4);
 }
 
-/* The bonds of a frame (md_bond_delta_t): a licorice whose bond mask hides
-   every third bond of the system (protein and water: through a regroup
-   that moves the waters' bonds) and draws them again as the caller's pairs
-   draws what the licorice of every bond draws, depth and motion; without
-   the pairs, less; a pick of a pair reports its id, never a hidden bond.
-   With the bond orders, the bonds hidden take their multiple sticks and
-   dashed partners along, the rings hidden their circles: all of them
-   hidden, what a licorice of no sticks draws */
-UTEST(render, mol_bond_mask_and_pairs) {
+/* Depth and motion of two draws compared: pixels of another depth, of
+   another motion where the depth is the same (by more than a twentieth of a
+   pixel: a tie at a joint between two sticks' round ends goes to either,
+   llvmpipe from run to run, and their motions there differ by a rounding) */
+static void depth_motion_off(const float* d0, const uint32_t* m0, const float* d1, const uint32_t* m1, uint32_t n, int* covered, int* depth_off,
+                             int* motion_off) {
+    *covered = *depth_off = *motion_off = 0;
+    for (uint32_t i = 0; i < n; ++i) {
+        *covered   += d0[i] > 0.0f;
+        *depth_off += d1[i] != d0[i];
+        if (!(d0[i] > 0.0f) || d1[i] != d0[i] || m1[i] == m0[i]) continue;
+        const float dm = fmaxf(fabsf(half_bits_to_float(m1[i] & 0xFFFFu) - half_bits_to_float(m0[i] & 0xFFFFu)),
+                               fabsf(half_bits_to_float(m1[i] >> 16) - half_bits_to_float(m0[i] >> 16)));
+        *motion_off += dm > 0.05f;
+    }
+}
+
+/* A frame's bonds (md_render_mol_bonds_t) that are the system's draw what
+   the system draws, through a regroup that moves the waters (and their
+   bonds). Without a chemistry: every third bond broken and formed again,
+   the sticks (a pick of one formed reports its id, sys->bond.count past
+   its index, never a broken bond); only broken, less. With the whole system
+   as the region (md_chem_delta_t of every atom, bond and ring, as perceived)
+   and the bond orders: its sticks, multiple sticks, circles and partners,
+   all of them the frame's own */
+UTEST(render, mol_frame_bonds_draw_the_system) {
     fix_t fx;
     if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
     ASSERT_TRUE(load_system(&sys, &state, MD_UNITTEST_DATA_DIR "/tryptophan-md.gro"));
-    const uint32_t n = (uint32_t)sys.atom.count;
+    const uint32_t n = (uint32_t)sys.atom.count, count = (uint32_t)sys.bond.count;
     uint64_t content[MD_RENDER_CONTENT_COUNT] = {0};
     md_temp_scope_t temp = md_temp_begin();
     md_render_mol_plan_t plan;
     ASSERT_TRUE(md_render_mol_plan(&plan, &sys, NULL, temp));
     md_render_mol_topo_t topo;
     ASSERT_TRUE(md_render_mol_write(fx.gfx, &topo, &plan, md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, plan.size).gpu, content));
-    md_temp_end(temp);
     ASSERT_GT(topo.small_bond_count, 100u);
-    ASSERT_GT(topo.order_count[0] + topo.aromatic_count[3] + topo.aromatic_count[2], 0u);
+    ASSERT_GT(topo.orders.order_count[0], 0u);
+    ASSERT_GT(topo.orders.aromatic_count[3] + topo.orders.aromatic_count[2], 0u);
     md_render_mol_ctx_t kernels = md_render_mol_create(fx.dev, NULL);
     ASSERT_TRUE(kernels != NULL);
     md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size_velocity).gpu;
 
-    /* every third covalent bond hidden, and as pairs */
-    const uint32_t nb = (uint32_t)(sys.bond.count + sys.bond.interaction_count), words = (nb + 31) / 32;
-    const uint32_t kv = MD_RENDER_MOL_BOND_KIND(MD_BOND_KIND_COVALENT);
-    uint32_t* mask = malloc(words * 4);
-    memset(mask, 0xFF, words * 4);
-    uint32_t* pairs = malloc((size_t)nb * 8);
-    uint32_t* ids   = malloc((size_t)nb * 4);
-    uint32_t np = 0;
-    for (uint32_t i = 0; i < (uint32_t)sys.bond.count; ++i) {
-        if (i % 3 || MD_RENDER_MOL_BOND_KIND(md_bond_kind(sys.bond.flags[i])) != kv) continue;
-        mask[i >> 5] &= ~(1u << (i & 31));
-        pairs[2 * np] = sys.bond.pairs[i].idx[0]; pairs[2 * np + 1] = sys.bond.pairs[i].idx[1]; ids[np++] = i;
+    /* every third covalent bond broken and formed again (its flags kept) */
+    md_bitmask_t broken = md_bitmask_create(0, count, alloc);
+    md_atom_pair_t*  fpair = md_alloc(alloc, ((size_t)count + 1) * sizeof(md_atom_pair_t));
+    md_bond_flags_t* fflag = md_alloc(alloc, ((size_t)count + 1) * sizeof(md_bond_flags_t));
+    uint32_t nf = 0;
+    for (uint32_t i = 0; i < count; ++i) {
+        if (i % 3 || md_bond_kind(sys.bond.flags[i]) != MD_BOND_KIND_COVALENT) continue;
+        md_bitmask_set_bit(&broken, i);
+        fpair[nf] = sys.bond.pairs[i];
+        fflag[nf++] = sys.bond.flags[i];
     }
-    ASSERT_GT(np, 1000u);
-    uint32_t offset[MD_RENDER_MOL_BOND_KIND_COUNT + 1];
-    for (uint32_t k = 0; k <= MD_RENDER_MOL_BOND_KIND_COUNT; ++k) offset[k] = k <= kv ? 0 : np;
-    uint32_t* none = calloc(words + 64, 4);     /* every bond and ring hidden */
+    ASSERT_GT(nf, 1000u);
+    md_bond_delta_t again  = { .broken = md_bitmask_view(&broken), .num_formed = nf, .formed_pair = fpair, .formed_flags = fflag };
+    md_bond_delta_t gone   = { .broken = md_bitmask_view(&broken) };
+    /* the whole system as the region, as perceived */
+    md_chem_delta_t whole = {0};
+    whole.num_atoms  = n;
+    whole.atom_idx   = md_alloc(alloc, (size_t)n * sizeof(int32_t));
+    whole.atom_flags = md_alloc(alloc, (size_t)n * sizeof(md_atom_flags_t));
+    for (uint32_t i = 0; i < n; ++i) { whole.atom_idx[i] = (int32_t)i; whole.atom_flags[i] = sys.atom.flags[i]; }
+    whole.bond_idx   = md_alloc(alloc, ((size_t)count + 1) * 4u);
+    whole.bond_flags = md_alloc(alloc, ((size_t)count + 1) * sizeof(md_bond_flags_t));
+    for (uint32_t i = 0; i < count; ++i) {
+        if (md_bond_kind(sys.bond.flags[i]) != MD_BOND_KIND_COVALENT) continue;
+        whole.bond_idx[whole.num_bonds] = i;
+        whole.bond_flags[whole.num_bonds++] = sys.bond.flags[i];
+    }
+    whole.ring = sys.ring;
+    const md_bond_delta_t none = {0};
+
+    md_render_mol_bonds_t fb[3];
+    const md_bond_delta_t* deltas[3] = { &again, &gone, &none };
+    const md_chem_delta_t* chems[3]  = { NULL, NULL, &whole };
+    for (int k = 0; k < 3; ++k) {
+        md_render_mol_bonds_plan_t bp;
+        ASSERT_TRUE(md_render_mol_bonds_plan(&bp, &sys, NULL, NULL, deltas[k], chems[k], temp));
+        ASSERT_TRUE(md_render_mol_bonds_write(fx.gfx, &fb[k], &bp, md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, bp.size).gpu, content));
+    }
+    EXPECT_EQ(nf, fb[0].pair_offset[MD_RENDER_MOL_BOND_KIND_COUNT]);
+    EXPECT_EQ(0u, fb[1].pair_offset[MD_RENDER_MOL_BOND_KIND_COUNT]);
+    EXPECT_EQ(topo.orders.order_count[0], fb[2].orders.order_count[0]);
+    EXPECT_EQ(topo.orders.order_count[1], fb[2].orders.order_count[1]);
+    EXPECT_EQ(topo.orders.partner_count, fb[2].orders.partner_count);
+    for (uint32_t k = 0; k < MD_RENDER_MOL_RING_SIZES; ++k) EXPECT_EQ(topo.orders.aromatic_count[k], fb[2].orders.aromatic_count[k]);
+    md_temp_end(temp);
 
     float cell[9];
     md_render_mol_frame_cell(cell, &state.unitcell);
@@ -5397,22 +5445,23 @@ UTEST(render, mol_bond_mask_and_pairs) {
     memcpy(atoms.cell, cell, sizeof(cell));
     atoms.velocity_dt = 1.0f;
 
-    md_render_mol_rep_t full = {0};
-    full.key = 5; full.type = MD_RENDER_MOL_REP_LICORICE; full.params.licorice.radius = 0.25f;
-    md_render_mol_rep_t hidden = full, back = full;
-    hidden.bond_visible = back.bond_visible = f_buf(&fx, mask, words * 4);
-    back.pairs = f_buf(&fx, pairs, (size_t)np * 8); back.pair_id = f_buf(&fx, ids, (size_t)np * 4); back.pair_offset = offset;
-
+    md_render_mol_rep_t rep = {0};
+    rep.key = 5; rep.type = MD_RENDER_MOL_REP_LICORICE; rep.params.licorice.radius = 0.25f;
     float lo[3] = { 1e30f, 1e30f, 1e30f }, hi[3] = { -1e30f, -1e30f, -1e30f };
     for (uint32_t i = 0; i < n; ++i) for (int k = 0; k < 3; ++k) { lo[k] = fminf(lo[k], x[3 * i + k]); hi[k] = fmaxf(hi[k], x[3 * i + k]); }
     const uint32_t W = 192, H = 192;
     cam_t c = { .ortho = true, .half_h = 0.6f * fmaxf(hi[0] - lo[0], hi[1] - lo[1]) + 2.0f, .aspect = 1.0f, .n = 0.0f, .far_ = 1000.0f };
     md_render_camera_t cam = make_camera(&c);
     cam.view[12] = -0.5f * (lo[0] + hi[0]); cam.view[13] = -0.5f * (lo[1] + hi[1]); cam.view[14] = -(hi[2] + 40.0f);
-    md_render_view_t vf = md_render_view_create(fx.r, "full"), vh = md_render_view_create(fx.r, "hidden");
-    ASSERT_TRUE(vf != NULL && vh != NULL);
-    float* df = malloc(W * H * 4); float* dh = malloc(W * H * 4); float* db = malloc(W * H * 4);
-    uint32_t* mf = malloc(W * H * 4); uint32_t* mh = malloc(W * H * 4); uint32_t* mb = malloc(W * H * 4);
+    /* a view per draw, each drawn once a step: the motion over the same time */
+    md_render_view_t vs[2], vf[2][3];
+    for (int o = 0; o < 2; ++o) {
+        vs[o] = md_render_view_create(fx.r, "system");
+        ASSERT_TRUE(vs[o] != NULL);
+        for (int k = 0; k < 3; ++k) { vf[o][k] = md_render_view_create(fx.r, "frame"); ASSERT_TRUE(vf[o][k] != NULL); }
+    }
+    float* d0 = malloc(W * H * 4); float* d1 = malloc(W * H * 4);
+    uint32_t* m0 = malloc(W * H * 4); uint32_t* m1 = malloc(W * H * 4);
 
     /* a frame, then every atom a little further and every fifth small
        molecule across the cell: regrouped */
@@ -5422,94 +5471,299 @@ UTEST(render, mol_bond_mask_and_pairs) {
             const md_molecule_data_t* M = &sys.molecule;
             for (size_t m = 0; m < M->count; ++m) {
                 if (M->offset[m + 1] - M->offset[m] > MD_RENDER_MOL_SMALL || m % 5) continue;
-                for (uint32_t s = M->offset[m]; s < M->offset[m + 1]; ++s) for (int k = 0; k < 3; ++k) x[3 * M->atom_idx[s] + k] += cell[k];
+                for (uint32_t q = M->offset[m]; q < M->offset[m + 1]; ++q) for (int k = 0; k < 3; ++k) x[3 * M->atom_idx[q] + k] += cell[k];
             }
             md_gpu_upload(fx.gfx, P, x, (size_t)n * 12);
         }
+        /* one update a step, with the bonds whose orders want sides (theirs
+           kept in their block, so the other draws need none) */
+        atoms.bonds = &fb[2];
         ASSERT_TRUE(md_render_mol_update(kernels, fx.gfx, &topo, dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, content));
-        ASSERT_TRUE(mol_draw(&fx, vf, &topo, dyn, &atoms, &full, cam, W, H, content, step, df, mf));
-        ASSERT_TRUE(mol_draw(&fx, vh, &topo, dyn, &atoms, &hidden, cam, W, H, content, step, dh, mh));
-        ASSERT_TRUE(mol_draw(&fx, fx.view, &topo, dyn, &atoms, &back, cam, W, H, content, step, db, mb));
-        /* the motion where the depth is the same, within a twentieth of a
-           pixel: a tie at a joint (two sticks' round ends, one a pair, the
-           other a bond of the system) goes to either (llvmpipe: from run to
-           run), whose motions there differ by a rounding (up to 0.007 seen) */
-        int covered = 0, hidden_off = 0, back_off = 0, motion_off = 0, moving = 0;
-        float worst = 0.0f;
-        for (uint32_t i = 0; i < W * H; ++i) {
-            covered    += df[i] > 0.0f;
-            hidden_off += dh[i] != df[i];
-            back_off   += db[i] != df[i];
-            moving     += df[i] > 0.0f && mf[i] != 0;
-            if (!(df[i] > 0.0f) || mb[i] == mf[i]) continue;
-            const float d = fmaxf(fabsf(half_bits_to_float(mb[i] & 0xFFFFu) - half_bits_to_float(mf[i] & 0xFFFFu)),
-                                  fabsf(half_bits_to_float(mb[i] >> 16) - half_bits_to_float(mf[i] >> 16)));
-            worst = fmaxf(worst, d);
-            motion_off += d > 0.05f;
+        for (int orders = 0; orders < 2; ++orders) {
+            rep.bond_orders = orders != 0;
+            atoms.bonds = NULL;
+            ASSERT_TRUE(mol_draw(&fx, vs[orders], &topo, dyn, &atoms, &rep, cam, W, H, content, step, d0, m0));
+            int moving = 0;
+            for (uint32_t i = 0; i < W * H; ++i) moving += d0[i] > 0.0f && m0[i] != 0;
+            if (step == 1) EXPECT_GT(moving, (int)(W * H / 40));
+            for (int k = 0; k < 3; ++k) {
+                if (orders != (k == 2) && k != 1) continue;
+                atoms.bonds = &fb[k];
+                ASSERT_TRUE(mol_draw(&fx, vf[orders][k], &topo, dyn, &atoms, &rep, cam, W, H, content, step, d1, m1));
+                int covered, depth_off, motion_off;
+                depth_motion_off(d0, m0, d1, m1, W * H, &covered, &depth_off, &motion_off);
+                static const char* what[3] = { "every third bond broken and formed again", "every third bond broken", "the region the whole system" };
+                printf("    step %d, %s, %s: %d of %d pixels of another depth (%d moving), %d of another motion\n", step, orders ? "bond orders" : "sticks",
+                       what[k], depth_off, covered, moving, motion_off);
+                EXPECT_GT(covered, (int)(W * H / 20));
+                if (k == 1) {
+                    EXPECT_GT(depth_off, covered / 50);
+                    continue;
+                }
+                EXPECT_EQ(0, depth_off);
+                EXPECT_EQ(0, motion_off);
+                if (k != 0 || step != 1) continue;
+                /* picks: a formed bond reports its id, never a broken one */
+                int formed_hits = 0, broken_hits = 0, bond_hits = 0;
+                for (uint32_t i = 0; i < W * H && formed_hits < 4; i += 37) {
+                    if (!(d1[i] > 0.0f)) continue;
+                    md_render_pick_t pk;
+                    md_render_mol_hit_t h;
+                    if (!md_render_view_pick(fx.gfx, vf[orders][k], i % W, i / W)) continue;
+                    md_gpu_stream_sync(fx.gfx);
+                    if (!md_render_view_pick_result(vf[orders][k], &pk) || !md_render_mol_decode_pick(&pk, &h)) continue;
+                    if (h.kind == MD_RENDER_MOL_HIT_PAIR) {
+                        formed_hits++;
+                        ASSERT_GE(h.bond, count);
+                        ASSERT_LT(h.bond - count, nf);
+                        const md_atom_pair_t bp = fpair[h.bond - count];
+                        EXPECT_TRUE(h.atom == (uint32_t)bp.idx[0] || h.atom == (uint32_t)bp.idx[1]);
+                    } else if (h.kind == MD_RENDER_MOL_HIT_BOND) {
+                        bond_hits++;
+                        broken_hits += h.bond < count && md_bitmask_test_bit(&broken, h.bond);
+                    }
+                }
+                printf("    picks: %d of formed bonds, %d of bonds, %d of broken ones\n", formed_hits, bond_hits, broken_hits);
+                EXPECT_GT(formed_hits, 0);
+                EXPECT_GT(bond_hits, 0);
+                EXPECT_EQ(0, broken_hits);
+            }
         }
-        printf("    step %d: %d pixels, %d moving; hidden: %d of another depth; given back as pairs: %d of another depth, %d of another motion (by %.2g at most)\n",
-               step, covered, moving, hidden_off, back_off, motion_off, worst);
-        EXPECT_GT(covered, (int)(W * H / 20));
-        EXPECT_GT(hidden_off, covered / 50);
-        EXPECT_EQ(0, back_off);
-        EXPECT_EQ(0, motion_off);
-        if (step == 1) EXPECT_GT(moving, covered / 2);
     }
-
-    /* picks: a pair reports its id (a hidden bond), a bond never a hidden one */
-    int pair_hits = 0, bond_hits = 0, hidden_hits = 0;
-    for (uint32_t i = 0; i < W * H && pair_hits < 4; i += 37) {
-        if (!(db[i] > 0.0f)) continue;
-        md_render_pick_t pk;
-        md_render_mol_hit_t h;
-        if (!f_pick(&fx, i % W, i / W, &pk) || !md_render_mol_decode_pick(&pk, &h)) continue;
-        if (h.kind == MD_RENDER_MOL_HIT_PAIR) {
-            pair_hits++;
-            ASSERT_LT(h.bond, nb);
-            EXPECT_EQ(0u, (mask[h.bond >> 5] >> (h.bond & 31)) & 1u);
-            const md_atom_pair_t bp = sys.bond.pairs[h.bond];
-            EXPECT_TRUE(h.atom == (uint32_t)bp.idx[0] || h.atom == (uint32_t)bp.idx[1]);
-        } else if (h.kind == MD_RENDER_MOL_HIT_BOND) {
-            bond_hits++;
-            hidden_hits += h.bond < nb && !((mask[h.bond >> 5] >> (h.bond & 31)) & 1u);
-        }
-    }
-    printf("    picks: %d of pairs, %d of bonds, %d of hidden bonds\n", pair_hits, bond_hits, hidden_hits);
-    EXPECT_GT(pair_hits, 0);
-    EXPECT_GT(bond_hits, 0);
-    EXPECT_EQ(0, hidden_hits);
-
-    /* the orders: every bond and ring hidden, as no sticks at all */
-    md_render_mol_bond_style_t zero[MD_RENDER_MOL_BOND_KIND_COUNT];
-    memset(zero, 0, sizeof(zero));
-    md_render_mol_rep_t orders = full;
-    orders.bond_orders = true;
-    md_render_mol_rep_t sticks_none = orders, rings_kept = orders;
-    sticks_none.bond_style = zero;
-    orders.bond_visible = orders.ring_visible = rings_kept.bond_visible = f_buf(&fx, none, (words + 64) * 4);
-    ASSERT_TRUE(mol_draw(&fx, vf, &topo, dyn, &atoms, &sticks_none, cam, W, H, content, 2.0, df, mf));
-    ASSERT_TRUE(mol_draw(&fx, vh, &topo, dyn, &atoms, &orders, cam, W, H, content, 2.0, dh, mh));
-    ASSERT_TRUE(mol_draw(&fx, fx.view, &topo, dyn, &atoms, &rings_kept, cam, W, H, content, 2.0, db, mb));
-    int orders_off = 0, rings_off = 0;
-    for (uint32_t i = 0; i < W * H; ++i) { orders_off += dh[i] != df[i]; rings_off += db[i] != df[i]; }
-    printf("    bond orders, every bond hidden: %d pixels of another depth than no sticks; the rings kept: %d\n", orders_off, rings_off);
-    EXPECT_EQ(0, orders_off);
-    EXPECT_GT(rings_off, 0);
-
-    /* refused: pairs without offsets, or on a representation without sticks */
-    md_render_mol_rep_t bad = back;
-    bad.pair_offset = NULL;
-    EXPECT_EQ(0u, md_render_mol_emit(&topo, dyn, &atoms, &bad, NULL, 0));
-    bad = back;
-    bad.type = MD_RENDER_MOL_REP_SPACEFILL; bad.params.spacefill.radius_scale = 1.0f;
+    /* refused: pairs on anything but PAIRS */
+    md_render_mol_rep_t bad = rep;
+    uint32_t offs[MD_RENDER_MOL_BOND_KIND_COUNT + 1] = {0};
+    bad.pairs = fb[0].pairs; bad.pair_offset = offs;
     EXPECT_EQ(0u, md_render_mol_emit(&topo, dyn, &atoms, &bad, NULL, 0));
 
-    free(df); free(dh); free(db); free(mf); free(mh); free(mb);
-    free(x); free(mask); free(none); free(pairs); free(ids);
-    md_render_view_destroy(fx.gfx, vf);
-    md_render_view_destroy(fx.gfx, vh);
+    free(d0); free(d1); free(m0); free(m1); free(x);
+    for (int o = 0; o < 2; ++o) {
+        md_render_view_destroy(fx.gfx, vs[o]);
+        for (int k = 0; k < 3; ++k) md_render_view_destroy(fx.gfx, vf[o][k]);
+    }
+    md_gpu_free(fx.gfx, P);
+    for (int k = 0; k < 3; ++k) md_gpu_free(fx.gfx, fb[k].bond_visible);
+    md_gpu_free(fx.gfx, dyn);
+    md_gpu_free(fx.gfx, topo.base);
+    md_render_mol_destroy(kernels);
+    md_vm_arena_destroy(alloc);
+    f_close(&fx);
+}
+
+/* Benzene, a small molecule (12 atoms): its circle drawn (md_render_mol's
+   small molecules regroup, their orders through each atom's point), picked
+   where the molecule is, before and after the regroup moves them */
+UTEST(render, mol_small_molecule_orders) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
+    /* 27 benzenes in the xy plane, 9 apart in a box of 27 */
+    char* pdb = md_alloc(alloc, 1 << 16);
+    int len = sprintf(pdb, "CRYST1   27.000   27.000   27.000  90.00  90.00  90.00 P 1           1\n");
+    int serial = 1;
+    for (int m = 0; m < 27; ++m) {
+        const float cx = 4.5f + 9.0f * (float)(m % 3), cy = 4.5f + 9.0f * (float)((m / 3) % 3), cz = 4.5f + 9.0f * (float)(m / 9);
+        for (int e = 0; e < 2; ++e) {
+            for (int k = 0; k < 6; ++k) {
+                const float a = 1.0471976f * (float)k, r = e ? 2.479f : 1.39f;
+                len += sprintf(pdb + len, "HETATM%5d %-4s BNZ A%4d    %8.3f%8.3f%8.3f  1.00  0.00          %2s\n", serial++, e ? " H" : " C", m + 1,
+                               cx + r * cosf(a), cy + r * sinf(a), cz, e ? "H" : "C");
+            }
+        }
+    }
+    len += sprintf(pdb + len, "END\n");
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, (md_str_t){ pdb, (size_t)len }, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
+    const uint32_t n = (uint32_t)sys.atom.count;
+    ASSERT_EQ(27u * 12u, n);
+    uint64_t content[MD_RENDER_CONTENT_COUNT] = {0};
+    md_temp_scope_t temp = md_temp_begin();
+    md_render_mol_plan_t plan;
+    ASSERT_TRUE(md_render_mol_plan(&plan, &sys, NULL, temp));
+    md_render_mol_topo_t topo;
+    ASSERT_TRUE(md_render_mol_write(fx.gfx, &topo, &plan, md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, plan.size).gpu, content));
+    md_temp_end(temp);
+    EXPECT_EQ(27u, topo.small_molecule_count);
+    EXPECT_EQ(27u, topo.orders.aromatic_count[3]);
+    md_render_mol_ctx_t kernels = md_render_mol_create(fx.dev, NULL);
+    ASSERT_TRUE(kernels != NULL);
+    md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size).gpu;
+    float* x = malloc((size_t)n * 12);
+    memcpy(x, state.xyz, (size_t)n * 12);
+    md_gpu_addr_t P = f_buf(&fx, x, (size_t)n * 12);
+    md_render_mol_atoms_t atoms = {0};
+    atoms.position = P;
+    md_render_mol_frame_cell(atoms.cell, &state.unitcell);
+    md_render_mol_rep_t rep = {0};
+    rep.key = 3; rep.type = MD_RENDER_MOL_REP_LICORICE; rep.params.licorice.radius = 0.2f; rep.bond_orders = true;
+    const uint32_t W = 256, H = 256;
+    cam_t c = { .ortho = true, .half_h = 16.0f, .aspect = 1.0f, .n = 0.0f, .far_ = 1000.0f };
+    md_render_camera_t cam = make_camera(&c);
+    cam.view[12] = -13.5f; cam.view[13] = -13.5f; cam.view[14] = -100.0f;
+    float* depth = malloc(W * H * 4);
+    uint32_t* motion = malloc(W * H * 4);
+    /* each benzene of the front layer (z 22.5) picked on its circle: the
+       apothem 1.204 less the inset 0.38, towards an edge's middle */
+    for (int step = 0; step < 2; ++step) {
+        if (step == 1) {        /* every molecule a third of the box along x, wrapped: regrouped */
+            for (uint32_t i = 0; i < n; ++i) { x[3 * i] += 9.0f; if (x[3 * i] > 27.0f) x[3 * i] -= 27.0f; }
+            md_gpu_upload(fx.gfx, P, x, (size_t)n * 12);
+        }
+        ASSERT_TRUE(md_render_mol_update(kernels, fx.gfx, &topo, dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, content));
+        ASSERT_TRUE(mol_draw(&fx, fx.view, &topo, dyn, &atoms, &rep, cam, W, H, content, step, depth, motion));
+        int rings = 0, right = 0;
+        for (int m = 18; m < 27; ++m) {
+            float cx = 0, cy = 0;
+            for (int k = 0; k < 6; ++k) { cx += x[3 * (12 * m + k)] / 6.0f; cy += x[3 * (12 * m + k) + 1] / 6.0f; }
+            const float px = cx + 0.824f * cosf(0.5235988f), py = cy + 0.824f * sinf(0.5235988f);
+            md_render_pick_t pk;
+            md_render_mol_hit_t h;
+            const uint32_t sx = (uint32_t)(((px + cam.view[12]) / c.half_h * 0.5f + 0.5f) * W);
+            const uint32_t sy = (uint32_t)((0.5f - (py + cam.view[13]) / c.half_h * 0.5f) * H);
+            if (!f_pick(&fx, sx, sy, &pk) || !md_render_mol_decode_pick(&pk, &h)) continue;
+            rings += h.kind == MD_RENDER_MOL_HIT_RING;
+            right += h.kind == MD_RENDER_MOL_HIT_RING && h.atom / 12u == (uint32_t)m && md_ring_atoms(&sys.ring, h.ring)[0] / 12 == m;
+        }
+        printf("    step %d: %d of the 9 front benzenes' circles picked, %d as their own\n", step, rings, right);
+        EXPECT_EQ(9, rings);
+        EXPECT_EQ(9, right);
+    }
+    free(x); free(depth); free(motion);
     md_gpu_free(fx.gfx, P);
     md_gpu_free(fx.gfx, dyn);
+    md_gpu_free(fx.gfx, topo.base);
+    md_render_mol_destroy(kernels);
+    md_vm_arena_destroy(alloc);
+    f_close(&fx);
+}
+
+/* A Diels-Alder reaction (test_chem's: butadiene and ethylene, as a frame
+   cyclohexene): the frame's bonds as md_chem perceives them. The formed
+   bonds and the region's are the frame's own: one double bond, the middle
+   one of the butadiene, which the system has single; the system's three
+   doubles hidden. Drawn, its sticks pick as that bond */
+static const char render_diels_alder_before[] =
+    "16\n" "diels_alder before\n"
+    "C 0.8500 -0.0113 1.0574\n" "C 1.9229 0.4135 0.3803\n" "C 3.0805 -0.4135 0.1454\n" "C 4.1534 0.0113 -0.5317\n"
+    "C 11.9048 0.0070 0.0359\n" "C 10.5710 -0.0070 -0.0359\n" "H 0.7872 -1.0117 1.4734\n" "H 0.0000 0.6463 1.2104\n"
+    "H 1.9319 1.4272 -0.0150\n" "H 3.0715 -1.4272 0.5408\n" "H 5.0034 -0.6463 -0.6847\n" "H 4.2162 1.0117 -0.9476\n"
+    "H 12.4725 -0.9167 0.0885\n" "H 12.4553 0.9426 0.0434\n" "H 10.0206 -0.9426 -0.0434\n" "H 10.0034 0.9167 -0.0885\n";
+static const float render_diels_alder_after[16][3] = {
+    { 3.4709f, -0.6842f, 0.2563f }, { 3.5206f, 0.6899f, -0.3459f }, { 2.4234f, 1.4151f, -0.6089f }, { 1.0302f, 0.9144f, -0.3607f },
+    { 0.9723f, -0.5923f, -0.0956f }, { 2.0979f, -1.0368f, 0.8345f }, { 4.2226f, -0.7617f, 1.0500f }, { 3.7444f, -1.4108f, -0.5180f },
+    { 4.5024f, 1.1004f, -0.5682f }, { 2.5261f, 2.4139f, -1.0257f }, { 0.3992f, 1.1488f, -1.2256f }, { 0.6155f, 1.4576f, 0.4968f },
+    { 1.0530f, -1.1351f, -1.0462f }, { 0.0000f, -0.8534f, 0.3374f }, { 2.0379f, -2.1168f, 1.0098f }, { 1.9748f, -0.5491f, 1.8101f } };
+
+static int32_t find_bond_of(const md_system_t* sys, int a, int b) {
+    for (size_t i = 0; i < sys->bond.count; ++i) {
+        const md_atom_pair_t p = sys->bond.pairs[i];
+        if ((p.idx[0] == a && p.idx[1] == b) || (p.idx[0] == b && p.idx[1] == a)) return (int32_t)i;
+    }
+    return -1;
+}
+
+UTEST(render, mol_frame_bonds_diels_alder) {
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(md_xyz_system_init_from_str(&sys, &state, md_str_from_cstr(render_diels_alder_before), NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
+    md_system_state_t frame = { .alloc = alloc };
+    md_system_state_init(&frame, 16);
+    for (int i = 0; i < 16; ++i) frame.xyz[i] = (md_float3_t){ render_diels_alder_after[i][0], render_diels_alder_after[i][1], render_diels_alder_after[i][2] };
+    md_bond_delta_t delta = {0};
+    const md_bond_delta_desc_t desc = { .tolerance = MD_BOND_DELTA_TOLERANCE, .breakable = MD_BOND_DELTA_BREAKABLE };
+    ASSERT_TRUE(md_bond_delta_compute(&delta, &sys, &frame, &desc, alloc));
+    ASSERT_EQ(2, (int)delta.num_formed);
+    md_chem_delta_t chem = {0};
+    ASSERT_TRUE(md_chem_perceive_delta(&chem, &sys, &frame, &delta, MD_CHEM_FLAG_PROTONATE_PH7, alloc));
+    const int32_t c12 = find_bond_of(&sys, 1, 2), c01 = find_bond_of(&sys, 0, 1), c23 = find_bond_of(&sys, 2, 3), c45 = find_bond_of(&sys, 4, 5);
+    ASSERT_TRUE(c12 >= 0 && c01 >= 0 && c23 >= 0 && c45 >= 0);
+    const uint32_t count = (uint32_t)sys.bond.count;
+
+    md_temp_scope_t temp = md_temp_begin();
+    md_render_mol_plan_t plan;
+    ASSERT_TRUE(md_render_mol_plan(&plan, &sys, NULL, temp));
+    EXPECT_EQ(3u, plan.layout.orders.order_count[0]);       /* the system's: butadiene's two, ethylene's */
+    md_render_mol_bonds_plan_t bp;
+    ASSERT_TRUE(md_render_mol_bonds_plan(&bp, &sys, NULL, &frame, &delta, &chem, temp));
+    const md_render_mol_bonds_t* L = &bp.layout;
+    const uint8_t* img = bp.data;
+    ASSERT_EQ(1u, L->orders.order_count[0]);
+    EXPECT_EQ(0u, L->orders.order_count[1]);
+    EXPECT_EQ((uint32_t)c12, ((const uint32_t*)(img + L->orders.order_id))[0]);
+    const uint32_t* oa = (const uint32_t*)(img + L->orders.order_atoms);
+    EXPECT_TRUE((oa[0] == 1 && oa[1] == 2) || (oa[0] == 2 && oa[1] == 1));
+    const uint32_t* bv = (const uint32_t*)(img + L->bond_visible);
+    #define BIT(w, i) (((w)[(i) >> 5] >> ((i) & 31)) & 1u)
+    EXPECT_EQ(0u, BIT(bv, (uint32_t)c12));
+    EXPECT_EQ(0u, BIT(bv, (uint32_t)c01));
+    EXPECT_EQ(0u, BIT(bv, (uint32_t)c23));
+    EXPECT_EQ(0u, BIT(bv, (uint32_t)c45));
+    #undef BIT
+    /* the frame's own sticks: every bond of the region but the double, the formed ones among them by their ids */
+    const uint32_t np = L->pair_offset[MD_RENDER_MOL_BOND_KIND_COUNT];
+    const uint32_t* pid = (const uint32_t*)(img + L->pair_id);
+    uint32_t formed_ids = 0;
+    for (uint32_t k = 0; k < np; ++k) { formed_ids += pid[k] >= count; EXPECT_NE((uint32_t)c12, pid[k]); }
+    printf("    the frame's own: %u sticks (%u formed), %u double\n", np, formed_ids, L->orders.order_count[0]);
+    EXPECT_EQ(2u, formed_ids);
+    EXPECT_EQ((uint32_t)chem.num_bonds - 1u, np);
+
+    fix_t fx;
+    if (!f_open(&fx)) { md_temp_end(temp); md_vm_arena_destroy(alloc); UTEST_SKIP(f_skip_reason()); }
+    uint64_t content[MD_RENDER_CONTENT_COUNT] = {0};
+    md_render_mol_topo_t topo;
+    ASSERT_TRUE(md_render_mol_write(fx.gfx, &topo, &plan, md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, plan.size).gpu, content));
+    md_render_mol_bonds_t fb;
+    ASSERT_TRUE(md_render_mol_bonds_write(fx.gfx, &fb, &bp, md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, bp.size).gpu, content));
+    md_temp_end(temp);
+    md_render_mol_ctx_t kernels = md_render_mol_create(fx.dev, NULL);
+    ASSERT_TRUE(kernels != NULL);
+    md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size).gpu;
+    md_gpu_addr_t P = f_buf(&fx, frame.xyz, 16 * 12);
+    md_render_mol_atoms_t atoms = {0};
+    atoms.position = P;
+    atoms.bonds = &fb;
+    ASSERT_TRUE(md_render_mol_update(kernels, fx.gfx, &topo, dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, content));
+    md_render_mol_rep_t rep = {0};
+    rep.key = 9; rep.type = MD_RENDER_MOL_REP_LICORICE; rep.params.licorice.radius = 0.2f; rep.bond_orders = true;
+    /* looking down the plane of the ring's double bond face on: along its
+       neighbours' normal, so its two sticks lie side by side */
+    const md_float3_t a = frame.xyz[1], b = frame.xyz[2], r3 = frame.xyz[3];
+    const double u[3] = { b.x - a.x, b.y - a.y, b.z - a.z }, v[3] = { r3.x - a.x, r3.y - a.y, r3.z - a.z };
+    double nz[3];
+    cross3(u, v, nz);
+    double ln = sqrt(dot3(nz, nz)), lu = sqrt(dot3(u, u));
+    double ex[3] = { u[0] / lu, u[1] / lu, u[2] / lu }, ez[3] = { nz[0] / ln, nz[1] / ln, nz[2] / ln }, ey[3];
+    cross3(ez, ex, ey);
+    const double mid[3] = { 0.5 * (a.x + b.x), 0.5 * (a.y + b.y), 0.5 * (a.z + b.z) };
+    const uint32_t W = 128, H = 128;
+    cam_t c = { .ortho = true, .half_h = 2.0f, .aspect = 1.0f, .n = 0.0f, .far_ = 1000.0f };
+    md_render_camera_t cam = make_camera(&c);
+    for (int i = 0; i < 3; ++i) { cam.view[4 * i + 0] = (float)ex[i]; cam.view[4 * i + 1] = (float)ey[i]; cam.view[4 * i + 2] = (float)ez[i]; }
+    cam.view[12] = (float)-dot3(ex, mid); cam.view[13] = (float)-dot3(ey, mid); cam.view[14] = (float)(-dot3(ez, mid) - 50.0);
+    float* depth = malloc(W * H * 4);
+    uint32_t* motion = malloc(W * H * 4);
+    ASSERT_TRUE(mol_draw(&fx, fx.view, &topo, dyn, &atoms, &rep, cam, W, H, content, 0.0, depth, motion));
+    /* along a vertical line through the bond's middle: the double's two sticks, as the bond */
+    int on = 0, hidden = 0;
+    for (uint32_t py = 0; py < H; ++py) {
+        md_render_pick_t pk;
+        md_render_mol_hit_t h;
+        if (!f_pick(&fx, W / 2, py, &pk) || !md_render_mol_decode_pick(&pk, &h)) continue;
+        on += h.kind == MD_RENDER_MOL_HIT_PAIR && h.bond == (uint32_t)c12;
+        hidden += h.kind == MD_RENDER_MOL_HIT_BOND && (h.bond == (uint32_t)c12 || h.bond == (uint32_t)c01 || h.bond == (uint32_t)c23);
+    }
+    printf("    picks across the double bond: %d of it, %d of the system's bonds of the region\n", on, hidden);
+    EXPECT_GT(on, 4);
+    EXPECT_EQ(0, hidden);
+    free(depth); free(motion);
+    md_gpu_free(fx.gfx, P);
+    md_gpu_free(fx.gfx, dyn);
+    md_gpu_free(fx.gfx, fb.bond_visible);
     md_gpu_free(fx.gfx, topo.base);
     md_render_mol_destroy(kernels);
     md_vm_arena_destroy(alloc);
@@ -6671,7 +6925,8 @@ static void ref_end_lines(const double ax[3], const double p[3], const double* c
 
 /* md_gl's bond orders on 1LAF: the double bonds of the plan are those of
    order 2, neither aromatic nor delocalized, the sticks of the covalent
-   class leave them out; the update's sides are the reference's; licorice
+   class leave them out; the partners those of every delocalized bond, small
+   molecules' (ions) too; the update's sides are the reference's; licorice
    with bond_orders emits the two thinner sticks, picked as the bond */
 UTEST(render, mol_bond_orders) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
@@ -6684,10 +6939,10 @@ UTEST(render, mol_bond_orders) {
     const md_render_mol_topo_t* L = &plan.layout;
     const uint8_t*  img   = plan.data;
     const uint32_t* order = (const uint32_t*)(img + L->atom_order);
-    const uint32_t* op    = (const uint32_t*)(img + L->order_points);
-    const uint32_t* ob    = (const uint32_t*)(img + L->order_bond);
-    const uint32_t* orf   = (const uint32_t*)(img + L->order_ref);
-    const uint32_t  nd = L->order_count[0], nt = L->order_count[1];
+    const uint32_t* op    = (const uint32_t*)(img + L->orders.order_atoms);
+    const uint32_t* ob    = (const uint32_t*)(img + L->orders.order_id);
+    const uint32_t* orf   = (const uint32_t*)(img + L->orders.order_ref);
+    const uint32_t  nd = L->orders.order_count[0], nt = L->orders.order_count[1];
     ASSERT_GT(nd, 100u);
     int wrong = 0, both_ends = 0;
     uint8_t* is_ord = calloc(sys.bond.count + 1, 1);
@@ -6695,7 +6950,7 @@ UTEST(render, mol_bond_orders) {
         const uint32_t bi = ob[k], f = sys.bond.flags[bi];
         is_ord[bi] = 1;
         wrong += md_bond_order(f) != (k < nd ? 2 : 3) || (f & (MD_BOND_FLAG_AROMATIC | MD_BOND_FLAG_DELOCALIZED)) || md_bond_kind(f) != MD_BOND_KIND_COVALENT;
-        const uint32_t a = order[op[2 * k]], b = order[op[2 * k + 1]];
+        const uint32_t a = op[2 * k], b = op[2 * k + 1];
         wrong += !((a == (uint32_t)sys.bond.pairs[bi].idx[0] && b == (uint32_t)sys.bond.pairs[bi].idx[1]));
         if (k >= nd) continue;
         int ends = 0;
@@ -6706,7 +6961,7 @@ UTEST(render, mol_bond_orders) {
                 const uint32_t r = orf[4 * k + 2 * e + q];
                 if (r == UINT32_MAX) continue;
                 any = true;
-                const uint32_t ra = order[r];
+                const uint32_t ra = r;
                 bool bonded = false;
                 md_bond_iter_t it = md_bond_iter(&sys.bond, at);
                 for (; md_bond_iter_has_next(&it); md_bond_iter_next(&it)) bonded |= (uint32_t)md_bond_iter_atom_index(&it) == ra;
@@ -6720,10 +6975,14 @@ UTEST(render, mol_bond_orders) {
     {
         const uint32_t beg = L->bond_kind_offset[MD_RENDER_MOL_BOND_KIND(MD_BOND_KIND_COVALENT)], cnt = L->bond_kind_offset[MD_RENDER_MOL_BOND_KIND(MD_BOND_KIND_COVALENT) + 1] - beg;
         const uint32_t* ids = (const uint32_t*)(img + L->bond_ids);
-        const float*    one = (const float*)(img + L->bond_single);
-        ASSERT_TRUE(L->bond_single != 0);
+        const uint32_t* one = (const uint32_t*)(img + L->single_bonds);
+        ASSERT_TRUE(L->single_bonds != 0);
         uint32_t zeros = 0;
-        for (uint32_t j = 0; j < cnt; ++j) { wrong += (one[j] == 0.0f) != (is_ord[ids[beg + j]] != 0); zeros += one[j] == 0.0f; }
+        for (uint32_t j = 0; j < cnt; ++j) {
+            const uint32_t id = ids[beg + j], set = (one[id >> 5] >> (id & 31)) & 1u;
+            wrong += (set == 0) != (is_ord[id] != 0);
+            zeros += set == 0;
+        }
         EXPECT_EQ(nd + nt, zeros);
     }
     printf("    1LAF: %u double, %u triple bonds; %u doubles with a plane by an end\n", nd, nt, both_ends);
@@ -6733,23 +6992,23 @@ UTEST(render, mol_bond_orders) {
     uint32_t n_circ = 0, n_dash = 0, n_arom = 0;
     for (size_t rg = 0; rg < md_ring_data_count(&sys.ring); ++rg) n_arom += (md_ring_flags(&sys.ring, rg) & MD_RING_FLAG_AROMATIC) != 0;
     for (uint32_t k = 0; k < MD_RENDER_MOL_RING_SIZES; ++k) {
-        const uint32_t* ap = (const uint32_t*)(img + L->aromatic_points[k]);
-        const uint32_t* ai = (const uint32_t*)(img + L->aromatic_ring[k]);
-        for (uint32_t j = 0; j < L->aromatic_count[k]; ++j) {
+        const uint32_t* ap = (const uint32_t*)(img + L->orders.aromatic_atoms[k]);
+        const uint32_t* ai = (const uint32_t*)(img + L->orders.aromatic_id[k]);
+        for (uint32_t j = 0; j < L->orders.aromatic_count[k]; ++j) {
             const md_ring_flags_t rf = md_ring_flags(&sys.ring, ai[j]);
-            const bool dashed = j >= L->aromatic_count[k] - L->aromatic_dashed[k];
+            const bool dashed = j >= L->orders.aromatic_count[k] - L->orders.aromatic_dashed[k];
             wrong += !(rf & MD_RING_FLAG_AROMATIC) || ((rf & MD_RING_FLAG_FUSED_AROMATIC) != 0) != dashed || md_ring_size(&sys.ring, ai[j]) != 3u + k;
             const int32_t* ra = md_ring_atoms(&sys.ring, ai[j]);
-            for (uint32_t l = 0; l < 3u + k; ++l) wrong += (int32_t)order[ap[(3u + k) * j + l]] != ra[l];
+            for (uint32_t l = 0; l < 3u + k; ++l) wrong += (int32_t)ap[(3u + k) * j + l] != ra[l];
         }
-        n_circ += L->aromatic_count[k];
-        n_dash += L->aromatic_dashed[k];
+        n_circ += L->orders.aromatic_count[k];
+        n_dash += L->orders.aromatic_dashed[k];
     }
     /* the partners: the delocalized bonds, the aromatic ones no circle covers (none here: every ring has one) */
     uint8_t* in_circle = calloc(sys.bond.count + 1, 1);
     for (uint32_t k = 0; k < MD_RENDER_MOL_RING_SIZES; ++k) {
-        const uint32_t* ai = (const uint32_t*)(img + L->aromatic_ring[k]);
-        for (uint32_t j = 0; j < L->aromatic_count[k]; ++j) {
+        const uint32_t* ai = (const uint32_t*)(img + L->orders.aromatic_id[k]);
+        for (uint32_t j = 0; j < L->orders.aromatic_count[k]; ++j) {
             const int32_t* ra = md_ring_atoms(&sys.ring, ai[j]);
             for (uint32_t l = 0; l < 3u + k; ++l) {
                 md_bond_iter_t it = md_bond_iter(&sys.bond, (size_t)ra[l]);
@@ -6762,21 +7021,21 @@ UTEST(render, mol_bond_orders) {
     for (size_t i = 0; i < sys.bond.count; ++i) {
         const uint32_t f = sys.bond.flags[i];
         if (!(md_bond_kind(f) == MD_BOND_KIND_COVALENT && (((f & MD_BOND_FLAG_DELOCALIZED) && !(f & MD_BOND_FLAG_AROMATIC)) || ((f & MD_BOND_FLAG_AROMATIC) && !in_circle[i])))) continue;
-        const int32_t m = mol_of[sys.bond.pairs[i].idx[0]];      /* a small molecule's (an ion): not static, none */
+        const int32_t m = mol_of[sys.bond.pairs[i].idx[0]];      /* a small molecule's (an ion) has one too */
         const bool small = m >= 0 && sys.molecule.offset[m + 1] - sys.molecule.offset[m] <= MD_RENDER_MOL_SMALL;
         n_small += small;
-        n_deloc += !small;
+        n_deloc++;
     }
     free(mol_of);
-    const uint32_t* pbnd = (const uint32_t*)(img + L->partner_bond);
-    const uint32_t* ppts = (const uint32_t*)(img + L->partner_points);
-    for (uint32_t k = 0; k < L->partner_count; ++k) {
+    const uint32_t* pbnd = (const uint32_t*)(img + L->orders.partner_id);
+    const uint32_t* ppts = (const uint32_t*)(img + L->orders.partner_atoms);
+    for (uint32_t k = 0; k < L->orders.partner_count; ++k) {
         const uint32_t f = sys.bond.flags[pbnd[k]];
         wrong += !(((f & MD_BOND_FLAG_DELOCALIZED) && !(f & MD_BOND_FLAG_AROMATIC)) || ((f & MD_BOND_FLAG_AROMATIC) && !in_circle[pbnd[k]]));
-        wrong += order[ppts[2 * k]] != (uint32_t)sys.bond.pairs[pbnd[k]].idx[0] || order[ppts[2 * k + 1]] != (uint32_t)sys.bond.pairs[pbnd[k]].idx[1];
+        wrong += ppts[2 * k] != (uint32_t)sys.bond.pairs[pbnd[k]].idx[0] || ppts[2 * k + 1] != (uint32_t)sys.bond.pairs[pbnd[k]].idx[1];
     }
-    printf("    %u aromatic rings, %u circles (%u dashed); %u partners of %u bonds that want one (and %u in small molecules)\n", n_arom, n_circ, n_dash, L->partner_count, n_deloc, n_small);
-    EXPECT_EQ(n_deloc, L->partner_count);
+    printf("    %u aromatic rings, %u circles (%u dashed); %u partners of %u bonds that want one (%u in small molecules)\n", n_arom, n_circ, n_dash, L->orders.partner_count, n_deloc, n_small);
+    EXPECT_EQ(n_deloc, L->orders.partner_count);
     free(in_circle);
     EXPECT_EQ(0, wrong);
     EXPECT_EQ(n_arom, n_circ);
@@ -6808,11 +7067,11 @@ UTEST(render, mol_bond_orders) {
     const uint32_t nb0 = md_render_mol_emit(&topo, dyn, &atoms, &rep, NULL, 0);
     rep.bond_orders = true;
     uint32_t n_cb = 0;            /* batches of circles: per size, solid and dashed */
-    for (uint32_t k = 0; k < MD_RENDER_MOL_RING_SIZES; ++k) n_cb += (topo.aromatic_count[k] > topo.aromatic_dashed[k]) + (topo.aromatic_dashed[k] > 0);
+    for (uint32_t k = 0; k < MD_RENDER_MOL_RING_SIZES; ++k) n_cb += (topo.orders.aromatic_count[k] > topo.orders.aromatic_dashed[k]) + (topo.orders.aromatic_dashed[k] > 0);
     ASSERT_EQ(nb0 + 3u + n_cb, nb);   /* the covalent sticks, its doubles' two, the circles, the partners */
     const md_render_batch_t* bpt = &bt[3 + n_cb];
     EXPECT_EQ((uint64_t)(7 << 8 | MD_RENDER_MOL_PART_PARTNER), bpt->key);
-    EXPECT_EQ(topo.partner_count, bpt->count);
+    EXPECT_EQ(topo.orders.partner_count, bpt->count);
     EXPECT_NEAR(0.066f, bpt->style.capsules.radius, 1e-6f);
     EXPECT_NEAR(0.38f / 0.066f, bpt->style.capsules.offset, 1e-4f);
     EXPECT_NEAR(0.08f, bpt->style.capsules.trim, 1e-6f);
@@ -6832,7 +7091,7 @@ UTEST(render, mol_bond_orders) {
     ASSERT_TRUE(c6 != NULL);
     const md_render_batch_t* d0 = &bt[1];
     const md_render_batch_t* d1 = &bt[2];
-    EXPECT_EQ(topo.bond_single, bt[0].style.capsules.radius_scale);
+    EXPECT_EQ(topo.single_bonds, bt[0].id_visible[0]);
     EXPECT_EQ((uint64_t)(7 << 8 | MD_RENDER_MOL_PART_DOUBLE), d0->key);
     EXPECT_EQ((uint64_t)(7 << 8 | (MD_RENDER_MOL_PART_DOUBLE + 1)), d1->key);
     EXPECT_NEAR(0.084f, d0->style.capsules.radius, 1e-6f);
@@ -6845,12 +7104,12 @@ UTEST(render, mol_bond_orders) {
     int strong = 0, first_strong = -1;
     for (uint32_t k = 0; k < nd; ++k) {
         double pa[3], pb[3], c[4][3];
-        const float* xa = &state.xyz[order[op[2 * k]]].x;
-        const float* xb = &state.xyz[order[op[2 * k + 1]]].x;
+        const float* xa = &state.xyz[op[2 * k]].x;
+        const float* xb = &state.xyz[op[2 * k + 1]].x;
         for (int i = 0; i < 3; ++i) { pa[i] = xa[i]; pb[i] = xb[i]; }
         for (int q = 0; q < 4; ++q) {
             const uint32_t r = orf[4 * k + q];
-            if (r != UINT32_MAX) for (int i = 0; i < 3; ++i) c[q][i] = (&state.xyz[order[r]].x)[i];
+            if (r != UINT32_MAX) for (int i = 0; i < 3; ++i) c[q][i] = (&state.xyz[r].x)[i];
         }
         double ax[3] = { pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2] }, l = sqrt(dot3(ax, ax));
         for (int i = 0; i < 3; ++i) ax[i] /= l;
@@ -6888,8 +7147,8 @@ UTEST(render, mol_bond_orders) {
         (void)gs;
         uint8_t* blk2 = read_block(&fx, dyn, topo.dynamic_size);
         const float* g = (const float*)(blk2 + (d0->style.capsules.side - dyn)) + 4 * k;
-        const float* xa = &state.xyz[order[op[2 * k]]].x;
-        const float* xb = &state.xyz[order[op[2 * k + 1]]].x;
+        const float* xa = &state.xyz[op[2 * k]].x;
+        const float* xb = &state.xyz[op[2 * k + 1]].x;
         double x[3] = { xb[0] - xa[0], xb[1] - xa[1], xb[2] - xa[2] }, len = sqrt(dot3(x, x));
         for (int i = 0; i < 3; ++i) x[i] /= len;
         double y[3] = { g[0], g[1], g[2] }, ly = sqrt(dot3(y, y));
@@ -6926,17 +7185,17 @@ UTEST(render, mol_bond_orders) {
     {
         uint8_t* blk3 = read_block(&fx, dyn, topo.dynamic_size);
         const float*    ps   = (const float*)(blk3 + (bpt->style.capsules.side - dyn));
-        const uint32_t* pref = (const uint32_t*)(img + L->partner_ref);
-        const uint32_t* ppt  = (const uint32_t*)(img + L->partner_points);
-        const uint32_t* pbd  = (const uint32_t*)(img + L->partner_bond);
+        const uint32_t* pref = (const uint32_t*)(img + L->orders.partner_ref);
+        const uint32_t* ppt  = (const uint32_t*)(img + L->orders.partner_atoms);
+        const uint32_t* pbd  = (const uint32_t*)(img + L->orders.partner_id);
         double pworst = 0;
         int carbox = -1;
-        for (uint32_t k = 0; k < topo.partner_count; ++k) {
+        for (uint32_t k = 0; k < topo.orders.partner_count; ++k) {
             double pa[3], pb[3], ca[3] = { 0, 0, 0 }, cb[3] = { 0, 0, 0 };
-            for (int i = 0; i < 3; ++i) { pa[i] = (&state.xyz[order[ppt[2 * k]]].x)[i]; pb[i] = (&state.xyz[order[ppt[2 * k + 1]]].x)[i]; }
+            for (int i = 0; i < 3; ++i) { pa[i] = (&state.xyz[ppt[2 * k]].x)[i]; pb[i] = (&state.xyz[ppt[2 * k + 1]].x)[i]; }
             const bool ha = pref[2 * k] != UINT32_MAX, hb = pref[2 * k + 1] != UINT32_MAX;
-            if (ha) for (int i = 0; i < 3; ++i) ca[i] = (&state.xyz[order[pref[2 * k]]].x)[i] - pa[i];
-            if (hb) for (int i = 0; i < 3; ++i) cb[i] = (&state.xyz[order[pref[2 * k + 1]]].x)[i] - pb[i];
+            if (ha) for (int i = 0; i < 3; ++i) ca[i] = (&state.xyz[pref[2 * k]].x)[i] - pa[i];
+            if (hb) for (int i = 0; i < 3; ++i) cb[i] = (&state.xyz[pref[2 * k + 1]].x)[i] - pb[i];
             double ax[3] = { pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2] }, l = sqrt(dot3(ax, ax));
             for (int i = 0; i < 3; ++i) ax[i] /= l;
             double nv[3] = { 0, 0, 0 }, c2 = 0, sd[3] = { 0, 0, 0 };
@@ -6963,7 +7222,7 @@ UTEST(render, mol_bond_orders) {
             for (int i = 0; i < 3; ++i) pworst = fmax(pworst, fabs(g[i] - sd[i]));
             for (int e = 0; e < 2; ++e) pworst = fmax(pworst, fabs(gm[e] - mt[e]) / fmax(mt[e], 1.0) * 0.1);   /* halves: 1e-3 relative */
             /* a carboxylate's (an O-C-O centre with two delocalized bonds) with a side */
-            if (carbox < 0 && dot3(sd, sd) > 0.5 && ha != hb && md_atom_atomic_number(&sys.atom, order[ppt[2 * k + (ha ? 0 : 1)]]) == 6) carbox = (int)k;
+            if (carbox < 0 && dot3(sd, sd) > 0.5 && ha != hb && md_atom_atomic_number(&sys.atom, ppt[2 * k + (ha ? 0 : 1)]) == 6) carbox = (int)k;
         }
         printf("    partners: the worst off the reference %.2e\n", pworst);
         EXPECT_LT(pworst, 2e-4);
@@ -6971,7 +7230,7 @@ UTEST(render, mol_bond_orders) {
         const uint32_t k = (uint32_t)carbox;
         const float* g = ps + 4 * k;
         double pa[3], pb[3];
-        for (int i = 0; i < 3; ++i) { pa[i] = (&state.xyz[order[ppt[2 * k]]].x)[i]; pb[i] = (&state.xyz[order[ppt[2 * k + 1]]].x)[i]; }
+        for (int i = 0; i < 3; ++i) { pa[i] = (&state.xyz[ppt[2 * k]].x)[i]; pb[i] = (&state.xyz[ppt[2 * k + 1]].x)[i]; }
         double x[3] = { pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2] }, len = sqrt(dot3(x, x));
         for (int i = 0; i < 3; ++i) x[i] /= len;
         double y[3] = { g[0], g[1], g[2] }, z[3];
@@ -7020,10 +7279,10 @@ UTEST(render, mol_bond_orders) {
 
     /* The first solid 6-ring's circle face on: picks as the ring, the corner nearest the hit */
     {
-        const uint32_t* ap = (const uint32_t*)(img + L->aromatic_points[3]);
-        const uint32_t* ai = (const uint32_t*)(img + L->aromatic_ring[3]);
+        const uint32_t* ap = (const uint32_t*)(img + L->orders.aromatic_atoms[3]);
+        const uint32_t* ai = (const uint32_t*)(img + L->orders.aromatic_id[3]);
         double q[6][3];
-        for (int l = 0; l < 6; ++l) for (int i = 0; i < 3; ++i) q[l][i] = (&state.xyz[order[ap[l]]].x)[i];
+        for (int l = 0; l < 6; ++l) for (int i = 0; i < 3; ++i) q[l][i] = (&state.xyz[ap[l]].x)[i];
         circ_ref_t cr;
         ASSERT_TRUE(circ_ref_build(&cr, (const double (*)[3])q, 6, 0.38, 0.066, 0));
         double x[3], y[3], z[3];
@@ -7047,7 +7306,7 @@ UTEST(render, mol_bond_orders) {
         ASSERT_TRUE(md_render_mol_decode_pick(&pk, &hit));
         EXPECT_EQ(MD_RENDER_MOL_HIT_RING, hit.kind);
         EXPECT_EQ(ai[0], hit.ring);
-        EXPECT_EQ(order[ap[0]], hit.atom);
+        EXPECT_EQ(ap[0], hit.atom);
     }
 
     /* A triple bond: three sticks facing the view, the middle one on the
@@ -7061,14 +7320,15 @@ UTEST(render, mol_bond_orders) {
         md_temp_scope_t t2 = md_temp_begin();
         md_render_mol_plan_t yp;
         ASSERT_TRUE(md_render_mol_plan(&yp, &ys, NULL, t2));
-        EXPECT_EQ(1u, yp.layout.order_count[0]);
-        ASSERT_EQ(1u, yp.layout.order_count[1]);
+        EXPECT_EQ(1u, yp.layout.orders.order_count[0]);
+        ASSERT_EQ(1u, yp.layout.orders.order_count[1]);
         md_render_mol_topo_t yt;
         ASSERT_TRUE(md_render_mol_write(fx.gfx, &yt, &yp, md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, yp.size).gpu, content));
         const uint32_t* yo  = (const uint32_t*)((const uint8_t*)yp.data + yp.layout.atom_order);
-        const uint32_t* yop = (const uint32_t*)((const uint8_t*)yp.data + yp.layout.order_points);
-        const uint32_t* yob = (const uint32_t*)((const uint8_t*)yp.data + yp.layout.order_bond);
-        const uint32_t  ta = yo[yop[2]], tb = yo[yop[3]], tbond = yob[1];
+        const uint32_t* yop = (const uint32_t*)((const uint8_t*)yp.data + yp.layout.orders.order_atoms);
+        const uint32_t* yob = (const uint32_t*)((const uint8_t*)yp.data + yp.layout.orders.order_id);
+        const uint32_t  ta = yop[2], tb = yop[3], tbond = yob[1];
+        (void)yo;
         EXPECT_EQ(3, md_bond_order(ys.bond.flags[tbond]));
         md_gpu_addr_t ydyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, yt.dynamic_size).gpu;
         md_gpu_addr_t YP = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, (uint64_t)ys.atom.count * 12).gpu;

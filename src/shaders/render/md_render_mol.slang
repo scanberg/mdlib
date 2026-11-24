@@ -114,11 +114,11 @@ struct Args {
     uint* der_member;           // per member its atom
     uint* der_weight;           // float per member
     uint* der_radius;           // float per derived point: its w
-    uint* ord_points;           // the multiple bonds: uint2 per bond, its points (the doubles first)
-    uint* ord_ref;              // uint4 per double: the points by its ends that give its plane
+    uint* ord_points;           // the multiple bonds: uint2 per bond, its atoms (the doubles first; atom_point: their points)
+    uint* ord_ref;              // uint4 per double: the atoms by its ends that give its plane
     uint* ord_side;             // float4 per double: its side (md_render's capsule side)
-    uint* prt_points;           // the partners: uint2 per partner, its bond's points
-    uint* prt_ref;              // uint2: the points by its ends that give its side
+    uint* prt_points;           // the partners: uint2 per partner, its bond's atoms
+    uint* prt_ref;              // uint2: the atoms by its ends that give its side
     uint* prt_side;             // float4: its side, w its miters (md_render's)
     uint* lip_tubes;            // the sterols' slabs: per control point its point | flags
     uint* lip_side;             // the point its axis points at (UINT32_MAX: none)
@@ -1003,11 +1003,14 @@ float2 ord_doubled(float3 c, float3 u, float3 v) {
     return float2(x * x - y * y, 2.0 * x * y) / dot(c, c);
 }
 
+// An atom's position, at its point of the order just gathered
+float3 atom_point_pos(Args a, uint atom) { return ld3(a.points, 4u * a.atom_point[atom]); }
+
 float2 ord_end_lines(Args a, float3 ax, float3 p, uint r0, uint r1, float3 u, float3 v) {
     float3 c0 = float3(0.0), c1 = float3(0.0);
     bool h0 = false, h1 = false;
-    if (r0 != 0xFFFFFFFFu) { c0 = ld3(a.points, 4u * r0) - p; h0 = dot(c0, c0) < ORD_MAX_D2 && dot(c0, c0) > 0.0; }
-    if (r1 != 0xFFFFFFFFu) { c1 = ld3(a.points, 4u * r1) - p; h1 = dot(c1, c1) < ORD_MAX_D2 && dot(c1, c1) > 0.0; }
+    if (r0 != 0xFFFFFFFFu) { c0 = atom_point_pos(a, r0) - p; h0 = dot(c0, c0) < ORD_MAX_D2 && dot(c0, c0) > 0.0; }
+    if (r1 != 0xFFFFFFFFu) { c1 = atom_point_pos(a, r1) - p; h1 = dot(c1, c1) < ORD_MAX_D2 && dot(c1, c1) > 0.0; }
     float2 s = float2(0.0);
     if (h0) s += ord_doubled(c0, u, v);
     if (h1) s += ord_doubled(c1, u, v);
@@ -1025,8 +1028,8 @@ void bond_sides(uint3 tid : SV_DispatchThreadID) {
     Args a = MD_ARGS;
     uint n = a.ord_count;
     for (uint j = tid.x; j < n; j += grid_threads(n)) {
-        float3 pa = ld3(a.points, 4u * a.ord_points[2u * j]);
-        float3 pb = ld3(a.points, 4u * a.ord_points[2u * j + 1u]);
+        float3 pa = atom_point_pos(a, a.ord_points[2u * j]);
+        float3 pb = atom_point_pos(a, a.ord_points[2u * j + 1u]);
         float3 d  = pb - pa;
         float  dd = dot(d, d);
         float3 side = float3(0.0);
@@ -1068,8 +1071,8 @@ void bond_partners(uint3 tid : SV_DispatchThreadID) {
     Args a = MD_ARGS;
     uint n = a.prt_count;
     for (uint j = tid.x; j < n; j += grid_threads(n)) {
-        float3 pa = ld3(a.points, 4u * a.prt_points[2u * j]);
-        float3 pb = ld3(a.points, 4u * a.prt_points[2u * j + 1u]);
+        float3 pa = atom_point_pos(a, a.prt_points[2u * j]);
+        float3 pb = atom_point_pos(a, a.prt_points[2u * j + 1u]);
         float3 d  = pb - pa;
         float  dd = dot(d, d);
         float3 side = float3(0.0);
@@ -1079,8 +1082,8 @@ void bond_partners(uint3 tid : SV_DispatchThreadID) {
             uint   ra = a.prt_ref[2u * j], rb = a.prt_ref[2u * j + 1u];
             float3 ca = float3(0.0), cb = float3(0.0);
             bool   ha = false, hb = false;
-            if (ra != 0xFFFFFFFFu) { ca = ld3(a.points, 4u * ra) - pa; ha = dot(ca, ca) > 0.0 && dot(ca, ca) < ORD_MAX_D2; }
-            if (rb != 0xFFFFFFFFu) { cb = ld3(a.points, 4u * rb) - pb; hb = dot(cb, cb) > 0.0 && dot(cb, cb) < ORD_MAX_D2; }
+            if (ra != 0xFFFFFFFFu) { ca = atom_point_pos(a, ra) - pa; ha = dot(ca, ca) > 0.0 && dot(ca, ca) < ORD_MAX_D2; }
+            if (rb != 0xFFFFFFFFu) { cb = atom_point_pos(a, rb) - pb; hb = dot(cb, cb) > 0.0 && dot(cb, cb) < ORD_MAX_D2; }
             float3 nv = float3(0.0);
             float  c2 = 0.0;
             if (ha) { nv = cross(ax, ca); c2 = dot(ca, ca); }

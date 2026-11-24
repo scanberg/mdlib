@@ -109,7 +109,9 @@ md_gl's BOND DASHES); CARTOON
 of proteins and of atomistic nucleic acids; the gaps of the chains, dashed
 (md_render_mol_rep_t.chain_gaps); the bond orders (bond_orders: double and
 triple bonds, the circles of aromatic rings, the dashed partners of
-delocalized bonds).
+delocalized bonds), small molecules' too; the bonds of a frame where they
+are not the system's (bonds formed and broken, and the chemistry of the
+region they change: md_render_mol_bonds_t).
 The cartoon of lipids and of coarse grained nucleic acids (the ideal
 rings of a Martini base), on derived points. RIBBONS of proteins.
 */
@@ -128,6 +130,8 @@ rings of a Martini base), on derived points. RIBBONS of proteins.
 struct md_system_t;
 struct md_system_state_t;
 struct md_unitcell_t;
+struct md_bond_delta_t;
+struct md_chem_delta_t;
 
 #ifdef __cplusplus
 extern "C" {
@@ -196,6 +200,51 @@ void                md_render_mol_destroy(md_render_mol_ctx_t kernels);
 /* =========================================================================
    Topology: one caller-owned block per system
    ========================================================================= */
+
+/* The bond orders of a set of bonds (md_gl's): the thinner sticks of the
+   double and triple bonds, the circles of the aromatic rings, the dashed
+   partners of the delocalized bonds. Between atoms, which a frame's points
+   are through the update's map (each atom's point of the order it gathered:
+   so they follow the small molecules' regroups); all of them resident. The
+   system's in the topology (topo.orders), a frame's own where its bonds are
+   not the system's in md_render_mol_bonds_t, in the same form. Each with an
+   id, what a pick of it reports. */
+typedef struct md_render_mol_orders_t {
+    /* The double and triple bonds (covalent, of order 2 and 3, neither
+       aromatic nor delocalized), the doubles first. A double's plane is that
+       of its sp2 centres: the atoms by its ends that give it (md_gl's), its
+       side (md_render's) the update's. */
+    uint32_t      order_count[2];          /* doubles, triples                        */
+    md_gpu_addr_t order_atoms;             /* uint32 [2 * (doubles + triples)]        */
+    md_gpu_addr_t order_id;                /* uint32 per bond                         */
+    md_gpu_addr_t order_ref;               /* internal: uint32 [4] per double, two atoms
+                                              by either end (UINT32_MAX: none)        */
+
+    /* The aromatic rings' circles: aromatic rings each of whose atoms is
+       bonded to the next by a covalent bond; per size those of a fused
+       aromatic system (MD_RING_FLAG_FUSED_AROMATIC: dashed) last. Their
+       corners' atoms in order around them. */
+    uint32_t      aromatic_count[MD_RENDER_MOL_RING_SIZES];    /* of 3 + k atoms     */
+    uint32_t      aromatic_dashed[MD_RENDER_MOL_RING_SIZES];   /* of them, the last  */
+    md_gpu_addr_t aromatic_atoms[MD_RENDER_MOL_RING_SIZES];    /* uint32 [(3 + k) * count] */
+    md_gpu_addr_t aromatic_id[MD_RENDER_MOL_RING_SIZES];       /* uint32 per ring    */
+
+    /* The dashed partners: of the delocalized bonds (carboxylate, nitro,
+       guanidinium, phosphate, ...) and of the aromatic bonds no circle
+       covers. The atoms by its ends that give its side (within the group:
+       towards the next delocalized bond of its centre; along the ring; else
+       the plane) are internal, the side (md_render's, with the miters of its
+       ends) the update's. */
+    uint32_t      partner_count;
+    md_gpu_addr_t partner_atoms;           /* uint32 [2 * partner_count]              */
+    md_gpu_addr_t partner_id;              /* uint32 per partner                      */
+    md_gpu_addr_t partner_ref;             /* internal: uint32 [2] per partner        */
+
+    /* internal: the update's sides, float4 per double then per partner: in
+       a frame's block (md_render_mol_bonds_t); the topology's in the
+       per-frame block (0 here) */
+    md_gpu_addr_t side;
+} md_render_mol_orders_t;
 
 typedef struct md_render_mol_topo_t {
     md_gpu_addr_t base;            /* the block; md_gpu_free(stream, base) frees it    */
@@ -300,41 +349,14 @@ typedef struct md_render_mol_topo_t {
                                               the cartoon's first                      */
     md_gpu_addr_t gap_residue;             /* uint32 per gap: index in sys->residue     */
 
-    /* The multiple bonds, for the bond orders: the covalent bonds of order 2
-       and 3 (md_chem's), neither aromatic nor delocalized, both ends static;
-       the doubles first. Between points, each with its index in sys->bond.
-       A double's plane is that of its sp2 centres: the atoms by its ends
-       that give it (md_gl's), its side (md_render's) the update's.
-       bond_single: per covalent bond (the first kind), 0 for those drawn as
-       multiple bonds, else 1 (the sticks' radius_scale); 0 without any. */
-    uint32_t      order_count[2];          /* doubles, triples                         */
-    md_gpu_addr_t order_points;            /* uint32 [2 * (order_count[0] + order_count[1])] */
-    md_gpu_addr_t order_bond;              /* uint32 per bond: index in sys->bond       */
-    md_gpu_addr_t order_ref;               /* internal: uint32 [4] per double, the points
-                                              of two atoms by either end (UINT32_MAX none) */
-    md_gpu_addr_t bond_single;             /* float per covalent bond                   */
-
-    /* The circles of the aromatic rings, for the bond orders: the rings of
-       sys->ring with MD_RING_FLAG_AROMATIC, every atom static and each
-       bonded to the next by a covalent bond; per size those of a fused
-       aromatic system (MD_RING_FLAG_FUSED_AROMATIC: dashed) last. Their
-       corners' points in order around them, each with its index in sys->ring. */
-    uint32_t      aromatic_count[MD_RENDER_MOL_RING_SIZES];    /* of 3 + k atoms     */
-    uint32_t      aromatic_dashed[MD_RENDER_MOL_RING_SIZES];   /* of them, the last  */
-    md_gpu_addr_t aromatic_points[MD_RENDER_MOL_RING_SIZES];   /* uint32 [(3 + k) * count] */
-    md_gpu_addr_t aromatic_ring[MD_RENDER_MOL_RING_SIZES];     /* uint32 per ring    */
-
-    /* The dashed partners, for the bond orders (md_gl's): of the delocalized
-       bonds (carboxylate, nitro, guanidinium, phosphate, ...) and of the
-       aromatic bonds no circle covers, both ends static. Between the bond's
-       points, each with its index in sys->bond; the atoms by its ends that
-       give its side (within the group: towards the next delocalized bond of
-       its centre; along the ring; else the plane) are internal, the side
-       (md_render's, with the miters of its ends) the update's. */
-    uint32_t      partner_count;
-    md_gpu_addr_t partner_points;          /* uint32 [2 * partner_count]               */
-    md_gpu_addr_t partner_bond;            /* uint32 per partner: index in sys->bond    */
-    md_gpu_addr_t partner_ref;             /* internal: uint32 [2] per partner          */
+    /* The bond orders of the system's bonds (md_chem's flags), small
+       molecules' too: ids the bonds' indices in sys->bond, the rings' in
+       sys->ring (MD_RING_FLAG_AROMATIC). single_bonds: a bitset over
+       sys->bond (uint32 words), set for all but the double and triple bonds
+       (what the sticks of the covalent kind draw with the bond orders); 0
+       without any. */
+    md_render_mol_orders_t orders;
+    md_gpu_addr_t single_bonds;
 
     /* The lipids, for the cartoon (viamd's cartoon_glyphs), on derived
        points, each lipid's taken whole about its first head atom. A sphere
@@ -450,6 +472,66 @@ bool md_render_mol_write(md_gpu_stream_t stream, md_render_mol_topo_t* out, cons
                          md_gpu_addr_t base, uint64_t content[MD_RENDER_CONTENT_COUNT]);
 
 /* =========================================================================
+   Bonds of a frame: where they are not the system's
+   ========================================================================= */
+
+/* A frame whose bonds are not the system's (bonds formed and broken:
+   md_bond_delta_t) has a chemistry of its own where they changed, its
+   region (md_chem_delta_t). The sticks of the representations (LICORICE,
+   BALL_AND_STICK, BONDS) draw the system's bonds less those this hides, and
+   the frame's own: its bonds of the region and those it formed, with their
+   orders. One block in the caller's memory, the same for update (the sides
+   of its orders) and emit; md_render_mol_bonds_plan writes it. Ids are the
+   caller's, what picks report: md_chem_delta_t's (a bond of the system by
+   its index, one formed sys->bond.count + its index in the delta; a ring
+   md_ring_data_count(&sys->ring) + its index in the delta's). */
+typedef struct md_render_mol_bonds_t {
+    /* Bitsets (uint32 words, bit i of word i / 32) of the system's bonds
+       and rings drawn: over sys->bond (its interactions after its bonds),
+       clear for those broken and those of the region (the frame's own); over
+       sys->ring, clear for the circles of the rings that are not the
+       frame's (an atom in the region, a bond broken) */
+    md_gpu_addr_t          bond_visible;
+    md_gpu_addr_t          ring_visible;
+    /* The frame's own bonds drawn as one stick each (all but its double and
+       triple bonds): uint32 atom indices, two per pair, those of bond kind k
+       at pair_offset[k] .. pair_offset[k + 1]; each with its id */
+    md_gpu_addr_t          pairs;
+    md_gpu_addr_t          pair_id;
+    uint32_t               pair_offset[MD_RENDER_MOL_BOND_KIND_COUNT + 1];
+    /* their bond orders (without bond_orders: the doubles and triples as one
+       stick each) */
+    md_render_mol_orders_t orders;
+} md_render_mol_bonds_t;
+
+/* Host side of a frame's bonds to be written, as md_render_mol_plan_t */
+typedef struct md_render_mol_bonds_plan_t {
+    uint64_t              size;
+    md_render_mol_bonds_t layout;  /* addresses are offsets from 0                     */
+    const void*           data;    /* [size] bytes (the sides' room not read)          */
+} md_render_mol_bonds_plan_t;
+
+/* The bonds of `state` (a frame of sys) where they are sys's changed by
+   `delta`, with the chemistry `chem` of the region they reach
+   (md_chem_perceive_delta; NULL or empty: the bonds formed as their flags
+   say, the rest the system's). As md_gl's md_gl_mol_set_bond_orders: the
+   region's bonds and rings are the frame's own, the system's rings with an
+   atom in it are not drawn, nor those whose bond broke. The planes of the
+   frame's double bonds and partners by `state`'s geometry (NULL: the
+   reference's). `resident` as md_render_mol_plan's (the topology's): the
+   frame's bonds with an atom that is not are left out. */
+bool md_render_mol_bonds_plan(md_render_mol_bonds_plan_t* out, const struct md_system_t* sys, const md_bitset_t* resident,
+                              const struct md_system_state_t* state, const struct md_bond_delta_t* delta,
+                              const struct md_chem_delta_t* chem, md_temp_scope_t temp);
+
+/* Uploads the plan into [base, base + plan->size) and writes the bonds'
+   value. Bumps content[MD_RENDER_CONTENT_GEOMETRY] when `content` is given.
+   The sides of its orders are the next update's (md_render_mol_update with
+   it as atoms->bonds): update before drawing with it. */
+bool md_render_mol_bonds_write(md_gpu_stream_t stream, md_render_mol_bonds_t* out, const md_render_mol_bonds_plan_t* plan,
+                               md_gpu_addr_t base, uint64_t content[MD_RENDER_CONTENT_COUNT]);
+
+/* =========================================================================
    Atoms: the caller's arrays
    ========================================================================= */
 
@@ -480,6 +562,9 @@ typedef struct md_render_mol_atoms_t {
                                       theirs is used), md_render_mol_frame_cell's;
                                       the derived points take their atoms at the
                                       images nearest their first. All 0: none       */
+    const struct md_render_mol_bonds_t* bonds;  /* the frame's bonds where they are
+                                      not the system's (see Bonds of a frame); the
+                                      same for update and emit. NULL: the system's  */
 
     /* Instead of position and velocity: frames resident on the GPU (see
        Frames below), combined by the update. In a periodic cell frames [0]
@@ -760,34 +845,20 @@ typedef struct md_render_mol_rep_t {
     uint32_t                          bond_kinds;
     const md_render_mol_bond_style_t* bond_style;
 
-    /* The caller's pairs of atoms, sticks as the bonds are: PAIRS's, and
-       LICORICE's, BALL_AND_STICK's and BONDS's besides the system's bonds
-       (those a frame formed: md_bond_delta_t), in the representation's stick
-       radius, kinds (bond_kinds) and styles, without bond orders. In the
-       caller's memory: uint32 atom indices, two per pair, those of bond kind
-       k (MD_RENDER_MOL_BOND_KIND) at pair_offset[k] .. pair_offset[k + 1]
-       (MD_RENDER_MOL_BOND_KIND_COUNT + 1 entries, read by emit). Through the
-       per-frame block's points (each atom's, of the last update's order):
-       their velocities, regroups, and the atoms' colours, visibility and
-       marks. The atoms must be resident (md_render_mol_plan): one that is
-       not stands at point 0. pair_id: uint32 per pair, optional, what a pick
-       of it reports (MD_RENDER_MOL_HIT_PAIR); 0: its index within its kind. */
+    /* PAIRS: the caller's pairs of atoms, sticks as the bonds are, in
+       params.pairs.radius, kinds (bond_kinds) and styles, without bond
+       orders. In the caller's memory: uint32 atom indices, two per pair,
+       those of bond kind k (MD_RENDER_MOL_BOND_KIND) at pair_offset[k] ..
+       pair_offset[k + 1] (MD_RENDER_MOL_BOND_KIND_COUNT + 1 entries, read by
+       emit). Through the per-frame block's points (each atom's, of the last
+       update's order): their velocities, regroups, and the atoms' colours,
+       visibility and marks. The atoms must be resident (md_render_mol_plan):
+       one that is not stands at point 0. pair_id: uint32 per pair, optional,
+       what a pick of it reports (MD_RENDER_MOL_HIT_PAIR); 0: its index within
+       its kind. */
     md_gpu_addr_t                     pairs;
     md_gpu_addr_t                     pair_id;
     const uint32_t*                   pair_offset;
-
-    /* The bonds and rings of the system shown, for a frame whose bonds are
-       not the system's (md_bond_delta_t: those broken; with bond_orders,
-       those whose order the frame changed): bitsets in the caller's memory
-       (uint32 words, bit i of word i / 32; md_render's id_visible). Of the
-       system's bonds (index in sys->bond, as picks report them: its
-       interactions after its bonds), LICORICE, BALL_AND_STICK and BONDS: a
-       bond whose bit is clear has no stick, and with bond_orders neither its
-       multiple sticks nor its dashed partner. Of sys->ring, with bond_orders:
-       a ring whose bit is clear has no circle. Not the caller's pairs. Part of
-       the geometry (MD_RENDER_CONTENT_GEOMETRY). 0: every one. */
-    md_gpu_addr_t                     bond_visible;
-    md_gpu_addr_t                     ring_visible;
 
     /* Dashed lines over the breaks of the chains (md_gl's chain gaps):
        CARTOON from end to end of the cartoon, 0.14 (0.7 of the coil at a
@@ -849,7 +920,12 @@ enum {
     MD_RENDER_MOL_PART_LIPID_TUBES = MD_RENDER_MOL_PART_LIPID_SPHERES + 2,  /* + 0 chains, 1 ring systems, 2 slabs */
     MD_RENDER_MOL_PART_RESIDUES = MD_RENDER_MOL_PART_LIPID_TUBES + 3,       /* spacefill's residues' spheres */
     MD_RENDER_MOL_PART_SMALL_ATOMS,     /* spacefill's atoms of small molecules, apart with residues */
-    MD_RENDER_MOL_PART_PAIRS,           /* + MD_RENDER_MOL_BOND_KIND: the caller's pairs */
+    MD_RENDER_MOL_PART_PAIRS,           /* + MD_RENDER_MOL_BOND_KIND: the caller's pairs, the frame's own bonds */
+    MD_RENDER_MOL_PART_FRAME_ORDERS = MD_RENDER_MOL_PART_PAIRS + MD_RENDER_MOL_BOND_KIND_COUNT,
+                                        /* + (part - MD_RENDER_MOL_PART_DOUBLE) for DOUBLE to PARTNER:
+                                           the orders of the frame's own bonds (md_render_mol_bonds_t) */
+    MD_RENDER_MOL_PART_FRAME_SINGLE = MD_RENDER_MOL_PART_FRAME_ORDERS + MD_RENDER_MOL_PART_PARTNER + 1 - MD_RENDER_MOL_PART_DOUBLE,
+                                        /* without bond_orders, its doubles and triples as one stick */
 };
 
 /* Appends the batches that draw `rep` to out[0 .. cap). Returns how many it
@@ -870,14 +946,17 @@ typedef enum md_render_mol_hit_kind_t {
     MD_RENDER_MOL_HIT_NUCLEOTIDE,  /* a nucleotide's: its part of the band, a ring,
                                       its stick                                      */
     MD_RENDER_MOL_HIT_CHAIN_GAP,   /* the gap over a break of a chain                */
-    MD_RENDER_MOL_HIT_RING,        /* the circle of an aromatic ring                 */
+    MD_RENDER_MOL_HIT_RING,        /* the circle of an aromatic ring (a frame's own:
+                                      `ring` its id)                                 */
     MD_RENDER_MOL_HIT_LIPID,       /* a lipid's sphere or tube: atom, the one its
                                       point stands for (a head's heaviest, a tail's
                                       spine atom)                                     */
     MD_RENDER_MOL_HIT_RESIDUE,     /* a residue's sphere (spacefill's `residues`):
                                       residue, and the atom it stands for            */
     MD_RENDER_MOL_HIT_PAIR,        /* a stick of PAIRS: `bond` its pair_id (or its
-                                      index within its kind)                         */
+                                      index within its kind); a frame's own bond
+                                      (md_render_mol_bonds_t), its stick, multiple
+                                      sticks or partner: `bond` its id             */
 } md_render_mol_hit_kind_t;
 
 typedef struct md_render_mol_hit_t {

@@ -1646,12 +1646,12 @@ static int run_heavy(int argc, char** argv) {
            parts (the representation draws [1] or [2]); tubes: control points */
         uint32_t aromatic = 0, lip_tubes = 0;
         const uint32_t lipids = topo.lipid_sphere_count[0] + topo.lipid_sphere_count[1];
-        for (int k = 0; k < MD_RENDER_MOL_RING_SIZES; ++k) aromatic += topo.aromatic_count[k];
+        for (int k = 0; k < MD_RENDER_MOL_RING_SIZES; ++k) aromatic += topo.orders.aromatic_count[k];
         for (int k = 0; k < 3; ++k) lip_tubes += topo.lipid_tube_count[k];
         printf("=== %s (%s): %u atoms, %zu bonds; cartoon: %u residues in %u pieces, %u nucleotides, %u lipids (%u tail control points); "
                "bond orders: %u double, %u triple, %u ring circles, %u partners\n",
                scenes[si].name, scenes[si].file, n, (size_t)(sys.bond.count + sys.bond.interaction_count), topo.backbone_count, topo.backbone_chain_count,
-               topo.nucleic_count, lipids, lip_tubes, topo.order_count[0], topo.order_count[1], aromatic, topo.partner_count);
+               topo.nucleic_count, lipids, lip_tubes, topo.orders.order_count[0], topo.orders.order_count[1], aromatic, topo.orders.partner_count);
         printf("    spacefill's residues: %u points for %u atoms not of small molecules (%u of small molecules)\n",
                topo.residue_point_count, topo.point_count - topo.small_atom_count, topo.small_atom_count);
         /* The per-frame update of this one copy (the copies share it) */
