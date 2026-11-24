@@ -1,4 +1,5 @@
 #include <md_ndx.h>
+#include "md_io_internal.h"
 #include <md_io.h>
 #include <md_system.h>
 
@@ -137,12 +138,31 @@ bool md_ndx_system_supplement(md_system_t* sys, const md_ndx_data_t* data) {
     return true;
 }
 
-bool md_ndx_system_supplement_from_file(md_system_t* sys, md_str_t filename, const md_load_desc_t* desc) {
+md_load_result_t md_ndx_system_load_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
+    (void)state;
     (void)desc;
     MD_ASSERT(sys);
+    if (!md_io_onto_atoms(sys, filename)) return MD_LOAD_FAILED;
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_ndx_data_t data = {0};
-    bool result = md_ndx_data_parse_file(&data, filename, arena) && md_ndx_system_supplement(sys, &data);
+    md_load_result_t result = MD_LOAD_FAILED;
+    if (md_ndx_data_parse_file(&data, filename, arena)) {
+        result = md_ndx_system_supplement(sys, &data) ? MD_LOAD_OK : MD_LOAD_MISMATCH;
+    }
+    md_arena_allocator_destroy(arena);
+    return result;
+}
+
+md_load_result_t md_ndx_system_check_file(const md_system_t* sys, md_str_t filename, const md_load_desc_t* desc) {
+    (void)desc;
+    MD_ASSERT(sys);
+    if (sys->atom.count == 0) return MD_LOAD_MISMATCH;
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
+    md_ndx_data_t data = {0};
+    md_load_result_t result = MD_LOAD_FAILED;
+    if (md_ndx_data_parse_file(&data, filename, arena)) {
+        result = data.max_atom <= sys->atom.count ? MD_LOAD_OK : MD_LOAD_MISMATCH;
+    }
     md_arena_allocator_destroy(arena);
     return result;
 }

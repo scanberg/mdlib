@@ -1,4 +1,5 @@
 #include <md_h5md.h>
+#include "md_io_internal.h"
 #include <md_io.h>
 
 #include <md_system.h>
@@ -1102,7 +1103,7 @@ static void h5md_publish_str(md_attributes_t* attributes, const char* path, md_s
         .unit = md_unit_none(), .data = &value, .byte_size = sizeof(md_str_t)});
 }
 
-bool md_h5md_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
+static bool h5md_system_build_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
     (void)desc;
     MD_ASSERT(sys);
     MD_ASSERT(state);
@@ -1651,4 +1652,11 @@ done:
     H5Fclose(file);
     h5md_unlock(lock);
     return result;
+}
+
+// ### LOAD (md_io.h) ###
+
+md_load_result_t md_h5md_system_load_from_file(struct md_system_t* sys, struct md_system_state_t* state, md_str_t filename, const struct md_load_desc_t* desc) {
+    if (!md_io_onto_no_atoms(sys, filename)) return MD_LOAD_FAILED;
+    return h5md_system_build_from_file(sys, state, filename, desc) ? MD_LOAD_OK : MD_LOAD_FAILED;
 }

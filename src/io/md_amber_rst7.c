@@ -1,4 +1,5 @@
 #include <md_amber_rst7.h>
+#include "md_io_internal.h"
 
 #include <md_system.h>
 #include <core/md_unitcell.h>
@@ -79,7 +80,7 @@ size_t md_amber_rst7_file_atom_count(md_str_t filename) {
     return rst7_peek(&n, filename) ? n : 0;
 }
 
-bool md_amber_rst7_state_init_from_file(md_system_state_t* state, md_str_t filename, size_t num_atoms) {
+static bool rst7_state_read(md_system_state_t* state, md_str_t filename, size_t num_atoms) {
     MD_ASSERT(state);
     if (!state->alloc) {
         MD_LOG_ERROR("Amber restart: the state has no allocator");
@@ -158,4 +159,16 @@ bool md_amber_rst7_state_init_from_file(md_system_state_t* state, md_str_t filen
 done:
     md_temp_end(temp);
     return result;
+}
+
+// ### LOAD (md_io.h) ###
+
+md_load_result_t md_amber_rst7_system_load_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
+    (void)desc;
+    MD_ASSERT(sys);
+    MD_ASSERT(state);
+    if (!md_io_onto_no_atoms(sys, filename)) return MD_LOAD_FAILED;
+    if (!rst7_state_read(state, filename, 0)) return MD_LOAD_FAILED;
+    md_io_points_system(sys, state->num_atoms);
+    return MD_LOAD_OK;
 }

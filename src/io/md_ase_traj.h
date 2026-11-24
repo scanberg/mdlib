@@ -1,6 +1,7 @@
 #pragma once
 
 #include <core/md_str.h>
+#include <md_io.h>
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -23,7 +24,7 @@ extern "C" {
 // SYSTEM
 // The atoms, typed by their atomic numbers, with the positions and cell of the first frame, which is
 // all that is read. The system is left as it was when the file cannot be read.
-bool md_ase_traj_system_init_from_file(struct md_system_t* sys, struct md_system_state_t* state, md_str_t filename, const struct md_load_desc_t* desc);
+md_load_result_t md_ase_traj_system_load_from_file(struct md_system_t* sys, struct md_system_state_t* state, md_str_t filename, const struct md_load_desc_t* desc);
 
 // RUN
 // Publishes the file as a run in the system's attribute table (see RUNS in md_system.h):

@@ -2,7 +2,7 @@
 #include <md_io.h>
 
 #include <md_system.h>
-#include <md_infer.h>
+#include <md_topology_build.h>
 #include <md_element.h>
 
 #include <core/md_common.h>
@@ -733,26 +733,10 @@ static const md_itp_atomtype_t* find_atomtype(const md_itp_data_t* data, md_str_
     return NULL;
 }
 
-bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
-    MD_ASSERT(sys);
-    MD_ASSERT(data);
-
-    if (!sys->alloc || sys->atom.count == 0) {
-        MD_LOG_ERROR("A topology can only supplement a loaded system");
-        return false;
-    }
-
+// The topology onto the atoms of its molecules, placed by md_itp_match_system or by the build
+static void itp_apply(md_system_t* sys, const md_itp_data_t* data, const md_itp_instance_t* instances, size_t num_instances) {
     const size_t atom_count = sys->atom.count;
     md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
-    md_allocator_i* temp_arena = md_temp_allocator(temp);
-    bool result = false;
-
-    md_itp_instance_t* instances = 0;
-    const size_t num_instances = md_itp_match_system(&instances, data, sys, temp_arena);
-    if (num_instances == 0) {
-        MD_LOG_ERROR("None of the topology's molecules match the loaded system");
-        goto done;
-    }
 
     // Charge and mass per moleculetype atom, resolved against the atomtypes once rather than per instance
     const size_t num_types = md_array_size(data->moleculetypes);
@@ -1009,27 +993,160 @@ bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
         }
     }
 
-    // ## Derived topology: inferred again, from the coordinates the system was inferred from
-    md_system_infer(sys, &sys->reference, NULL);
+    MD_LOG_INFO("Topology applied: %zu molecules covering %zu of %zu atoms, %zu bonds",
+        num_instances, num_covered, atom_count, num_topology_bonds);
+    md_temp_end(temp);
+}
 
-    MD_LOG_INFO("Topology applied: %zu molecules covering %zu of %zu atoms, %zu bonds, %zu structures",
-        num_instances, num_covered, atom_count, num_topology_bonds, md_system_molecule_count(sys));
-    result = true;
+bool md_itp_system_supplement(md_system_t* sys, const md_itp_data_t* data) {
+    MD_ASSERT(sys);
+    MD_ASSERT(data);
+
+    if (!sys->alloc || sys->atom.count == 0) {
+        MD_LOG_ERROR("itp: the topology applies to the atoms of a system, and this one has none");
+        return false;
+    }
+
+    md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
+    md_itp_instance_t* instances = 0;
+    const size_t num_instances = md_itp_match_system(&instances, data, sys, md_temp_allocator(temp));
+    if (num_instances) {
+        itp_apply(sys, data, instances, num_instances);
+    } else {
+        MD_LOG_INFO("itp: none of the topology's molecules match the system");
+    }
+    md_temp_end(temp);
+    return num_instances > 0;
+}
+
+// ### LOAD ###
+
+// The system of the topology alone, onto a system without atoms: the molecules of [ molecules ], or one of each
+// moleculetype for a plain .itp. Built as the other topology formats are (md_topology_system_load), then the topology
+// is applied onto its own molecules as it would be onto a structure's.
+static md_load_result_t itp_system_build(md_system_t* sys, md_system_state_t* state, const md_itp_data_t* data, md_str_t filename) {
+    md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
+    md_allocator_i* temp_alloc = md_temp_allocator(temp);
+    md_load_result_t result = MD_LOAD_FAILED;
+
+    md_itp_instance_t* instances = 0;
+    size_t N = 0;
+    const size_t num_types = md_array_size(data->moleculetypes);
+    if (md_array_size(data->molecules)) {
+        for (size_t m = 0; m < md_array_size(data->molecules); ++m) {
+            const md_itp_molecules_t* entry = &data->molecules[m];
+            const int64_t t = find_moleculetype(data, entry->name);
+            if (t < 0) {
+                MD_LOG_ERROR("itp: [ molecules ] of '" MD_STR_FMT "' names '" MD_STR_FMT "', which it does not define", MD_STR_ARG(filename), MD_STR_ARG(entry->name));
+                goto done;
+            }
+            for (int32_t c = 0; c < entry->count; ++c) {
+                md_itp_instance_t inst = { (uint32_t)t, (uint32_t)N };
+                md_array_push(instances, inst, temp_alloc);
+                N += md_array_size(data->moleculetypes[t].atoms);
+            }
+        }
+    } else {
+        for (size_t t = 0; t < num_types; ++t) {
+            md_itp_instance_t inst = { (uint32_t)t, (uint32_t)N };
+            md_array_push(instances, inst, temp_alloc);
+            N += md_array_size(data->moleculetypes[t].atoms);
+        }
+    }
+    if (N == 0 || N > UINT32_MAX) {
+        MD_LOG_ERROR("itp: '" MD_STR_FMT "' describes no atoms", MD_STR_ARG(filename));
+        goto done;
+    }
+
+    // ## Atoms and residues. A residue ends where the residue number or name changes, and with its molecule.
+    // Elements: the atomtype's atomic number, else the name's; none when neither tells (a coarse grained bead,
+    // which the masses tell apart once the topology is applied).
+    const size_t num_instances = md_array_size(instances);
+    md_str_t* atom_name = md_temp_alloc_array(temp, md_str_t, N);
+    md_str_t* atom_type = md_temp_alloc_array(temp, md_str_t, N);
+    double*   mass      = md_temp_alloc_array(temp, double, N);
+    int64_t*  atomic_number = md_temp_alloc_array(temp, int64_t, N);
+    md_str_t* res_name   = 0;
+    uint32_t* res_offset = 0;
+    int64_t*  res_number = 0;
+    size_t i = 0;
+    for (size_t k = 0; k < num_instances; ++k) {
+        const md_itp_moleculetype_t* mol = &data->moleculetypes[instances[k].type];
+        for (size_t j = 0; j < md_array_size(mol->atoms); ++j, ++i) {
+            const md_itp_atom_t* atom = &mol->atoms[j];
+            if (j == 0 || atom->res_nr != mol->atoms[j - 1].res_nr || !md_str_eq(atom->res_name, mol->atoms[j - 1].res_name)) {
+                md_array_push(res_name, atom->res_name, temp_alloc);
+                md_array_push(res_offset, (uint32_t)i, temp_alloc);
+                md_array_push(res_number, (int64_t)atom->res_nr, temp_alloc);
+            }
+            const md_itp_atomtype_t* at = find_atomtype(data, atom->type);
+            atom_name[i] = atom->name;
+            atom_type[i] = atom->type;
+            mass[i] = atom->has_mass ? atom->mass : (at ? at->mass : 0.0);
+            atomic_number[i] = at && at->atomic_number >= 0 ? at->atomic_number : -1;
+        }
+    }
+    const size_t R = md_array_size(res_name);
+    md_array_push(res_offset, (uint32_t)N, temp_alloc);
+    for (size_t r = 0; r < R; ++r) {
+        const size_t beg = res_offset[r], end = res_offset[r + 1];
+        for (size_t a = beg; a < end; ++a) {
+            if (atomic_number[a] < 0) atomic_number[a] = md_atomic_number_infer_from_label(atom_name[a], res_name[r], end - beg);
+        }
+    }
+
+    const md_topology_desc_t desc = {
+        .format = "GROMACS topology",
+        .num_atoms = N,
+        .atom_name = atom_name,
+        .atom_type = atom_type,
+        .mass = mass,
+        .atomic_number = atomic_number,
+        .num_residues = R,
+        .res_name = res_name,
+        .res_offset = res_offset,
+        .res_number = res_number,
+        .title = data->system_name,
+    };
+    result = md_topology_system_load(sys, state, &desc, filename);
+    if (result == MD_LOAD_OK) {
+        itp_apply(sys, data, instances, num_instances);
+    }
 
 done:
     md_temp_end(temp);
     return result;
 }
 
-bool md_itp_system_supplement_from_file(md_system_t* sys, md_str_t filename, const md_load_desc_t* desc) {
+md_load_result_t md_itp_system_load_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
     (void)desc;
     MD_ASSERT(sys);
+    MD_ASSERT(state);
     md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
-    md_allocator_i* temp_arena = md_temp_allocator(temp);
-
     md_itp_data_t data = {0};
-    bool result = md_itp_data_parse_file(&data, filename, temp_arena) && md_itp_system_supplement(sys, &data);
-
+    md_load_result_t result = MD_LOAD_FAILED;
+    if (md_itp_data_parse_file(&data, filename, md_temp_allocator(temp))) {
+        if (sys->atom.count == 0) {
+            result = itp_system_build(sys, state, &data, filename);
+        } else {
+            result = md_itp_system_supplement(sys, &data) ? MD_LOAD_OK : MD_LOAD_MISMATCH;
+        }
+    }
     md_temp_end(temp);
+    return result;
+}
+
+md_load_result_t md_itp_system_check_file(const md_system_t* sys, md_str_t filename, const md_load_desc_t* desc) {
+    (void)desc;
+    MD_ASSERT(sys);
+    if (sys->atom.count == 0) return MD_LOAD_MISMATCH;
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
+    md_itp_data_t data = {0};
+    md_load_result_t result = MD_LOAD_FAILED;
+    if (md_itp_data_parse_file(&data, filename, arena)) {
+        md_itp_instance_t* instances = 0;
+        result = md_itp_match_system(&instances, &data, sys, arena) ? MD_LOAD_OK : MD_LOAD_MISMATCH;
+    }
+    md_arena_allocator_destroy(arena);
     return result;
 }

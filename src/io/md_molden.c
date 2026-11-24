@@ -1,4 +1,5 @@
 #include <md_molden.h>
+#include "md_io_internal.h"
 #include <md_io.h>
 
 #include <md_system.h>
@@ -32,7 +33,7 @@
 // ---------------------------------------------------------------------------
 // The reader's own representation
 // ---------------------------------------------------------------------------
-// Parse time only. Nothing here outlives md_molden_system_init_from_str, which is the whole point:
+// Parse time only. Nothing here outlives molden_system_build_from_str, which is the whole point:
 // what the file carried leaves this file as attributes on a system, never as a struct a consumer
 // would then have to keep a reader alive to read.
 
@@ -1155,7 +1156,7 @@ static bool molden_publish(md_system_t* sys, molden_t* molden, md_allocator_i* t
 // Entry points
 // ---------------------------------------------------------------------------
 
-bool md_molden_system_init_from_str(md_system_t* sys, md_system_state_t* state, md_str_t str, const md_load_desc_t* desc) {
+static bool molden_system_build_from_str(md_system_t* sys, md_system_state_t* state, md_str_t str, const md_load_desc_t* desc) {
     (void)desc;
     MD_ASSERT(sys);
 
@@ -1172,7 +1173,7 @@ bool md_molden_system_init_from_str(md_system_t* sys, md_system_state_t* state, 
     return result;
 }
 
-bool md_molden_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
+static bool molden_system_build_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
     (void)desc;
     MD_ASSERT(sys);
 
@@ -1192,7 +1193,7 @@ bool md_molden_system_init_from_file(md_system_t* sys, md_system_state_t* state,
         MD_LOG_ERROR("MOLDEN: failed to read '" MD_STR_FMT "'", MD_STR_ARG(filename));
     } else {
         buf[size] = '\0';
-        result = md_molden_system_init_from_str(sys, state, (md_str_t){ buf, size }, desc);
+        result = molden_system_build_from_str(sys, state, (md_str_t){ buf, size }, desc);
     }
 
     if (buf) {
@@ -1223,4 +1224,16 @@ bool md_molden_file_is_molden(md_str_t filename) {
         return molden_section_header(&name, &arg, line) && md_str_eq_cstr_ignore_case(name, "molden format");
     }
     return false;
+}
+
+// ### LOAD (md_io.h) ###
+
+md_load_result_t md_molden_system_load_from_file(struct md_system_t* sys, struct md_system_state_t* state, md_str_t filename, const struct md_load_desc_t* desc) {
+    if (!md_io_onto_no_atoms(sys, filename)) return MD_LOAD_FAILED;
+    return molden_system_build_from_file(sys, state, filename, desc) ? MD_LOAD_OK : MD_LOAD_FAILED;
+}
+
+md_load_result_t md_molden_system_load_from_str(struct md_system_t* sys, struct md_system_state_t* state, md_str_t str, const struct md_load_desc_t* desc) {
+    if (!md_io_onto_no_atoms(sys, MD_STR_LIT("text"))) return MD_LOAD_FAILED;
+    return molden_system_build_from_str(sys, state, str, desc) ? MD_LOAD_OK : MD_LOAD_FAILED;
 }

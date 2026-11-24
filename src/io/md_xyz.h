@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include <core/md_str.h>
+#include <md_io.h>
 
 #include <stdint.h>
 #include <stddef.h>
@@ -53,7 +54,7 @@ void md_xyz_data_free(md_xyz_data_t* data, struct md_allocator_i* alloc);
 
 // SYSTEM
 bool md_xyz_system_init_from_data(struct md_system_t* sys, md_system_state_t* state, const md_xyz_data_t* data);
-bool md_xyz_system_init_from_file(struct md_system_t* sys, md_system_state_t* state, md_str_t filename, const struct md_load_desc_t* desc);
+md_load_result_t md_xyz_system_load_from_file(struct md_system_t* sys, md_system_state_t* state, md_str_t filename, const struct md_load_desc_t* desc);
 
 // RUN
 // A file of several frames of the same atoms, published as a run (see md_run_publish in
@@ -62,7 +63,7 @@ bool md_xyz_system_init_from_file(struct md_system_t* sys, md_system_state_t* st
 // Plain, Tinker, ARC and extended XYZ alike. The index is kept beside the file ('<file>.cache',
 // written unless flags carries MD_RUN_FLAG_DISABLE_CACHE_WRITE). False for a single frame.
 bool md_xyz_system_publish_run(struct md_system_t* sys, md_str_t filename, md_str_t run, uint32_t flags);
-bool md_xyz_system_init_from_str (struct md_system_t* sys, md_system_state_t* state, md_str_t str, const struct md_load_desc_t* desc);
+md_load_result_t md_xyz_system_load_from_str (struct md_system_t* sys, md_system_state_t* state, md_str_t str, const struct md_load_desc_t* desc);
 
 #ifdef __cplusplus
 }

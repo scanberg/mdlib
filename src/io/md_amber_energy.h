@@ -3,9 +3,10 @@
 #include <stdbool.h>
 
 #include <core/md_str.h>
+#include <md_io.h>
 
 struct md_system_t;
-struct md_load_desc_t;
+struct md_system_state_t;
 
 #ifdef __cplusplus
 extern "C" {
@@ -35,7 +36,13 @@ bool md_amber_energy_file_is_mdout(md_str_t filename);
 // An mden file: it starts with "L0  Nsteps"
 bool md_amber_energy_file_is_mden(md_str_t filename);
 
-bool md_amber_energy_system_supplement_from_file(struct md_system_t* sys, md_str_t filename, const struct md_load_desc_t* desc);
+// Data of a system (md_io.h, LOAD): onto a system with the run desc->run, MD_LOAD_MISMATCH when the energies are not
+// along it; without it they form it.
+md_load_result_t md_amber_energy_system_load_from_file(struct md_system_t* sys, struct md_system_state_t* state, md_str_t filename, const struct md_load_desc_t* desc);
+
+// Whether the energies are along the run desc->run of the system, changing nothing (md_io.h, CHECK): MD_LOAD_MISMATCH
+// when the system has no such run
+md_load_result_t md_amber_energy_system_check_file(const struct md_system_t* sys, md_str_t filename, const struct md_load_desc_t* desc);
 
 #ifdef __cplusplus
 }

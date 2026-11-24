@@ -1,4 +1,5 @@
 #include <md_trexio.h>
+#include "md_io_internal.h"
 #include <md_io.h>
 
 #include <md_system.h>
@@ -985,7 +986,7 @@ static bool trexio_publish(md_system_t* sys, const trexio_t* trexio, md_allocato
 // Entry points
 // ---------------------------------------------------------------------------
 
-bool md_trexio_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
+static bool trexio_system_build_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
     (void)desc;
     MD_ASSERT(sys);
 
@@ -1050,4 +1051,11 @@ bool md_trexio_file_is_trexio(md_str_t filename) {
     }
     h5_error_scope_end(err);
     return result;
+}
+
+// ### LOAD (md_io.h) ###
+
+md_load_result_t md_trexio_system_load_from_file(struct md_system_t* sys, struct md_system_state_t* state, md_str_t filename, const struct md_load_desc_t* desc) {
+    if (!md_io_onto_no_atoms(sys, filename)) return MD_LOAD_FAILED;
+    return trexio_system_build_from_file(sys, state, filename, desc) ? MD_LOAD_OK : MD_LOAD_FAILED;
 }

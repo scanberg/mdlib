@@ -409,7 +409,7 @@ UTEST(ring, rings_c60) {
     md_allocator_i* alloc = md_temp_allocator(temp_scope);
 	md_system_t sys = { .alloc = alloc };
 	md_system_state_t sys_state = { .alloc = alloc };
-	md_pdb_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/c60.pdb"), NULL);
+	(md_pdb_system_load_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/c60.pdb"), NULL) == MD_LOAD_OK);
 	md_system_infer(&sys, &sys_state, NULL);
 
 	EXPECT_EQ(sys.atom.count, 60);
@@ -429,7 +429,7 @@ UTEST(ring, rings_c720) {
     md_allocator_i* alloc = md_temp_allocator(temp_scope);
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
-    md_xyz_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/c720.xyz"), NULL);
+    (md_xyz_system_load_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/c720.xyz"), NULL) == MD_LOAD_OK);
     md_system_infer(&sys, &sys_state, NULL);
 
     EXPECT_EQ(sys.atom.count, 720);
@@ -449,7 +449,7 @@ UTEST(ring, rings_14kr) {
     md_allocator_i* alloc = md_temp_allocator(temp_scope);
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
-    md_pdb_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), NULL);
+    (md_pdb_system_load_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), NULL) == MD_LOAD_OK);
     md_system_infer(&sys, &sys_state, NULL);
 
     const size_t num_rings = md_ring_data_count(&sys.ring);
@@ -463,7 +463,7 @@ UTEST(ring, rings_trytophan_pdb) {
     md_allocator_i* alloc = md_temp_allocator(temp_scope);
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
-    md_pdb_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.pdb"), NULL);
+    (md_pdb_system_load_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.pdb"), NULL) == MD_LOAD_OK);
     md_system_infer(&sys, &sys_state, NULL);
 
     const size_t num_rings = md_ring_data_count(&sys.ring);
@@ -480,7 +480,7 @@ UTEST(ring, rings_trytophan_xyz) {
     md_allocator_i* alloc = md_temp_allocator(temp_scope);
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
-    md_xyz_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.xyz"), NULL);
+    (md_xyz_system_load_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.xyz"), NULL) == MD_LOAD_OK);
     md_system_infer(&sys, &sys_state, NULL);
 
     const size_t num_rings = md_ring_data_count(&sys.ring);
@@ -497,7 +497,7 @@ UTEST(ring, rings_full) {
     md_allocator_i* alloc = md_temp_allocator(temp_scope);
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
-    md_xyz_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/full.xyz"), NULL);
+    (md_xyz_system_load_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/full.xyz"), NULL) == MD_LOAD_OK);
     md_system_infer(&sys, &sys_state, NULL);
 
     const size_t num_rings = md_ring_data_count(&sys.ring);
@@ -514,7 +514,7 @@ UTEST(ring, rings_ciprofloxacin) {
     md_allocator_i* alloc = md_temp_allocator(temp_scope);
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
-    md_pdb_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/ciprofloxacin.pdb"), NULL);
+    (md_pdb_system_load_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/ciprofloxacin.pdb"), NULL) == MD_LOAD_OK);
     md_system_infer(&sys, &sys_state, NULL);
 
     const int64_t num_rings = md_ring_data_count(&sys.ring);
@@ -540,7 +540,7 @@ UTEST(ring, rings_coarse_grained) {
         md_system_state_t sys_state = { .alloc = alloc };
         char path[512];
         snprintf(path, sizeof(path), MD_UNITTEST_DATA_DIR "/martini/%s", files[f]);
-        ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &sys_state, md_str_from_cstr(path), NULL));
+        ASSERT_TRUE(md_tpr_system_load_from_file(&sys, &sys_state, md_str_from_cstr(path), NULL) == MD_LOAD_OK);
         ASSERT_TRUE(md_system_is_coarse_grained(&sys));
         // The bonds of the topology close cycles: more bonds than a forest of the molecules has
         EXPECT_GT(md_bond_list_count(&sys.given_bond) + sys.instance.count, sys.atom.count);

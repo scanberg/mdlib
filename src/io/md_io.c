@@ -2,8 +2,13 @@
 
 #include <core/md_common.h>
 #include <core/md_path.h>
+#include <core/md_allocator.h>
+#include <core/md_arena_allocator.h>
+#include <core/md_log.h>
 
 #include <md_system.h>
+#include <md_run.h>
+#include "md_io_internal.h"
 #include <md_pdb.h>
 #include <md_gro.h>
 #include <md_xyz.h>
@@ -36,16 +41,16 @@
 // Where a format needs more than its reader's function
 
 // An index file names the groups an energy file of the run, loaded before it, used for its energy and T-coupling groups
-static bool ndx_supplement(md_system_t* sys, md_str_t path, const md_load_desc_t* desc) {
-    if (!md_ndx_system_supplement_from_file(sys, path, desc)) return false;
-    if (desc && !md_str_empty(desc->run)) md_edr_system_infer_group_roles_of_run(sys, desc->run);
-    return true;
+static md_load_result_t ndx_load(md_system_t* sys, md_system_state_t* state, md_str_t path, const md_load_desc_t* desc) {
+    const md_load_result_t result = md_ndx_system_load_from_file(sys, state, path, desc);
+    if (result == MD_LOAD_OK && desc && !md_str_empty(desc->run)) md_edr_system_infer_group_roles_of_run(sys, desc->run);
+    return result;
 }
 
 // An Amber restart is ASCII or NetCDF
-static bool amber_restart_state_init(md_system_state_t* state, md_str_t path, size_t num_atoms) {
-    if (md_amber_netcdf_file_kind(path) == MD_AMBER_NETCDF_RESTART) return md_amber_netcdf_state_init_from_file(state, path, num_atoms);
-    return md_amber_rst7_state_init_from_file(state, path, num_atoms);
+static md_load_result_t amber_restart_load(md_system_t* sys, md_system_state_t* state, md_str_t path, const md_load_desc_t* desc) {
+    if (md_amber_netcdf_file_kind(path) == MD_AMBER_NETCDF_RESTART) return md_amber_netcdf_system_load_from_file(sys, state, path, desc);
+    return md_amber_rst7_system_load_from_file(sys, state, path, desc);
 }
 
 static size_t amber_restart_atom_count(md_str_t path) {
@@ -53,86 +58,138 @@ static size_t amber_restart_atom_count(md_str_t path) {
     return n ? n : md_amber_rst7_file_atom_count(path);
 }
 
+// A trajectory alone is a system of its atoms by their count, at its first frame. The frames are published onto a
+// system of their own to take that one; the run of the system the caller publishes (publish_run).
+static md_load_result_t trajectory_load(md_system_t* sys, md_system_state_t* state, md_str_t path,
+    bool (*publish_run)(md_system_t* sys, md_str_t path, md_str_t run, uint32_t flags))
+{
+    MD_ASSERT(sys);
+    MD_ASSERT(state);
+    if (!md_io_onto_no_atoms(sys, path)) return MD_LOAD_FAILED;
+
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
+    md_system_t frames = { .alloc = arena };
+    frames.attributes.alloc = arena;
+    const md_str_t run = MD_STR_LIT("run/first");
+    md_load_result_t result = MD_LOAD_FAILED;
+    if (publish_run(&frames, path, run, MD_RUN_FLAG_NONE)) {
+        const md_attribute_t* position = md_attributes_find(&frames.attributes, MD_STR_LIT("run/first/atom/position"));
+        const size_t N = position && position->format.rank == 2 ? position->format.shape[1] : 0;
+        const bool has_cell = md_attributes_find(&frames.attributes, MD_STR_LIT("run/first/unitcell")) != NULL;
+        const md_str_t paths[] = { MD_STR_LIT("atom/position"), MD_STR_LIT("unitcell") };
+        md_system_extract_t* ex = N ? md_system_extract_begin(&frames, run, paths, has_cell ? 2 : 1, arena) : NULL;
+        if (ex && md_system_state_init(state, N) && md_system_extract_frame(ex, 0, state)) {
+            md_io_points_system(sys, N);
+            result = MD_LOAD_OK;
+        } else {
+            MD_LOG_ERROR("Could not read the first frame of '" MD_STR_FMT "'", MD_STR_ARG(path));
+        }
+        if (ex) md_system_extract_end(ex);
+    }
+    md_system_free(&frames);
+    md_arena_allocator_destroy(arena);
+    return result;
+}
+
+static md_load_result_t lammps_trajectory_load(md_system_t* sys, md_system_state_t* state, md_str_t path, const md_load_desc_t* desc) {
+    (void)desc;
+    return trajectory_load(sys, state, path, md_lammps_system_publish_run);
+}
+
+static md_load_result_t xtc_load(md_system_t* sys, md_system_state_t* state, md_str_t path, const md_load_desc_t* desc) {
+    (void)desc;
+    return trajectory_load(sys, state, path, md_xtc_system_publish_run);
+}
+
+static md_load_result_t trr_load(md_system_t* sys, md_system_state_t* state, md_str_t path, const md_load_desc_t* desc) {
+    (void)desc;
+    return trajectory_load(sys, state, path, md_trr_system_publish_run);
+}
+
+static md_load_result_t dcd_load(md_system_t* sys, md_system_state_t* state, md_str_t path, const md_load_desc_t* desc) {
+    (void)desc;
+    return trajectory_load(sys, state, path, md_dcd_system_publish_run);
+}
+
 #define S(x) MD_STR_INIT(x)
 
 static const md_io_format_info_t formats[MD_IO_FORMAT_COUNT] = {
     [MD_IO_FORMAT_UNKNOWN] = { S("Undefined"), S(""), 0 },
     [MD_IO_FORMAT_PDB] = { S("Standard Protein Data Bank (pdb)"), S("pdb"), MD_IO_FLAG_SYSTEM | MD_IO_FLAG_RUN | MD_IO_FLAG_MM,
-        .system_init = md_pdb_system_init_from_file, .publish_run = md_pdb_system_publish_run },
+        .load = md_pdb_system_load_from_file, .publish_run = md_pdb_system_publish_run },
     [MD_IO_FORMAT_GRO] = { S("Gromacs Structure (gro)"), S("gro"), MD_IO_FLAG_SYSTEM | MD_IO_FLAG_MM,
-        .system_init = md_gro_system_init_from_file },
+        .load = md_gro_system_load_from_file },
     [MD_IO_FORMAT_XYZ] = { S("xyz (xyz)"), S("xyz"), MD_IO_FLAG_SYSTEM | MD_IO_FLAG_RUN | MD_IO_FLAG_MM,
-        .system_init = md_xyz_system_init_from_file, .publish_run = md_xyz_system_publish_run },
+        .load = md_xyz_system_load_from_file, .publish_run = md_xyz_system_publish_run },
     [MD_IO_FORMAT_XMOL] = { S("xyz (xmol)"), S("xmol"), MD_IO_FLAG_SYSTEM | MD_IO_FLAG_RUN | MD_IO_FLAG_MM,
-        .system_init = md_xyz_system_init_from_file, .publish_run = md_xyz_system_publish_run },
+        .load = md_xyz_system_load_from_file, .publish_run = md_xyz_system_publish_run },
     [MD_IO_FORMAT_ARC] = { S("xyz (arc)"), S("arc"), MD_IO_FLAG_SYSTEM | MD_IO_FLAG_RUN | MD_IO_FLAG_MM,
-        .system_init = md_xyz_system_init_from_file, .publish_run = md_xyz_system_publish_run },
+        .load = md_xyz_system_load_from_file, .publish_run = md_xyz_system_publish_run },
     [MD_IO_FORMAT_MMCIF] = { S("PDBx/mmCIF (cif)"), S("cif"), MD_IO_FLAG_SYSTEM | MD_IO_FLAG_MM,
-        .system_init = md_mmcif_system_init_from_file },
+        .load = md_mmcif_system_load_from_file },
     [MD_IO_FORMAT_LAMMPS_DATA] = { S("LAMMPS (data)"), S("data"), MD_IO_FLAG_SYSTEM | MD_IO_FLAG_MM,
-        .system_init = md_lammps_system_init_from_file },
+        .load = md_lammps_system_load_from_file },
+    // Trajectories: frames, which a system's atoms take as a run (publish_run); alone a system of their atoms by their
+    // count, at the first frame (load)
     [MD_IO_FORMAT_LAMMPS_TRJ] = { S("LAMMPS Trajectory (lammpstrj)"), S("lammpstrj"), MD_IO_FLAG_RUN | MD_IO_FLAG_MM,
-        .publish_run = md_lammps_system_publish_run },
+        .load = lammps_trajectory_load, .publish_run = md_lammps_system_publish_run },
     [MD_IO_FORMAT_XTC] = { S("Gromacs Compressed Trajectory (xtc)"), S("xtc"), MD_IO_FLAG_RUN | MD_IO_FLAG_MM,
-        .publish_run = md_xtc_system_publish_run, .atom_count = md_xtc_file_atom_count },
+        .load = xtc_load, .publish_run = md_xtc_system_publish_run, .atom_count = md_xtc_file_atom_count },
     [MD_IO_FORMAT_TRR] = { S("Gromacs Lossless Trajectory (trr)"), S("trr"), MD_IO_FLAG_RUN | MD_IO_FLAG_MM,
-        .publish_run = md_trr_system_publish_run, .atom_count = md_trr_file_atom_count },
+        .load = trr_load, .publish_run = md_trr_system_publish_run, .atom_count = md_trr_file_atom_count },
     [MD_IO_FORMAT_DCD] = { S("DCD Trajectory (dcd)"), S("dcd"), MD_IO_FLAG_RUN | MD_IO_FLAG_MM,
-        .publish_run = md_dcd_system_publish_run, .atom_count = md_dcd_file_atom_count },
+        .load = dcd_load, .publish_run = md_dcd_system_publish_run, .atom_count = md_dcd_file_atom_count },
     // VeloxChem: a system of its own, and the QM data of a region of the atoms of one loaded (md_vlx_system_load_from_file).
     // RUN as it is read along with the trajectories of a system; it publishes none of its own.
     [MD_IO_FORMAT_VLX] = { S("VeloxChem (h5)"), S("h5"), MD_IO_FLAG_SYSTEM | MD_IO_FLAG_SUPPLEMENT | MD_IO_FLAG_RUN | MD_IO_FLAG_MM | MD_IO_FLAG_QM,
 #if MD_HDF5
-        .load = md_vlx_system_load_from_file,
+        .load = md_vlx_system_load_from_file, .check = md_vlx_system_check_file,
 #endif
     },
     [MD_IO_FORMAT_MOLDEN] = { S("Molden (molden)"), S("molden"), MD_IO_FLAG_SYSTEM | MD_IO_FLAG_QM,
-        .system_init = md_molden_system_init_from_file },
+        .load = md_molden_system_load_from_file },
     [MD_IO_FORMAT_TREXIO] = { S("TREXIO (trexio)"), S("trexio"), MD_IO_FLAG_SYSTEM | MD_IO_FLAG_QM,
 #if MD_HDF5
-        .system_init = md_trexio_system_init_from_file,
+        .load = md_trexio_system_load_from_file,
 #endif
     },
     // The system and its positions as a run in one file. TOPOLOGY: GROMACS writes its bonds (a file without any has them
     // inferred)
     [MD_IO_FORMAT_H5MD] = { S("H5MD (h5md)"), S("h5md"), MD_IO_FLAG_SYSTEM | MD_IO_FLAG_RUN | MD_IO_FLAG_MM | MD_IO_FLAG_TOPOLOGY,
 #if MD_HDF5
-        .system_init = md_h5md_system_init_from_file, .publish_run = md_h5md_system_publish_run,
+        .load = md_h5md_system_load_from_file, .publish_run = md_h5md_system_publish_run,
 #endif
     },
-    [MD_IO_FORMAT_ITP] = { S("Gromacs Topology (itp/top)"), S("itp"), MD_IO_FLAG_SUPPLEMENT | MD_IO_FLAG_MM,
-        .supplement = md_itp_system_supplement_from_file },
+    // A topology: a system without coordinates of its own, or the molecules it defines found among a system's atoms
+    [MD_IO_FORMAT_ITP] = { S("Gromacs Topology (itp/top)"), S("itp"), MD_IO_FLAG_SYSTEM | MD_IO_FLAG_SUPPLEMENT | MD_IO_FLAG_MM,
+        .load = md_itp_system_load_from_file, .check = md_itp_system_check_file },
     [MD_IO_FORMAT_TPR] = { S("Gromacs Run Input (tpr)"), S("tpr"), MD_IO_FLAG_SYSTEM | MD_IO_FLAG_MM | MD_IO_FLAG_TOPOLOGY,
-        .system_init = md_tpr_system_init_from_file },
+        .load = md_tpr_system_load_from_file },
     [MD_IO_FORMAT_NDX] = { S("Gromacs Index Groups (ndx)"), S("ndx"), MD_IO_FLAG_SUPPLEMENT | MD_IO_FLAG_MM,
-        .supplement = ndx_supplement },
+        .load = ndx_load, .check = md_ndx_system_check_file },
     [MD_IO_FORMAT_EDR] = { S("Gromacs Energy (edr)"), S("edr"), MD_IO_FLAG_SUPPLEMENT | MD_IO_FLAG_TEMPORAL | MD_IO_FLAG_MM,
-        .supplement = md_edr_system_supplement_from_file },
+        .load = md_edr_system_load_from_file, .check = md_edr_system_check_file },
     [MD_IO_FORMAT_XVG] = { S("xmgrace columns (xvg)"), S("xvg"), MD_IO_FLAG_SUPPLEMENT | MD_IO_FLAG_TEMPORAL,
-        .supplement = md_xvg_system_supplement_from_file },
+        .load = md_xvg_system_load_from_file, .check = md_xvg_system_check_file },
     [MD_IO_FORMAT_CSV] = { S("Comma separated values (csv)"), S("csv"), MD_IO_FLAG_SUPPLEMENT | MD_IO_FLAG_TEMPORAL,
-        .supplement = md_csv_system_supplement_from_file },
+        .load = md_csv_system_load_from_file, .check = md_csv_system_check_file },
     [MD_IO_FORMAT_ASE_TRAJ] = { S("ASE Trajectory (traj)"), S("traj"), MD_IO_FLAG_SYSTEM | MD_IO_FLAG_RUN | MD_IO_FLAG_MM,
-        .system_init = md_ase_traj_system_init_from_file, .publish_run = md_ase_traj_system_publish_run },
-    // A topology: a system without coordinates, which joins one of its atoms (md_system_merge) or is given them by a
-    // file of coordinates (state_init of its format reads them, until those load too)
-    [MD_IO_FORMAT_AMBER_PRMTOP] = { S("Amber Topology (prmtop/parm7)"), S("prmtop"),
-        MD_IO_FLAG_SYSTEM | MD_IO_FLAG_MM | MD_IO_FLAG_TOPOLOGY | MD_IO_FLAG_NEEDS_COORDINATES,
-        .load = md_amber_prmtop_system_load_from_file,
-        .atom_count = md_amber_prmtop_file_atom_count },
-    [MD_IO_FORMAT_AMBER_RESTART] = { S("Amber Restart (rst7/inpcrd/ncrst)"), S("rst7"), MD_IO_FLAG_COORDINATES | MD_IO_FLAG_MM,
-        .state_init = amber_restart_state_init, .atom_count = amber_restart_atom_count },
+        .load = md_ase_traj_system_load_from_file, .publish_run = md_ase_traj_system_publish_run },
+    // Topologies: systems without coordinates, which join one of their atoms (md_system_merge)
+    [MD_IO_FORMAT_AMBER_PRMTOP] = { S("Amber Topology (prmtop/parm7)"), S("prmtop"), MD_IO_FLAG_SYSTEM | MD_IO_FLAG_MM | MD_IO_FLAG_TOPOLOGY,
+        .load = md_amber_prmtop_system_load_from_file, .atom_count = md_amber_prmtop_file_atom_count },
+    // Coordinates without names: systems of their atoms by their count
+    [MD_IO_FORMAT_AMBER_RESTART] = { S("Amber Restart (rst7/inpcrd/ncrst)"), S("rst7"), MD_IO_FLAG_SYSTEM | MD_IO_FLAG_MM,
+        .load = amber_restart_load, .atom_count = amber_restart_atom_count },
     [MD_IO_FORMAT_AMBER_NETCDF] = { S("Amber NetCDF Trajectory (nc)"), S("nc"), MD_IO_FLAG_RUN | MD_IO_FLAG_MM,
-        .publish_run = md_amber_netcdf_system_publish_run, .state_init = md_amber_netcdf_state_init_from_file,
+        .load = md_amber_netcdf_system_load_from_file, .publish_run = md_amber_netcdf_system_publish_run,
         .atom_count = md_amber_netcdf_file_atom_count },
     [MD_IO_FORMAT_AMBER_ENERGY] = { S("Amber Energies (mdout/mden)"), S("mdout"), MD_IO_FLAG_SUPPLEMENT | MD_IO_FLAG_TEMPORAL | MD_IO_FLAG_MM,
-        .supplement = md_amber_energy_system_supplement_from_file },
-    [MD_IO_FORMAT_PSF] = { S("CHARMM/NAMD Topology (psf)"), S("psf"),
-        MD_IO_FLAG_SYSTEM | MD_IO_FLAG_MM | MD_IO_FLAG_TOPOLOGY | MD_IO_FLAG_NEEDS_COORDINATES,
-        .load = md_psf_system_load_from_file,
-        .atom_count = md_psf_file_atom_count },
-    [MD_IO_FORMAT_NAMD_COOR] = { S("NAMD Binary Coordinates (coor)"), S("coor"), MD_IO_FLAG_COORDINATES | MD_IO_FLAG_MM,
-        .state_init = md_namdbin_state_init_from_file, .atom_count = md_namdbin_file_atom_count },
+        .load = md_amber_energy_system_load_from_file, .check = md_amber_energy_system_check_file },
+    [MD_IO_FORMAT_PSF] = { S("CHARMM/NAMD Topology (psf)"), S("psf"), MD_IO_FLAG_SYSTEM | MD_IO_FLAG_MM | MD_IO_FLAG_TOPOLOGY,
+        .load = md_psf_system_load_from_file, .atom_count = md_psf_file_atom_count },
+    [MD_IO_FORMAT_NAMD_COOR] = { S("NAMD Binary Coordinates (coor)"), S("coor"), MD_IO_FLAG_SYSTEM | MD_IO_FLAG_MM,
+        .load = md_namdbin_system_load_from_file, .atom_count = md_namdbin_file_atom_count },
 };
 
 #undef S
@@ -143,7 +200,7 @@ const md_io_format_info_t* md_io_format_info(md_io_format_t format) {
 
 bool md_io_format_available(md_io_format_t format) {
     const md_io_format_info_t* f = md_io_format_info(format);
-    return f->load || f->publish_run || f->system_init || f->supplement || f->state_init;
+    return f->load || f->publish_run;
 }
 
 md_io_format_t md_io_format_from_ext(md_str_t ext) {

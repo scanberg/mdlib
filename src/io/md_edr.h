@@ -4,10 +4,12 @@
 #include <stdbool.h>
 
 #include <core/md_str.h>
+#include <md_io.h>
 #include <core/md_unit.h>
 
 struct md_allocator_i;
 struct md_system_t;
+struct md_system_state_t;
 struct md_load_desc_t;
 
 #ifdef __cplusplus
@@ -58,8 +60,13 @@ bool md_edr_system_supplement(struct md_system_t* sys, const md_edr_energies_t* 
 
 // The same from a file, along the run desc->run, which additionally publishes "<run>/edr/source": the path it was loaded
 // from, so that whoever saves the session can find what to load again. It lives and dies with the
-// energies it describes, so it can never name a file whose data is gone.
-bool md_edr_system_supplement_from_file(struct md_system_t* sys, md_str_t filename, const struct md_load_desc_t* desc);
+// energies it describes, so it can never name a file whose data is gone. Data of a system (md_io.h, LOAD): onto a system
+// with the run, MD_LOAD_MISMATCH when the energies are not along it; without it they form it.
+md_load_result_t md_edr_system_load_from_file(struct md_system_t* sys, struct md_system_state_t* state, md_str_t filename, const struct md_load_desc_t* desc);
+
+// Whether the energies are along the run desc->run of the system, changing nothing (md_io.h, CHECK): MD_LOAD_MISMATCH
+// when the system has no such run
+md_load_result_t md_edr_system_check_file(const struct md_system_t* sys, md_str_t filename, const struct md_load_desc_t* desc);
 
 // THE GROUPS OF A TERM. GROMACS names the terms it writes for groups by the groups' names:
 //

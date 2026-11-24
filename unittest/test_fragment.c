@@ -599,7 +599,7 @@ static size_t frag_component_lines(md_array(char)* out, const ref_comp_t* c, md_
     }
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    if (!md_xyz_system_init_from_str(&sys, &st, (md_str_t){ xyz, md_array_size(xyz) }, NULL)) return 0;
+    if ((md_xyz_system_load_from_str(&sys, &st, (md_str_t){ xyz, md_array_size(xyz) }, NULL) != MD_LOAD_OK)) return 0;
     if (!md_system_infer(&sys, &st, NULL)) return 0;
     const size_t n = md_system_fragment_count(&sys);
     md_array_resize(*out, n * FRAG_REF_LINE, alloc);
@@ -661,7 +661,7 @@ UTEST(fragment, the_residues_of_a_protein) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(4));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), NULL));
+    ASSERT_TRUE(md_pdb_system_load_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), NULL) == MD_LOAD_OK);
     ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
 
     // The side chain of each amino acid within a chain: its fragments of no backbone, by heavy atoms and name

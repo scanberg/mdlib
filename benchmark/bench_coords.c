@@ -25,7 +25,7 @@
 static bool load_big(md_system_t* sys, md_system_state_t* st, md_allocator_i* arena) {
     sys->alloc = arena;
     st->alloc  = arena;
-    if (!md_gro_system_init_from_file(sys, st, MD_STR_LIT(BIG_GRO), NULL)) {
+    if ((md_gro_system_load_from_file(sys, st, MD_STR_LIT(BIG_GRO), NULL) != MD_LOAD_OK)) {
         fprintf(stderr, "Failed to load " BIG_GRO "\n");
         return false;
     }
@@ -256,7 +256,7 @@ UBENCH_EX(coords, protein_backbone) {
     md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(4));
     md_system_t sys = {.alloc = arena};
     md_system_state_t st = {.alloc = arena};
-    if (md_pdb_system_init_from_file(&sys, &st, MD_STR_LIT(PROTEIN_PDB), NULL) &&
+    if ((md_pdb_system_load_from_file(&sys, &st, MD_STR_LIT(PROTEIN_PDB), NULL) == MD_LOAD_OK) &&
         md_system_infer(&sys, &st, NULL)) {
         const size_t n = sys.protein_backbone.segment.count;
         md_secondary_structure_t* ss = md_alloc(arena, n * sizeof(md_secondary_structure_t));
@@ -312,7 +312,7 @@ UBENCH_EX(coords, script_eval_trr) {
     md_system_t sys = {.alloc = arena};
     md_system_state_t st = {.alloc = arena};
     const md_str_t run = MD_STR_INIT("run/t");
-    if (md_gro_system_init_from_file(&sys, &st, MD_STR_LIT(MD_BENCHMARK_DATA_DIR "/tryptophan-md.gro"), NULL) &&
+    if ((md_gro_system_load_from_file(&sys, &st, MD_STR_LIT(MD_BENCHMARK_DATA_DIR "/tryptophan-md.gro"), NULL) == MD_LOAD_OK) &&
         md_system_infer(&sys, &st, NULL) &&
         md_trr_system_publish_run(&sys, MD_STR_LIT(MD_BENCHMARK_DATA_DIR "/tryptophan-md.trr"), run, MD_RUN_FLAG_DISABLE_CACHE_WRITE)) {
         md_script_ir_t* ir = md_script_ir_create(arena);
@@ -343,7 +343,7 @@ UBENCH_EX(coords, extract_trr) {
     md_system_t sys = {.alloc = arena};
     md_system_state_t st = {.alloc = arena};
     const md_str_t run = MD_STR_INIT("run/t");
-    if (md_gro_system_init_from_file(&sys, &st, MD_STR_LIT(MD_BENCHMARK_DATA_DIR "/tryptophan-md.gro"), NULL) &&
+    if ((md_gro_system_load_from_file(&sys, &st, MD_STR_LIT(MD_BENCHMARK_DATA_DIR "/tryptophan-md.gro"), NULL) == MD_LOAD_OK) &&
         md_trr_system_publish_run(&sys, MD_STR_LIT(MD_BENCHMARK_DATA_DIR "/tryptophan-md.trr"), run, MD_RUN_FLAG_DISABLE_CACHE_WRITE)) {
         const md_str_t paths[] = { MD_STR_INIT("atom/position"), MD_STR_INIT("unitcell") };
         md_system_extract_t* ex = md_system_extract_begin(&sys, run, paths, 2, md_get_heap_allocator());

@@ -33,7 +33,7 @@ UTEST(gro, parse_small) {
 
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &sys_state, path, NULL));
+    ASSERT_TRUE(md_gro_system_load_from_file(&sys, &sys_state, path, NULL) == MD_LOAD_OK);
     EXPECT_EQ((size_t)1336, sys.atom.count);
     EXPECT_EQ((size_t)1336, sys_state.num_atoms);
     // A format without force field types still keeps the column aligned, with empty entries
@@ -52,7 +52,7 @@ UTEST(gro, parse_big) {
     md_allocator_i* alloc = md_get_heap_allocator();
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &sys_state, path, NULL));
+    ASSERT_TRUE(md_gro_system_load_from_file(&sys, &sys_state, path, NULL) == MD_LOAD_OK);
     EXPECT_EQ((size_t)161742, sys.atom.count);
     md_system_free(&sys);
     md_system_state_free(&sys_state);
@@ -64,7 +64,7 @@ UTEST(gro, parse_small_water) {
     md_str_t path = MD_STR_INIT(MD_UNITTEST_DATA_DIR"/water.gro");
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &sys_state, path, NULL));
+    ASSERT_TRUE(md_gro_system_load_from_file(&sys, &sys_state, path, NULL) == MD_LOAD_OK);
     EXPECT_EQ((size_t)12165, sys.atom.count);
     EXPECT_EQ((size_t)4055, sys.residue.count);
 
@@ -85,7 +85,7 @@ UTEST(gro, nonexistent_file) {
     md_allocator_i* alloc = md_get_heap_allocator();
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
-    EXPECT_FALSE(md_gro_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR"/nonexistent.gro"), NULL));
+    EXPECT_FALSE(md_gro_system_load_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR"/nonexistent.gro"), NULL) == MD_LOAD_OK);
     EXPECT_EQ((size_t)0, sys.atom.count);
     md_system_free(&sys);
     md_system_state_free(&sys_state);
@@ -104,7 +104,7 @@ UTEST(gro, malformed) {
     for (size_t i = 0; i < MD_COUNTOF(texts); ++i) {
         md_system_t sys = { .alloc = alloc };
         md_system_state_t st = { .alloc = alloc };
-        EXPECT_FALSE(md_gro_system_init_from_str(&sys, &st, md_str_from_cstr(texts[i]), NULL));
+        EXPECT_FALSE(md_gro_system_load_from_str(&sys, &st, md_str_from_cstr(texts[i]), NULL) == MD_LOAD_OK);
         EXPECT_EQ((size_t)0, sys.atom.count);
         EXPECT_EQ((size_t)0, st.num_atoms);
     }
@@ -127,7 +127,7 @@ UTEST(gro, frames) {
         "   4.00000   5.00000   6.00000\n");
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &st, text, NULL));
+    ASSERT_TRUE(md_gro_system_load_from_str(&sys, &st, text, NULL) == MD_LOAD_OK);
     ASSERT_EQ((size_t)2, sys.atom.count);
     EXPECT_EQ((size_t)1, sys.residue.count);
     EXPECT_NEAR(4.0f, st.xyz[1].x, 1e-5f);
@@ -175,7 +175,7 @@ UTEST(gro, coordinate_columns) {
 
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &st, text, NULL));
+    ASSERT_TRUE(md_gro_system_load_from_str(&sys, &st, text, NULL) == MD_LOAD_OK);
     ASSERT_EQ((size_t)7, sys.atom.count);
     const md_float3_t* x = st.xyz;
     const float* v = gro_test_velocities(&sys);
@@ -226,7 +226,7 @@ UTEST(gro, coordinate_columns_with_more_decimals) {
 
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &st, text, NULL));
+    ASSERT_TRUE(md_gro_system_load_from_str(&sys, &st, text, NULL) == MD_LOAD_OK);
     ASSERT_EQ((size_t)2, sys.atom.count);
     const md_float3_t* x = st.xyz;
     const float* v = gro_test_velocities(&sys);
@@ -250,7 +250,7 @@ static size_t gro_test_compare_with_tokens(md_str_t path, const md_executor_t* e
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     size_t mismatches = SIZE_MAX;
-    if (md_gro_system_init_from_file(&sys, &st, path, &(md_load_desc_t){ .executor = ex })) {
+    if (md_gro_system_load_from_file(&sys, &st, path, &(md_load_desc_t){ .executor = ex }) == MD_LOAD_OK) {
         mismatches = 0;
         const float* vel = gro_test_velocities(&sys);
         md_str_t text = md_load_textfile(path, alloc);
@@ -326,7 +326,7 @@ UTEST(gro, blocks_and_pieces) {
 
     md_system_t ref = { .alloc = alloc };
     md_system_state_t ref_st = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_str(&ref, &ref_st, str, NULL));
+    ASSERT_TRUE(md_gro_system_load_from_str(&ref, &ref_st, str, NULL) == MD_LOAD_OK);
     EXPECT_EQ(num_waters * 3, ref.atom.count);
     EXPECT_EQ(num_waters, ref.residue.count);
 
@@ -336,18 +336,18 @@ UTEST(gro, blocks_and_pieces) {
     for (size_t e = 0; e < MD_COUNTOF(executors); ++e) {
         md_system_t sys = { .alloc = alloc };
         md_system_state_t st = { .alloc = alloc };
-        ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, md_str_from_cstr(path), &(md_load_desc_t){ .executor = executors[e] }));
+        ASSERT_TRUE(md_gro_system_load_from_file(&sys, &st, md_str_from_cstr(path), &(md_load_desc_t){ .executor = executors[e] }) == MD_LOAD_OK);
         EXPECT_EQ((size_t)0, load_blocks_diff(&ref, &ref_st, &sys, &st));
         md_system_t sys2 = { .alloc = alloc };
         md_system_state_t st2 = { .alloc = alloc };
-        ASSERT_TRUE(md_gro_system_init_from_str(&sys2, &st2, str, &(md_load_desc_t){ .executor = executors[e] }));
+        ASSERT_TRUE(md_gro_system_load_from_str(&sys2, &st2, str, &(md_load_desc_t){ .executor = executors[e] }) == MD_LOAD_OK);
         EXPECT_EQ((size_t)0, load_blocks_diff(&ref, &ref_st, &sys2, &st2));
     }
 
     // The velocities: of every line which has them, absent where a line has none
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, md_str_from_cstr(path), &(md_load_desc_t){ .executor = test_executor(&threads) }));
+    ASSERT_TRUE(md_gro_system_load_from_file(&sys, &st, md_str_from_cstr(path), &(md_load_desc_t){ .executor = test_executor(&threads) }) == MD_LOAD_OK);
     const md_attribute_t* vel = md_attributes_find(&sys.attributes, MD_STR_LIT("atom/velocity"));
     ASSERT_TRUE(vel != NULL);
     const md_unit_t nm_per_ps = md_unit_div(md_unit_nanometer(), md_unit_picosecond());

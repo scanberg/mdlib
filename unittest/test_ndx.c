@@ -1,4 +1,5 @@
 #include "utest.h"
+#include <stdio.h>
 #include <md_io.h>
 
 #include <md_ndx.h>
@@ -52,7 +53,7 @@ UTEST(ndx, supplement_tpr_system) {
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_system_t sys = { .alloc = arena };
     md_system_state_t state = { .alloc = arena };
-    ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &state, MD_STR_LIT(TPR_DIR "nb_fswitch_rf.tpr"), NULL));
+    ASSERT_TRUE(md_tpr_system_load_from_file(&sys, &state, MD_STR_LIT(TPR_DIR "nb_fswitch_rf.tpr"), NULL) == MD_LOAD_OK);
     ASSERT_EQ(2u, sys.group.count);
     const uint64_t topology = sys.topology_version;
     const uint64_t groups = sys.group.version;
@@ -86,6 +87,37 @@ UTEST(ndx, supplement_tpr_system) {
     md_arena_allocator_destroy(arena);
 }
 
+// The file, as an application loads it: data of a system's atoms, which its check finds before the load
+UTEST(ndx, load_and_check) {
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
+    md_system_t sys = { .alloc = arena };
+    md_system_state_t state = { .alloc = arena };
+    const md_str_t ndx = MD_STR_LIT(TPR_DIR "nb_index.ndx");
+    const md_str_t big = MD_STR_LIT("md_unittest_ndx_big.ndx");
+    FILE* f = fopen(big.ptr, "wb");
+    ASSERT_TRUE(f != NULL);
+    fputs("[ big ]\n1 100000\n", f);
+    fclose(f);
+
+    // Onto no atoms: of no system
+    EXPECT_EQ(MD_LOAD_MISMATCH, md_ndx_system_check_file(&sys, ndx, NULL));
+    EXPECT_EQ(MD_LOAD_FAILED, md_ndx_system_load_from_file(&sys, &state, ndx, NULL));
+
+    ASSERT_EQ(MD_LOAD_OK, md_tpr_system_load_from_file(&sys, &state, MD_STR_LIT(TPR_DIR "nb_fswitch_rf.tpr"), NULL));
+    const size_t num_groups = sys.group.count;
+    EXPECT_EQ(MD_LOAD_OK, md_ndx_system_check_file(&sys, ndx, NULL));
+    EXPECT_EQ(MD_LOAD_MISMATCH, md_ndx_system_check_file(&sys, big, NULL));
+    EXPECT_EQ(MD_LOAD_FAILED, md_ndx_system_check_file(&sys, MD_STR_LIT("md_unittest_ndx_not_there.ndx"), NULL));
+    EXPECT_EQ(num_groups, sys.group.count);
+
+    EXPECT_EQ(MD_LOAD_MISMATCH, md_ndx_system_load_from_file(&sys, &state, big, NULL));
+    EXPECT_EQ(num_groups, sys.group.count);
+    EXPECT_EQ(MD_LOAD_OK, md_ndx_system_load_from_file(&sys, &state, ndx, NULL));
+
+    remove(big.ptr);
+    md_arena_allocator_destroy(arena);
+}
+
 #include <md_gro.h>
 #include <md_edr.h>
 
@@ -101,7 +133,7 @@ UTEST(ndx, default_groups) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/inside-md-pullout.gro"), NULL));
+    ASSERT_TRUE(md_gro_system_load_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/inside-md-pullout.gro"), NULL) == MD_LOAD_OK);
     ASSERT_EQ(50515u, sys.atom.count);
 
     EXPECT_EQ(50515u, default_count(&sys, "System", alloc));
@@ -135,9 +167,9 @@ UTEST(ndx, energy_file_names_default_groups) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(64));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/inside-md-pullout.gro"), NULL));
+    ASSERT_TRUE(md_gro_system_load_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/inside-md-pullout.gro"), NULL) == MD_LOAD_OK);
     ASSERT_EQ(0u, sys.group.count);
-    ASSERT_TRUE(md_edr_system_supplement_from_file(&sys, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/inside-md-pullout.edr"), &(md_load_desc_t){ .run = MD_STR_LIT("run/md") }));
+    ASSERT_EQ(MD_LOAD_OK, md_edr_system_load_from_file(&sys, NULL, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/inside-md-pullout.edr"), &(md_load_desc_t){ .run = MD_STR_LIT("run/md") }));
 
     size_t er_n;
     const uint32_t* er = md_system_group_role_order(&sys.group, MD_GROUP_ROLE_ENERGY, &er_n);

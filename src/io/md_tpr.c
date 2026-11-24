@@ -1,4 +1,5 @@
 #include <md_tpr.h>
+#include "md_io_internal.h"
 #include <md_io.h>
 #include <md_xdr.h>
 
@@ -2073,7 +2074,7 @@ bool md_tpr_system_init_from_data(md_system_t* sys, md_system_state_t* state, co
     return true;
 }
 
-bool md_tpr_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
+static bool tpr_system_build_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
     (void)desc;
     MD_ASSERT(sys);
     md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
@@ -2084,4 +2085,11 @@ bool md_tpr_system_init_from_file(md_system_t* sys, md_system_state_t* state, md
 
     md_temp_end(temp);
     return result;
+}
+
+// ### LOAD (md_io.h) ###
+
+md_load_result_t md_tpr_system_load_from_file(struct md_system_t* sys, md_system_state_t* state, md_str_t filename, const struct md_load_desc_t* desc) {
+    if (!md_io_onto_no_atoms(sys, filename)) return MD_LOAD_FAILED;
+    return tpr_system_build_from_file(sys, state, filename, desc) ? MD_LOAD_OK : MD_LOAD_FAILED;
 }

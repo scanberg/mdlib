@@ -4,7 +4,9 @@
 #include <stddef.h>
 
 #include <core/md_str.h>
+#include <md_io.h>
 
+struct md_system_t;
 struct md_system_state_t;
 
 #ifdef __cplusplus
@@ -22,8 +24,9 @@ bool md_namdbin_file_is_coor(md_str_t filename);
 
 size_t md_namdbin_file_atom_count(md_str_t filename);
 
-// The coordinates into state; num_atoms 0 accepts any count. state->alloc must be set.
-bool md_namdbin_state_init_from_file(struct md_system_state_t* state, md_str_t filename, size_t num_atoms);
+// Builds the system of the file (md_io.h, LOAD): its atoms known by their count alone, their coordinates in state. It
+// joins a topology of its atoms through md_system_merge.
+md_load_result_t md_namdbin_system_load_from_file(struct md_system_t* sys, struct md_system_state_t* state, md_str_t filename, const struct md_load_desc_t* desc);
 
 #ifdef __cplusplus
 }

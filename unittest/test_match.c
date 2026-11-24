@@ -47,15 +47,15 @@ static md_system_t* get_sys(sys_id_t id) {
         s->alloc  = alloc;
         st->alloc = alloc;
         switch (id) {
-        case SYS_ALA:      md_pdb_system_init_from_file(s, st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL); break;
-        case SYS_PFTAA:    md_gro_system_init_from_file(s, st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/pftaa.gro"), NULL); break;
-        case SYS_CENTERED: md_gro_system_init_from_file(s, st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL); break;
-        case SYS_DNA:      md_gro_system_init_from_file(s, st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"), NULL); break;
-        case SYS_1K4R:     md_pdb_system_init_from_file(s, st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), NULL); break;
-        case SYS_1FEZ:     md_mmcif_system_init_from_file(s, st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif"), NULL); break;
-        case SYS_2OR2:     md_mmcif_system_init_from_file(s, st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/2or2.cif"), NULL); break;
-        case SYS_TUBULIN:  md_pdb_system_init_from_file(s, st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), NULL); break;
-        case SYS_TIP4P:    md_gro_system_init_from_file(s, st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/peptide_tip4p.gro"), NULL); break;
+        case SYS_ALA:      (md_pdb_system_load_from_file(s, st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL) == MD_LOAD_OK); break;
+        case SYS_PFTAA:    (md_gro_system_load_from_file(s, st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/pftaa.gro"), NULL) == MD_LOAD_OK); break;
+        case SYS_CENTERED: (md_gro_system_load_from_file(s, st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL) == MD_LOAD_OK); break;
+        case SYS_DNA:      (md_gro_system_load_from_file(s, st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"), NULL) == MD_LOAD_OK); break;
+        case SYS_1K4R:     (md_pdb_system_load_from_file(s, st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), NULL) == MD_LOAD_OK); break;
+        case SYS_1FEZ:     (md_mmcif_system_load_from_file(s, st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif"), NULL) == MD_LOAD_OK); break;
+        case SYS_2OR2:     (md_mmcif_system_load_from_file(s, st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/2or2.cif"), NULL) == MD_LOAD_OK); break;
+        case SYS_TUBULIN:  (md_pdb_system_load_from_file(s, st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), NULL) == MD_LOAD_OK); break;
+        case SYS_TIP4P:    (md_gro_system_load_from_file(s, st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/peptide_tip4p.gro"), NULL) == MD_LOAD_OK); break;
         default: break;
         }
         md_system_infer(s, st, NULL);
@@ -1389,7 +1389,7 @@ UTEST(match, topology_changes) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
     md_system_t sys = {.alloc = alloc};
     md_system_state_t st = {.alloc = alloc};
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL));
+    ASSERT_TRUE(md_pdb_system_load_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL) == MD_LOAD_OK);
     ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
     ASSERT_GT(sys.residue.count, 5u);
 

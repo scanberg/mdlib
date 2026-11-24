@@ -26,7 +26,7 @@ UBENCH_EX(gro, load) {
         md_arena_allocator_reset(alloc);
         md_system_t sys = { .alloc = alloc };
         md_system_state_t st = { .alloc = alloc };
-        md_gro_system_init_from_file(&sys, &st, path, NULL);
+        (md_gro_system_load_from_file(&sys, &st, path, NULL) == MD_LOAD_OK);
     }
 
     md_arena_allocator_destroy(alloc);
@@ -40,7 +40,7 @@ UBENCH_EX(gro, postprocess) {
 
     md_system_t sys = {.alloc = alloc};
     md_system_state_t sys_state = { .alloc = alloc };
-    if (!md_gro_system_init_from_file(&sys, &sys_state, path, NULL)) {
+    if ((md_gro_system_load_from_file(&sys, &sys_state, path, NULL) != MD_LOAD_OK)) {
         MD_LOG_ERROR("Failed to load system for GRO postprocess benchmark\n");
         md_free(md_get_heap_allocator(), buffer, capacity);
         return;

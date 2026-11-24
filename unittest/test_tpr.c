@@ -60,7 +60,7 @@ static void compare_with_gro(int* utest_result, const md_system_t* sys, const md
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t gro = { .alloc = alloc };
     md_system_state_t gro_st = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&gro, &gro_st, gro_path, NULL));
+    ASSERT_TRUE(md_gro_system_load_from_file(&gro, &gro_st, gro_path, NULL) == MD_LOAD_OK);
     ASSERT_EQ(gro.atom.count, sys->atom.count);
 
     size_t res = 0, gro_res = 0;
@@ -139,7 +139,7 @@ UTEST(tpr, system_tip3p) {
     md_system_t sys = { .alloc = arena };
     md_system_state_t state = { .alloc = arena };
 
-    ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &state, MD_STR_LIT(TPR_DIR "peptide_tip3p.tpr"), NULL));
+    ASSERT_TRUE(md_tpr_system_load_from_file(&sys, &state, MD_STR_LIT(TPR_DIR "peptide_tip3p.tpr"), NULL) == MD_LOAD_OK);
     EXPECT_EQ(1577u, sys.atom.count);
     EXPECT_EQ(1577u, state.num_atoms);
     EXPECT_EQ(2u + 509u + 4u, sys.residue.count);
@@ -209,7 +209,7 @@ UTEST(tpr, virtual_sites) {
     md_system_t sys = { .alloc = arena };
     md_system_state_t state = { .alloc = arena };
 
-    ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &state, MD_STR_LIT(TPR_DIR "peptide_tip4p.tpr"), NULL));
+    ASSERT_TRUE(md_tpr_system_load_from_file(&sys, &state, MD_STR_LIT(TPR_DIR "peptide_tip4p.tpr"), NULL) == MD_LOAD_OK);
     EXPECT_EQ(2074u, sys.atom.count);
     // TIP4P: the two O-H bonds of the SETTLE. The charge site is not bonded, as when read from coordinates.
     EXPECT_EQ((size_t)PEPTIDE_BONDS + 506 * 2, md_bond_list_count(&sys.given_bond));
@@ -416,7 +416,7 @@ UTEST(tpr, martini) {
     {
         md_system_t gro = { .alloc = arena };
         md_system_state_t gro_state = { .alloc = arena };
-        ASSERT_TRUE(md_gro_system_init_from_file(&gro, &gro_state, MD_STR_LIT(TPR_DIR "martini3.gro"), NULL));
+        ASSERT_TRUE(md_gro_system_load_from_file(&gro, &gro_state, MD_STR_LIT(TPR_DIR "martini3.gro"), NULL) == MD_LOAD_OK);
         ASSERT_TRUE(md_system_infer(&gro, &gro_state, NULL));
         const uint32_t roles = MD_ATOM_FLAG_BACKBONE | MD_ATOM_FLAG_SIDE_CHAIN | MD_ATOM_FLAG_NUCLEOSIDE | MD_ATOM_FLAG_NUCLEOBASE;
         for (size_t i = 0; i < 8; ++i) {
@@ -624,7 +624,7 @@ UTEST(tpr, martini_no_elastic_bonds) {
         md_system_state_t state = { .alloc = arena };
         char path[512];
         snprintf(path, sizeof(path), MD_UNITTEST_DATA_DIR "/martini/%s.tpr", files[f]);
-        ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &state, md_str_from_cstr(path), NULL));
+        ASSERT_TRUE(md_tpr_system_load_from_file(&sys, &state, md_str_from_cstr(path), NULL) == MD_LOAD_OK);
         ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
         EXPECT_EQ(0u, count_elastic(&sys));
         if (count_elastic(&sys)) printf("%s: %zu bonds taken for elastic ones\n", files[f], count_elastic(&sys));

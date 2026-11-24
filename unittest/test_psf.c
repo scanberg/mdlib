@@ -105,11 +105,14 @@ UTEST(namdbin, coordinates_in_either_byte_order) {
         md_file_close(&f);
         EXPECT_TRUE(md_namdbin_file_is_coor(path));
         EXPECT_EQ(3u, md_namdbin_file_atom_count(path));
+        md_system_t sys = { .alloc = arena };
         md_system_state_t s = { .alloc = arena };
-        ASSERT_TRUE(md_namdbin_state_init_from_file(&s, path, 3));
+        ASSERT_EQ(MD_LOAD_OK, md_namdbin_system_load_from_file(&sys, &s, path, NULL));
+        EXPECT_EQ(3u, sys.atom.count);
         EXPECT_EQ(-4.0f, s.xyz[0].x);
         EXPECT_EQ(8.0f, s.xyz[2].z);
-        EXPECT_FALSE(md_namdbin_state_init_from_file(&s, path, 4));
+        EXPECT_EQ(MD_LOAD_FAILED, md_namdbin_system_load_from_file(&sys, &s, path, NULL));
+        md_system_free(&sys);
     }
     // A PDB file of the same name is not one
     ASSERT_TRUE(psf_write_text(path, "ATOM      1  N   ALA A   1      11.104   6.134  -6.504  1.00  0.00           N\n"));

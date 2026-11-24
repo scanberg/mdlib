@@ -6369,6 +6369,13 @@ md_load_result_t md_vlx_system_load_from_file(md_system_t* sys, struct md_system
 	return success ? MD_LOAD_OK : MD_LOAD_FAILED;
 }
 
+md_load_result_t md_vlx_system_check_file(const md_system_t* sys, md_str_t filename, const md_load_desc_t* desc) {
+	(void)desc;
+	MD_ASSERT(sys);
+	if (sys->atom.count == 0) return MD_LOAD_MISMATCH;
+	return vlx_file_fits_system(sys, filename);
+}
+
 // Externally visible procedures
 
 size_t vlx_number_of_atoms(const vlx_t* vlx) {

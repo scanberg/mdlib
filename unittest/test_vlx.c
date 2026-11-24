@@ -1185,7 +1185,7 @@ UTEST(vlx, load_onto_atoms_is_of_a_region_of_them) {
 		"O  3.000  0.000  0.000\n"
 		"H  3.957  0.000  0.000\n"
 		"H  2.760  0.927  0.000\n");
-	ASSERT_TRUE(md_xyz_system_init_from_str(&two.sys, &two.state, waters, NULL));
+	ASSERT_TRUE(md_xyz_system_load_from_str(&two.sys, &two.state, waters, NULL) == MD_LOAD_OK);
 	EXPECT_EQ(MD_LOAD_OK, md_vlx_system_load_from_file(&two.sys, &two.state, h5, NULL));
 	EXPECT_EQ(6u, two.sys.atom.count);
 	EXPECT_EQ(6u, two.state.num_atoms);

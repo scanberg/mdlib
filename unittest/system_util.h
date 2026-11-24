@@ -203,23 +203,23 @@ static inline void reference_systems_load(reference_systems_t* ref) {
 
     ref->mol_ala.alloc = alloc;
     md_system_state_t mol_ala_state = { .alloc = alloc };
-    md_pdb_system_init_from_file(&ref->mol_ala, &mol_ala_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL);
+    (md_pdb_system_load_from_file(&ref->mol_ala, &mol_ala_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL) == MD_LOAD_OK);
     md_pdb_system_publish_run(&ref->mol_ala, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), MD_STR_LIT("run/ala"), MD_RUN_FLAG_DISABLE_CACHE_WRITE);
     md_system_infer(&ref->mol_ala, &mol_ala_state, NULL);
 
     ref->mol_pftaa.alloc = alloc;
     md_system_state_t mol_pftaa_state = { .alloc = alloc };
-    md_gro_system_init_from_file(&ref->mol_pftaa, &mol_pftaa_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/pftaa.gro"), NULL);
+    (md_gro_system_load_from_file(&ref->mol_pftaa, &mol_pftaa_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/pftaa.gro"), NULL) == MD_LOAD_OK);
     md_system_infer(&ref->mol_pftaa, &mol_pftaa_state, NULL);
 
     ref->mol_nucleotides.alloc = alloc;
     md_system_state_t mol_nucleotides_state = { .alloc = alloc };
-    md_gro_system_init_from_file(&ref->mol_nucleotides, &mol_nucleotides_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/nucleotides.gro"), NULL);
+    (md_gro_system_load_from_file(&ref->mol_nucleotides, &mol_nucleotides_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/nucleotides.gro"), NULL) == MD_LOAD_OK);
     md_system_infer(&ref->mol_nucleotides, &mol_nucleotides_state, NULL);
 
     ref->mol_centered.alloc = alloc;
     md_system_state_t mol_centered_state = { .alloc = alloc };
-    md_gro_system_init_from_file(&ref->mol_centered, &mol_centered_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL);
+    (md_gro_system_load_from_file(&ref->mol_centered, &mol_centered_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL) == MD_LOAD_OK);
     md_system_infer(&ref->mol_centered, &mol_centered_state, NULL);
 }
 

@@ -5,6 +5,7 @@
 #include <stdbool.h>
 
 #include <core/md_str.h>
+#include <md_io.h>
 
 struct md_atom_pair_t;
 
@@ -14,14 +15,14 @@ extern "C" {
 
 struct md_allocator_i;
 struct md_system_t;
-struct md_load_desc_t;
+struct md_system_state_t;
 
 // GROMACS topology (.top / .itp)
 //
-// A topology does not describe coordinates, so it never creates a system. It SUPPLEMENTS one that a
-// structure file (gro, pdb, ...) already loaded: its molecule definitions are matched onto the
-// system's atoms by atom name, and what the structure file could not carry is filled in from them -
-// bonds first of all, which is what gives a coarse grained system its structures (and so unwrap).
+// A topology is both a system of its own and data of a system's atoms (md_io.h, LOAD). Onto no atoms it builds the
+// system of its molecules, without coordinates. Onto a system with atoms its molecule definitions are matched onto the
+// atoms by atom name, and what the structure file could not carry is filled in from them - bonds first of all, which
+// is what gives a coarse grained system its structures (and so unwrap). It may describe only part of the system.
 //
 // Parsed: [ atomtypes ], [ moleculetype ], [ atoms ], [ bonds ], [ constraints ], [ settles ],
 // [ virtual_sites1..4 ] / [ virtual_sitesn ] (and the old [ dummies* ] names), [ molecules ], [ system ].
@@ -108,10 +109,17 @@ size_t md_itp_match_system(md_itp_instance_t** out_instances, const md_itp_data_
 // - molecules: where the structure gave no units of its own (a GRO file), the matched molecules become its instances,
 //   each of its molecule type (md_instance_data_t, md_molecule_type_data_t), and the residues between them units of
 //   no type. The molecules of the system are then those of the topology, as GROMACS has them.
-// - the system is inferred again (md_system_infer, with the system's reference coordinates).
-// Returns false if nothing in the topology matched the system.
+// Nothing is inferred (md_io.h): the elastic network written as plain bonds is told by md_system_infer.
+// Returns false, changing nothing, if nothing in the topology matched the system.
 bool md_itp_system_supplement(struct md_system_t* sys, const md_itp_data_t* data);
-bool md_itp_system_supplement_from_file(struct md_system_t* sys, md_str_t filename, const struct md_load_desc_t* desc);
+
+// Onto no atoms: the system of the topology, its molecules those of [ molecules ], or one of each moleculetype for a
+// plain .itp; the state has no coordinates. MD_LOAD_FAILED when [ molecules ] names a molecule it does not define (an
+// #include not found). Onto atoms: md_itp_system_supplement, MD_LOAD_MISMATCH when nothing matched.
+md_load_result_t md_itp_system_load_from_file(struct md_system_t* sys, struct md_system_state_t* state, md_str_t filename, const struct md_load_desc_t* desc);
+
+// Whether any of the topology's molecules match the system's atoms, changing nothing (md_io.h, CHECK)
+md_load_result_t md_itp_system_check_file(const struct md_system_t* sys, md_str_t filename, const struct md_load_desc_t* desc);
 
 #ifdef __cplusplus
 }

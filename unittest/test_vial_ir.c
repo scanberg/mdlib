@@ -206,7 +206,7 @@ static const md_system_t* vial_ir__run_p(int64_t* num_frames) {
         sys = (md_system_t){.alloc = alloc};
         md_system_state_t state = {.alloc = alloc};
         const md_str_t path = MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
-        if (md_pdb_system_init_from_file(&sys, &state, path, NULL)) {
+        if (md_pdb_system_load_from_file(&sys, &state, path, NULL) == MD_LOAD_OK) {
             md_system_infer(&sys, &state, NULL);
             if (md_pdb_system_publish_run(&sys, path, MD_STR_LIT("run"), MD_RUN_FLAG_DISABLE_CACHE_WRITE)) {
                 const md_attribute_t* t = md_attributes_find(&sys.attributes, MD_STR_LIT("run/time"));
@@ -1604,8 +1604,8 @@ static bool vial_ir__load_file(md_system_t* sys, md_system_state_t* st, const ch
     *sys = (md_system_t){.alloc = alloc};
     *st = (md_system_state_t){.alloc = alloc};
     const md_str_t p = md_str_from_cstr(path);
-    const bool ok = strstr(file, ".gro") ? md_gro_system_init_from_file(sys, st, p, NULL) :
-                    strstr(file, ".tpr") ? md_tpr_system_init_from_file(sys, st, p, NULL) : md_pdb_system_init_from_file(sys, st, p, NULL);
+    const bool ok = strstr(file, ".gro") ? (md_gro_system_load_from_file(sys, st, p, NULL) == MD_LOAD_OK) :
+                    strstr(file, ".tpr") ? (md_tpr_system_load_from_file(sys, st, p, NULL) == MD_LOAD_OK) : (md_pdb_system_load_from_file(sys, st, p, NULL) == MD_LOAD_OK);
     return ok && md_system_infer(sys, st, NULL);
 }
 
@@ -2109,7 +2109,7 @@ UTEST(vial_ir, bond_stored) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL));
+    ASSERT_TRUE(md_pdb_system_load_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL) == MD_LOAD_OK);
     md_system_infer(&sys, &state, NULL);
     const size_t strong = sys.bond.count;
     ASSERT_TRUE(md_system_bond_insert(&sys, 0, 20, md_bond_flags_set_kind(MD_BOND_FLAG_NONE, MD_BOND_KIND_ELASTIC)));
@@ -2594,7 +2594,7 @@ UTEST(vial_ir, attr_reads_the_run_per_frame) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(64));
     md_system_t sys = {.alloc = alloc};
     md_system_state_t st = {.alloc = alloc};
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.gro"), NULL));
+    ASSERT_TRUE(md_gro_system_load_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.gro"), NULL) == MD_LOAD_OK);
     ASSERT_TRUE(md_trr_system_publish_run(&sys, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.trr"), MD_STR_LIT("run/t"), MD_RUN_FLAG_DISABLE_CACHE_WRITE));
     md_attributes_t* t = &sys.attributes;
     const md_attribute_t* frames = md_attributes_find(t, MD_STR_LIT("run/t/time"));
@@ -2695,7 +2695,7 @@ UTEST(vial_ir, at_time) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(64));
     md_system_t sys = {.alloc = alloc};
     md_system_state_t st = {.alloc = alloc};
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.gro"), NULL));
+    ASSERT_TRUE(md_gro_system_load_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.gro"), NULL) == MD_LOAD_OK);
     ASSERT_TRUE(md_trr_system_publish_run(&sys, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.trr"), MD_STR_LIT("run/t"), MD_RUN_FLAG_DISABLE_CACHE_WRITE));
     const md_attribute_t* frames = md_attributes_find(&sys.attributes, MD_STR_LIT("run/t/time"));
     ASSERT_TRUE(frames != NULL);
@@ -2794,7 +2794,7 @@ UTEST(vial_ir, hydrogen_bonds_per_frame) {
         "END\n";
     md_system_t sys = {.alloc = alloc};
     md_system_state_t st = {.alloc = alloc};
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, md_str_from_cstr(pdb), NULL));
+    ASSERT_TRUE(md_pdb_system_load_from_str(&sys, &st, md_str_from_cstr(pdb), NULL) == MD_LOAD_OK);
     ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
     const md_vial_filter_desc_t at0 = {.sys = &sys, .state = &st};
     md_vial_filter_t f;
@@ -2883,7 +2883,7 @@ UTEST(vial_ir, bonds_formed_and_broken) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
     md_system_t sys = {.alloc = alloc};
     md_system_state_t st = {.alloc = alloc};
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, md_str_from_cstr(path), NULL));
+    ASSERT_TRUE(md_pdb_system_load_from_file(&sys, &st, md_str_from_cstr(path), NULL) == MD_LOAD_OK);
     ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
     ASSERT_TRUE(md_pdb_system_publish_run(&sys, md_str_from_cstr(path), MD_STR_LIT("run"), MD_RUN_FLAG_DISABLE_CACHE_WRITE));
     const char* src =
@@ -2981,7 +2981,7 @@ UTEST(vial_ir, planarity) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
     md_system_t sys = {.alloc = alloc};
     md_system_state_t st = {.alloc = alloc};
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, md_str_from_cstr(path), NULL));
+    ASSERT_TRUE(md_pdb_system_load_from_file(&sys, &st, md_str_from_cstr(path), NULL) == MD_LOAD_OK);
     ASSERT_TRUE(md_pdb_system_publish_run(&sys, md_str_from_cstr(path), MD_STR_LIT("run"), MD_RUN_FLAG_DISABLE_CACHE_WRITE));
     md_vial_program_t* prog = md_vial_compile(MD_STR_LIT("pl = planarity(particle)\n"), &(md_vial_compile_desc_t){.sys = &sys, .run = MD_STR_LIT("run")}, alloc);
     ASSERT_TRUE(prog != NULL);
@@ -3119,7 +3119,7 @@ UTEST(vial_ir, particle_types_and_bfactors) {
         "#\n";
     sys = (md_system_t){.alloc = alloc};
     st = (md_system_state_t){.alloc = alloc};
-    ASSERT_TRUE(md_mmcif_system_init_from_str(&sys, &st, (md_str_t){cif, sizeof(cif) - 1}, NULL));
+    ASSERT_TRUE(md_mmcif_system_load_from_str(&sys, &st, (md_str_t){cif, sizeof(cif) - 1}, NULL) == MD_LOAD_OK);
     ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
     {
         vial_ir__run_t r;
@@ -4921,13 +4921,13 @@ UTEST(vial_ir, attr_draws_groups) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(64));
     md_system_t sys = {.alloc = alloc};
     md_system_state_t st = {.alloc = alloc};
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/inside-md-pullout.gro"), NULL));
+    ASSERT_TRUE(md_gro_system_load_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/inside-md-pullout.gro"), NULL) == MD_LOAD_OK);
     ASSERT_GE(sys.atom.count, 1000u);
     md_system_group_add(&sys, MD_STR_LIT("CA"),      md_bitset_range(0, 10), MD_GROUP_ORIGIN_GIVEN);
     md_system_group_add(&sys, MD_STR_LIT("Protein"), md_bitset_range(10, 300), MD_GROUP_ORIGIN_GIVEN);
     md_system_group_add(&sys, MD_STR_LIT("AIN"),     md_bitset_range(300, 400), MD_GROUP_ORIGIN_GIVEN);
     md_system_group_add(&sys, MD_STR_LIT("SOL"),     md_bitset_range(400, 900), MD_GROUP_ORIGIN_GIVEN);
-    ASSERT_TRUE(md_edr_system_supplement_from_file(&sys, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/inside-md-pullout.edr"), &(md_load_desc_t){ .run = MD_STR_LIT("run/md") }));
+    ASSERT_EQ(MD_LOAD_OK, md_edr_system_load_from_file(&sys, NULL, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/inside-md-pullout.edr"), &(md_load_desc_t){ .run = MD_STR_LIT("run/md") }));
     size_t er_n;
     md_system_group_role_order(&sys.group, MD_GROUP_ROLE_ENERGY, &er_n);
     ASSERT_EQ(5u, er_n);
@@ -4988,7 +4988,7 @@ UTEST(vial_ir, group_fingerprints) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(8));
     md_system_t sys = {.alloc = alloc};
     md_system_state_t st = {.alloc = alloc};
-    ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/nb_fswitch_rf.tpr"), NULL));
+    ASSERT_EQ(MD_LOAD_OK, md_tpr_system_load_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/nb_fswitch_rf.tpr"), NULL));
     md_system_group_add(&sys, MD_STR_LIT("Odd"), md_bitset_range(0, 3), MD_GROUP_ORIGIN_GIVEN);
     const char* src =
         "g = count(group('Odd'))\n"

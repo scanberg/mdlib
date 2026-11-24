@@ -31,7 +31,7 @@ static mcs_fixture_t* mcs_tubulin(void) {
         f.alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
         f.sys = (md_system_t){.alloc = f.alloc};
         f.state = (md_system_state_t){.alloc = f.alloc};
-        f.ok = md_pdb_system_init_from_file(&f.sys, &f.state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), NULL) &&
+        f.ok = (md_pdb_system_load_from_file(&f.sys, &f.state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), NULL) == MD_LOAD_OK) &&
                md_system_infer(&f.sys, &f.state, NULL);
     }
     return f.ok ? &f : NULL;
@@ -179,7 +179,7 @@ UTEST(mcs, nucleotides) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_system_t sys = {.alloc = alloc};
     md_system_state_t st = {.alloc = alloc};
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"), NULL));
+    ASSERT_TRUE(md_gro_system_load_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"), NULL) == MD_LOAD_OK);
     ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
     // A purine and a pyrimidine share the sugar and what the base's ring holds in common with it: the first DA has no
     // phosphate, 18 heavy atoms

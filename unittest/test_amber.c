@@ -288,12 +288,16 @@ UTEST(amber_netcdf, trajectory_with_records) {
         ASSERT_TRUE(temp0 != NULL);
         EXPECT_EQ(330.0, ((const double*)temp0->data)[3]);
 
-        // The first frame as a state, as a topology takes its coordinates
+        // The trajectory alone: a system of its atoms by their count, at its first frame. A system of its own, which
+        // does not load onto atoms
+        md_system_t points = { .alloc = arena };
         md_system_state_t s = { .alloc = arena };
-        ASSERT_TRUE(md_amber_netcdf_state_init_from_file(&s, path, NATOMS));
+        ASSERT_EQ(MD_LOAD_OK, md_amber_netcdf_system_load_from_file(&points, &s, path, NULL));
+        EXPECT_EQ((size_t)NATOMS, points.atom.count);
         EXPECT_EQ((float)coord(0, 4, 2), s.xyz[4].z);
         EXPECT_NEAR(30.0f, s.unitcell.x, 1e-4f);
-        EXPECT_FALSE(md_amber_netcdf_state_init_from_file(&s, path, NATOMS + 1));
+        EXPECT_EQ(MD_LOAD_FAILED, md_amber_netcdf_system_load_from_file(&points, &s, path, NULL));
+        md_system_free(&points);
         md_system_free(&sys);
     }
     remove(path.ptr);
@@ -374,8 +378,10 @@ UTEST(amber_netcdf, restart_and_what_is_not_amber) {
     ASSERT_TRUE(ncw_write(&w, path, 0));
     EXPECT_EQ(MD_AMBER_NETCDF_RESTART, md_amber_netcdf_file_kind(path));
 
+    md_system_t rst = { .alloc = arena };
     md_system_state_t s = { .alloc = arena };
-    ASSERT_TRUE(md_amber_netcdf_state_init_from_file(&s, path, 0));
+    ASSERT_EQ(MD_LOAD_OK, md_amber_netcdf_system_load_from_file(&rst, &s, path, NULL));
+    EXPECT_EQ((size_t)NATOMS, rst.atom.count);
     EXPECT_EQ((size_t)NATOMS, s.num_atoms);
     EXPECT_EQ((float)coord(7, 3, 1), s.xyz[3].y);
     EXPECT_TRUE(md_system_state_has_unitcell(&s));
@@ -387,11 +393,13 @@ UTEST(amber_netcdf, restart_and_what_is_not_amber) {
     w.gatt[0].text = "CF-1.6";
     ASSERT_TRUE(ncw_write(&w, path, 0));
     EXPECT_EQ(MD_AMBER_NETCDF_NONE, md_amber_netcdf_file_kind(path));
-    EXPECT_FALSE(md_amber_netcdf_state_init_from_file(&s, path, 0));
+    md_system_reset(&rst);
+    EXPECT_EQ(MD_LOAD_FAILED, md_amber_netcdf_system_load_from_file(&rst, &s, path, NULL));
 
     md_file_t f = {0};
     ASSERT_TRUE(md_file_open(&f, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE));
-    md_file_write(f, "\211HDF\r\n\032\n and then some", 24);
+    static const char hdf5_text[] = "\211HDF\r\n\032\n and then some";
+    md_file_write(f, hdf5_text, sizeof(hdf5_text) - 1);
     md_file_close(&f);
 #if MD_HDF5
     // Read through HDF5, which does not take it for a file at all
@@ -402,6 +410,7 @@ UTEST(amber_netcdf, restart_and_what_is_not_amber) {
     EXPECT_FALSE(md_amber_netcdf_system_publish_run(&sys, path, MD_STR_LIT("run/a"), 0));
 
     md_system_free(&sys);
+    md_system_free(&rst);
     remove(path.ptr);
     md_arena_allocator_destroy(arena);
 }
@@ -531,8 +540,8 @@ static bool prmtop_and_gro(md_system_t* sys, md_system_state_t* state, md_str_t 
     md_system_t other = { .alloc = alloc };
     md_system_state_t other_state = { .alloc = alloc };
     bool ok = gro_first
-        ? md_gro_system_init_from_file(sys, state, gro, NULL) && md_amber_prmtop_system_load_from_file(&other, &other_state, prmtop, NULL) == MD_LOAD_OK
-        : md_amber_prmtop_system_load_from_file(sys, state, prmtop, NULL) == MD_LOAD_OK && md_gro_system_init_from_file(&other, &other_state, gro, NULL);
+        ? (md_gro_system_load_from_file(sys, state, gro, NULL) == MD_LOAD_OK) && md_amber_prmtop_system_load_from_file(&other, &other_state, prmtop, NULL) == MD_LOAD_OK
+        : md_amber_prmtop_system_load_from_file(sys, state, prmtop, NULL) == MD_LOAD_OK && (md_gro_system_load_from_file(&other, &other_state, gro, NULL) == MD_LOAD_OK);
     ok = ok && md_system_merge(sys, state, &other, &other_state);
     md_system_free(&other);
     return ok;
@@ -546,7 +555,7 @@ UTEST(amber_prmtop, joins_a_system_of_its_atoms) {
     ASSERT_TRUE(write_text(path, prmtop_text));
     md_system_t sys = { .alloc = arena };
     md_system_state_t state = { .alloc = arena };
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, gro, NULL));
+    ASSERT_TRUE(md_gro_system_load_from_file(&sys, &state, gro, NULL) == MD_LOAD_OK);
     ASSERT_EQ(10u, sys.atom.count);
     ASSERT_EQ(0u, sys.instance.count);
     const md_unitcell_t cell = state.unitcell;
@@ -668,12 +677,15 @@ UTEST(amber_rst7, coordinates_velocities_and_box) {
     ASSERT_TRUE(write_text(path, text));
     EXPECT_TRUE(md_amber_rst7_file_is_restart(path));
     EXPECT_EQ(3u, md_amber_rst7_file_atom_count(path));
+    md_system_t sys = { .alloc = arena };
     md_system_state_t s = { .alloc = arena };
-    ASSERT_TRUE(md_amber_rst7_state_init_from_file(&s, path, 3));
+    ASSERT_EQ(MD_LOAD_OK, md_amber_rst7_system_load_from_file(&sys, &s, path, NULL));
+    EXPECT_EQ(3u, sys.atom.count);
     EXPECT_EQ(3u, s.num_atoms);
     EXPECT_EQ(-100.0f, s.xyz[2].y);   // fields of 12 that run together
     EXPECT_NEAR(31.0f, s.unitcell.y, 1e-4f);
-    EXPECT_FALSE(md_amber_rst7_state_init_from_file(&s, path, 4));
+    // A system of its own: not onto atoms
+    EXPECT_EQ(MD_LOAD_FAILED, md_amber_rst7_system_load_from_file(&sys, &s, path, NULL));
 
     // Coordinates alone: no box
     const char* bare =
@@ -681,7 +693,8 @@ UTEST(amber_rst7, coordinates_velocities_and_box) {
         "     2\n"
         "   1.0000000   2.0000000   3.0000000   4.0000000   5.0000000   6.0000000\n";
     ASSERT_TRUE(write_text(path, bare));
-    ASSERT_TRUE(md_amber_rst7_state_init_from_file(&s, path, 0));
+    md_system_reset(&sys);
+    ASSERT_EQ(MD_LOAD_OK, md_amber_rst7_system_load_from_file(&sys, &s, path, NULL));
     EXPECT_FALSE(md_system_state_has_unitcell(&s));
     EXPECT_EQ(6.0f, s.xyz[1].z);
 
@@ -748,7 +761,7 @@ UTEST(amber_energy, mdout_and_mden_along_the_run) {
 
     md_system_t sys = { .alloc = arena };
     ASSERT_TRUE(md_amber_netcdf_system_publish_run(&sys, nc, MD_STR_LIT("run/a"), 0));
-    ASSERT_TRUE(md_amber_energy_system_supplement_from_file(&sys, out, &(md_load_desc_t){ .run = MD_STR_LIT("run/a") }));
+    ASSERT_EQ(MD_LOAD_OK, md_amber_energy_system_load_from_file(&sys, NULL, out, &(md_load_desc_t){ .run = MD_STR_LIT("run/a") }));
     const md_attribute_t* ep = md_attributes_find(&sys.attributes, MD_STR_LIT("run/a/amber_energy/eptot"));
     const md_attribute_t* nb = md_attributes_find(&sys.attributes, MD_STR_LIT("run/a/amber_energy/1_4_nb"));
     const md_attribute_t* tk = md_attributes_find(&sys.attributes, MD_STR_LIT("run/a/amber_energy/temp_k"));
@@ -771,7 +784,7 @@ UTEST(amber_energy, mdout_and_mden_along_the_run) {
         "L2 -.1102000000E+04  -.2550000000E+00  -.1127330000E+02\n";
     ASSERT_TRUE(write_text(out, mden));
     EXPECT_TRUE(md_amber_energy_file_is_mden(out));
-    ASSERT_TRUE(md_amber_energy_system_supplement_from_file(&sys, out, &(md_load_desc_t){ .run = MD_STR_LIT("run/a") }));
+    ASSERT_EQ(MD_LOAD_OK, md_amber_energy_system_load_from_file(&sys, NULL, out, &(md_load_desc_t){ .run = MD_STR_LIT("run/a") }));
     ep = md_attributes_find(&sys.attributes, MD_STR_LIT("run/a/amber_energy/eptot"));
     ASSERT_TRUE(ep != NULL);
     EXPECT_EQ(-1102.0, ((const double*)ep->data)[1]);
@@ -782,7 +795,9 @@ UTEST(amber_energy, mdout_and_mden_along_the_run) {
     ncw_t w3 = amber_trajectory(2, 3);
     ASSERT_TRUE(ncw_write(&w3, nc, 0));
     ASSERT_TRUE(md_amber_netcdf_system_publish_run(&other, nc, MD_STR_LIT("run/b"), 0));
-    EXPECT_FALSE(md_amber_energy_system_supplement_from_file(&other, out, &(md_load_desc_t){ .run = MD_STR_LIT("run/b") }));
+    EXPECT_EQ(MD_LOAD_MISMATCH, md_amber_energy_system_load_from_file(&other, NULL, out, &(md_load_desc_t){ .run = MD_STR_LIT("run/b") }));
+    EXPECT_EQ(MD_LOAD_MISMATCH, md_amber_energy_system_check_file(&other, out, &(md_load_desc_t){ .run = MD_STR_LIT("run/b") }));
+    EXPECT_EQ(MD_LOAD_OK,       md_amber_energy_system_check_file(&sys,   out, &(md_load_desc_t){ .run = MD_STR_LIT("run/a") }));
     EXPECT_TRUE(md_attributes_find(&other.attributes, MD_STR_LIT("run/b/amber_energy/time")) == NULL);
 
     md_system_free(&sys);
@@ -860,7 +875,7 @@ UTEST(amber_energy, ti_regions_are_one_record) {
         "   5.  TIMINGS\n";
     ASSERT_TRUE(write_text(out, text));
     md_system_t sys = { .alloc = arena };
-    ASSERT_TRUE(md_amber_energy_system_supplement_from_file(&sys, out, &(md_load_desc_t){ .run = MD_STR_LIT("run/ti") }));
+    ASSERT_EQ(MD_LOAD_OK, md_amber_energy_system_load_from_file(&sys, NULL, out, &(md_load_desc_t){ .run = MD_STR_LIT("run/ti") }));
     const md_attribute_t* time = md_attributes_find(&sys.attributes, MD_STR_LIT("run/ti/amber_energy/time"));
     const md_attribute_t* e1   = md_attributes_find(&sys.attributes, MD_STR_LIT("run/ti/amber_energy/etot"));
     const md_attribute_t* e2   = md_attributes_find(&sys.attributes, MD_STR_LIT("run/ti/amber_energy/etot_ti_region_2"));

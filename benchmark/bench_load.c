@@ -13,7 +13,7 @@
 //   --mmap-prefetch  the same, the OS asked to bring the pages in first (PrefetchVirtualMemory on Windows, MAP_POPULATE
 //                    elsewhere)
 //
-// .pdb files load with md_pdb_system_init_from_file, .gro with md_gro_system_init_from_file. Each line is a thread
+// .pdb files load with md_pdb_system_load_from_file, .gro with md_gro_system_load_from_file. Each line is a thread
 // count: the best and median wall time of a load, the speedup over one thread, the bytes of the file per second and the
 // page faults of the best load. The system each count loads is summarized by a hash of its atoms, residues, bonds and
 // types, which every count must agree on ('!' marks one that does not). The header names the benchmark's revision (bumped
@@ -144,9 +144,9 @@ static void unmap_file(mapped_file_t* m) {
 
 static bool load(md_system_t* sys, md_system_state_t* st, md_str_t path, md_str_t text, bool gro, const md_executor_t* ex) {
     if (text.len) {
-        return gro ? md_gro_system_init_from_str(sys, st, text, &(md_load_desc_t){ .executor = ex }) : md_pdb_system_init_from_str(sys, st, text, &(md_load_desc_t){ .executor = ex });
+        return gro ? (md_gro_system_load_from_str(sys, st, text, &(md_load_desc_t){ .executor = ex }) == MD_LOAD_OK) : (md_pdb_system_load_from_str(sys, st, text, &(md_load_desc_t){ .executor = ex }) == MD_LOAD_OK);
     }
-    return gro ? md_gro_system_init_from_file(sys, st, path, &(md_load_desc_t){ .executor = ex }) : md_pdb_system_init_from_file(sys, st, path, &(md_load_desc_t){ .executor = ex });
+    return gro ? (md_gro_system_load_from_file(sys, st, path, &(md_load_desc_t){ .executor = ex }) == MD_LOAD_OK) : (md_pdb_system_load_from_file(sys, st, path, &(md_load_desc_t){ .executor = ex }) == MD_LOAD_OK);
 }
 
 // The loaders' debug lines of the load being kept (--phases), errors always

@@ -131,8 +131,12 @@ UTEST(xvg, series_along_a_run) {
     series_run(&sys, MD_STR_LIT("run/o"), offset, F, md_unit_picosecond());
 
     const md_str_t path = MD_STR_INIT(MD_UNITTEST_DATA_DIR "/energy.xvg");
-    ASSERT_TRUE(md_xvg_system_supplement_from_file(&sys, path, &(md_load_desc_t){ .run = MD_STR_LIT("run/r") }));
-    EXPECT_FALSE(md_xvg_system_supplement_from_file(&sys, path, &(md_load_desc_t){ .run = MD_STR_LIT("run/o") }));
+    ASSERT_EQ(MD_LOAD_OK, md_xvg_system_load_from_file(&sys, NULL, path, &(md_load_desc_t){ .run = MD_STR_LIT("run/r") }));
+    EXPECT_EQ(MD_LOAD_MISMATCH, md_xvg_system_load_from_file(&sys, NULL, path, &(md_load_desc_t){ .run = MD_STR_LIT("run/o") }));
+    // The check answers the same, and changes nothing
+    EXPECT_EQ(MD_LOAD_OK,       md_xvg_system_check_file(&sys, path, &(md_load_desc_t){ .run = MD_STR_LIT("run/r") }));
+    EXPECT_EQ(MD_LOAD_MISMATCH, md_xvg_system_check_file(&sys, path, &(md_load_desc_t){ .run = MD_STR_LIT("run/o") }));
+    EXPECT_EQ(MD_LOAD_MISMATCH, md_xvg_system_check_file(&sys, path, &(md_load_desc_t){ .run = MD_STR_LIT("run/none") }));
     EXPECT_TRUE(md_attributes_find(&sys.attributes, MD_STR_LIT("run/o/xvg/energy/time")) == NULL);
 
     const md_attribute_t* time = md_attributes_find(&sys.attributes, MD_STR_LIT("run/r/xvg/energy/time"));
@@ -167,7 +171,7 @@ UTEST(xvg, series_along_a_run) {
     md_script_ir_free(ir);
 
     // Loading it again replaces it
-    ASSERT_TRUE(md_xvg_system_supplement_from_file(&sys, path, &(md_load_desc_t){ .run = MD_STR_LIT("run/r") }));
+    ASSERT_EQ(MD_LOAD_OK, md_xvg_system_load_from_file(&sys, NULL, path, &(md_load_desc_t){ .run = MD_STR_LIT("run/r") }));
     EXPECT_TRUE(md_attributes_find(&sys.attributes, MD_STR_LIT("run/r/xvg/energy/coul_sr_2s29_2s29")) != NULL);
 
     md_system_free(&sys);
@@ -197,20 +201,23 @@ UTEST(xvg, csv_series_along_a_run) {
     md_file_printf(f, "Count\n1\n2\n3\n");
     md_file_close(&f);
 
-    ASSERT_TRUE(md_csv_system_supplement_from_file(&sys, with_time, &(md_load_desc_t){ .run = MD_STR_LIT("run/r") }));
+    ASSERT_EQ(MD_LOAD_OK, md_csv_system_load_from_file(&sys, NULL, with_time, &(md_load_desc_t){ .run = MD_STR_LIT("run/r") }));
     const md_attribute_t* dist = md_attributes_find(&sys.attributes, MD_STR_LIT("run/r/csv/md_unittest_series_time/distance_nm"));
     ASSERT_TRUE(dist != NULL);
     EXPECT_TRUE(md_unit_equal(dist->unit, md_unit_nanometer()));
     // Frame 3 is at 3 ps, row 6
     EXPECT_EQ(7.0f, ((const float*)dist->data)[6]);
 
-    ASSERT_TRUE(md_csv_system_supplement_from_file(&sys, per_frame, &(md_load_desc_t){ .run = MD_STR_LIT("run/r") }));
+    ASSERT_EQ(MD_LOAD_OK, md_csv_system_load_from_file(&sys, NULL, per_frame, &(md_load_desc_t){ .run = MD_STR_LIT("run/r") }));
     const md_attribute_t* count = md_attributes_find(&sys.attributes, MD_STR_LIT("run/r/csv/md_unittest_series_frames/count"));
     ASSERT_TRUE(count != NULL);
     EXPECT_EQ(md_attributes_find(&sys.attributes, MD_STR_LIT("run/r/time")), md_attributes_axis(&sys.attributes, count));
 
-    EXPECT_FALSE(md_csv_system_supplement_from_file(&sys, too_short, &(md_load_desc_t){ .run = MD_STR_LIT("run/r") }));
-    EXPECT_FALSE(md_csv_system_supplement_from_file(&sys, per_frame, &(md_load_desc_t){ .run = MD_STR_LIT("run/none") }));
+    EXPECT_EQ(MD_LOAD_MISMATCH, md_csv_system_load_from_file(&sys, NULL, too_short, &(md_load_desc_t){ .run = MD_STR_LIT("run/r") }));
+    EXPECT_EQ(MD_LOAD_FAILED, md_csv_system_load_from_file(&sys, NULL, per_frame, &(md_load_desc_t){ .run = MD_STR_LIT("run/none") }));
+    EXPECT_EQ(MD_LOAD_OK,       md_csv_system_check_file(&sys, with_time, &(md_load_desc_t){ .run = MD_STR_LIT("run/r") }));
+    EXPECT_EQ(MD_LOAD_MISMATCH, md_csv_system_check_file(&sys, too_short, &(md_load_desc_t){ .run = MD_STR_LIT("run/r") }));
+    EXPECT_EQ(MD_LOAD_MISMATCH, md_csv_system_check_file(&sys, per_frame, &(md_load_desc_t){ .run = MD_STR_LIT("run/none") }));
 
     remove(with_time.ptr);
     remove(per_frame.ptr);

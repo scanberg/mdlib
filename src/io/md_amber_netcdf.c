@@ -1,4 +1,5 @@
 #include <md_amber_netcdf.h>
+#include "md_io_internal.h"
 
 #include <md_system.h>
 #include <md_run.h>
@@ -674,7 +675,7 @@ static md_unitcell_t amber_cell(const double lengths[3], const double* angles) {
 
 // ## INITIAL STATE
 
-bool md_amber_netcdf_state_init_from_file(md_system_state_t* state, md_str_t filename, size_t num_atoms) {
+static bool netcdf_state_read(md_system_state_t* state, md_str_t filename, size_t num_atoms) {
     MD_ASSERT(state);
     if (!state->alloc) {
         MD_LOG_ERROR("Amber NetCDF: the state has no allocator");
@@ -995,4 +996,16 @@ done:
     if (md_file_valid(file)) md_file_close(&file);
     md_arena_allocator_destroy(arena);
     return result;
+}
+
+// ### LOAD (md_io.h) ###
+
+md_load_result_t md_amber_netcdf_system_load_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
+    (void)desc;
+    MD_ASSERT(sys);
+    MD_ASSERT(state);
+    if (!md_io_onto_no_atoms(sys, filename)) return MD_LOAD_FAILED;
+    if (!netcdf_state_read(state, filename, 0)) return MD_LOAD_FAILED;
+    md_io_points_system(sys, state->num_atoms);
+    return MD_LOAD_OK;
 }

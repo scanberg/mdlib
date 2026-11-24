@@ -1,9 +1,11 @@
 #pragma once
 
 #include <core/md_str.h>
+#include <md_io.h>
 
 struct md_allocator_i;
 struct md_system_t;
+struct md_system_state_t;
 struct md_load_desc_t;
 struct md_writer_i;
 
@@ -35,12 +37,16 @@ bool  md_csv_write_to_file(const float* const field_values[], const md_str_t fie
 // Free csv structures created from the csv_parse functions
 void md_csv_free(md_csv_t* csv, struct md_allocator_i* alloc);
 
-// The file's columns as a series along the run desc->run, "run/<name>" (see md_run_publish_series in
+// Its columns as a series along the run desc->run, "run/<name>" (see md_run_publish_series in
 // md_system.h), in the group "csv/<file stem>": with a first column named time, its values are the
 // group's own time axis and every run frame must find its time there; otherwise the rows are the
 // run's frames. A column's unit is the one in parentheses in its name, "Distance (nm)". Read in the
 // script with attr("csv/<stem>/<column>").
-bool md_csv_system_supplement_from_file(struct md_system_t* sys, md_str_t filename, const struct md_load_desc_t* desc);
+// Data of a system's atoms (md_io.h, LOAD): onto a system with the run, MD_LOAD_MISMATCH when the file is not along it.
+md_load_result_t md_csv_system_load_from_file(struct md_system_t* sys, struct md_system_state_t* state, md_str_t filename, const struct md_load_desc_t* desc);
+
+// Whether the file is along the run desc->run of the system, changing nothing (md_io.h, CHECK)
+md_load_result_t md_csv_system_check_file(const struct md_system_t* sys, md_str_t filename, const struct md_load_desc_t* desc);
 
 #ifdef __cplusplus
 }

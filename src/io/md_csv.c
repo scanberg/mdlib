@@ -1,4 +1,5 @@
 #include <md_csv.h>
+#include "md_io_internal.h"
 #include <md_io.h>
 #include <md_system.h>
 #include <md_run.h>
@@ -70,7 +71,8 @@ static bool parse(md_csv_t* csv, md_reader_i* reader, struct md_allocator_i* all
     }
 
     md_memset(csv, 0, sizeof(md_csv_t));
-
+
+
     const char delim = md_str_contains_char(line, ',') ? ',' : md_str_contains_char(line, ';') ? ';' : md_str_contains_char(line, '\t') ? '\t' : ',';
 
     // Read first row explicitly to determine the expected number of columns
@@ -263,12 +265,17 @@ static md_str_t csv_group(char* buf, size_t cap, const char* kind, md_str_t file
     return (md_str_t){ buf, len };
 }
 
-bool md_csv_system_supplement_from_file(struct md_system_t* sys, md_str_t filename, const md_load_desc_t* desc) {
+md_load_result_t md_csv_system_load_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
+    (void)state;
     const md_str_t run = desc ? desc->run : (md_str_t){0};
     MD_ASSERT(sys);
+    if (!md_io_has_run(sys, run)) {
+        MD_LOG_ERROR("CSV: no run '" MD_STR_FMT "' for '" MD_STR_FMT "' to be along; load the trajectory first", MD_STR_ARG(run), MD_STR_ARG(filename));
+        return MD_LOAD_FAILED;
+    }
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* alloc = md_temp_allocator(temp);
-    bool result = false;
+    md_load_result_t result = MD_LOAD_FAILED;
 
     md_csv_t csv = {0};
     if (!md_csv_parse_file(&csv, filename, alloc) || csv.num_fields == 0 || csv.num_values == 0) {
@@ -313,10 +320,35 @@ bool md_csv_system_supplement_from_file(struct md_system_t* sys, md_str_t filena
             .columns     = columns,
             .source_path = (md_str_t){ path_buf, path_len },
         };
-        result = md_run_publish_series(sys, run, &desc);
+        if (!md_run_series_fits(sys, run, desc.time, desc.time_unit, desc.num_rows)) {
+            md_io_log_not_along("CSV", filename, run);
+            result = MD_LOAD_MISMATCH;
+        } else {
+            result = md_run_publish_series(sys, run, &desc) ? MD_LOAD_OK : MD_LOAD_FAILED;
+        }
     }
 
 done:
+    md_temp_end(temp);
+    return result;
+}
+
+md_load_result_t md_csv_system_check_file(const md_system_t* sys, md_str_t filename, const md_load_desc_t* desc) {
+    MD_ASSERT(sys);
+    const md_str_t run = desc ? desc->run : (md_str_t){0};
+    if (!md_io_has_run(sys, run)) return MD_LOAD_MISMATCH;
+    md_temp_scope_t temp = md_temp_begin();
+    md_load_result_t result = MD_LOAD_FAILED;
+    md_csv_t csv = {0};
+    if (md_csv_parse_file(&csv, filename, md_temp_allocator(temp)) && csv.num_fields && csv.num_values) {
+        const bool has_time = csv.field_names && md_str_begins_with_ignore_case(md_str_trim(csv.field_names[0]), MD_STR_LIT("time"));
+        double* time = NULL;
+        if (has_time) {
+            time = md_temp_alloc_array(temp, double, csv.num_values);
+            for (size_t i = 0; i < csv.num_values; ++i) time[i] = csv.field_values[0][i];
+        }
+        result = md_run_series_fits(sys, run, time, has_time ? csv_label_unit(csv.field_names[0]) : md_unit_none(), csv.num_values) ? MD_LOAD_OK : MD_LOAD_MISMATCH;
+    }
     md_temp_end(temp);
     return result;
 }

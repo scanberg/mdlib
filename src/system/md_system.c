@@ -1720,6 +1720,54 @@ static size_t run_series_slug(char* buf, size_t cap, md_str_t name) {
     return len;
 }
 
+static bool run_series_fits(const md_attributes_t* attributes, md_str_t run, const double* time, md_unit_t time_unit, size_t R, md_str_t what, bool verbose) {
+    const md_attribute_t* run_axis = md_str_empty(run) ? NULL : md_attributes_find_in(attributes, run, MD_STR_LIT("time"));
+    if (!run_axis || md_attributes_axis(attributes, run_axis) != run_axis) {
+        if (verbose) MD_LOG_ERROR("No run '" MD_STR_FMT "' for '" MD_STR_FMT "' to be along", MD_STR_ARG(run), MD_STR_ARG(what));
+        return false;
+    }
+    const size_t F = run_axis->format.shape[0];
+    if (R == 0 || R > UINT32_MAX) {
+        if (verbose) MD_LOG_ERROR("'" MD_STR_FMT "' holds no values", MD_STR_ARG(what));
+        return false;
+    }
+    if (!time) {
+        if (R != F && verbose) {
+            MD_LOG_ERROR("'" MD_STR_FMT "' has %zu rows and no time, and '" MD_STR_FMT "' %zu frames: the rows cannot be the frames", MD_STR_ARG(what), R, MD_STR_ARG(run), F);
+        }
+        return R == F;
+    }
+    for (size_t i = 1; i < R; ++i) {
+        if (time[i] < time[i - 1]) {
+            if (verbose) MD_LOG_ERROR("'" MD_STR_FMT "': time decreases at row %zu", MD_STR_ARG(what), i);
+            return false;
+        }
+    }
+    if (md_unit_is_none(time_unit)) time_unit = run_axis->unit;
+    // Whether the rows cover the run is a question about the values, answered against a scratch table
+    md_temp_scope_t temp = md_temp_begin();
+    md_attributes_t probe = { .alloc = md_temp_allocator(temp) };
+    const md_attribute_id_t probe_id = md_attributes_create(&probe, &(md_attribute_desc_t){
+        .path = MD_STR_INIT("time"), .format = { .type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = { (uint32_t)R } },
+        .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = time_unit, .data = time, .byte_size = R * sizeof(double)});
+    const md_attribute_t* axis = probe_id ? md_attributes_get(&probe, probe_id) : NULL;
+    bool fits = axis != NULL;
+    for (size_t f = 0; fits && f < F; ++f) {
+        size_t row;
+        if (!md_attribute_axis_map(&row, attributes, run_axis, f, &probe, axis)) {
+            if (verbose) MD_LOG_ERROR("'" MD_STR_FMT "' has no row at the time of frame %zu of '" MD_STR_FMT "'; it belongs to another run", MD_STR_ARG(what), f, MD_STR_ARG(run));
+            fits = false;
+        }
+    }
+    md_temp_end(temp);
+    return fits;
+}
+
+bool md_run_series_fits(const md_system_t* sys, md_str_t run, const double* time, md_unit_t time_unit, size_t num_rows) {
+    MD_ASSERT(sys);
+    return run_series_fits(&sys->attributes, run, time, time_unit, num_rows, run, false);
+}
+
 bool md_run_publish_series(md_system_t* sys, md_str_t run, const md_run_series_desc_t* d) {
     MD_ASSERT(sys);
     MD_ASSERT(d);
@@ -1729,14 +1777,8 @@ bool md_run_publish_series(md_system_t* sys, md_str_t run, const md_run_series_d
     }
 
     char buf[512];
-    const md_attribute_t* run_axis = md_str_empty(run) ? NULL : md_attributes_find_in(attributes, run, MD_STR_LIT("time"));
-    if (!run_axis || md_attributes_axis(attributes, run_axis) != run_axis) {
-        MD_LOG_ERROR("No run '" MD_STR_FMT "' to publish '" MD_STR_FMT "' along", MD_STR_ARG(run), MD_STR_ARG(d->group));
-        return false;
-    }
-    const size_t F = run_axis->format.shape[0];
     const size_t R = d->num_rows;
-    if (R == 0 || d->num_columns == 0 || R > UINT32_MAX || !d->names || !d->columns) {
+    if (d->num_columns == 0 || !d->names || !d->columns) {
         MD_LOG_ERROR("'" MD_STR_FMT "' holds no values", MD_STR_ARG(d->group));
         return false;
     }
@@ -1747,41 +1789,13 @@ bool md_run_publish_series(md_system_t* sys, md_str_t run, const md_run_series_d
         MD_LOG_ERROR("No group to publish the series under");
         return false;
     }
+    if (!run_series_fits(attributes, run, d->time, d->time_unit, R, d->group, true)) return false;
+    const md_attribute_t* run_axis = md_attributes_find_in(attributes, run, MD_STR_LIT("time"));
+    const md_unit_t time_unit = md_unit_is_none(d->time_unit) ? run_axis->unit : d->time_unit;
 
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* temp_alloc = md_temp_allocator(temp);
     bool result = false;
-
-    md_unit_t time_unit = d->time_unit;
-    if (d->time) {
-        if (md_unit_is_none(time_unit)) {
-            time_unit = run_axis->unit;
-        }
-        for (size_t i = 1; i < R; ++i) {
-            if (d->time[i] < d->time[i - 1]) {
-                MD_LOG_ERROR("'" MD_STR_FMT "': time decreases at row %zu", MD_STR_ARG(d->group), i);
-                goto done;
-            }
-        }
-        // Whether the rows cover the run is a question about the values, answered against a scratch
-        // table before the real one is touched.
-        md_attributes_t probe = { .alloc = temp_alloc };
-        const md_attribute_id_t probe_id = md_attributes_create(&probe, &(md_attribute_desc_t){
-            .path = MD_STR_INIT("time"), .format = { .type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = { (uint32_t)R } },
-            .flags = MD_ATTRIBUTE_FLAG_TEMPORAL, .unit = time_unit, .data = d->time, .byte_size = R * sizeof(double)});
-        const md_attribute_t* axis = probe_id ? md_attributes_get(&probe, probe_id) : NULL;
-        if (!axis) goto done;
-        for (size_t f = 0; f < F; ++f) {
-            size_t row;
-            if (!md_attribute_axis_map(&row, attributes, run_axis, f, &probe, axis)) {
-                MD_LOG_ERROR("'" MD_STR_FMT "' has no row at the time of frame %zu of '" MD_STR_FMT "'; it belongs to another run", MD_STR_ARG(d->group), f, MD_STR_ARG(run));
-                goto done;
-            }
-        }
-    } else if (R != F) {
-        MD_LOG_ERROR("'" MD_STR_FMT "' has %zu rows and no time, and '" MD_STR_FMT "' %zu frames: the rows cannot be the frames", MD_STR_ARG(d->group), R, MD_STR_ARG(run), F);
-        goto done;
-    }
 
     md_attributes_remove_prefix(attributes, group);
 

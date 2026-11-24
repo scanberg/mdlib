@@ -63,7 +63,7 @@ UTEST(xyz, atom_names) {
     for (size_t f = 0; f < MD_COUNTOF(files); ++f) {
         md_system_t sys = {.alloc = alloc};
         md_system_state_t state = {.alloc = alloc};
-        ASSERT_TRUE(md_xyz_system_init_from_file(&sys, &state, md_str_from_cstr(files[f]), NULL));
+        ASSERT_TRUE(md_xyz_system_load_from_file(&sys, &state, md_str_from_cstr(files[f]), NULL) == MD_LOAD_OK);
         ASSERT_GT(sys.atom.count, 0u);
         for (size_t i = 0; i < sys.atom.count; ++i) {
             const md_str_t name = md_atom_name(&sys.atom, i);
@@ -73,7 +73,7 @@ UTEST(xyz, atom_names) {
     }
     md_system_t c60 = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
-    ASSERT_TRUE(md_xyz_system_init_from_file(&c60, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/C60-Ih.xyz"), NULL));
+    ASSERT_TRUE(md_xyz_system_load_from_file(&c60, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/C60-Ih.xyz"), NULL) == MD_LOAD_OK);
     EXPECT_TRUE(md_str_eq(md_atom_name(&c60.atom, 0), MD_STR_LIT("C")));
     md_arena_allocator_destroy(alloc);
 }
@@ -459,7 +459,7 @@ UTEST(xyz, comprehensive_c720) {
     
     md_system_t sys = { .alloc = alloc };
     md_system_state_t sys_state = { .alloc = alloc };
-    bool result = md_xyz_system_init_from_file(&sys, &sys_state, path, NULL);
+    bool result = md_xyz_system_load_from_file(&sys, &sys_state, path, NULL) == MD_LOAD_OK;
     ASSERT_TRUE(result);
     
     // C720 should have exactly 720 carbon atoms
@@ -493,14 +493,14 @@ UTEST(xyz, error_handling) {
     md_str_t path = MD_STR_INIT(MD_UNITTEST_DATA_DIR "/nonexistent.xyz");
     md_system_t sys = {.alloc = alloc};
     md_system_state_t sys_state = { .alloc = alloc };
-    bool result = md_xyz_system_init_from_file(&sys, &sys_state, path, NULL);
+    bool result = md_xyz_system_load_from_file(&sys, &sys_state, path, NULL) == MD_LOAD_OK;
     EXPECT_FALSE(result);
 
     md_system_reset(&sys);
     
     // Test empty path
     md_str_t empty_path = {0};
-    result = md_xyz_system_init_from_file(&sys, &sys_state, empty_path, NULL);
+    result = md_xyz_system_load_from_file(&sys, &sys_state, empty_path, NULL) == MD_LOAD_OK;
     EXPECT_FALSE(result);
     md_system_free(&sys);
 }
@@ -541,7 +541,7 @@ static void xyz_run_check(int* utest_result, md_str_t path, const run_ref_t* ref
     size_t frames = 0;
     md_system_t sys = { .alloc = arena };
     md_system_state_t sys_state = { .alloc = arena };
-    if (!md_xyz_system_init_from_file(&sys, &sys_state, path, NULL)) {
+    if ((md_xyz_system_load_from_file(&sys, &sys_state, path, NULL) != MD_LOAD_OK)) {
         *utest_result = UTEST_TEST_FAILURE;
         goto done;
     }
@@ -603,7 +603,7 @@ UTEST(xyz, run_extended_cell_per_frame) {
     md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = arena };
     md_system_state_t sys_state = { .alloc = arena };
-    ASSERT_TRUE(md_xyz_system_init_from_file(&sys, &sys_state, path, NULL));
+    ASSERT_TRUE(md_xyz_system_load_from_file(&sys, &sys_state, path, NULL) == MD_LOAD_OK);
     ASSERT_TRUE(md_xyz_system_publish_run(&sys, path, XYZ_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
     const md_attribute_t* cell = md_attributes_find(&sys.attributes, MD_STR_LIT("run/xyz/unitcell"));
     ASSERT_TRUE(cell && cell->data);
@@ -619,7 +619,7 @@ UTEST(xyz, run_extended_cell_per_frame) {
 // ### DIALECTS ###
 
 static bool xyz_load_str(md_system_t* sys, md_system_state_t* state, const char* text) {
-    return md_xyz_system_init_from_str(sys, state, md_str_from_cstr(text), NULL);
+    return md_xyz_system_load_from_str(sys, state, md_str_from_cstr(text), NULL) == MD_LOAD_OK;
 }
 
 // Plain XYZ with more columns than the element and coordinates: they are not read (nor taken for Tinker's)
@@ -775,7 +775,7 @@ UTEST(xyz, run_extra_columns) {
         md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
         md_system_t sys = { .alloc = arena };
         md_system_state_t st = { .alloc = arena };
-        ASSERT_TRUE(md_xyz_system_init_from_file(&sys, &st, paths[p], NULL));
+        ASSERT_TRUE(md_xyz_system_load_from_file(&sys, &st, paths[p], NULL) == MD_LOAD_OK);
         ASSERT_TRUE(md_xyz_system_publish_run(&sys, paths[p], XYZ_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
         md_system_state_t got = {.alloc = arena};
         md_system_state_init(&got, sys.atom.count);

@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include <core/md_str.h>
+#include <md_io.h>
 #include <core/md_file.h>
 
 #include <stdint.h>
@@ -31,8 +32,8 @@ struct md_executor_t;
 // nor what the residues are by them: md_system_infer derives those, when the caller wants them. The executor of desc
 // (NULL: the calling thread) reads a file and its lines in parallel; of a file of several models, the first model and
 // the CONECT records after the last are read, not the models between.
-bool md_pdb_system_init_from_file(struct md_system_t* sys, md_system_state_t* state, md_str_t filename, const struct md_load_desc_t* desc);
-bool md_pdb_system_init_from_str (struct md_system_t* sys, md_system_state_t* state, md_str_t str,      const struct md_load_desc_t* desc);
+md_load_result_t md_pdb_system_load_from_file(struct md_system_t* sys, md_system_state_t* state, md_str_t filename, const struct md_load_desc_t* desc);
+md_load_result_t md_pdb_system_load_from_str (struct md_system_t* sys, md_system_state_t* state, md_str_t str,      const struct md_load_desc_t* desc);
 
 // EXPORT
 bool md_pdb_system_write_state_to_file(md_file_t file, const struct md_system_t* sys, const md_system_state_t* state, const int32_t* atom_indices, size_t num_atoms, int model_num);

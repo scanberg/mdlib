@@ -5,6 +5,7 @@
 #include <stdbool.h>
 
 #include <core/md_str.h>
+#include <md_io.h>
 
 struct md_atom_pair_t;
 
@@ -337,7 +338,7 @@ bool md_tpr_nb_forcefield_init(struct md_nb_forcefield_t* ff, const md_tpr_data_
 // The bonds are the topology's and are complete, so a caller should not infer covalent bonds on
 // top of them.
 bool md_tpr_system_init_from_data(struct md_system_t* sys, md_system_state_t* state, const md_tpr_data_t* data);
-bool md_tpr_system_init_from_file(struct md_system_t* sys, md_system_state_t* state, md_str_t filename, const struct md_load_desc_t* desc);
+md_load_result_t md_tpr_system_load_from_file(struct md_system_t* sys, md_system_state_t* state, md_str_t filename, const struct md_load_desc_t* desc);
 
 #ifdef __cplusplus
 }

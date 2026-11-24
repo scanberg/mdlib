@@ -387,7 +387,7 @@ UTEST(lammps, comprehensive_data_validation) {
     for (int p = 0; p < 2; ++p) {
         md_system_t sys = { .alloc = alloc };
         md_system_state_t sys_state = { .alloc = alloc };
-        ASSERT_TRUE(md_lammps_system_init_from_file(&sys, &sys_state, paths[p], &(md_load_desc_t){ .format = md_str_from_cstr(atom_format) }));
+        ASSERT_TRUE(md_lammps_system_load_from_file(&sys, &sys_state, paths[p], &(md_load_desc_t){ .format = md_str_from_cstr(atom_format) }) == MD_LOAD_OK);
         
         EXPECT_GT(sys.atom.count, 0);
         
@@ -409,7 +409,7 @@ UTEST(lammps, comprehensive_data_validation) {
 // ### DATA FILES ###
 
 static bool lammps_load_str(md_system_t* sys, md_system_state_t* state, const char* text) {
-    return md_lammps_system_init_from_str(sys, state, md_str_from_cstr(text), NULL);
+    return md_lammps_system_load_from_str(sys, state, md_str_from_cstr(text), NULL) == MD_LOAD_OK;
 }
 
 // Comments after the counts and the keywords, as LAMMPS allows them anywhere after a blank

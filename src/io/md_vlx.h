@@ -188,6 +188,9 @@ extern "C" {
 // left as they are.
 md_load_result_t md_vlx_system_load_from_file(struct md_system_t* sys, struct md_system_state_t* state, md_str_t filename, const struct md_load_desc_t* desc);
 
+// Whether the file is of a region of the system's atoms, changing nothing (md_io.h, CHECK)
+md_load_result_t md_vlx_system_check_file(const struct md_system_t* sys, md_str_t filename, const struct md_load_desc_t* desc);
+
 #ifdef __cplusplus
 }
 #endif

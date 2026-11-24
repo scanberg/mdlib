@@ -1,4 +1,6 @@
 #include <md_amber_energy.h>
+#include "md_io_internal.h"
+#include <md_run.h>
 #include <md_io.h>
 
 #include <md_system.h>
@@ -366,40 +368,49 @@ static md_str_t amber_join(char* buf, size_t cap, md_str_t a, const char* b) {
     return (md_str_t){buf, a.len + 1 + b_len};
 }
 
-bool md_amber_energy_system_supplement_from_file(md_system_t* sys, md_str_t filename, const md_load_desc_t* desc) {
+// The table of the file: its terms along its times, non decreasing
+static bool amber_energy_read(amber_table_t* t, md_str_t filename, md_allocator_i* alloc) {
+    const md_str_t text = md_load_textfile(filename, alloc);
+    if (md_str_empty(text)) {
+        MD_LOG_ERROR("Amber energy: cannot read '" MD_STR_FMT "'", MD_STR_ARG(filename));
+        return false;
+    }
+    const bool mden = md_amber_energy_file_is_mden(filename);
+    if (!(mden ? amber_parse_mden(t, text, filename) : amber_parse_mdout(t, text, filename))) return false;
+    for (size_t r = 1; r < md_array_size(t->time); ++r) {
+        if (!(t->time[r] >= t->time[r - 1])) {
+            MD_LOG_ERROR("Amber energy: the times of '" MD_STR_FMT "' decrease at record %zu (%g ps after %g ps); a restarted run is to be loaded file by file",
+                MD_STR_ARG(filename), r, t->time[r], t->time[r - 1]);
+            return false;
+        }
+    }
+    return true;
+}
+
+md_load_result_t md_amber_energy_system_load_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
+    (void)state;
     const md_str_t run = desc ? desc->run : (md_str_t){0};
     MD_ASSERT(sys);
     if (md_str_empty(run)) {
-        MD_LOG_ERROR("Amber energy: no run to publish the energies under; load the trajectory first");
-        return false;
+        MD_LOG_ERROR("Amber energy: no run to publish the energies of '" MD_STR_FMT "' under", MD_STR_ARG(filename));
+        return MD_LOAD_FAILED;
     }
     md_attributes_t* attributes = &sys->attributes;
     if (!attributes->alloc) attributes->alloc = sys->alloc;
 
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* temp_alloc = md_temp_allocator(temp);
-    bool result = false;
-    md_attributes_t probe = { .alloc = temp_alloc };
+    md_load_result_t result = MD_LOAD_FAILED;
 
     amber_table_t t = { .alloc = temp_alloc };
-    const md_str_t text = md_load_textfile(filename, temp_alloc);
-    if (md_str_empty(text)) {
-        MD_LOG_ERROR("Amber energy: cannot read '" MD_STR_FMT "'", MD_STR_ARG(filename));
+    if (!amber_energy_read(&t, filename, temp_alloc)) goto done;
+    const size_t R = md_array_size(t.time);
+    // Along the run where the system has it; without it the energies form it
+    if (md_io_has_run(sys, run) && !md_run_series_fits(sys, run, t.time, md_unit_picosecond(), R)) {
+        md_io_log_not_along("Amber energy", filename, run);
+        result = MD_LOAD_MISMATCH;
         goto done;
     }
-    const bool mden = md_amber_energy_file_is_mden(filename);
-    if (!(mden ? amber_parse_mden(&t, text, filename) : amber_parse_mdout(&t, text, filename))) goto done;
-
-    const size_t R = md_array_size(t.time);
-    for (size_t r = 1; r < R; ++r) {
-        if (!(t.time[r] >= t.time[r - 1])) {
-            MD_LOG_ERROR("Amber energy: the times of '" MD_STR_FMT "' decrease at record %zu (%g ps after %g ps); a restarted run is to be loaded file by file",
-                MD_STR_ARG(filename), r, t.time[r], t.time[r - 1]);
-            goto done;
-        }
-    }
-
-    // The file's own axis, against a scratch table first: whether it covers the run is a question about the values
     const md_attribute_desc_t time_desc = {
         .path   = MD_STR_INIT("time"),
         .format = { .type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 1, .shape = { (uint32_t)R } },
@@ -409,25 +420,8 @@ bool md_amber_energy_system_supplement_from_file(md_system_t* sys, md_str_t file
         .data   = t.time,
         .byte_size = R * sizeof(double),
     };
-    const md_attribute_id_t probe_id = md_attributes_create(&probe, &time_desc);
-    if (!probe_id) goto done;
 
     char path_buf[512], group_buf[512];
-    const md_attribute_t* run_axis = md_attributes_find(attributes, amber_join(path_buf, sizeof(path_buf), run, "time"));
-    if (run_axis && md_attributes_axis(attributes, run_axis) == run_axis) {
-        const md_attribute_t* axis = md_attributes_get(&probe, probe_id);
-        for (size_t f = 0; f < run_axis->format.shape[0]; ++f) {
-            size_t row;
-            if (!md_attribute_axis_map(&row, attributes, run_axis, f, &probe, axis)) {
-                double time = 0;
-                md_attribute_extract_f64(&time, 1, attributes, run_axis, md_attribute_slice_1((uint32_t)f), md_unit_picosecond());
-                MD_LOG_ERROR("Amber energy: frame %zu of '" MD_STR_FMT "' (%g ps) has no record in '" MD_STR_FMT "' (%g - %g ps); the file belongs to another run, or was written at another interval",
-                    f, MD_STR_ARG(run), time, MD_STR_ARG(filename), t.time[0], t.time[R - 1]);
-                goto done;
-            }
-        }
-    }
-
     const md_str_t group = amber_join(group_buf, sizeof(group_buf), run, "amber_energy");
     if (md_str_empty(group)) goto done;
     md_attributes_remove_prefix(attributes, group);
@@ -473,7 +467,7 @@ bool md_amber_energy_system_supplement_from_file(md_system_t* sys, md_str_t file
         if (!md_attributes_create(attributes, &desc)) goto fail;
     }
     MD_LOG_INFO("Amber energy: %zu terms of %zu records from '" MD_STR_FMT "'", published, R, MD_STR_ARG(filename));
-    result = true;
+    result = MD_LOAD_OK;
     goto done;
 
 fail:
@@ -481,7 +475,20 @@ fail:
     md_attributes_remove_prefix(attributes, group);
 
 done:
-    md_attributes_free(&probe);
+    md_temp_end(temp);
+    return result;
+}
+
+md_load_result_t md_amber_energy_system_check_file(const md_system_t* sys, md_str_t filename, const md_load_desc_t* desc) {
+    MD_ASSERT(sys);
+    const md_str_t run = desc ? desc->run : (md_str_t){0};
+    if (!md_io_has_run(sys, run)) return MD_LOAD_MISMATCH;
+    md_temp_scope_t temp = md_temp_begin();
+    amber_table_t t = { .alloc = md_temp_allocator(temp) };
+    md_load_result_t result = MD_LOAD_FAILED;
+    if (amber_energy_read(&t, filename, t.alloc)) {
+        result = md_run_series_fits(sys, run, t.time, md_unit_picosecond(), md_array_size(t.time)) ? MD_LOAD_OK : MD_LOAD_MISMATCH;
+    }
     md_temp_end(temp);
     return result;
 }

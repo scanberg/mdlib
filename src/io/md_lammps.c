@@ -1,4 +1,5 @@
 ﻿#include "md_lammps.h"
+#include "md_io_internal.h"
 
 #include <md_system.h>
 #include <md_io.h>
@@ -1214,7 +1215,7 @@ bool md_lammps_system_init_from_data(md_system_t* sys, md_system_state_t* state,
 	return true;
 }
 
-bool md_lammps_system_init_from_str(md_system_t* sys, md_system_state_t* state, md_str_t str, const md_load_desc_t* desc) {
+static bool lammps_system_build_from_str(md_system_t* sys, md_system_state_t* state, md_str_t str, const md_load_desc_t* desc) {
     // The atom style, as a C string for the parser
     char atom_format_buf[512];
     const char* atom_format = NULL;
@@ -1247,7 +1248,7 @@ bool md_lammps_system_init_from_str(md_system_t* sys, md_system_state_t* state, 
 	return success;
 }
 
-bool md_lammps_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
+static bool lammps_system_build_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
     // The atom style, as a C string for the parser
     char atom_format_buf[512];
     const char* atom_format = NULL;
@@ -1976,3 +1977,14 @@ done:
 	return result;
 }
 
+// ### LOAD (md_io.h) ###
+
+md_load_result_t md_lammps_system_load_from_file(struct md_system_t* sys, md_system_state_t* state, md_str_t filename, const struct md_load_desc_t* desc) {
+    if (!md_io_onto_no_atoms(sys, filename)) return MD_LOAD_FAILED;
+    return lammps_system_build_from_file(sys, state, filename, desc) ? MD_LOAD_OK : MD_LOAD_FAILED;
+}
+
+md_load_result_t md_lammps_system_load_from_str(struct md_system_t* sys, md_system_state_t* state, md_str_t str, const struct md_load_desc_t* desc) {
+    if (!md_io_onto_no_atoms(sys, MD_STR_LIT("text"))) return MD_LOAD_FAILED;
+    return lammps_system_build_from_str(sys, state, str, desc) ? MD_LOAD_OK : MD_LOAD_FAILED;
+}

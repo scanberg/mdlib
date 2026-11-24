@@ -149,7 +149,7 @@ UTEST(martini, martini3_peptide_gro) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, md_str_from_cstr(martini3_peptide_gro), NULL));
+    ASSERT_TRUE(md_gro_system_load_from_str(&sys, &state, md_str_from_cstr(martini3_peptide_gro), NULL) == MD_LOAD_OK);
     ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
     check_martini_peptide(utest_result, &sys, &state, 9);
     md_vm_arena_destroy(alloc);
@@ -159,7 +159,7 @@ UTEST(martini, martini3_peptide_pdb) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(martini3_peptide_pdb), NULL));
+    ASSERT_TRUE(md_pdb_system_load_from_str(&sys, &state, md_str_from_cstr(martini3_peptide_pdb), NULL) == MD_LOAD_OK);
     ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
     check_martini_peptide(utest_result, &sys, &state, 9);
     md_vm_arena_destroy(alloc);
@@ -228,7 +228,7 @@ UTEST(martini, martini_residue_names) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, (md_str_t){text, (size_t)len}, NULL));
+    ASSERT_TRUE(md_gro_system_load_from_str(&sys, &state, (md_str_t){text, (size_t)len}, NULL) == MD_LOAD_OK);
     ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
     ASSERT_EQ((size_t)n, md_system_residue_count(&sys));
     check_martini_peptide(utest_result, &sys, &state, (size_t)n);
@@ -276,7 +276,7 @@ UTEST(martini, martini3_peptide_bonds) {
     {
         md_system_t sys = { .alloc = alloc };
         md_system_state_t state = { .alloc = alloc };
-        ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(martini3_peptide_pdb), NULL));
+        ASSERT_TRUE(md_pdb_system_load_from_str(&sys, &state, md_str_from_cstr(martini3_peptide_pdb), NULL) == MD_LOAD_OK);
         ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
         check_bonds_against_topology(utest_result, &sys, (const int (*)[2])topology, MD_COUNTOF(topology), NULL, 0);
         EXPECT_EQ(1u, md_bond_conn_count(&sys.bond, 23));
@@ -292,7 +292,7 @@ UTEST(martini, martini3_peptide_bonds) {
         len += snprintf(text + len, sizeof(text) - len, "END\n");
         md_system_t sys = { .alloc = alloc };
         md_system_state_t state = { .alloc = alloc };
-        ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, (md_str_t){text, (size_t)len}, NULL));
+        ASSERT_TRUE(md_pdb_system_load_from_str(&sys, &state, (md_str_t){text, (size_t)len}, NULL) == MD_LOAD_OK);
         ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
         check_bonds_against_topology(utest_result, &sys, (const int (*)[2])topology, MD_COUNTOF(topology), NULL, 0);
         EXPECT_EQ(MD_COUNTOF(topology), sys.bond.count);
@@ -330,7 +330,7 @@ UTEST(martini, martini22p_peptide) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(martini22p_peptide_pdb), NULL));
+    ASSERT_TRUE(md_pdb_system_load_from_str(&sys, &state, md_str_from_cstr(martini22p_peptide_pdb), NULL) == MD_LOAD_OK);
     ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
 
     static const int topology[][2] = {
@@ -359,7 +359,7 @@ UTEST(martini, martini_masses_by_version) {
         // Martini 3 (Tyr has SC4 and Trp SC5)
         md_system_t sys = { .alloc = alloc };
         md_system_state_t state = { .alloc = alloc };
-        ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, md_str_from_cstr(martini3_peptide_gro), NULL));
+        ASSERT_TRUE(md_gro_system_load_from_str(&sys, &state, md_str_from_cstr(martini3_peptide_gro), NULL) == MD_LOAD_OK);
         ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
         EXPECT_EQ(72.0f, md_atom_mass(&sys.atom, 0));     // Tyr BB, regular
         EXPECT_EQ(36.0f, md_atom_mass(&sys.atom, 4));     // Tyr SC4, tiny
@@ -393,7 +393,7 @@ UTEST(martini, martini_masses_by_version) {
             "   5.00000   5.00000   5.00000\n";
         md_system_t sys = { .alloc = alloc };
         md_system_state_t state = { .alloc = alloc };
-        ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, md_str_from_cstr(text), NULL));
+        ASSERT_TRUE(md_gro_system_load_from_str(&sys, &state, md_str_from_cstr(text), NULL) == MD_LOAD_OK);
         ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
         for (size_t i = 0; i < sys.atom.count; ++i) {
             const bool ring = 2 <= i && i <= 5;
@@ -445,7 +445,7 @@ UTEST(martini, martini2_dna) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(martini2_dna_pdb), NULL));
+    ASSERT_TRUE(md_pdb_system_load_from_str(&sys, &state, md_str_from_cstr(martini2_dna_pdb), NULL) == MD_LOAD_OK);
     ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
     ASSERT_EQ(4u, md_system_residue_count(&sys));
 
@@ -522,7 +522,7 @@ UTEST(martini, martini2_dna_strands_under_one_chain_id) {
     memcpy(text + first_len, martini2_dna_second_strand_pdb, sizeof(martini2_dna_second_strand_pdb));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(text), NULL));
+    ASSERT_TRUE(md_pdb_system_load_from_str(&sys, &state, md_str_from_cstr(text), NULL) == MD_LOAD_OK);
     ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
     ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
     ASSERT_EQ(8u, md_system_residue_count(&sys));
@@ -559,7 +559,7 @@ UTEST(martini, martini_chain_links) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, md_str_from_cstr(text), NULL));
+    ASSERT_TRUE(md_gro_system_load_from_str(&sys, &state, md_str_from_cstr(text), NULL) == MD_LOAD_OK);
     ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
     static const int expected[][2] = {
         {0, 1}, {2, 3}, {4, 5}, {6, 7}, {8, 9},     // BB-SC1
@@ -595,7 +595,7 @@ UTEST(martini, martini_bonds_by_geometry) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, md_str_from_cstr(text), NULL));
+    ASSERT_TRUE(md_gro_system_load_from_str(&sys, &state, md_str_from_cstr(text), NULL) == MD_LOAD_OK);
     ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
     static const int expected[][2] = {
         {0, 1}, {1, 2}, {2, 4}, {3, 4}, {1, 3},     // Trp, without SC2-SC4 (2-3)
@@ -634,8 +634,8 @@ UTEST(martini, martini_reference_systems) {
         snprintf(gro_path, sizeof(gro_path), MD_UNITTEST_DATA_DIR "/martini/%s.gro", names[n]);
         md_system_t top = { .alloc = alloc }, gro = { .alloc = alloc };
         md_system_state_t top_state = { .alloc = alloc }, gro_state = { .alloc = alloc };
-        ASSERT_TRUE(md_tpr_system_init_from_file(&top, &top_state, md_str_from_cstr(tpr_path), NULL));
-        ASSERT_TRUE(md_gro_system_init_from_file(&gro, &gro_state, md_str_from_cstr(gro_path), NULL));
+        ASSERT_TRUE(md_tpr_system_load_from_file(&top, &top_state, md_str_from_cstr(tpr_path), NULL) == MD_LOAD_OK);
+        ASSERT_TRUE(md_gro_system_load_from_file(&gro, &gro_state, md_str_from_cstr(gro_path), NULL) == MD_LOAD_OK);
         ASSERT_TRUE(md_system_infer(&top, &top_state, NULL));
         ASSERT_TRUE(test_infer_as_loaded(&gro, &gro_state));
         ASSERT_EQ(top.atom.count, gro.atom.count);
@@ -692,7 +692,7 @@ UTEST(martini, martini_nucleic_backbones) {
             snprintf(path, sizeof(path), MD_UNITTEST_DATA_DIR "/martini/%s.%s", systems[n].name, with_tpr ? "tpr" : "gro");
             md_system_t sys = { .alloc = alloc };
             md_system_state_t state = { .alloc = alloc };
-            ASSERT_TRUE(with_tpr ? md_tpr_system_init_from_file(&sys, &state, md_str_from_cstr(path), NULL) : md_gro_system_init_from_file(&sys, &state, md_str_from_cstr(path), NULL));
+            ASSERT_TRUE(with_tpr ? (md_tpr_system_load_from_file(&sys, &state, md_str_from_cstr(path), NULL) == MD_LOAD_OK) : (md_gro_system_load_from_file(&sys, &state, md_str_from_cstr(path), NULL) == MD_LOAD_OK));
             ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
 
             const md_nucleic_backbone_data_t* bb = &sys.nucleic_backbone;
@@ -774,7 +774,7 @@ UTEST(martini, martini_nucleic_break) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(martini2_dna_gap_pdb), NULL));
+    ASSERT_TRUE(md_pdb_system_load_from_str(&sys, &state, md_str_from_cstr(martini2_dna_gap_pdb), NULL) == MD_LOAD_OK);
     ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
     ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
     ASSERT_EQ((size_t)6, md_system_residue_count(&sys));

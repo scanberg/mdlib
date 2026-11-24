@@ -10,20 +10,29 @@
 //
 //   md_<fmt>_system_load_from_file(sys, state, path, desc)    what the file holds, into the system
 //   md_<fmt>_system_load_from_str (sys, state, str,  desc)    the same of text in memory
-//   md_<fmt>_system_publish_run(sys, path, run, flags)        frames streamed from the file as a run (md_run.h)
+//   md_<fmt>_system_check_file    (sys, path, desc)           whether data of atoms is of the system's (CHECK)
+//   md_<fmt>_system_publish_run   (sys, path, run, flags)     frames streamed from the file as a run (md_run.h)
 //
 // LOAD. A file is one of two, and some are both:
 //   A SYSTEM OF ITS OWN (MD_IO_FLAG_SYSTEM): it has atoms, known by their names, their elements or their count alone,
 //     and may have coordinates, bonds and more. Its load builds the system onto one without atoms; onto one with atoms
-//     it is MD_LOAD_FAILED, and nothing changes. A topology (prmtop, psf, top) is a system without coordinates
+//     it is MD_LOAD_FAILED, and nothing changes. A topology (prmtop, psf, top, itp) is a system without coordinates
 //     (md_system_state_has_coords is false), coordinates without names (a restart) a system known by its count. Two
 //     such files of the same atoms make one system: the second is built on its own and joined to the first
 //     (md_system_match, md_system_merge in md_system.h), which the caller decides.
 //   DATA OF A SYSTEM'S ATOMS (MD_IO_FLAG_SUPPLEMENT): index groups, a series along a run (desc->run), an itp's
 //     molecule types found in the system, the QM data of a region of it (VeloxChem). Its load adds to a system with
 //     atoms, which the file names its own way; MD_LOAD_MISMATCH when they are not the system's, checked before anything
-//     is written, so that nothing changed. Where such a file is a system of its own as well (VeloxChem), its load onto
-//     a system without atoms builds one.
+//     is written, so that nothing changed. Where such a file is a system of its own as well (itp, VeloxChem), its load
+//     onto a system without atoms builds one.
+// A trajectory (MD_IO_FLAG_RUN without MD_IO_FLAG_SYSTEM) is frames, which a system takes as a run (publish_run). Its
+// load is what it is alone: a system of its atoms by their count, at its first frame, which md_system_match checks
+// against a system before its frames join it.
+//
+// CHECK. Data of a system's atoms has a check besides its load: what its load onto the atoms would answer, OK or MISMATCH,
+// changing nothing, for a caller to find which of its systems a file is of before it loads it into one. Onto a
+// system without atoms it is MD_LOAD_MISMATCH; MD_LOAD_FAILED when the file cannot be read. A system of its own has
+// none: it is built, and matched as a system (md_system_match).
 //
 // SAME ATOMS. Two systems are of the same atoms when their counts are equal, their elements where both give them, and
 // their atom names and residue boundaries where both name their atoms in residues. Two the same by their count alone
@@ -125,15 +134,13 @@ typedef enum md_io_format_t {
 
 // What a format holds and how it joins what is loaded
 enum {
-    MD_IO_FLAG_SYSTEM            = 1u << 1,     // A system of its own (load onto none, or system_init)
-    MD_IO_FLAG_RUN               = 1u << 2,     // Frames, published as a run (publish_run)
+    MD_IO_FLAG_SYSTEM            = 1u << 1,     // A system of its own (load onto none)
+    MD_IO_FLAG_RUN               = 1u << 2,     // Frames, published as a run (publish_run); without SYSTEM a trajectory
     MD_IO_FLAG_MM                = 1u << 5,     // Molecular mechanics data
     MD_IO_FLAG_QM                = 1u << 6,     // Quantum mechanics data
-    MD_IO_FLAG_SUPPLEMENT        = 1u << 7,     // Data of a system's atoms (load onto atoms, or supplement)
+    MD_IO_FLAG_SUPPLEMENT        = 1u << 7,     // Data of a system's atoms (load onto atoms, check)
     MD_IO_FLAG_TOPOLOGY          = 1u << 8,     // A complete topology: its bonds are not to be inferred
-    MD_IO_FLAG_TEMPORAL          = 1u << 9,     // A supplement sampled along a trajectory: it joins a run (desc->run)
-    MD_IO_FLAG_NEEDS_COORDINATES = 1u << 11,    // A topology without coordinates (prmtop, psf): they come from another file
-    MD_IO_FLAG_COORDINATES       = 1u << 12,    // Coordinates without atoms (a restart): for a topology (state_init)
+    MD_IO_FLAG_TEMPORAL          = 1u << 9,     // Data sampled along a run: it joins one (desc->run)
 };
 
 typedef struct md_io_format_info_t {
@@ -143,18 +150,11 @@ typedef struct md_io_format_info_t {
 
     // The readers of the format; NULL where it has none, all of them where the format is not built in (VeloxChem,
     // TREXIO and H5MD without HDF5)
-    md_load_result_t (*load)(struct md_system_t* sys, struct md_system_state_t* state, md_str_t path, const md_load_desc_t* desc);
+    md_load_result_t (*load) (struct md_system_t* sys, struct md_system_state_t* state, md_str_t path, const md_load_desc_t* desc);
+    md_load_result_t (*check)(const struct md_system_t* sys, md_str_t path, const md_load_desc_t* desc);   // SUPPLEMENT
     bool   (*publish_run)(struct md_system_t* sys, md_str_t path, md_str_t run, uint32_t flags);
     // The atom count its header gives, without reading the rest; NULL where a format does not say up front
     size_t (*atom_count) (md_str_t path);
-
-    // TRANSITIONAL: the readers of the formats which do not load yet. They go once every format does: system_init and
-    // supplement into load, state_init into the load of a file of coordinates onto the atoms of a system.
-    bool   (*system_init)(struct md_system_t* sys, struct md_system_state_t* state, md_str_t path, const md_load_desc_t* desc);
-    bool   (*supplement) (struct md_system_t* sys, md_str_t path, const md_load_desc_t* desc);
-    // The coordinates of a file of coordinates (MD_IO_FLAG_COORDINATES, or the first frame of a trajectory) for a
-    // system of num_atoms atoms
-    bool   (*state_init) (struct md_system_state_t* state, md_str_t path, size_t num_atoms);
 } md_io_format_info_t;
 
 // The format's entry. MD_IO_FORMAT_UNKNOWN, and anything past the end, is an entry of nothing.

@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include <core/md_str.h>
+#include <md_io.h>
 #include <stdbool.h>
 
 struct md_system_t;
@@ -23,8 +24,8 @@ extern "C" {
 // the same however many there are. The connections of _struct_conn are bonds the file gives (md_system_t::given_bond), of
 // the kinds it says: covalent bonds, disulfides and modified residues' bonds covalent, metal coordination coordinate,
 // hydrogen bonds hydrogen and salt bridges ionic (md_bond_kind_t); inference keeps them and adds those they leave out.
-bool md_mmcif_system_init_from_file(struct md_system_t* sys, md_system_state_t* state, md_str_t filename, const struct md_load_desc_t* desc);
-bool md_mmcif_system_init_from_str (struct md_system_t* sys, md_system_state_t* state, md_str_t str, const struct md_load_desc_t* desc);
+md_load_result_t md_mmcif_system_load_from_file(struct md_system_t* sys, md_system_state_t* state, md_str_t filename, const struct md_load_desc_t* desc);
+md_load_result_t md_mmcif_system_load_from_str (struct md_system_t* sys, md_system_state_t* state, md_str_t str, const struct md_load_desc_t* desc);
 
 #ifdef __cplusplus
 }

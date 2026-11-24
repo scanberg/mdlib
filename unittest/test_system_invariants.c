@@ -43,19 +43,19 @@ static void check_file(int* utest_result, sys_load_fn load, md_str_t path) {
 }
 
 static bool load_pdb(md_system_t* sys, md_system_state_t* state, md_str_t path) {
-    return md_pdb_system_init_from_file(sys, state, path, NULL);
+    return md_pdb_system_load_from_file(sys, state, path, NULL) == MD_LOAD_OK;
 }
 
 static bool load_mmcif(md_system_t* sys, md_system_state_t* state, md_str_t path) {
-    return md_mmcif_system_init_from_file(sys, state, path, NULL);
+    return md_mmcif_system_load_from_file(sys, state, path, NULL) == MD_LOAD_OK;
 }
 
 static bool load_gro(md_system_t* sys, md_system_state_t* state, md_str_t path) {
-    return md_gro_system_init_from_file(sys, state, path, NULL);
+    return md_gro_system_load_from_file(sys, state, path, NULL) == MD_LOAD_OK;
 }
 
 static bool load_lammps(md_system_t* sys, md_system_state_t* state, md_str_t path) {
-    return md_lammps_system_init_from_file(sys, state, path, NULL);
+    return md_lammps_system_load_from_file(sys, state, path, NULL) == MD_LOAD_OK;
 }
 
 UTEST(system_invariants, pdb) {
@@ -86,7 +86,7 @@ UTEST(system_invariants, copy) {
     md_allocator_i* a2 = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = a1 };
     md_system_state_t state = { .alloc = a1 };
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), NULL));
+    ASSERT_TRUE(md_pdb_system_load_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), NULL) == MD_LOAD_OK);
 
     // The core, copied and inferred on, as viamd does in the background
     md_system_t core = { .alloc = a2 };
@@ -369,15 +369,15 @@ static void expect_derived_owned(int* utest_result, const char* what, const md_s
 }
 
 static bool load_tpr(md_system_t* sys, md_system_state_t* state, md_str_t path) {
-    return md_tpr_system_init_from_file(sys, state, path, NULL);
+    return md_tpr_system_load_from_file(sys, state, path, NULL) == MD_LOAD_OK;
 }
 
 static bool load_xyz(md_system_t* sys, md_system_state_t* state, md_str_t path) {
-    return md_xyz_system_init_from_file(sys, state, path, NULL);
+    return md_xyz_system_load_from_file(sys, state, path, NULL) == MD_LOAD_OK;
 }
 
 static bool load_molden(md_system_t* sys, md_system_state_t* state, md_str_t path) {
-    return md_molden_system_init_from_file(sys, state, path, NULL);
+    return md_molden_system_load_from_file(sys, state, path, NULL) == MD_LOAD_OK;
 }
 
 static void check_derived_arena(int* utest_result, sys_load_fn load, md_str_t path) {

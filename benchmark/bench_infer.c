@@ -150,10 +150,10 @@ static uint64_t inferred_hash(const md_system_t* sys) {
 }
 
 static bool load(md_system_t* sys, md_system_state_t* st, md_str_t path) {
-    if (md_str_ends_with(path, MD_STR_LIT(".gro"))) return md_gro_system_init_from_file(sys, st, path, NULL);
-    if (md_str_ends_with(path, MD_STR_LIT(".pdb"))) return md_pdb_system_init_from_file(sys, st, path, NULL);
-    if (md_str_ends_with(path, MD_STR_LIT(".cif"))) return md_mmcif_system_init_from_file(sys, st, path, NULL);
-    if (md_str_ends_with(path, MD_STR_LIT(".tpr"))) return md_tpr_system_init_from_file(sys, st, path, NULL);
+    if (md_str_ends_with(path, MD_STR_LIT(".gro"))) return md_gro_system_load_from_file(sys, st, path, NULL) == MD_LOAD_OK;
+    if (md_str_ends_with(path, MD_STR_LIT(".pdb"))) return md_pdb_system_load_from_file(sys, st, path, NULL) == MD_LOAD_OK;
+    if (md_str_ends_with(path, MD_STR_LIT(".cif"))) return md_mmcif_system_load_from_file(sys, st, path, NULL) == MD_LOAD_OK;
+    if (md_str_ends_with(path, MD_STR_LIT(".tpr"))) return md_tpr_system_load_from_file(sys, st, path, NULL) == MD_LOAD_OK;
     return false;
 }
 

@@ -551,7 +551,7 @@ static bool xtc_load_catalyst(md_system_t* sys, md_allocator_i* arena) {
     const md_str_t xtc = MD_STR_INIT(MD_UNITTEST_DATA_DIR "/catalyst.xtc");
     sys->alloc = arena;
     md_system_state_t sys_state = {.alloc = arena};
-    return md_gro_system_init_from_file(sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.gro"), NULL) &&
+    return (md_gro_system_load_from_file(sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.gro"), NULL) == MD_LOAD_OK) &&
         md_xtc_system_publish_run(sys, xtc, XTC_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE);
 }
 
@@ -720,7 +720,7 @@ UTEST(xtc, run_refuses_a_different_system) {
     md_allocator_i* arena = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {.alloc = arena};
     md_system_state_t sys_state = {.alloc = arena};
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/water.gro"), NULL));
+    ASSERT_TRUE(md_gro_system_load_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/water.gro"), NULL) == MD_LOAD_OK);
     EXPECT_FALSE(md_xtc_system_publish_run(&sys, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.xtc"), XTC_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
     md_system_free(&sys);
     md_vm_arena_destroy(arena);
@@ -768,7 +768,7 @@ UTEST(xtc, run_context_keeps_the_file_open) {
 
     md_system_t sys = {.alloc = arena};
     md_system_state_t sys_state = {.alloc = arena};
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.gro"), NULL));
+    ASSERT_TRUE(md_gro_system_load_from_file(&sys, &sys_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.gro"), NULL) == MD_LOAD_OK);
     ASSERT_TRUE(md_xtc_system_publish_run(&sys, tmp, XTC_RUN, MD_RUN_FLAG_DISABLE_CACHE_WRITE));
 
     md_system_state_t st = {.alloc = arena};

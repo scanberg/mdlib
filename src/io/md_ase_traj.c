@@ -1,4 +1,5 @@
 #include <md_ase_traj.h>
+#include "md_io_internal.h"
 #include <md_io.h>
 
 #include <md_system.h>
@@ -401,7 +402,7 @@ static size_t ase_position_provider(void* dst, size_t cap, const md_attributes_t
     return cap;
 }
 
-bool md_ase_traj_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
+static bool ase_traj_system_build_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
     (void)desc;
     MD_ASSERT(sys);
     MD_ASSERT(state);
@@ -461,7 +462,7 @@ bool md_ase_traj_system_publish_run(md_system_t* sys, md_str_t filename, md_str_
     ase_index_t idx;
     bool result = ase_index_read(&idx, path, SIZE_MAX, temp);
     if (result && idx.num_frames < 2) {
-        // A structure, as a PDB of one model is: md_ase_traj_system_init_from_file has all of it
+        // A structure, as a PDB of one model is: ase_traj_system_build_from_file has all of it
         MD_LOG_INFO("ASE: '" MD_STR_FMT "' has a single frame and is not read as a trajectory", MD_STR_ARG(path));
         result = false;
     }
@@ -493,4 +494,11 @@ bool md_ase_traj_system_publish_run(md_system_t* sys, md_str_t filename, md_str_
 
     md_temp_end(temp);
     return result;
+}
+
+// ### LOAD (md_io.h) ###
+
+md_load_result_t md_ase_traj_system_load_from_file(struct md_system_t* sys, struct md_system_state_t* state, md_str_t filename, const struct md_load_desc_t* desc) {
+    if (!md_io_onto_no_atoms(sys, filename)) return MD_LOAD_FAILED;
+    return ase_traj_system_build_from_file(sys, state, filename, desc) ? MD_LOAD_OK : MD_LOAD_FAILED;
 }

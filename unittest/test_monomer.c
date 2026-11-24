@@ -138,7 +138,7 @@ UTEST(monomer, residue_types_nucleosome) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"), NULL));
+    ASSERT_TRUE(md_gro_system_load_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"), NULL) == MD_LOAD_OK);
     ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
     EXPECT_VALID_SYSTEM(&sys);
 
@@ -195,7 +195,7 @@ UTEST(monomer, residue_types_without_monomer) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(ligand_water_ion_pdb), NULL));
+    ASSERT_TRUE(md_pdb_system_load_from_str(&sys, &state, md_str_from_cstr(ligand_water_ion_pdb), NULL) == MD_LOAD_OK);
     ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
     EXPECT_VALID_SYSTEM(&sys);
 
@@ -225,7 +225,7 @@ UTEST(monomer, residue_types_without_monomer) {
 
     md_system_t sys2 = { .alloc = alloc };
     md_system_state_t state2 = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys2, &state2, md_str_from_cstr(ligand_water_ion_pdb), NULL));
+    ASSERT_TRUE(md_pdb_system_load_from_str(&sys2, &state2, md_str_from_cstr(ligand_water_ion_pdb), NULL) == MD_LOAD_OK);
     ASSERT_TRUE(md_system_infer(&sys2, &state2, NULL));
     EXPECT_EQ(md_residue_type_color(type, lig), md_residue_type_color(&sys2.residue.type, type_of_name(&sys2, "LIG")));
 
@@ -372,7 +372,7 @@ UTEST(monomer, extended_ccd_ligand_is_not_nucleotide) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
-    ASSERT_TRUE(md_mmcif_system_init_from_str(&sys, &state, (md_str_t){a1jb9_cif, sizeof(a1jb9_cif) - 1}, NULL));
+    ASSERT_TRUE(md_mmcif_system_load_from_str(&sys, &state, (md_str_t){a1jb9_cif, sizeof(a1jb9_cif) - 1}, NULL) == MD_LOAD_OK);
     ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
     ASSERT_EQ(1u, md_system_residue_count(&sys));
     EXPECT_TRUE(md_str_eq_cstr(md_system_residue_name(&sys, 0), "A1JB9"));
@@ -392,7 +392,7 @@ UTEST(monomer, t3p_is_water) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
-    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, (md_str_t){gro, sizeof(gro) - 1}, NULL));
+    ASSERT_TRUE(md_gro_system_load_from_str(&sys, &state, (md_str_t){gro, sizeof(gro) - 1}, NULL) == MD_LOAD_OK);
     ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
     ASSERT_EQ(1u, md_system_residue_count(&sys));
     EXPECT_EQ((int)MD_RESIDUE_KIND_WATER, (int)md_system_residue_kind(&sys, 0));
@@ -403,7 +403,7 @@ UTEST(monomer, amino_acid_of_any_size) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, md_str_from_cstr(palmitoyl_cys_pdb), NULL));
+    ASSERT_TRUE(md_pdb_system_load_from_str(&sys, &state, md_str_from_cstr(palmitoyl_cys_pdb), NULL) == MD_LOAD_OK);
     ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
     ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
     ASSERT_EQ(1u, md_system_residue_count(&sys));
@@ -429,7 +429,7 @@ UTEST(monomer, atom_roles_stay_in_their_residue) {
     {
         md_system_t sys = {.alloc = alloc};
         md_system_state_t state = {.alloc = alloc};
-        ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1a64.pdb"), NULL));
+        ASSERT_TRUE(md_pdb_system_load_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1a64.pdb"), NULL) == MD_LOAD_OK);
         ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
         ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
         size_t num_pro = 0, num_with_side_chain = 0, num_aa = 0;
@@ -458,7 +458,7 @@ UTEST(monomer, atom_roles_stay_in_their_residue) {
         // The Mg of 1fez is coordinated by an aspartate
         md_system_t sys = {.alloc = alloc};
         md_system_state_t state = {.alloc = alloc};
-        ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif"), NULL));
+        ASSERT_TRUE(md_mmcif_system_load_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1fez.cif"), NULL) == MD_LOAD_OK);
         ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
         ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
         size_t num_mg = 0;
@@ -472,7 +472,7 @@ UTEST(monomer, atom_roles_stay_in_their_residue) {
     {
         md_system_t sys = {.alloc = alloc};
         md_system_state_t state = {.alloc = alloc};
-        ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"), NULL));
+        ASSERT_TRUE(md_gro_system_load_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"), NULL) == MD_LOAD_OK);
         ASSERT_TRUE(test_infer_as_loaded(&sys, &state));
         ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
         size_t num_nuc = 0, num_with_base = 0;
@@ -518,7 +518,7 @@ UTEST(monomer, lone_atom_ion_only_without_covalent_bonds) {
     #undef ATOM
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &state, (md_str_t){ text, (size_t)len }, NULL));
+    ASSERT_TRUE(md_pdb_system_load_from_str(&sys, &state, (md_str_t){ text, (size_t)len }, NULL) == MD_LOAD_OK);
     ASSERT_EQ(10u, sys.residue.count);
     ASSERT_EQ(0u, sys.bond.count);
 
@@ -539,7 +539,7 @@ UTEST(monomer, residue_classified_anew) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.gro"), NULL));
+    ASSERT_TRUE(md_gro_system_load_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.gro"), NULL) == MD_LOAD_OK);
     ASSERT_TRUE(md_system_infer(&sys, &state, NULL));
     size_t trp = SIZE_MAX;
     for (size_t r = 0; r < sys.residue.count && trp == SIZE_MAX; ++r) {

@@ -1,4 +1,5 @@
 #include <md_xvg.h>
+#include "md_io_internal.h"
 #include <md_io.h>
 #include <md_system.h>
 #include <md_run.h>
@@ -327,12 +328,17 @@ static md_str_t xvg_group(char* buf, size_t cap, const char* kind, md_str_t file
     return (md_str_t){ buf, len };
 }
 
-bool md_xvg_system_supplement_from_file(struct md_system_t* sys, md_str_t filename, const md_load_desc_t* desc) {
+md_load_result_t md_xvg_system_load_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
+    (void)state;
     const md_str_t run = desc ? desc->run : (md_str_t){0};
     MD_ASSERT(sys);
+    if (!md_io_has_run(sys, run)) {
+        MD_LOG_ERROR("XVG: no run '" MD_STR_FMT "' for '" MD_STR_FMT "' to be along; load the trajectory first", MD_STR_ARG(run), MD_STR_ARG(filename));
+        return MD_LOAD_FAILED;
+    }
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* alloc = md_temp_allocator(temp);
-    bool result = false;
+    md_load_result_t result = MD_LOAD_FAILED;
 
     md_xvg_t xvg = {0};
     if (!md_xvg_parse_file(&xvg, filename, alloc) || xvg.num_fields == 0 || xvg.num_values == 0) {
@@ -388,10 +394,35 @@ bool md_xvg_system_supplement_from_file(struct md_system_t* sys, md_str_t filena
             .columns     = columns,
             .source_path = (md_str_t){ path_buf, path_len },
         };
-        result = md_run_publish_series(sys, run, &desc);
+        if (!md_run_series_fits(sys, run, desc.time, desc.time_unit, desc.num_rows)) {
+            md_io_log_not_along("XVG", filename, run);
+            result = MD_LOAD_MISMATCH;
+        } else {
+            result = md_run_publish_series(sys, run, &desc) ? MD_LOAD_OK : MD_LOAD_FAILED;
+        }
     }
 
 done:
+    md_temp_end(temp);
+    return result;
+}
+
+md_load_result_t md_xvg_system_check_file(const md_system_t* sys, md_str_t filename, const md_load_desc_t* desc) {
+    MD_ASSERT(sys);
+    const md_str_t run = desc ? desc->run : (md_str_t){0};
+    if (!md_io_has_run(sys, run)) return MD_LOAD_MISMATCH;
+    md_temp_scope_t temp = md_temp_begin();
+    md_load_result_t result = MD_LOAD_FAILED;
+    md_xvg_t xvg = {0};
+    if (md_xvg_parse_file(&xvg, filename, md_temp_allocator(temp)) && xvg.num_fields && xvg.num_values) {
+        const bool has_time = md_str_begins_with_ignore_case(md_str_trim(xvg.header_info.xaxis_label), MD_STR_LIT("time"));
+        double* time = NULL;
+        if (has_time) {
+            time = md_temp_alloc_array(temp, double, xvg.num_values);
+            for (size_t i = 0; i < xvg.num_values; ++i) time[i] = xvg.fields[0][i];
+        }
+        result = md_run_series_fits(sys, run, time, has_time ? xvg_label_unit(xvg.header_info.xaxis_label) : md_unit_none(), xvg.num_values) ? MD_LOAD_OK : MD_LOAD_MISMATCH;
+    }
     md_temp_end(temp);
     return result;
 }

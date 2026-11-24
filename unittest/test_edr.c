@@ -220,14 +220,14 @@ UTEST(edr, supplement_replaces_the_previous_file) {
     md_allocator_i* alloc = md_get_heap_allocator();
     md_system_t sys = {.alloc = alloc};
 
-    ASSERT_TRUE(md_edr_system_supplement_from_file(&sys, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/ener.edr"), &(md_load_desc_t){ .run = MD_STR_LIT("run/test") }));
+    ASSERT_EQ(MD_LOAD_OK, md_edr_system_load_from_file(&sys, NULL, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/ener.edr"), &(md_load_desc_t){ .run = MD_STR_LIT("run/test") }));
     EXPECT_TRUE(edr_attr(&sys, "run/test/edr/box") != NULL);
 
     const md_attribute_t* src = edr_attr(&sys, "run/test/edr/source");
     ASSERT_TRUE(src != NULL);
     EXPECT_TRUE(md_str_eq_cstr(md_attribute_str(&sys.attributes, src, 0), MD_UNITTEST_DATA_DIR "/ener.edr"));
 
-    ASSERT_TRUE(md_edr_system_supplement_from_file(&sys, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/dhdl.edr"), &(md_load_desc_t){ .run = MD_STR_LIT("run/test") }));
+    ASSERT_EQ(MD_LOAD_OK, md_edr_system_load_from_file(&sys, NULL, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/dhdl.edr"), &(md_load_desc_t){ .run = MD_STR_LIT("run/test") }));
     EXPECT_TRUE(edr_attr(&sys, "run/test/edr/box") == NULL);
     EXPECT_TRUE(edr_attr(&sys, "run/test/edr/dvcoul_dl") != NULL);
     EXPECT_EQ(101u, edr_attr(&sys, "run/test/edr/time")->format.shape[0]);
@@ -500,7 +500,7 @@ UTEST(edr, supplement_infers_group_roles) {
     md_system_group_add(&sys, MD_STR_LIT("Protein"), md_bitset_range(5, 30), MD_GROUP_ORIGIN_GIVEN);
     md_system_group_add(&sys, MD_STR_LIT("AIN"),     md_bitset_range(30, 40), MD_GROUP_ORIGIN_GIVEN);
     md_system_group_add(&sys, MD_STR_LIT("SOL"),     md_bitset_range(40, 80), MD_GROUP_ORIGIN_GIVEN);
-    ASSERT_TRUE(md_edr_system_supplement_from_file(&sys, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/inside-md-pullout.edr"), &(md_load_desc_t){ .run = MD_STR_LIT("run/md") }));
+    ASSERT_EQ(MD_LOAD_OK, md_edr_system_load_from_file(&sys, NULL, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/inside-md-pullout.edr"), &(md_load_desc_t){ .run = MD_STR_LIT("run/md") }));
     size_t r_n;
     const uint32_t* r = md_system_group_role_order(&sys.group, MD_GROUP_ROLE_ENERGY, &r_n);
     EXPECT_EQ(5u, r_n);

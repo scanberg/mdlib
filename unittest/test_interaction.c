@@ -53,7 +53,7 @@ enum { ACT1_O1 = 2, MAM2_N1 = 4, CLM5_CL = 13, FOR6_O = 14 };
 static bool interaction__load(md_system_t* sys, md_system_state_t* st, md_allocator_i* alloc) {
     *sys = (md_system_t){.alloc = alloc};
     *st = (md_system_state_t){.alloc = alloc};
-    if (!md_pdb_system_init_from_str(sys, st, (md_str_t){interaction__pdb, sizeof(interaction__pdb) - 1}, NULL)) return false;
+    if ((md_pdb_system_load_from_str(sys, st, (md_str_t){interaction__pdb, sizeof(interaction__pdb) - 1}, NULL) != MD_LOAD_OK)) return false;
     md_system_infer(sys, st, NULL);
     return true;
 }

@@ -1347,7 +1347,7 @@ UTEST_F(vial_check, groups) {
     md_allocator_i* alloc = utest_fixture->alloc;
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/nb_fswitch_rf.tpr"), NULL));
+    ASSERT_TRUE(md_tpr_system_load_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tpr/nb_fswitch_rf.tpr"), NULL) == MD_LOAD_OK);
     md_ndx_data_t ndx = {0};
     ASSERT_TRUE(md_ndx_data_parse_str(&ndx, MD_STR_LIT("[ SOL ]\n16 17 18 19\n[ Ends ]\n1 19\n[ Odd ]\n1 3 5\n[ Odd ]\n2 4\n[ Z_first ]\n16\n"), alloc));
     ASSERT_TRUE(md_ndx_system_supplement(&sys, &ndx));
@@ -1391,7 +1391,7 @@ UTEST_F(vial_check, part_names) {
     md_allocator_i* alloc = utest_fixture->alloc;
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"), NULL));
+    ASSERT_TRUE(md_gro_system_load_from_file(&sys, &state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/nucl-dna.gro"), NULL) == MD_LOAD_OK);
     md_system_infer(&sys, &state, NULL);
     ASSERT_TRUE(md_str_eq(md_system_part_type_description(&sys, 0), MD_STR_LIT("dna")));
     EXPECT_TRUE(md_str_eq(md_vial_part_name(&sys, 0), MD_STR_LIT("dna")));
@@ -1437,7 +1437,7 @@ UTEST_F(vial_check, contacts) {
             "END\n";
         md_system_t sys = {.alloc = utest_fixture->alloc};
         md_system_state_t st = {.alloc = utest_fixture->alloc};
-        ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, (md_str_t){pdb, sizeof(pdb) - 1}, NULL));
+        ASSERT_TRUE(md_pdb_system_load_from_str(&sys, &st, (md_str_t){pdb, sizeof(pdb) - 1}, NULL) == MD_LOAD_OK);
         md_system_infer(&sys, &st, NULL);
         // Nor has it bonds: by bond_separation nothing is left out, W0611
         EXPECT_DIAGS_ON(&sys, "c = contacts(residue)\n",

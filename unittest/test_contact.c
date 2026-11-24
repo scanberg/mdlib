@@ -65,13 +65,13 @@ UTEST_F_SETUP(contact) {
 
     utest_fixture->ala.alloc = utest_fixture->alloc;
     utest_fixture->ala_state = (md_system_state_t){ .alloc = utest_fixture->alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_file(&utest_fixture->ala, &utest_fixture->ala_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL));
+    ASSERT_TRUE(md_pdb_system_load_from_file(&utest_fixture->ala, &utest_fixture->ala_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL) == MD_LOAD_OK);
     md_system_infer(&utest_fixture->ala, &utest_fixture->ala_state, NULL);
 
     // A triclinic cell, the case which exposes mistakes in the periodic neighbour walk
     utest_fixture->npt.alloc = utest_fixture->alloc;
     utest_fixture->npt_state = (md_system_state_t){ .alloc = utest_fixture->alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&utest_fixture->npt, &utest_fixture->npt_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/npt.gro"), NULL));
+    ASSERT_TRUE(md_gro_system_load_from_file(&utest_fixture->npt, &utest_fixture->npt_state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/npt.gro"), NULL) == MD_LOAD_OK);
     md_system_infer(&utest_fixture->npt, &utest_fixture->npt_state, NULL);
 }
 
@@ -469,7 +469,7 @@ UTEST(contact, bond_separation_across_a_gap) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(64));
     md_system_t sys = {.alloc = alloc};
     md_system_state_t st = {.alloc = alloc};
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), NULL));
+    ASSERT_TRUE(md_pdb_system_load_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/tubulin-A-B.pdb"), NULL) == MD_LOAD_OK);
     md_system_infer(&sys, &st, NULL);
     const size_t nr = md_system_residue_count(&sys);
     md_bitset_t* res = md_alloc(alloc, sizeof(md_bitset_t) * nr);

@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include <core/md_str.h>
+#include <md_io.h>
 
 struct md_system_t;
 struct md_system_state_t;
@@ -39,10 +40,9 @@ md_amber_netcdf_kind_t md_amber_netcdf_file_kind(md_str_t filename);
 // The atom count of an Amber NetCDF trajectory or restart, 0 when it is neither.
 size_t md_amber_netcdf_file_atom_count(md_str_t filename);
 
-// Coordinates (Angstrom) and cell of a restart, or of the first frame of a trajectory, into state.
-// num_atoms is what the system expects: the file must hold that many atoms (0 accepts any count).
-// state->alloc must be set.
-bool md_amber_netcdf_state_init_from_file(struct md_system_state_t* state, md_str_t filename, size_t num_atoms);
+// Builds the system of a restart, or of the first frame of a trajectory (md_io.h, LOAD): its atoms known by their count
+// alone, their coordinates (Angstrom) and cell in state. It joins a topology of its atoms through md_system_merge.
+md_load_result_t md_amber_netcdf_system_load_from_file(struct md_system_t* sys, struct md_system_state_t* state, md_str_t filename, const struct md_load_desc_t* desc);
 
 // RUN
 // Publishes a trajectory as a run in the system's attribute table (see md_run_publish in md_system.h):

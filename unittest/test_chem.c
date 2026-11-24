@@ -235,7 +235,7 @@ UTEST(chem, ions) {
         "HETATM   16 CL    CL A   5      40.000   0.000   0.000  1.00  0.00          CL\n"
         "HETATM   17 MG    MG A   6      50.000   0.000   0.000  1.00  0.00          MG\n"
         "HETATM   18  O   HOH A   7      60.000   0.000   0.000  1.00  0.00           O\n";
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, md_str_from_cstr(pdb), NULL));
+    ASSERT_TRUE(md_pdb_system_load_from_str(&sys, &st, md_str_from_cstr(pdb), NULL) == MD_LOAD_OK);
     ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
 
     int q[8] = { 0 };
@@ -339,7 +339,7 @@ UTEST(chem, deposited_structure) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(2));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_mmcif_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif"), NULL));
+    ASSERT_TRUE(md_mmcif_system_load_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/8g7u.cif"), NULL) == MD_LOAD_OK);
     ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
     ASSERT_TRUE(sys.atom.formal_charge != NULL);
     ASSERT_TRUE(sys.atom.hydrogen_count != NULL);
@@ -387,7 +387,7 @@ UTEST(chem, simulation_with_hydrogens) {
     md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(4));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL));
+    ASSERT_TRUE(md_gro_system_load_from_file(&sys, &st, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL) == MD_LOAD_OK);
     ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
 
     int n_res = 0, unexpected = 0;
@@ -921,8 +921,8 @@ static void delta_load(delta_fixture_chem_t* f, const char* before, const char* 
     f->before_state = (md_system_state_t){ .alloc = f->alloc };
     f->after_state  = (md_system_state_t){ .alloc = f->alloc };
     f->frame        = (md_system_state_t){ .alloc = f->alloc };
-    if (!md_xyz_system_init_from_str(&f->before, &f->before_state, md_str_from_cstr(before), NULL)) return;
-    if (!md_xyz_system_init_from_str(&f->after, &f->after_state, md_str_from_cstr(after), NULL)) return;
+    if ((md_xyz_system_load_from_str(&f->before, &f->before_state, md_str_from_cstr(before), NULL) != MD_LOAD_OK)) return;
+    if ((md_xyz_system_load_from_str(&f->after, &f->after_state, md_str_from_cstr(after), NULL) != MD_LOAD_OK)) return;
     if (!md_system_infer(&f->before, &f->before_state, NULL)) return;
     if (!md_system_infer(&f->after, &f->after_state, NULL)) return;
     const size_t n = f->before.atom.count;

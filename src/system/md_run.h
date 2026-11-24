@@ -173,6 +173,11 @@ typedef struct md_run_series_desc_t {
 
 bool md_run_publish_series(md_system_t* sys, md_str_t run, const md_run_series_desc_t* desc);
 
+// Whether a series of num_rows rows is along the run, changing nothing: with times (time_unit none: the run's), every
+// frame of the run finds its time among them, non decreasing; without (time NULL), there are as many rows as frames.
+// What md_run_publish_series checks before it writes, and a reader's check of a series file (md_io.h).
+bool md_run_series_fits(const md_system_t* sys, md_str_t run, const double* time, md_unit_t time_unit, size_t num_rows);
+
 #ifdef __cplusplus
 }
 #endif

@@ -1,4 +1,5 @@
 ﻿#include "md_mmcif.h"
+#include "md_io_internal.h"
 
 #include <core/md_str.h>
 #include <core/md_file.h>
@@ -1822,7 +1823,7 @@ done:
     return result;
 }
 
-bool md_mmcif_system_init_from_str(md_system_t* sys, md_system_state_t* state, md_str_t str, const md_load_desc_t* desc) {
+static bool mmcif_system_build_from_str(md_system_t* sys, md_system_state_t* state, md_str_t str, const md_load_desc_t* desc) {
     const md_executor_t* ex = desc ? desc->executor : NULL;
     MD_ASSERT(sys);
     MD_ASSERT(state);
@@ -1851,7 +1852,7 @@ bool md_mmcif_system_init_from_str(md_system_t* sys, md_system_state_t* state, m
     return result;
 }
 
-bool md_mmcif_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
+static bool mmcif_system_build_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
     const md_executor_t* ex = desc ? desc->executor : NULL;
     MD_ASSERT(sys);
     MD_ASSERT(state);
@@ -1890,4 +1891,16 @@ bool md_mmcif_system_init_from_file(md_system_t* sys, md_system_state_t* state, 
     md_file_close(&file);
 
     return result;
+}
+
+// ### LOAD (md_io.h) ###
+
+md_load_result_t md_mmcif_system_load_from_file(struct md_system_t* sys, md_system_state_t* state, md_str_t filename, const struct md_load_desc_t* desc) {
+    if (!md_io_onto_no_atoms(sys, filename)) return MD_LOAD_FAILED;
+    return mmcif_system_build_from_file(sys, state, filename, desc) ? MD_LOAD_OK : MD_LOAD_FAILED;
+}
+
+md_load_result_t md_mmcif_system_load_from_str(struct md_system_t* sys, md_system_state_t* state, md_str_t str, const struct md_load_desc_t* desc) {
+    if (!md_io_onto_no_atoms(sys, MD_STR_LIT("text"))) return MD_LOAD_FAILED;
+    return mmcif_system_build_from_str(sys, state, str, desc) ? MD_LOAD_OK : MD_LOAD_FAILED;
 }

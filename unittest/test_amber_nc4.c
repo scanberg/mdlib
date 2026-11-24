@@ -203,11 +203,13 @@ UTEST(amber_netcdf4, trajectories_in_every_storage) {
         EXPECT_NEAR((float)nc4_vel(3, 20, 0), v[0], 1e-5f);
         EXPECT_NEAR((float)nc4_vel(3, 20, 2), v[2], 1e-5f);
 
-        // The first frame as a state
+        // The trajectory alone: a system of its atoms by their count, at its first frame
+        md_system_t points = { .alloc = arena };
         md_system_state_t first = { .alloc = arena };
-        ASSERT_TRUE(md_amber_netcdf_state_init_from_file(&first, path, NC4_ATOMS));
+        ASSERT_EQ(MD_LOAD_OK, md_amber_netcdf_system_load_from_file(&points, &first, path, NULL));
+        EXPECT_EQ((size_t)NC4_ATOMS, points.atom.count);
         EXPECT_EQ((float)nc4_coord(0, 36, 1), first.xyz[36].y);
-        EXPECT_FALSE(md_amber_netcdf_state_init_from_file(&first, path, NC4_ATOMS + 1));
+        md_system_free(&points);
 
         md_system_free(&sys);
         md_arena_allocator_destroy(arena);
@@ -222,8 +224,10 @@ UTEST(amber_netcdf4, restart_and_what_is_not_amber) {
     ASSERT_TRUE(nc4_write(path, &c, true));
     EXPECT_EQ(MD_AMBER_NETCDF_RESTART, md_amber_netcdf_file_kind(path));
     EXPECT_EQ((size_t)NC4_ATOMS, md_amber_netcdf_file_atom_count(path));
+    md_system_t rst = { .alloc = arena };
     md_system_state_t s = { .alloc = arena };
-    ASSERT_TRUE(md_amber_netcdf_state_init_from_file(&s, path, NC4_ATOMS));
+    ASSERT_EQ(MD_LOAD_OK, md_amber_netcdf_system_load_from_file(&rst, &s, path, NULL));
+    EXPECT_EQ((size_t)NC4_ATOMS, rst.atom.count);
     EXPECT_EQ((float)nc4_coord(0, 5, 2), s.xyz[5].z);
     EXPECT_NEAR(41.0f, s.unitcell.y, 1e-4f);
 

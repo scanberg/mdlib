@@ -101,8 +101,8 @@ UTEST_F(merge_test_t, same_atoms) {
     md_system_t top = { .alloc = alloc }, pdb = { .alloc = alloc }, xyz = { .alloc = alloc };
     md_system_state_t top_s = { .alloc = alloc }, pdb_s = { .alloc = alloc }, xyz_s = { .alloc = alloc };
     ASSERT_TRUE(water_topology(&top, &top_s));
-    ASSERT_TRUE(md_pdb_system_init_from_str(&pdb, &pdb_s, md_str_from_cstr(water_pdb), NULL));
-    ASSERT_TRUE(md_xyz_system_init_from_str(&xyz, &xyz_s, md_str_from_cstr(water_xyz), NULL));
+    ASSERT_TRUE(md_pdb_system_load_from_str(&pdb, &pdb_s, md_str_from_cstr(water_pdb), NULL) == MD_LOAD_OK);
+    ASSERT_TRUE(md_xyz_system_load_from_str(&xyz, &xyz_s, md_str_from_cstr(water_xyz), NULL) == MD_LOAD_OK);
 
     EXPECT_TRUE(md_system_match(NULL, &top, &top_s, &pdb, &pdb_s));
     EXPECT_TRUE(md_system_match(NULL, &pdb, &pdb_s, &top, &top_s));
@@ -112,13 +112,13 @@ UTEST_F(merge_test_t, same_atoms) {
     md_system_t swapped = { .alloc = alloc };
     md_system_state_t swapped_s = { .alloc = alloc };
     const char* text = "6\n\nH 1 1 1\nO 2 1 1\nH 1 2 1\nO 5 5 5\nH 6 5 5\nH 5 6 5\n";
-    ASSERT_TRUE(md_xyz_system_init_from_str(&swapped, &swapped_s, md_str_from_cstr(text), NULL));
+    ASSERT_TRUE(md_xyz_system_load_from_str(&swapped, &swapped_s, md_str_from_cstr(text), NULL) == MD_LOAD_OK);
     EXPECT_FALSE(md_system_match(NULL, &top, &top_s, &swapped, &swapped_s));
 
     // Fewer atoms
     md_system_t three = { .alloc = alloc };
     md_system_state_t three_s = { .alloc = alloc };
-    ASSERT_TRUE(md_xyz_system_init_from_str(&three, &three_s, MD_STR_LIT("3\n\nO 1 1 1\nH 2 1 1\nH 1 2 1\n"), NULL));
+    ASSERT_TRUE(md_xyz_system_load_from_str(&three, &three_s, MD_STR_LIT("3\n\nO 1 1 1\nH 2 1 1\nH 1 2 1\n"), NULL) == MD_LOAD_OK);
     EXPECT_FALSE(md_system_match(NULL, &top, &top_s, &three, &three_s));
 
     // Not joined: nothing changed
@@ -184,7 +184,7 @@ UTEST_F(merge_test_t, bonds) {
     md_allocator_i* alloc = utest_fixture->arena;
     md_system_t top = { .alloc = alloc }, pdb = { .alloc = alloc };
     md_system_state_t top_s = { .alloc = alloc }, pdb_s = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_str(&pdb, &pdb_s, md_str_from_cstr(water_pdb), NULL));
+    ASSERT_TRUE(md_pdb_system_load_from_str(&pdb, &pdb_s, md_str_from_cstr(water_pdb), NULL) == MD_LOAD_OK);
     ASSERT_EQ(1u, md_bond_list_count(&pdb.given_bond));
     ASSERT_TRUE(water_topology(&top, &top_s));
 
@@ -196,7 +196,7 @@ UTEST_F(merge_test_t, bonds) {
     md_system_t top2 = { .alloc = alloc }, pdb2 = { .alloc = alloc };
     md_system_state_t top2_s = { .alloc = alloc }, pdb2_s = { .alloc = alloc };
     ASSERT_TRUE(water_topology(&top2, &top2_s));
-    ASSERT_TRUE(md_pdb_system_init_from_str(&pdb2, &pdb2_s, md_str_from_cstr(water_pdb), NULL));
+    ASSERT_TRUE(md_pdb_system_load_from_str(&pdb2, &pdb2_s, md_str_from_cstr(water_pdb), NULL) == MD_LOAD_OK);
     uint32_t override = ~0u;
     EXPECT_TRUE(md_system_match(&override, &top2, &top2_s, &pdb2, &pdb2_s));
     EXPECT_EQ(0u, override);
@@ -221,8 +221,8 @@ UTEST_F(merge_test_t, coordinates_and_labels) {
     md_allocator_i* alloc = utest_fixture->arena;
     md_system_t xyz = { .alloc = alloc }, pdb = { .alloc = alloc }, top = { .alloc = alloc };
     md_system_state_t xyz_s = { .alloc = alloc }, pdb_s = { .alloc = alloc }, top_s = { .alloc = alloc };
-    ASSERT_TRUE(md_xyz_system_init_from_str(&xyz, &xyz_s, md_str_from_cstr(water_xyz), NULL));
-    ASSERT_TRUE(md_pdb_system_init_from_str(&pdb, &pdb_s, md_str_from_cstr(water_pdb), NULL));
+    ASSERT_TRUE(md_xyz_system_load_from_str(&xyz, &xyz_s, md_str_from_cstr(water_xyz), NULL) == MD_LOAD_OK);
+    ASSERT_TRUE(md_pdb_system_load_from_str(&pdb, &pdb_s, md_str_from_cstr(water_pdb), NULL) == MD_LOAD_OK);
     ASSERT_TRUE(water_topology(&top, &top_s));
 
     // The XYZ file knows its atoms by their elements: the topology names them, and gives its chains

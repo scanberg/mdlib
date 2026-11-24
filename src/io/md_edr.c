@@ -1,4 +1,6 @@
 #include <md_edr.h>
+#include "md_io_internal.h"
+#include <md_run.h>
 #include <md_io.h>
 
 #include <core/md_allocator.h>
@@ -1104,18 +1106,30 @@ done:
 	return result;
 }
 
-bool md_edr_system_supplement_from_file(md_system_t* sys, md_str_t filename, const md_load_desc_t* desc) {
+md_load_result_t md_edr_system_load_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
+    (void)state;
     const md_str_t run = desc ? desc->run : (md_str_t){0};
 	MD_ASSERT(sys);
+	if (md_str_empty(run)) {
+		MD_LOG_ERROR("EDR: no run to publish the energies of '" MD_STR_FMT "' under", MD_STR_ARG(filename));
+		return MD_LOAD_FAILED;
+	}
 
 	md_edr_energies_t energies = {0};
 	if (!md_edr_energies_parse_file(&energies, filename, md_get_heap_allocator())) {
-		return false;
+		return MD_LOAD_FAILED;
 	}
-	bool result = md_edr_system_supplement(sys, &energies, run);
+	// Along the run where the system has it; without it the energies form it
+	md_load_result_t result = MD_LOAD_FAILED;
+	if (md_io_has_run(sys, run) && !md_run_series_fits(sys, run, energies.frame_time, md_unit_picosecond(), energies.num_frames)) {
+		md_io_log_not_along("EDR", filename, run);
+		result = MD_LOAD_MISMATCH;
+	} else if (md_edr_system_supplement(sys, &energies, run)) {
+		result = MD_LOAD_OK;
+	}
 	md_edr_energies_free(&energies);
 
-	if (result) {
+	if (result == MD_LOAD_OK) {
 		char group_buf[512];
 		char path_buf[512];
 		const md_str_t group = edr_join(group_buf, sizeof(group_buf), run, "edr", 3);
@@ -1130,6 +1144,17 @@ bool md_edr_system_supplement_from_file(md_system_t* sys, md_str_t filename, con
 		md_attributes_create(&sys->attributes, &desc);
 	}
 	return result;
+}
+
+md_load_result_t md_edr_system_check_file(const md_system_t* sys, md_str_t filename, const md_load_desc_t* desc) {
+	MD_ASSERT(sys);
+	const md_str_t run = desc ? desc->run : (md_str_t){0};
+	if (!md_io_has_run(sys, run)) return MD_LOAD_MISMATCH;
+	md_edr_energies_t energies = {0};
+	if (!md_edr_energies_parse_file(&energies, filename, md_get_heap_allocator())) return MD_LOAD_FAILED;
+	const bool fits = md_run_series_fits(sys, run, energies.frame_time, md_unit_picosecond(), energies.num_frames);
+	md_edr_energies_free(&energies);
+	return fits ? MD_LOAD_OK : MD_LOAD_MISMATCH;
 }
 
 // ### THE GROUPS OF A TERM ###

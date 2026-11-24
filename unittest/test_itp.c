@@ -203,12 +203,13 @@ UTEST(itp, supplement_coarse_grained_cellulose) {
     md_str_t gro = make_msc_gro(alloc, MOLS, SLICES, origin, box, 2);
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, gro, NULL));
+    ASSERT_TRUE(md_gro_system_load_from_str(&sys, &state, gro, NULL) == MD_LOAD_OK);
     md_system_infer(&sys, &state, NULL);
 
     md_itp_data_t data = {0};
     ASSERT_TRUE(md_itp_data_parse_str(&data, make_msc_itp(alloc, "MSC", SLICES), MD_STR_LIT(""), alloc));
     ASSERT_TRUE(md_itp_system_supplement(&sys, &data));
+    ASSERT_TRUE(md_system_infer(&sys, &state, NULL));   // the caller infers (md_io.h)
 
     const size_t bonds_per_mol = SLICES * 7 - 1;
     EXPECT_EQ(count_origin(&sys, MD_BOND_ORIGIN_TOPOLOGY), MOLS * bonds_per_mol);
@@ -265,7 +266,7 @@ UTEST(itp, residue_boundaries_disambiguate_polymers) {
     md_str_t gro = make_msc_gro(alloc, 2, 5, origin, box, 0);
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, gro, NULL));
+    ASSERT_TRUE(md_gro_system_load_from_str(&sys, &state, gro, NULL) == MD_LOAD_OK);
 
     md_itp_data_t data = {0};
     ASSERT_TRUE(md_itp_data_parse_str(&data, make_msc_itp(alloc, "MSC10", 10), MD_STR_LIT(""), alloc));
@@ -280,6 +281,7 @@ UTEST(itp, residue_boundaries_disambiguate_polymers) {
     EXPECT_EQ(inst[1].atom_offset, 35u);
 
     ASSERT_TRUE(md_itp_system_supplement(&sys, &data));
+    ASSERT_TRUE(md_system_infer(&sys, &state, NULL));   // the caller infers (md_io.h)
     EXPECT_EQ(md_system_molecule_count(&sys), 2u);
     // Two molecules of the one molecule type matched, the only molecule type of the system
     ASSERT_EQ(md_system_molecule_type_count(&sys), 1u);
@@ -299,7 +301,7 @@ UTEST(itp, molecules_section_sequential_and_fallback) {
     md_str_t gro = make_msc_gro(alloc, 2, 3, origin, box, 1);
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, gro, NULL));
+    ASSERT_TRUE(md_gro_system_load_from_str(&sys, &state, gro, NULL) == MD_LOAD_OK);
 
     md_str_t water = MD_STR_INIT("[ moleculetype ]\nW 1\n[ atoms ]\n1 W 1 W W 1 0.0 72.0\n");
     {
@@ -344,7 +346,7 @@ UTEST(itp, supplement_replaces_only_covered_bonds) {
     md_str_t gro = make_msc_gro(alloc, 1, 2, origin, box, 2);  // 14 beads, then W at 14 and 15
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, gro, NULL));
+    ASSERT_TRUE(md_gro_system_load_from_str(&sys, &state, gro, NULL) == MD_LOAD_OK);
 
     md_bond_list_push(&sys.given_bond, 1, 2, MD_BOND_FLAG_NONE, sys.alloc);      // from the file, inside: replaced
     md_bond_list_push(&sys.given_bond, 14, 15, MD_BOND_FLAG_NONE, sys.alloc);    // from the file, outside: kept
@@ -353,6 +355,7 @@ UTEST(itp, supplement_replaces_only_covered_bonds) {
     md_itp_data_t data = {0};
     ASSERT_TRUE(md_itp_data_parse_str(&data, make_msc_itp(alloc, "MSC", 2), MD_STR_LIT(""), alloc));
     ASSERT_TRUE(md_itp_system_supplement(&sys, &data));
+    ASSERT_TRUE(md_system_infer(&sys, &state, NULL));   // the caller infers (md_io.h)
 
     EXPECT_EQ(sys.bond.count, 1u + 13u + 1u);
     EXPECT_EQ(sys.bond.pairs[0].idx[0], 14);
@@ -394,7 +397,7 @@ UTEST(itp, elastic_bonds) {
 
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, md_str_writer_to_str(&gro), NULL));
+    ASSERT_TRUE(md_gro_system_load_from_str(&sys, &state, md_str_writer_to_str(&gro), NULL) == MD_LOAD_OK);
     md_system_infer(&sys, &state, NULL);
 
     md_itp_data_t data = {0};
@@ -410,6 +413,7 @@ UTEST(itp, elastic_bonds) {
     EXPECT_EQ(8, mol->elastic_bonds[1].idx[1]);
 
     ASSERT_TRUE(md_itp_system_supplement(&sys, &data));
+    ASSERT_TRUE(md_system_infer(&sys, &state, NULL));   // the caller infers (md_io.h)
     EXPECT_EQ(15u, sys.bond.count);
     size_t elastic = 0;
     for (size_t i = 0; i < sys.bond.count; ++i) {
@@ -456,11 +460,12 @@ UTEST(itp, supplement_beads_by_mass) {
 
         md_system_t sys = { .alloc = alloc };
         md_system_state_t st = { .alloc = alloc };
-        ASSERT_TRUE(md_gro_system_init_from_str(&sys, &st, (md_str_t){gro, (size_t)len}, NULL));
+        ASSERT_TRUE(md_gro_system_load_from_str(&sys, &st, (md_str_t){gro, (size_t)len}, NULL) == MD_LOAD_OK);
         md_system_infer(&sys, &st, NULL);
         md_itp_data_t data = {0};
         ASSERT_TRUE(md_itp_data_parse_str(&data, (md_str_t){itp, (size_t)il}, MD_STR_LIT(""), alloc));
         ASSERT_TRUE(md_itp_system_supplement(&sys, &data));
+        ASSERT_TRUE(md_system_infer(&sys, &st, NULL));   // the caller infers (md_io.h)
         for (size_t i = 0; i < 4; ++i) {
             EXPECT_EQ(cases[c].kind, md_atom_particle_kind(&sys.atom, i));
         }
@@ -486,7 +491,7 @@ UTEST(itp, supplement_again_replaces_charge_and_mass) {
         "   3.00000   3.00000   3.00000\n");
     md_system_t sys = { .alloc = alloc };
     md_system_state_t state = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &state, gro, NULL));
+    ASSERT_TRUE(md_gro_system_load_from_str(&sys, &state, gro, NULL) == MD_LOAD_OK);
     md_system_infer(&sys, &state, NULL);
 
     const char* itp_fmt =
@@ -503,6 +508,7 @@ UTEST(itp, supplement_again_replaces_charge_and_mass) {
         md_itp_data_t data = {0};
         ASSERT_TRUE(md_itp_data_parse_str(&data, md_str_from_cstr(itp), MD_STR_LIT(""), alloc));
         ASSERT_TRUE(md_itp_system_supplement(&sys, &data));
+        ASSERT_TRUE(md_system_infer(&sys, &state, NULL));   // the caller infers (md_io.h)
         const md_attribute_t* charge = md_attributes_find(&sys.attributes, MD_STR_LIT("atom/charge"));
         ASSERT_TRUE(charge != NULL);
         float q[3];
@@ -537,5 +543,107 @@ UTEST(itp, macros_for_charge_and_mass) {
     EXPECT_NEAR(12.011f, mol->atoms[1].mass, 1e-5f);
     EXPECT_FALSE(mol->atoms[2].has_charge);   // QN is no longer defined
     EXPECT_TRUE(mol->atoms[2].has_mass);
+    md_vm_arena_destroy(alloc);
+}
+
+static bool itp_write_text(md_str_t path, md_str_t text) {
+    FILE* f = fopen(path.ptr, "wb");
+    if (!f) return false;
+    const bool ok = fwrite(text.ptr, 1, text.len, f) == text.len;
+    fclose(f);
+    return ok;
+}
+
+// A topology alone is a system of its own, without coordinates: the molecules of [ molecules ], or one of each
+// moleculetype of a plain .itp. A structure of the same atoms joins it as a system (md_system_match, md_system_merge);
+// onto the structure's atoms the topology applies as it always did, which its check tells beforehand.
+UTEST(itp, a_system_of_its_own) {
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
+    const md_str_t water = MD_STR_LIT("[ moleculetype ]\nW 1\n[ atoms ]\n1 W 1 W W 1 0.0 72.0\n");
+    const md_str_t top_path = MD_STR_LIT("md_unittest_itp_alone.top");
+    const md_str_t itp_path = MD_STR_LIT("md_unittest_itp_alone.itp");
+    const md_str_t bad_path = MD_STR_LIT("md_unittest_itp_undefined.top");
+    {
+        md_str_writer_t w = md_str_writer_create(alloc);
+        md_str_writer_push_str(&w, make_msc_itp(alloc, "MSC", 3));
+        md_str_writer_push_str(&w, water);
+        const md_str_t itp = md_str_writer_to_str(&w);
+        ASSERT_TRUE(itp_write_text(itp_path, itp));
+        md_str_writer_push_cstr(&w, "[ system ]\nCellulose in water\n[ molecules ]\nMSC 2\nW 1\n");
+        ASSERT_TRUE(itp_write_text(top_path, md_str_writer_to_str(&w)));
+        md_str_writer_push_cstr(&w, "SOL 3\n");
+        ASSERT_TRUE(itp_write_text(bad_path, md_str_writer_to_str(&w)));
+    }
+
+    md_system_t top = { .alloc = alloc };
+    md_system_state_t top_state = { .alloc = alloc };
+    ASSERT_EQ(MD_LOAD_OK, md_itp_system_load_from_file(&top, &top_state, top_path, NULL));
+    EXPECT_EQ(43u, top.atom.count);
+    EXPECT_FALSE(md_system_state_has_coords(&top_state));
+    EXPECT_TRUE(md_str_eq(MD_STR_LIT("Cellulose in water"), top.description));
+    EXPECT_EQ(3u, top.residue.count);
+    ASSERT_EQ(3u, top.instance.count);
+    // The topology's molecule types, given (md_instance_data_t::mol_type); the molecules are the caller's to infer
+    ASSERT_EQ(2u, top.instance.mol_type.count);
+    EXPECT_TRUE(md_str_eq(MD_STR_LIT("MSC"), top.instance.mol_type.name[0]));
+    EXPECT_TRUE(md_str_eq(MD_STR_LIT("W"), top.instance.mol_type.name[1]));
+    EXPECT_EQ(2u * (3u * 7u - 1u), md_bond_list_count(&top.given_bond));
+    for (size_t i = 0; i < top.atom.count; ++i) {
+        // Beads by their masses, and no names of elements
+        EXPECT_EQ(MD_PARTICLE_BEAD, md_atom_particle_kind(&top.atom, i));
+        EXPECT_EQ(0, (int)md_atom_atomic_number(&top.atom, i));
+        EXPECT_TRUE(top.atom.bonds_complete[i]);
+    }
+    EXPECT_NEAR(3981.330f, md_atom_mass(&top.atom, 0), 1e-2f);
+    // Onto atoms it is data of them: onto its own system it applies again
+    EXPECT_EQ(MD_LOAD_OK, md_itp_system_load_from_file(&top, &top_state, top_path, NULL));
+    EXPECT_EQ(43u, top.atom.count);
+
+    // A plain .itp: one molecule of each type
+    md_system_t itp = { .alloc = alloc };
+    md_system_state_t itp_state = { .alloc = alloc };
+    ASSERT_EQ(MD_LOAD_OK, md_itp_system_load_from_file(&itp, &itp_state, itp_path, NULL));
+    EXPECT_EQ(22u, itp.atom.count);
+    EXPECT_EQ(2u, itp.instance.count);
+
+    // [ molecules ] of a molecule it does not define (an #include not found): not a system
+    md_system_t bad = { .alloc = alloc };
+    md_system_state_t bad_state = { .alloc = alloc };
+    EXPECT_EQ(MD_LOAD_FAILED, md_itp_system_load_from_file(&bad, &bad_state, bad_path, NULL));
+
+    // The structure of the same atoms joins the topology
+    float box[3] = {100.0f, 100.0f, 100.0f};
+    const float origin[2][3] = {{10, 10, 10}, {10, 60, 10}};
+    md_system_t gro = { .alloc = alloc };
+    md_system_state_t gro_state = { .alloc = alloc };
+    ASSERT_EQ(MD_LOAD_OK, md_gro_system_load_from_str(&gro, &gro_state, make_msc_gro(alloc, 2, 3, origin, box, 1), NULL));
+    uint32_t override = 0;
+    EXPECT_TRUE(md_system_match(&override, &top, &top_state, &gro, &gro_state));
+    EXPECT_EQ((uint32_t)0, override & MD_SYSTEM_KIND_COORDINATES);
+    EXPECT_FALSE(md_system_match(&override, &itp, &itp_state, &gro, &gro_state));
+
+    // And the topology applies onto the structure's atoms, which its check says first, changing nothing
+    const uint64_t version = gro.topology_version;
+    EXPECT_EQ(MD_LOAD_OK, md_itp_system_check_file(&gro, top_path, NULL));
+    EXPECT_EQ(MD_LOAD_OK, md_itp_system_check_file(&gro, itp_path, NULL));
+    EXPECT_EQ(version, gro.topology_version);
+    md_system_t none = { .alloc = alloc };
+    EXPECT_EQ(MD_LOAD_MISMATCH, md_itp_system_check_file(&none, top_path, NULL));
+    EXPECT_EQ(MD_LOAD_OK, md_itp_system_load_from_file(&gro, &gro_state, top_path, NULL));
+    EXPECT_NE(version, gro.topology_version);
+
+    // A topology of other molecules: a mismatch, and nothing changes; a file not there: a failure
+    const md_str_t foo_path = MD_STR_LIT("md_unittest_itp_foo.itp");
+    ASSERT_TRUE(itp_write_text(foo_path, MD_STR_LIT("[ moleculetype ]\nFOO 1\n[ atoms ]\n1 X 1 FOO X 1\n")));
+    const uint64_t applied = gro.topology_version;
+    EXPECT_EQ(MD_LOAD_MISMATCH, md_itp_system_check_file(&gro, foo_path, NULL));
+    EXPECT_EQ(MD_LOAD_MISMATCH, md_itp_system_load_from_file(&gro, &gro_state, foo_path, NULL));
+    EXPECT_EQ(applied, gro.topology_version);
+    EXPECT_EQ(MD_LOAD_FAILED, md_itp_system_check_file(&gro, MD_STR_LIT("md_unittest_itp_not_there.itp"), NULL));
+    remove(foo_path.ptr);
+
+    remove(top_path.ptr);
+    remove(itp_path.ptr);
+    remove(bad_path.ptr);
     md_vm_arena_destroy(alloc);
 }

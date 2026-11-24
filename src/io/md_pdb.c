@@ -1,4 +1,5 @@
 #include <md_pdb.h>
+#include "md_io_internal.h"
 #include <md_io.h>
 #include <math.h>
 
@@ -1563,12 +1564,12 @@ done:
 
 #undef PDB_ROOM
 
-bool md_pdb_system_init_from_str(md_system_t* sys, md_system_state_t* state, md_str_t str, const md_load_desc_t* desc) {
+static bool pdb_system_build_from_str(md_system_t* sys, md_system_state_t* state, md_str_t str, const md_load_desc_t* desc) {
     md_reader_i src = md_reader_from_str(str);
     return pdb_load(sys, state, &src, desc);
 }
 
-bool md_pdb_system_init_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
+static bool pdb_system_build_from_file(md_system_t* sys, md_system_state_t* state, md_str_t filename, const md_load_desc_t* desc) {
     // The reader's buffer in a temp scope, below the one of the load (pdb_load): a few passes of it
     md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
     md_file_reader_t fr;
@@ -1927,3 +1928,15 @@ bool md_pdb_system_write_state_to_file(md_file_t file, const struct md_system_t*
 #ifdef __cplusplus
 }
 #endif
+
+// ### LOAD (md_io.h) ###
+
+md_load_result_t md_pdb_system_load_from_file(struct md_system_t* sys, md_system_state_t* state, md_str_t filename, const struct md_load_desc_t* desc) {
+    if (!md_io_onto_no_atoms(sys, filename)) return MD_LOAD_FAILED;
+    return pdb_system_build_from_file(sys, state, filename, desc) ? MD_LOAD_OK : MD_LOAD_FAILED;
+}
+
+md_load_result_t md_pdb_system_load_from_str(struct md_system_t* sys, md_system_state_t* state, md_str_t str, const struct md_load_desc_t* desc) {
+    if (!md_io_onto_no_atoms(sys, MD_STR_LIT("text"))) return MD_LOAD_FAILED;
+    return pdb_system_build_from_str(sys, state, str, desc) ? MD_LOAD_OK : MD_LOAD_FAILED;
+}

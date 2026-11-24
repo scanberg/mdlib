@@ -31,7 +31,7 @@ typedef struct md_topology_desc_t {
     const md_str_t*   atom_type;    // force field types, NULL for none
     const double*  charge;          // e, NULL for none
     const double*  mass;            // Da, NULL for none
-    const int64_t* atomic_number;   // NULL for none: inferred from names and masses. <= 0: unknown
+    const int64_t* atomic_number;   // > 0 the element, 0 none, < 0 inferred from name and mass. NULL: all inferred
 
     size_t num_residues;
     const md_str_t*    res_name;    // required

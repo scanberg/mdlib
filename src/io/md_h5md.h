@@ -1,6 +1,7 @@
 #pragma once
 
 #include <core/md_str.h>
+#include <md_io.h>
 
 struct md_system_t;
 struct md_load_desc_t;
@@ -101,7 +102,7 @@ extern "C" {
 
 // Read the system: its atoms, its bonds, the first frame's coordinates and cell, and what is
 // published above, replacing what the system held.
-bool md_h5md_system_init_from_file(struct md_system_t* sys, struct md_system_state_t* state, md_str_t filename, const struct md_load_desc_t* desc);
+md_load_result_t md_h5md_system_load_from_file(struct md_system_t* sys, struct md_system_state_t* state, md_str_t filename, const struct md_load_desc_t* desc);
 
 // Publish the trajectory as the run 'run'. The particle group read must hold as many particles as
 // the system has atoms. flags are md_run_flag_t; none applies, as HDF5 keeps its own index and

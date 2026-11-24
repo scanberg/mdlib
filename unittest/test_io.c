@@ -21,13 +21,11 @@ UTEST(io, format_table) {
         EXPECT_FALSE(md_str_empty(f->ext));
         EXPECT_EQ(format, md_io_format_from_ext(f->ext));
         if (!md_io_format_available(format)) continue;
-        if (f->flags & MD_IO_FLAG_SYSTEM)       EXPECT_TRUE(f->load != NULL || f->system_init != NULL);
-        if (f->flags & MD_IO_FLAG_SUPPLEMENT)   EXPECT_TRUE(f->load != NULL || f->supplement != NULL);
-        // A format which loads has none of the readers the load replaces
-        if (f->load) EXPECT_TRUE(f->system_init == NULL && f->supplement == NULL);
-        if (f->flags & MD_IO_FLAG_COORDINATES)  EXPECT_TRUE(f->state_init != NULL);
+        // Every format loads; data of a system's atoms is checked as well, and only it is
+        EXPECT_TRUE(f->load != NULL);
+        EXPECT_EQ((f->flags & MD_IO_FLAG_SUPPLEMENT) != 0, f->check != NULL);
         if (f->flags & MD_IO_FLAG_TEMPORAL)     EXPECT_TRUE((f->flags & MD_IO_FLAG_SUPPLEMENT) != 0);
-        if (f->flags & MD_IO_FLAG_NEEDS_COORDINATES) EXPECT_TRUE(f->atom_count != NULL);
+        if (f->publish_run)                     EXPECT_TRUE((f->flags & MD_IO_FLAG_RUN) != 0);
     }
 #if MD_HDF5
     EXPECT_TRUE(md_io_format_available(MD_IO_FORMAT_H5MD));
@@ -113,4 +111,32 @@ UTEST(io, format_from_contents) {
     EXPECT_EQ(2u, md_bond_list_count(&sys.given_bond));
     md_arena_allocator_destroy(arena);
     remove(psf.ptr);
+}
+
+// A trajectory alone, through the table: a system of its atoms by their count, at the first frame, which the run of
+// the same file then joins
+UTEST(io, trajectory_alone) {
+    static const md_io_format_t formats[] = { MD_IO_FORMAT_XTC, MD_IO_FORMAT_TRR, MD_IO_FORMAT_LAMMPS_TRJ };
+    static const char* files[] = {
+        MD_UNITTEST_DATA_DIR "/catalyst.xtc",
+        MD_UNITTEST_DATA_DIR "/tryptophan-md.trr",
+        MD_UNITTEST_DATA_DIR "/cubic_standardASCII.lammpstrj",
+    };
+    for (size_t i = 0; i < MD_COUNTOF(formats); ++i) {
+        const md_io_format_info_t* f = md_io_format_info(formats[i]);
+        const md_str_t path = md_str_from_cstr(files[i]);
+        md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
+        md_system_t sys = { .alloc = arena };
+        md_system_state_t state = { .alloc = arena };
+        ASSERT_EQ(MD_LOAD_OK, f->load(&sys, &state, path, NULL));
+        EXPECT_TRUE(sys.atom.count > 0);
+        EXPECT_EQ(sys.atom.count, state.num_atoms);
+        EXPECT_TRUE(md_system_state_has_coords(&state));
+        if (f->atom_count) EXPECT_EQ(f->atom_count(path), sys.atom.count);
+        EXPECT_TRUE(f->publish_run(&sys, path, MD_STR_LIT("run/a"), 0));
+        // A system of its own: not onto atoms
+        EXPECT_EQ(MD_LOAD_FAILED, f->load(&sys, &state, path, NULL));
+        md_system_free(&sys);
+        md_arena_allocator_destroy(arena);
+    }
 }

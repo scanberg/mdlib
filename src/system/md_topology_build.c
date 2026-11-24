@@ -49,18 +49,16 @@ static bool topology_is_virtual(const md_topology_desc_t* d, size_t i, md_atomic
     return z == 0 && (!d->mass || d->mass[i] == 0.0);
 }
 
-// The elements of the atoms: those the topology gives, else inferred from names and masses. Returns how many were
-// inferred.
+// The elements of the atoms: those the topology gives (0 for none), else inferred from names and masses. Returns how
+// many were inferred.
 static size_t topology_elements(md_atomic_number_t* z, const md_topology_desc_t* d) {
     size_t num_inferred = 0;
     for (size_t r = 0; r < d->num_residues; ++r) {
         const size_t beg = d->res_offset[r], end = d->res_offset[r + 1];
         for (size_t i = beg; i < end; ++i) {
             const int64_t given = d->atomic_number ? d->atomic_number[i] : -1;
-            if (given > 0 && given <= 118) {
-                z[i] = (md_atomic_number_t)given;
-            } else if (given == 0 && d->mass && d->mass[i] == 0.0) {
-                z[i] = 0;   // an extra point
+            if (given >= 0 && given <= 118) {
+                z[i] = (md_atomic_number_t)given;   // 0: none, an extra point when massless
             } else {
                 z[i] = topology_infer_element(d->atom_name[i], d->res_name[r], end - beg, d->mass ? d->mass[i] : 0.0);
                 num_inferred += z[i] != 0;
