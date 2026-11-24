@@ -125,25 +125,27 @@ static bool ring_has_atom(const md_ring_data_t* rd, uint32_t ring, int32_t atom)
 
 /* ---- Bond orders ------------------------------------------------------------------ */
 
-/* The graph the bond orders are made of: the system's bonds (the plan), or
-   a frame's around the region where its chemistry is its own (the frame's
-   bonds). Its atoms by a local index, sorted by their index in the system
-   (atom: NULL, the system's own); each one's neighbours through the bonds
-   of the graph with the bond's flags and an edge index (what the candidate
-   bonds name: covered by a circle). */
+/* The graph the bond orders are made of: the system's bonds (the plan: its
+   connectivity as it is), or a frame's around the region where its
+   chemistry is its own (the frame's bonds). Its atoms by a local index,
+   sorted by their index in the system (atom: NULL, the system's own); each
+   one's neighbours through the bonds of the graph, with the bond's edge
+   index (its flags; what the candidate bonds name: covered by a circle). */
 typedef struct ograph_t {
     uint32_t           n;
     const uint32_t*    atom;        /* [n]: index in the system, ascending; NULL: its own */
     const uint32_t*    off;         /* [n + 1]                                          */
-    const uint32_t*    nbr;         /* local index                                     */
-    const uint32_t*    nbr_flags;   /* md_bond_flags_t                                  */
-    const uint32_t*    nbr_edge;    /* the bond's edge index                            */
+    const int32_t*     nbr;         /* local index                                     */
+    const int32_t*     nbr_edge;    /* the bond's edge index                            */
+    const md_bond_flags_t* edge_flags;  /* per edge; NULL: none (0)                     */
     uint32_t           edge_count;
     const uint8_t*     hyb;         /* md_hybridization_t per local atom; NULL: the system's */
     const uint8_t*     ok;          /* per local atom: may be drawn (resident)          */
     const md_system_t* sys;         /* the atomic numbers                               */
     const float*       xyz;         /* by index in the system: the off-axis tests; NULL: none */
 } ograph_t;
+
+static uint32_t og_flags(const ograph_t* g, uint32_t k) { return g->edge_flags ? (uint32_t)g->edge_flags[g->nbr_edge[k]] : 0u; }
 
 /* A candidate for the bond orders: a bond of the graph (local atoms) */
 typedef struct ocand_t {
@@ -199,7 +201,7 @@ static void plane_refs(const ograph_t* g, uint32_t e, uint32_t o, uint32_t out[2
     uint32_t n = 0;
     for (int rank = 0; rank < 3 && n < 2; ++rank) {     /* 0 through a multiple bond (not sp2), 1 heavy, 2 hydrogen */
         for (uint32_t k = g->off[e]; k < g->off[e + 1] && n < 2; ++k) {
-            const uint32_t c = g->nbr[k], f = g->nbr_flags[k];
+            const uint32_t c = (uint32_t)g->nbr[k], f = og_flags(g, k);
             if (c == o || !g->ok[c] || md_bond_kind((md_bond_flags_t)f) == MD_BOND_KIND_COORDINATE || !off_axis(g, e, o, c)) continue;
             const int r = (hyb != MD_HYBRIDIZATION_SP2 && bond_is_multiple(f)) ? 0 : md_atom_atomic_number(&g->sys->atom, og_atom(g, c)) == MD_Z_H ? 2 : 1;
             if (r == rank) out[n++] = c;
@@ -220,7 +222,7 @@ static uint32_t plane_ref(const ograph_t* g, uint32_t e, uint32_t o) {
    ring, when that is too large for a circle), failing those in its plane */
 static uint32_t aromatic_ref(const ograph_t* g, uint32_t e, uint32_t o) {
     for (uint32_t k = g->off[e]; k < g->off[e + 1]; ++k) {
-        const uint32_t c = g->nbr[k], f = g->nbr_flags[k];
+        const uint32_t c = (uint32_t)g->nbr[k], f = og_flags(g, k);
         if (c != o && g->ok[c] && (f & MD_BOND_FLAG_AROMATIC) && md_bond_kind((md_bond_flags_t)f) != MD_BOND_KIND_COORDINATE && off_axis(g, e, o, c)) return c;
     }
     return plane_ref(g, e, o);
@@ -234,8 +236,8 @@ static uint32_t aromatic_ref(const ograph_t* g, uint32_t e, uint32_t o) {
    guanidinium one in each angle. No group to speak of: the plane. */
 static void delocalized_refs(const ograph_t* g, uint32_t a, uint32_t b, uint32_t out[2]) {
     uint32_t na = 0, nb = 0;
-    for (uint32_t k = g->off[a]; k < g->off[a + 1]; ++k) na += (g->nbr_flags[k] & MD_BOND_FLAG_DELOCALIZED) ? 1u : 0u;
-    for (uint32_t k = g->off[b]; k < g->off[b + 1]; ++k) nb += (g->nbr_flags[k] & MD_BOND_FLAG_DELOCALIZED) ? 1u : 0u;
+    for (uint32_t k = g->off[a]; k < g->off[a + 1]; ++k) na += (og_flags(g, k) & MD_BOND_FLAG_DELOCALIZED) ? 1u : 0u;
+    for (uint32_t k = g->off[b]; k < g->off[b + 1]; ++k) nb += (og_flags(g, k) & MD_BOND_FLAG_DELOCALIZED) ? 1u : 0u;
     out[0] = out[1] = UINT32_MAX;
     if (na < 2 && nb < 2) {
         out[0] = plane_ref(g, a, b);
@@ -245,8 +247,8 @@ static void delocalized_refs(const ograph_t* g, uint32_t a, uint32_t b, uint32_t
     const uint32_t center = na >= nb ? a : b, other = center == a ? b : a;
     uint32_t nbr[8], n = 0;     /* local indices ascend with the system's */
     for (uint32_t k = g->off[center]; k < g->off[center + 1] && n < 8; ++k) {
-        if (!(g->nbr_flags[k] & MD_BOND_FLAG_DELOCALIZED)) continue;
-        const uint32_t c = g->nbr[k];
+        if (!(og_flags(g, k) & MD_BOND_FLAG_DELOCALIZED)) continue;
+        const uint32_t c = (uint32_t)g->nbr[k];
         uint32_t j = n++;
         while (j > 0 && nbr[j - 1] > c) { nbr[j] = nbr[j - 1]; --j; }
         nbr[j] = c;
@@ -342,7 +344,7 @@ static bool build_orders(orders_host_t* o, const ograph_t* g, const ocand_t* can
                 const uint32_t x = loc[l], y = loc[(l + 1) % rn];
                 edge[l] = UINT32_MAX;
                 for (uint32_t q = g->off[x]; q < g->off[x + 1] && edge[l] == UINT32_MAX; ++q) {
-                    if (g->nbr[q] == y && md_bond_kind((md_bond_flags_t)g->nbr_flags[q]) == MD_BOND_KIND_COVALENT) edge[l] = g->nbr_edge[q];
+                    if ((uint32_t)g->nbr[q] == y && md_bond_kind((md_bond_flags_t)og_flags(g, q)) == MD_BOND_KIND_COVALENT) edge[l] = (uint32_t)g->nbr_edge[q];
                 }
                 all = edge[l] != UINT32_MAX;
             }
@@ -1598,34 +1600,17 @@ bool md_render_mol_plan(md_render_mol_plan_t* out, const md_system_t* sys, const
     const uint32_t cov_n   = bonds_of_kind[COVALENT];
     orders_host_t oh;
     {
-        uint32_t* g_off  = md_temp_alloc_zero(temp, ((size_t)n + 2) * 4u);
         uint8_t*  g_ok   = md_temp_alloc(temp, (size_t)n + 1);
         ocand_t*  cand   = md_temp_alloc(temp, ((size_t)cov_n + 1) * sizeof(ocand_t));
-        if (!g_off || !g_ok || !cand) return false;
-        for (uint32_t i = 0; i < n; ++i) {
-            g_ok[i] = inv[i] != UINT32_MAX;
-            md_bond_iter_t it = md_bond_iter(&sys->bond, i);
-            for (; md_bond_iter_has_next(&it); md_bond_iter_next(&it)) g_off[i + 1]++;
-        }
-        for (uint32_t i = 0; i < n; ++i) g_off[i + 1] += g_off[i];
-        const uint32_t n_adj = g_off[n];
-        uint32_t* g_nbr  = md_temp_alloc(temp, ((size_t)n_adj + 1) * 4u);
-        uint32_t* g_flg  = md_temp_alloc(temp, ((size_t)n_adj + 1) * 4u);
-        uint32_t* g_edge = md_temp_alloc(temp, ((size_t)n_adj + 1) * 4u);
-        if (!g_nbr || !g_flg || !g_edge) return false;
-        for (uint32_t i = 0; i < n; ++i) {
-            uint32_t q = g_off[i];
-            md_bond_iter_t it = md_bond_iter(&sys->bond, i);
-            for (; md_bond_iter_has_next(&it); md_bond_iter_next(&it), ++q) {
-                const int32_t c = md_bond_iter_atom_index(&it);
-                g_nbr[q]  = c >= 0 && (uint32_t)c < n ? (uint32_t)c : i;     /* none: itself, never taken */
-                g_flg[q]  = sys->bond.flags ? (uint32_t)sys->bond.flags[md_bond_iter_bond_index(&it)] : 0u;
-                g_edge[q] = (uint32_t)md_bond_iter_bond_index(&it);
-            }
-        }
+        uint32_t* no_off = NULL;        /* no connectivity: no neighbours */
+        const md_bond_conn_data_t* conn = &sys->bond.conn;
+        const bool has_conn = conn->offset && conn->offset_count >= (size_t)n + 1;
+        if (!has_conn) no_off = md_temp_alloc_zero(temp, ((size_t)n + 1) * 4u);
+        if (!g_ok || !cand || (!has_conn && !no_off)) return false;
+        for (uint32_t i = 0; i < n; ++i) g_ok[i] = inv[i] != UINT32_MAX;
         const ograph_t g = {
-            .n = n, .atom = NULL, .off = g_off, .nbr = g_nbr, .nbr_flags = g_flg, .nbr_edge = g_edge, .edge_count = nb_sys,
-            .hyb = NULL, .ok = g_ok, .sys = sys,
+            .n = n, .atom = NULL, .off = has_conn ? conn->offset : no_off, .nbr = conn->atom_idx, .nbr_edge = conn->bond_idx,
+            .edge_flags = sys->bond.flags, .edge_count = nb_sys, .hyb = NULL, .ok = g_ok, .sys = sys,
             .xyz = (md_system_state_has_coords(&sys->reference) && sys->reference.num_atoms >= n) ? (const float*)sys->reference.xyz : NULL,
         };
         uint32_t nc = 0;
@@ -2108,15 +2093,16 @@ bool md_render_mol_bonds_plan(md_render_mol_bonds_plan_t* out, const md_system_t
         uint32_t na = 0;
         for (uint32_t j = 0; j < n_region * 2u; ++j) if (na == 0 || atom[na - 1] != atom[j]) atom[na++] = atom[j];
         uint32_t* off  = md_temp_alloc_zero(temp, ((size_t)na + 2) * 4u);
-        uint32_t* nbr  = md_temp_alloc(temp, (size_t)n_region * 2u * 4u);
-        uint32_t* flg  = md_temp_alloc(temp, (size_t)n_region * 2u * 4u);
-        uint32_t* edge = md_temp_alloc(temp, (size_t)n_region * 2u * 4u);
+        int32_t*  nbr  = md_temp_alloc(temp, (size_t)n_region * 2u * 4u);
+        int32_t*  edge = md_temp_alloc(temp, (size_t)n_region * 2u * 4u);
+        md_bond_flags_t* flg = md_temp_alloc(temp, ((size_t)n_region + 1) * sizeof(md_bond_flags_t));
         uint8_t*  hyb  = md_temp_alloc(temp, (size_t)na + 1);
         uint8_t*  ok   = md_temp_alloc(temp, (size_t)na + 1);
         ocand_t*  cand = md_temp_alloc(temp, ((size_t)n_region + 1) * sizeof(ocand_t));
         if (!off || !nbr || !flg || !edge || !hyb || !ok || !cand) return false;
         for (uint32_t j = 0; j < n_region; ++j) {
             cand[j] = own[j];
+            flg[j] = (md_bond_flags_t)own[j].flags;
             cand[j].a = search_u32(atom, na, own[j].a);
             cand[j].b = search_u32(atom, na, own[j].b);
             off[cand[j].a + 1]++;
@@ -2128,8 +2114,8 @@ bool md_render_mol_bonds_plan(md_render_mol_bonds_plan_t* out, const md_system_t
         memcpy(fill, off, (size_t)na * 4u);
         for (uint32_t j = 0; j < n_region; ++j) {
             const uint32_t a = cand[j].a, b = cand[j].b;
-            nbr[fill[a]] = b; flg[fill[a]] = cand[j].flags; edge[fill[a]++] = j;
-            nbr[fill[b]] = a; flg[fill[b]] = cand[j].flags; edge[fill[b]++] = j;
+            nbr[fill[a]] = (int32_t)b; edge[fill[a]++] = (int32_t)j;
+            nbr[fill[b]] = (int32_t)a; edge[fill[b]++] = (int32_t)j;
         }
         for (uint32_t x = 0; x < na; ++x) {     /* the region's hybridization is the frame's */
             const uint32_t r = search_u32((const uint32_t*)chem->atom_idx, (uint32_t)chem->num_atoms, atom[x]);
@@ -2138,7 +2124,7 @@ bool md_render_mol_bonds_plan(md_render_mol_bonds_plan_t* out, const md_system_t
         }
         const bool own_xyz = state && state->xyz && state->num_atoms >= n;
         const ograph_t g = {
-            .n = na, .atom = atom, .off = off, .nbr = nbr, .nbr_flags = flg, .nbr_edge = edge, .edge_count = n_region,
+            .n = na, .atom = atom, .off = off, .nbr = nbr, .nbr_edge = edge, .edge_flags = flg, .edge_count = n_region,
             .hyb = hyb, .ok = ok, .sys = sys,
             .xyz = own_xyz ? (const float*)state->xyz :
                    (md_system_state_has_coords(&sys->reference) && sys->reference.num_atoms >= n) ? (const float*)sys->reference.xyz : NULL,
