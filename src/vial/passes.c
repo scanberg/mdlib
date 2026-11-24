@@ -439,6 +439,8 @@ static uint64_t fp_value(fp_t* f, vial_ssa_t v) {
         const char* name = vial_builtin_at(op->aux)->name;
         h = fp_bytes(h, name, strlen(name));
         if (!strcmp(name, "attr")) h = fp_attr(f, h, op);
+        // The groups it selects from, which change without the topology (md_group_data_t::version)
+        if (!strcmp(name, "group") && f->sys) h = fp_mix(h, f->sys->group.version);
         break;
     }
     case VIAL_IR_ELEM:    h = fp_mix(h, op->aux); break;

@@ -1527,7 +1527,7 @@ static void tpr_system_add_groups(md_system_t* sys, const md_tpr_data_t* data) {
                 }
             }
             // An empty group is kept: its place in the order is what an energy file names the pairs by
-            idx[num_idx++] = (uint32_t)md_system_group_add(sys, data->group_names[g->name_idx[k]], atoms);
+            idx[num_idx++] = (uint32_t)md_system_group_add(sys, data->group_names[g->name_idx[k]], atoms, MD_GROUP_ORIGIN_GIVEN);
             md_bitset_free(&atoms, heap);
             if (words) md_free(heap, words, num_words * sizeof(uint64_t));
         }

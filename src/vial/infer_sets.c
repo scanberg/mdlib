@@ -75,12 +75,12 @@ static uint8_t selector_level(md_str_t name, uint8_t* particle_kind) {
     return VIAL_LEVEL_NONE;
 }
 
-// The type of a selector whose sets are not known: one set, or an array of a length not known
-static T selector_unknown(uint8_t level, uint8_t stage, vial_node_id at) {
+// The type of a selector whose sets are not known: one set (particles, or one_name), or an array of a length not known
+static T selector_unknown(uint8_t level, uint8_t stage, vial_node_id at, bool one_name) {
     T t = vial_type_scalar(VIAL_DT_SET);
     t.stage = stage;
     t.ident = (uint32_t)at;
-    if (level == VIAL_LEVEL_PARTICLE) return t;
+    if (level == VIAL_LEVEL_PARTICLE || one_name) return t;
     vial_extent_t e = {.kind = stage == VIAL_STAGE_STATIC ? VIAL_EXT_UNKNOWN : VIAL_EXT_DYNAMIC, .id = (uint32_t)at};
     vial_type_push_dim(&t, e);
     return t;
@@ -360,6 +360,18 @@ static const vial_filter_t* find_filter(const vial_select_t* q, uint8_t key) {
     return NULL;
 }
 
+// A name or an id is the user's handle on a set, so one of them is one set. group('Protein'), one name and not a
+// pattern, is the particles of every group of that name: those that share one (each role's 'rest') are told apart by
+// role=. chain('A') is every particle filed under the author's chain id A, as v1 has it. A pattern, several names or
+// ids, a positional set, or the selector bare, are a set per unit: group('*d*'), chain(id=['A', 'B']), group(s), chain.
+static bool one_name(const vial_select_t* q) {
+    const uint8_t key = q->level == VIAL_LEVEL_GROUP ? VIAL_KEY_NAME : q->level == VIAL_LEVEL_CHAIN ? VIAL_KEY_ID : VIAL_KEY_NONE;
+    if (key == VIAL_KEY_NONE) return false;
+    const vial_filter_t* f = find_filter(q, key);
+    if (!f || md_array_size(f->expr) != 1 || f->expr[0].kind != VIAL_MATCH_STR) return false;
+    return key != VIAL_KEY_NAME || !vial_is_glob(f->expr[0].s);    // a chain's id is matched as it is, never as a pattern
+}
+
 // The keyword values with and/or/not of a call: the node of each and its filter's position among the call's
 #define MAX_LOGIC 16
 typedef struct logic_args_t {
@@ -580,10 +592,12 @@ static T selector_call(infer_t* x, vial_node_id call, md_str_t name) {
         if (logic.unknown) { report_logic_unknown(x, logic_at); return err(); }
         lower_logic(x, &logic, q.filters);
     }
-    if (stage.stage != VIAL_STAGE_STATIC) return selector_unknown(level, stage.stage, call);
-    if (!known) return selector_unknown(level, VIAL_STAGE_STATIC, call);
+    const bool one = one_name(&q);
+    if (stage.stage != VIAL_STAGE_STATIC) return selector_unknown(level, stage.stage, call, one);
+    if (!known) return selector_unknown(level, VIAL_STAGE_STATIC, call, one);
 
     const vial_sets_t* s = vial_select(x->sys, &q, x->alloc);
+    if (one) s = vial_sets_merge(s, x->alloc);
     const bool empty = s->single ? vial_sets_size(s, 0) == 0 : s->count == 0;
     if (empty) {
         char ex[VIAL_EXCERPT_MAX + 4];
@@ -689,7 +703,7 @@ bool vx_name_sets(infer_t* x, vial_node_id id, const vial_builtin_t* b, T* out) 
         uint8_t pkind = 0;
         const uint8_t level = selector_level(name, &pkind);
         if (level == VIAL_LEVEL_CHAIN && no_chains(x)) { report_no_chains(x, id); *out = err(); return true; }
-        if (!x->sys) { *out = selector_unknown(level, VIAL_STAGE_STATIC, id); return true; }
+        if (!x->sys) { *out = selector_unknown(level, VIAL_STAGE_STATIC, id, false); return true; }
         // All of a level's units, once per compile, as the predefined sets
         const vial_sets_t* s = NULL;
         size_t k = 0;
@@ -899,10 +913,10 @@ T vx_view_all(infer_t* x, vial_node_id id, vial_node_id on, const T* a) {
     const vial_value_t av = vx_value_of(x, on);
     T st = vial_type_scalar(VIAL_DT_SET);
     join_stage(&st, a);
-    if (st.stage != VIAL_STAGE_STATIC || av.kind != VIAL_VAL_SETS || !x->sys) return selector_unknown(level, st.stage, id);
+    if (st.stage != VIAL_STAGE_STATIC || av.kind != VIAL_VAL_SETS || !x->sys) return selector_unknown(level, st.stage, id, false);
     const vial_select_t q = {.level = level, .particle_kind = pkind, .scope = av.sets->single ? av.sets : vial_sets_merge(av.sets, x->alloc)};
     const vial_sets_t* s = vial_select(x->sys, &q, x->alloc);
-    if (!s) return selector_unknown(level, VIAL_STAGE_STATIC, id);
+    if (!s) return selector_unknown(level, VIAL_STAGE_STATIC, id, false);
     const bool empty = s->single ? vial_sets_size(s, 0) == 0 : s->count == 0;
     if (empty) {
         char ex[VIAL_EXCERPT_MAX + 4];

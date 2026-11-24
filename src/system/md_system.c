@@ -23,13 +23,18 @@
 extern "C" {
 #endif
 
-// One counter for every system, so that a version is never handed out twice: a consumer which kept the version of a
-// system that has since been freed and loaded anew cannot take the new topology for the one it saw.
-static volatile uint64_t topology_version_counter = 0;
+// One counter for every system and for both its topology and its groups, so that a version is never handed out twice:
+// a consumer which kept the version of a system that has since been freed and loaded anew cannot take the new topology
+// (or groups) for the one it saw.
+static volatile uint64_t version_counter = 0;
+
+static uint64_t next_version(void) {
+    return md_atomic_fetch_add64(&version_counter, 1) + 1;
+}
 
 uint64_t md_system_topology_changed(md_system_t* sys) {
     MD_ASSERT(sys);
-    sys->topology_version = md_atomic_fetch_add64(&topology_version_counter, 1) + 1;
+    sys->topology_version = next_version();
     return sys->topology_version;
 }
 
@@ -78,17 +83,20 @@ static void md_system_groups_free(md_system_t* sys) {
     md_array_free(g->name, alloc);
     md_array_free(g->atoms, alloc);
     md_array_free(g->roles, alloc);
+    md_array_free(g->origin, alloc);
     md_array_free(g->role_order.group, alloc);
     md_memset(g, 0, sizeof(md_group_data_t));
 }
 
 static void groups_copy(md_group_data_t* dst, const md_group_data_t* src, md_allocator_i* alloc) {
     md_memset(dst, 0, sizeof(md_group_data_t));
+    dst->version = src->version;
     if (!src->count) return;
     dst->count = src->count;
     md_array_resize(dst->name, src->count, alloc);
     md_array_resize(dst->atoms, src->count, alloc);
     md_array_push_array(dst->roles, src->roles, src->count, alloc);
+    md_array_push_array(dst->origin, src->origin, src->count, alloc);
     for (size_t i = 0; i < src->count; ++i) {
         dst->name[i]  = md_str_empty(src->name[i]) ? (md_str_t){0} : md_alloc_str(alloc, src->name[i]);
         dst->atoms[i] = md_bitset_copy(src->atoms[i], alloc);
@@ -97,18 +105,23 @@ static void groups_copy(md_group_data_t* dst, const md_group_data_t* src, md_all
     if (md_array_size(src->role_order.group)) md_array_push_array(dst->role_order.group, src->role_order.group, md_array_size(src->role_order.group), alloc);
 }
 
-size_t md_system_group_add(md_system_t* sys, md_str_t name, md_bitset_t atoms) {
+// The atoms of the system of a set: those past its atoms left out, in temp where any are
+static md_bitset_t group_atoms_clip(const md_system_t* sys, md_bitset_t atoms, md_temp_scope_t temp) {
+    const uint32_t N = (uint32_t)sys->atom.count;
+    if (md_bitset_last_end(atoms) > N) atoms = md_bitset_and(atoms, md_bitset_range(0, N), md_temp_allocator(temp));
+    return atoms;
+}
+
+size_t md_system_group_add(md_system_t* sys, md_str_t name, md_bitset_t atoms, md_group_origin_t origin) {
     MD_ASSERT(sys);
     MD_ASSERT(sys->alloc);
+    MD_ASSERT((uint32_t)origin < MD_GROUP_ORIGIN_COUNT);
     md_group_data_t* g = &sys->group;
     md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
-    const uint32_t N = (uint32_t)sys->atom.count;
-    if (md_bitset_last_end(atoms) > N) {
-        atoms = md_bitset_and(atoms, md_bitset_range(0, N), md_temp_allocator(temp));
-    }
+    atoms = group_atoms_clip(sys, atoms, temp);
     size_t idx = g->count;
     for (size_t i = 0; i < g->count; ++i) {
-        if (md_str_eq(g->name[i], name) && md_bitset_equal(g->atoms[i], atoms)) {
+        if (g->origin[i] == origin && md_str_eq(g->name[i], name) && md_bitset_equal(g->atoms[i], atoms)) {
             idx = i;
             break;
         }
@@ -117,11 +130,17 @@ size_t md_system_group_add(md_system_t* sys, md_str_t name, md_bitset_t atoms) {
         md_array_push(g->name, md_str_empty(name) ? (md_str_t){0} : md_alloc_str(sys->alloc, name), sys->alloc);
         md_array_push(g->atoms, md_bitset_copy(atoms, sys->alloc), sys->alloc);
         md_array_push(g->roles, 0, sys->alloc);
+        md_array_push(g->origin, (uint8_t)origin, sys->alloc);
         g->count += 1;
+        g->version = next_version();
     }
     md_temp_end(temp);
-    md_system_topology_changed(sys);
     return idx;
+}
+
+// A role is of the data: an index of one of its groups, not of a user's
+static bool role_group_ok(const md_group_data_t* g, uint32_t idx) {
+    return idx < g->count && g->origin[idx] == MD_GROUP_ORIGIN_GIVEN;
 }
 
 void md_system_group_set_role(md_system_t* sys, md_group_role_t role, const uint32_t* group_idx, size_t count) {
@@ -134,7 +153,7 @@ void md_system_group_set_role(md_system_t* sys, md_group_role_t role, const uint
     // The role's previous groups lose it, unless named again below
     for (uint32_t i = beg; i < end; ++i) g->roles[g->role_order.group[i]] &= ~(1u << role);
     uint32_t n = 0;
-    for (size_t i = 0; i < count; ++i) n += group_idx[i] < g->count;
+    for (size_t i = 0; i < count; ++i) n += role_group_ok(g, group_idx[i]);
     // Make room for the new list in place of the old one, the roles after it moved along
     const size_t total = md_array_size(g->role_order.group);
     const size_t new_total = total - (end - beg) + n;
@@ -143,14 +162,77 @@ void md_system_group_set_role(md_system_t* sys, md_group_role_t role, const uint
     md_array_shrink(g->role_order.group, new_total);
     uint32_t k = beg;
     for (size_t i = 0; i < count; ++i) {
-        if (group_idx[i] >= g->count) continue;
+        if (!role_group_ok(g, group_idx[i])) continue;
         g->role_order.group[k++] = group_idx[i];
         g->roles[group_idx[i]] |= 1u << role;
     }
     for (uint32_t r = role + 1; r <= MD_GROUP_ROLE_COUNT; ++r) {
         offset[r] = (uint32_t)(offset[r] - (end - beg) + n);
     }
-    md_system_topology_changed(sys);
+    g->version = next_version();
+}
+
+// Whether an index is of a user's group: false (logged) for one out of range or of the data
+static bool user_group(const md_group_data_t* g, size_t idx, const char* what) {
+    if (idx >= g->count) {
+        MD_LOG_ERROR("Cannot %s group %zu: there are %zu groups", what, idx, g->count);
+        return false;
+    }
+    if (g->origin[idx] != MD_GROUP_ORIGIN_USER) {
+        MD_LOG_ERROR("Cannot %s group '" MD_STR_FMT "': it is of the data, not the user's", what, MD_STR_ARG(g->name[idx]));
+        return false;
+    }
+    return true;
+}
+
+bool md_system_group_set_atoms(md_system_t* sys, size_t group_idx, md_bitset_t atoms) {
+    MD_ASSERT(sys);
+    md_group_data_t* g = &sys->group;
+    if (!user_group(g, group_idx, "change the atoms of")) return false;
+    md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
+    const md_bitset_t copy = md_bitset_copy(group_atoms_clip(sys, atoms, temp), sys->alloc);
+    md_temp_end(temp);
+    md_bitset_free(&g->atoms[group_idx], sys->alloc);
+    g->atoms[group_idx] = copy;
+    g->version = next_version();
+    return true;
+}
+
+bool md_system_group_rename(md_system_t* sys, size_t group_idx, md_str_t name) {
+    MD_ASSERT(sys);
+    md_group_data_t* g = &sys->group;
+    if (!user_group(g, group_idx, "rename")) return false;
+    const md_str_t copy = md_str_empty(name) ? (md_str_t){0} : md_alloc_str(sys->alloc, name);
+    if (!md_str_empty(g->name[group_idx])) md_free_str(sys->alloc, g->name[group_idx]);
+    g->name[group_idx] = copy;
+    g->version = next_version();
+    return true;
+}
+
+bool md_system_group_remove(md_system_t* sys, size_t group_idx) {
+    MD_ASSERT(sys);
+    md_group_data_t* g = &sys->group;
+    if (!user_group(g, group_idx, "remove")) return false;
+    if (!md_str_empty(g->name[group_idx])) md_free_str(sys->alloc, g->name[group_idx]);
+    md_bitset_free(&g->atoms[group_idx], sys->alloc);
+    // Those after it one down, in their order
+    const size_t after = g->count - group_idx - 1;
+    md_memmove(g->name   + group_idx, g->name   + group_idx + 1, after * sizeof(*g->name));
+    md_memmove(g->atoms  + group_idx, g->atoms  + group_idx + 1, after * sizeof(*g->atoms));
+    md_memmove(g->roles  + group_idx, g->roles  + group_idx + 1, after * sizeof(*g->roles));
+    md_memmove(g->origin + group_idx, g->origin + group_idx + 1, after * sizeof(*g->origin));
+    g->count -= 1;
+    md_array_shrink(g->name, g->count);
+    md_array_shrink(g->atoms, g->count);
+    md_array_shrink(g->roles, g->count);
+    md_array_shrink(g->origin, g->count);
+    // The roles name groups by index; a user's group is of none, so only those after it are moved
+    for (size_t i = 0; i < md_array_size(g->role_order.group); ++i) {
+        MD_ASSERT(g->role_order.group[i] != group_idx);
+        if (g->role_order.group[i] > group_idx) g->role_order.group[i] -= 1;
+    }
+    g->version = next_version();
+    return true;
 }
 
 static int compare_u64(const void* a, const void* b) {
