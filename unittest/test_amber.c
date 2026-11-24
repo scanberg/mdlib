@@ -512,6 +512,14 @@ UTEST(amber_prmtop, builds_a_system_without_coordinates) {
     ASSERT_EQ(MD_LOAD_OK, md_amber_prmtop_system_load_from_file(&sys2, &state, path, NULL));
     EXPECT_EQ(10u, sys2.atom.count);
 
+    // Inferred without coordinates, as an application infers a topology alone: what its bonds tell, and nothing of
+    // the geometry
+    md_system_state_t none = { .alloc = arena };
+    md_system_state_init(&none, 0);
+    ASSERT_TRUE(md_system_infer(&sys, &none, NULL));
+    EXPECT_EQ(2u, md_system_molecule_count(&sys));
+    EXPECT_EQ(8u, sys.bond.count);
+
     md_system_free(&sys);
     md_system_free(&sys2);
     remove(path.ptr);

@@ -161,7 +161,7 @@ static const md_io_format_info_t formats[MD_IO_FORMAT_COUNT] = {
 #endif
     },
     // A topology: a system without coordinates of its own, or the molecules it defines found among a system's atoms
-    [MD_IO_FORMAT_ITP] = { S("Gromacs Topology (itp/top)"), S("itp"), MD_IO_FLAG_SYSTEM | MD_IO_FLAG_SUPPLEMENT | MD_IO_FLAG_MM,
+    [MD_IO_FORMAT_ITP] = { S("Gromacs Topology (itp/top)"), S("itp"), MD_IO_FLAG_SYSTEM | MD_IO_FLAG_SUPPLEMENT | MD_IO_FLAG_MM | MD_IO_FLAG_TOPOLOGY,
         .load = md_itp_system_load_from_file, .check = md_itp_system_check_file },
     [MD_IO_FORMAT_TPR] = { S("Gromacs Run Input (tpr)"), S("tpr"), MD_IO_FLAG_SYSTEM | MD_IO_FLAG_MM | MD_IO_FLAG_TOPOLOGY,
         .load = md_tpr_system_load_from_file },
