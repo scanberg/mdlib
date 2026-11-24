@@ -2803,8 +2803,7 @@ static md_render_points_t atom_points(const md_render_mol_topo_t* topo, md_gpu_a
     p.palette_index   = rep->atom_palette_index;
     p.visible[0]      = rep->visible;
     p.visible[1]      = atoms->visible;
-    p.state[0]        = atoms->selection;
-    p.state[1]        = atoms->highlight;
+    p.marks           = atoms->marks;
     return p;
 }
 

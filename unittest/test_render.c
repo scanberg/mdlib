@@ -75,6 +75,25 @@ static md_gpu_addr_t f_buf(fix_t* f, const void* data, size_t size) {
     return a;
 }
 
+/* Marks of n points from bitset words over them (NULL: none set) */
+static void f_marks_bytes(uint8_t* m, const uint32_t* s0, const uint32_t* s1, uint32_t n) {
+    for (uint32_t i = 0; i < n; ++i) {
+        m[i] = (uint8_t)((s0 && ((s0[i >> 5] >> (i & 31)) & 1u) ? MD_RENDER_MARK_STATE0 : 0u) |
+                         (s1 && ((s1[i >> 5] >> (i & 31)) & 1u) ? MD_RENDER_MARK_STATE1 : 0u));
+    }
+}
+static void f_marks_upload(fix_t* f, md_gpu_addr_t dst, const uint32_t* s0, const uint32_t* s1, uint32_t n) {
+    uint8_t* m = malloc(n);
+    f_marks_bytes(m, s0, s1, n);
+    md_gpu_upload(f->gfx, dst, m, n);
+    free(m);
+}
+static md_gpu_addr_t f_marks(fix_t* f, const uint32_t* s0, const uint32_t* s1, uint32_t n) {
+    md_gpu_addr_t a = md_gpu_malloc(f->gfx, MD_GPU_MEM_DEVICE, n).gpu;
+    if (a) f_marks_upload(f, a, s0, s1, n);
+    return a;
+}
+
 static bool f_read(fix_t* f, md_gpu_texture_t t, void* dst, size_t size) {
     md_gpu_tex_region_t r = {0};
     r.extent[2] = 1;
@@ -1063,7 +1082,7 @@ UTEST(render, spline_curves_match_the_sweep) {
        shows them, its outline around more (where the turn in front covers
        the turn behind) */
     uint32_t sel = 0x555u & ((1u << NA) - 1u);
-    b.points.state[0] = f_buf(&fx, &sel, 4);
+    b.points.marks = f_marks(&fx, &sel, NULL, 32);
     f.content[MD_RENDER_CONTENT_STATE]++;
     ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
     /* against this frame's ids, which the mask is made from: it rasterised
@@ -1092,7 +1111,7 @@ UTEST(render, spline_curves_match_the_sweep) {
 
     /* shrunk across a fade band through the scene: thinner, the rasters
        still agree to the bit; past the band, nothing */
-    b.points.state[0] = 0;
+    b.points.marks = 0;
     b.fade.mode = MD_RENDER_FADE_SHRINK;
     b.fade.out[0] = 14.0f; b.fade.out[1] = 8.0f;     /* px per unit: depth 11.4 to 20 */
     f.content[MD_RENDER_CONTENT_GEOMETRY]++;
@@ -1639,8 +1658,8 @@ UTEST(render, polygons_match_their_solids) {
             hsel[pnt >> 5] |= 1u << (pnt & 31);
         }
     }
-    bp[0].points.state[0] = f_buf(&fx, hsel, sizeof(hsel));
-    bp[1].points.state[0] = f_buf(&fx, &psel, 4);
+    bp[0].points.marks = f_marks(&fx, hsel, NULL, (uint32_t)sizeof(hsel) * 8);
+    bp[1].points.marks = f_marks(&fx, &psel, NULL, 32);
     f.content[MD_RENDER_CONTENT_STATE]++;
     ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
     uint32_t* m = malloc(W * H * 4);
@@ -1661,8 +1680,8 @@ UTEST(render, polygons_match_their_solids) {
     EXPECT_GE(many, mvis);
     printf("    selected: %d pixels in view, %d in all\n", mvis, many);
     free(m);
-    bp[0].points.state[0] = 0;
-    bp[1].points.state[0] = 0;
+    bp[0].points.marks = 0;
+    bp[1].points.marks = 0;
 
     /* shrunk across a fade band: fewer pixels; past it, nothing */
     for (int k = 0; k < 4; ++k) { bp[k].fade.mode = MD_RENDER_FADE_SHRINK; bp[k].fade.out[0] = 14.0f; bp[k].fade.out[1] = 8.0f; }
@@ -2483,7 +2502,7 @@ UTEST(render, lazy_tiers) {
     md_render_batch_t b = {0};
     b.key = 1; b.kind = MD_RENDER_SPHERES; b.count = 1; b.points.count = 1;
     b.points.position = f_buf(&fx, pos, sizeof(pos));
-    b.points.state[0] = f_buf(&fx, &sel, 4);
+    b.points.marks = f_marks(&fx, &sel, NULL, 32);
     b.style.spheres.radius_add = 1.0f;
     b.color.mode = MD_RENDER_COLOR_UNIFORM;
     b.color.uniform = 0xFFFFFFFFu;
@@ -2571,7 +2590,7 @@ UTEST(render, lazy_tiers_with_instances) {
     md_render_batch_t b = {0};
     b.key = 1; b.kind = MD_RENDER_SPHERES; b.count = 1; b.points.count = 1;
     b.points.position = f_buf(&fx, pos, sizeof(pos));
-    b.points.state[0] = f_buf(&fx, &sel, 4);
+    b.points.marks = f_marks(&fx, &sel, NULL, 32);
     b.style.spheres.radius_add = 0.5f;
     b.color.mode = MD_RENDER_COLOR_UNIFORM;
     b.color.uniform = 0xFFFFFFFFu;
@@ -2719,6 +2738,84 @@ UTEST(render, motion_from_velocity) {
     f_close(&fx);
 }
 
+/* The marks' tags: a set mask channel holds (8 + tag) / 15, the visible
+   surface's tag in the visible channels and the largest in the anywhere
+   ones; a capsule has a state when both its points have it, with the larger
+   tag. The export carries the tag of state 1 in the colour's alpha. And the
+   CPU helpers that write marks from sets. */
+UTEST(render, masks_carry_tags) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    const uint32_t W = 64, H = 32;
+    cam_t c = { .ortho = true, .half_h = 2.0f, .aspect = 2.0f, .n = 0.0f, .far_ = 100.0f };
+    /* 0 highlighted (tag 2) in front of 1 highlighted (tag 6); 2 selected (tag 5);
+       capsules 3-4 highlighted (tags 1, 4) and 5-6 (only 5 highlighted) */
+    float pos[21] = { -1.0f, 0, -10,   0.0f, 0, -20,   2.5f, 0, -10,
+                      -3.0f, 1.5f, -10,  -1.0f, 1.5f, -10,   1.0f, 1.5f, -10,   3.0f, 1.5f, -10 };
+    uint8_t marks[7] = {
+        MD_RENDER_MARK_STATE1 | MD_RENDER_MARK_TAG(2), MD_RENDER_MARK_STATE1 | MD_RENDER_MARK_TAG(6),
+        MD_RENDER_MARK_STATE0 | MD_RENDER_MARK_TAG(5),
+        MD_RENDER_MARK_STATE1 | MD_RENDER_MARK_TAG(1), MD_RENDER_MARK_STATE1 | MD_RENDER_MARK_TAG(4),
+        MD_RENDER_MARK_STATE1 | MD_RENDER_MARK_TAG(3), MD_RENDER_MARK_TAG(7) };
+    uint32_t index[4] = { 3, 4, 5, 6 };
+    md_gpu_addr_t P = f_buf(&fx, pos, sizeof(pos)), M = f_buf(&fx, marks, sizeof(marks));
+    md_render_batch_t b[2];
+    memset(b, 0, sizeof(b));
+    b[0].key = 1; b[0].kind = MD_RENDER_SPHERES; b[0].count = 3;
+    b[0].style.spheres.radius_add = 0.9f;
+    b[1].key = 2; b[1].kind = MD_RENDER_CAPSULES; b[1].count = 2;
+    b[1].index = f_buf(&fx, index, sizeof(index));
+    b[1].style.capsules.radius = 0.3f;
+    for (int k = 0; k < 2; ++k) { b[k].points.position = P; b[k].points.count = 7; b[k].points.marks = M; }
+    md_render_frame_t f = frame_of(W, H, make_camera(&c), b, 2);
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+    uint32_t* m = malloc(W * H * 4);
+    ASSERT_TRUE(f_read(&fx, md_render_view_targets(fx.view).mask, m, W * H * 4));
+    #define AT(wx, wy) m[(uint32_t)((0.5 - (wy) / 4.0) * H) * W + (uint32_t)(((wx) / 4.0 * 0.5 + 0.5) * W)]
+    #define CH(tag) ((8u + (tag)) * 17u)
+    EXPECT_EQ((CH(6) << 24) | (CH(2) << 16), AT(-0.5, 0.0));   /* 0 in view (tag 2), 1 behind it: the larger, 6 */
+    EXPECT_EQ((CH(6) << 24) | (CH(6) << 16), AT(0.5, 0.0));    /* 1 in view */
+    EXPECT_EQ((CH(5) << 8) | CH(5), AT(2.5, 0.0));             /* the selection's tag */
+    EXPECT_EQ((CH(4) << 24) | (CH(4) << 16), AT(-2.0, 1.5));   /* both points highlighted: the larger tag */
+    EXPECT_EQ(0u, AT(2.0, 1.5));                               /* one of them: not */
+
+    /* The export: the state 1 tag of the visible surface, else of the largest */
+    md_gpu_texture_desc_t td = {0};
+    td.type = MD_GPU_TEX_2D; td.usage = MD_GPU_TEX_STORAGE; td.width = W; td.height = H;
+    td.format = MD_GPU_FORMAT_RGBA8_UNORM; td.label = "export color";
+    md_gpu_texture_t xc = md_gpu_texture_create(fx.gfx, &td);
+    md_render_export_t ex = { 0, xc, 0 };
+    ASSERT_TRUE(md_render_view_export(fx.gfx, fx.view, &ex));
+    ASSERT_TRUE(f_read(&fx, xc, m, W * H * 4));
+    EXPECT_EQ(12u | (2u << 4), AT(-0.5, 0.0) >> 24);
+    EXPECT_EQ(12u | (6u << 4), AT(0.5, 0.0) >> 24);
+    EXPECT_EQ(3u, AT(2.5, 0.0) >> 24);
+    #undef CH
+    #undef AT
+    md_gpu_texture_destroy(xc);
+    free(m);
+
+    /* The helpers: states from sets, then tags (the later wins) */
+    uint64_t w0 = 0x5ull, w1 = 0x6ull, wt = 0xCull, wu = 0x8ull;
+    md_bitset_t s0 = { .words = &w0, .beg = 0, .end = 64 }, s1 = { .words = &w1, .beg = 0, .end = 64 };
+    md_bitset_t st = { .words = &wt, .beg = 0, .end = 64 }, su = { .words = &wu, .beg = 0, .end = 64 }, none = {0};
+    uint8_t out[5];
+    memset(out, 0xFF, sizeof(out));
+    md_render_marks_write(out, 4, s0, s1);
+    EXPECT_EQ(MD_RENDER_MARK_STATE0, out[0]);
+    EXPECT_EQ(MD_RENDER_MARK_STATE1, out[1]);
+    EXPECT_EQ(MD_RENDER_MARK_STATE0 | MD_RENDER_MARK_STATE1, out[2]);
+    EXPECT_EQ(0, out[3]);
+    EXPECT_EQ(0xFF, out[4]);                                   /* beyond the count: untouched */
+    md_render_marks_tag(out, 4, st, 3);
+    md_render_marks_tag(out, 4, su, 6);
+    EXPECT_EQ(MD_RENDER_MARK_STATE0 | MD_RENDER_MARK_STATE1 | MD_RENDER_MARK_TAG(3), out[2]);
+    EXPECT_EQ(MD_RENDER_MARK_TAG(6), out[3]);
+    md_render_marks_write(out, 4, none, none);
+    EXPECT_EQ(0, out[0] | out[1] | out[2] | out[3]);
+    f_close(&fx);
+}
+
 UTEST(render, masks_visible_and_hidden) {
     fix_t fx;
     if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
@@ -2730,23 +2827,22 @@ UTEST(render, masks_visible_and_hidden) {
     md_render_batch_t b = {0};
     b.key = 1; b.kind = MD_RENDER_SPHERES; b.count = 3; b.points.count = 3;
     b.points.position = f_buf(&fx, pos, sizeof(pos));
-    b.points.state[0] = f_buf(&fx, &sel, 4);
-    b.points.state[1] = f_buf(&fx, &hl, 4);
+    b.points.marks = f_marks(&fx, &sel, &hl, 32);
     b.style.spheres.radius_add = 0.9f;
     md_render_frame_t f = frame_of(W, H, make_camera(&c), &b, 1);
     ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
     uint32_t* m = malloc(W * H * 4);
     ASSERT_TRUE(f_read(&fx, md_render_view_targets(fx.view).mask, m, W * H * 4));
     #define AT(wx) m[(H / 2) * W + (uint32_t)(((wx) / 4.0 * 0.5 + 0.5) * W)]
-    EXPECT_EQ(0x0000FF00u | 0x000000FFu, AT(-1.5));   /* selection, visible and there   */
-    EXPECT_EQ(0x0000FF00u, AT(-0.3));                 /* selection hidden behind point 1 */
-    EXPECT_EQ(0xFF000000u | 0x00FF0000u, AT(2.5));    /* highlight, visible             */
+    EXPECT_EQ(0x00008800u | 0x00000088u, AT(-1.5));   /* selection, visible and there   */
+    EXPECT_EQ(0x00008800u, AT(-0.3));                 /* selection hidden behind point 1 */
+    EXPECT_EQ(0x88000000u | 0x00880000u, AT(2.5));    /* highlight, visible             */
     EXPECT_EQ(0u, AT(0.6));                           /* point 1: nothing               */
     #undef AT
 
     /* Selection moves to point 1: STATE only */
     sel = 1u << 1;
-    md_gpu_upload(fx.gfx, b.points.state[0], &sel, 4);
+    f_marks_upload(&fx, b.points.marks, &sel, &hl, 32);
     f.content[MD_RENDER_CONTENT_STATE]++;
     md_render_status_t st;
     ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, &st));
@@ -2754,7 +2850,7 @@ UTEST(render, masks_visible_and_hidden) {
     ASSERT_TRUE(f_read(&fx, md_render_view_targets(fx.view).mask, m, W * H * 4));
     #define AT(wx) m[(H / 2) * W + (uint32_t)(((wx) / 4.0 * 0.5 + 0.5) * W)]
     EXPECT_EQ(0u, AT(-1.5));
-    EXPECT_EQ(0x0000FF00u | 0x000000FFu, AT(-0.3));
+    EXPECT_EQ(0x00008800u | 0x00000088u, AT(-0.3));
     #undef AT
 
     /* The camera moves a little: a raster that keeps the state lists, and the
@@ -2765,8 +2861,8 @@ UTEST(render, masks_visible_and_hidden) {
     ASSERT_TRUE(f_read(&fx, md_render_view_targets(fx.view).mask, m, W * H * 4));
     #define AT(wx) m[(H / 2) * W + (uint32_t)(((wx) / 4.0 * 0.5 + 0.5) * W)]
     EXPECT_EQ(0u, AT(-1.5));
-    EXPECT_EQ(0x0000FF00u | 0x000000FFu, AT(-0.3));
-    EXPECT_EQ(0xFF000000u | 0x00FF0000u, AT(2.5));    /* the highlight too */
+    EXPECT_EQ(0x00008800u | 0x00000088u, AT(-0.3));
+    EXPECT_EQ(0x88000000u | 0x00880000u, AT(2.5));    /* the highlight too */
     #undef AT
     free(m);
     f_close(&fx);
@@ -2792,8 +2888,7 @@ UTEST(render, export_copies_the_targets) {
     b.points.position = f_buf(&fx, pos, sizeof(pos));
     b.points.velocity = f_buf(&fx, pv, sizeof(pv));
     b.points.color    = f_buf(&fx, col, sizeof(col));
-    b.points.state[0] = f_buf(&fx, &sel, 4);
-    b.points.state[1] = f_buf(&fx, &hl, 4);
+    b.points.marks = f_marks(&fx, &sel, &hl, 32);
     b.style.spheres.radius_add = 1.2f;
     md_render_frame_t f = frame_of(W, H, make_camera(&c), &b, 1);
     f.time = 0.0;
@@ -3175,11 +3270,11 @@ UTEST(render, culling_and_compute_raster_change_nothing) {
     uint32_t* sel = calloc(words, 4);
     const uint32_t deep = d.n_sph - 1;                      /* back of the stack: hidden */
     sel[deep / 32] |= 1u << (deep % 32);
-    md_gpu_addr_t S = f_buf(&fx, NULL, words * 4);
-    md_gpu_memset(fx.gfx, S, 0, words * 4);
-    d.b[0].points.state[0] = S;
+    md_gpu_addr_t S = f_buf(&fx, NULL, words * 32);
+    md_gpu_memset(fx.gfx, S, 0, words * 32);
+    d.b[0].points.marks = S;
     ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));   /* the address is geometry: a raster */
-    md_gpu_upload(fx.gfx, S, sel, words * 4);
+    f_marks_upload(&fx, S, sel, NULL, words * 32);
     f.content[MD_RENDER_CONTENT_STATE]++;
     md_render_status_t rs;
     ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, &rs));
@@ -3465,7 +3560,7 @@ UTEST(render, fade_thin_hands_over) {
         fs.z[i] = z;
     }
     #undef RND
-    md_gpu_addr_t P = f_buf(&fx, pos, N * 12), R = f_buf(&fx, rad, N * 4), S = f_buf(&fx, sel, sizeof(sel));
+    md_gpu_addr_t P = f_buf(&fx, pos, N * 12), R = f_buf(&fx, rad, N * 4), S = f_marks(&fx, sel, NULL, N);
     fs.vis[0] = f_buf(&fx, NULL, N / 8);
     fs.vis[1] = f_buf(&fx, NULL, N / 8);
     md_render_camera_t cam = make_camera(&c);
@@ -3475,7 +3570,7 @@ UTEST(render, fade_thin_hands_over) {
     for (int k = 0; k < 2; ++k) {
         md_render_batch_t b = {0};
         b.key = 1 + k; b.kind = MD_RENDER_SPHERES; b.count = N; b.points.count = N;
-        b.points.position = P; b.points.radius = R; b.points.state[0] = S;
+        b.points.position = P; b.points.radius = R; b.points.marks = S;
         b.style.spheres.radius_scale = k ? 1.5f : 1.0f;         /* the stand-in: larger */
         b.color.mode = MD_RENDER_COLOR_UNIFORM;
         b.color.uniform = k ? 0xFFFF0000u : 0xFF0000FFu;
@@ -3624,7 +3719,7 @@ UTEST(render, fade_key_hands_over_groups) {
     for (uint32_t k = 0; k <= G / PER; ++k) { coff[k] = k * PER * M; soff[k] = k * PER * (M - 1); }
     for (uint32_t k = 1; k <= G / PER; ++k) coff[G / PER + k] = G * M + k * PER;   /* coff[G / PER] = G M: the stand-ins' first */
     md_gpu_addr_t P = f_buf(&fx, pos, NP * 12), R = f_buf(&fx, rad, NP * 4), K = f_buf(&fx, key, NP * 4);
-    md_gpu_addr_t AI = f_buf(&fx, attr, G * 4), PR = f_buf(&fx, pair, NS * 8), S = f_buf(&fx, sel, sizeof(sel));
+    md_gpu_addr_t AI = f_buf(&fx, attr, G * 4), PR = f_buf(&fx, pair, NS * 8), S = f_marks(&fx, sel, NULL, (uint32_t)sizeof(sel) * 8);
     md_gpu_addr_t CO = f_buf(&fx, coff, sizeof(coff)), SO = f_buf(&fx, soff, sizeof(soff));
     ks.vis[0] = f_buf(&fx, NULL, sizeof(sel));
     ks.vis[1] = f_buf(&fx, NULL, sizeof(sel));
@@ -3639,7 +3734,7 @@ UTEST(render, fade_key_hands_over_groups) {
     for (int k = 0; k < 3; ++k) {
         b[k].key = 1 + k;
         b[k].points.position = P; b[k].points.radius = R; b[k].points.count = NP; b[k].points.attr_count = NP;
-        b[k].points.state[0] = S;
+        b[k].points.marks = S;
         b[k].color.mode = MD_RENDER_COLOR_UNIFORM;
         b[k].color.uniform = 0xFF0000FFu + 0x4000u * k;
     }

@@ -714,9 +714,8 @@ static bool scene_make(md_gpu_stream_t s, scene_t* sc, uint32_t molecules, clust
         md_gpu_upload(s, sc->bond_clusters, boff, ((size_t)nc + 1) * 4);
         free(mc); free(p2); free(r2); free(c2); free(aoff); free(boff);
     }
-    size_t words = (sc->atoms + 31) / 32;
-    uint32_t* sel = calloc(words, 4);
-    for (uint32_t i = 0; i < sc->atoms; i += 97) sel[i / 32] |= 1u << (i % 32);     // about 1 % selected
+    uint8_t* sel = calloc(sc->atoms ? sc->atoms : 1, 1);                              // the marks
+    for (uint32_t i = 0; i < sc->atoms; i += 97) sel[i] = MD_RENDER_MARK_STATE0;     // about 1 % selected
     sc->pos      = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, (size_t)sc->atoms * 12).gpu;
     /* md_render_mol reads radii from its types and bonds from its topology:
        the scene's own arrays only for the plain batches */
@@ -724,11 +723,11 @@ static bool scene_make(md_gpu_stream_t s, scene_t* sc, uint32_t molecules, clust
     sc->rad      = plain ? md_gpu_malloc(s, MD_GPU_MEM_DEVICE, (size_t)sc->atoms * 4).gpu : 0;
     sc->bond_idx = plain ? md_gpu_malloc(s, MD_GPU_MEM_DEVICE, (size_t)sc->bonds * 8).gpu : 0;
     sc->color    = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, (size_t)sc->atoms * 4).gpu;
-    sc->sel      = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, words * 4).gpu;
+    sc->sel      = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sc->atoms ? sc->atoms : 1).gpu;
     bool ok = sc->pos && (!plain || (sc->rad && sc->bond_idx)) && sc->color && sc->sel &&
               md_gpu_upload(s, sc->pos, pos, (size_t)sc->atoms * 12) &&
               (!plain || (md_gpu_upload(s, sc->rad, rad, (size_t)sc->atoms * 4) && md_gpu_upload(s, sc->bond_idx, idx, (size_t)sc->bonds * 8))) &&
-              md_gpu_upload(s, sc->color, col, (size_t)sc->atoms * 4) && md_gpu_upload(s, sc->sel, sel, words * 4);
+              md_gpu_upload(s, sc->color, col, (size_t)sc->atoms * 4) && md_gpu_upload(s, sc->sel, sel, sc->atoms ? sc->atoms : 1);
     md_gpu_stream_sync(s);
     if (src == SRC_MOL) sc->host_pos = pos; else free(pos);
     free(rad); free(idx); free(col); free(sel);
@@ -1193,7 +1192,7 @@ static int run_gpu(int argc, char** argv) {
                                    !sc.partial ? "" : resident_scattered ? ", molecules at random" : ", one block of molecules",
                                    sc.topo.bond_count, sc.plan_ms, sc.write_ms);
         md_render_mol_atoms_t atoms = {0};
-        atoms.position = sc.pos; atoms.selection = sc.sel;
+        atoms.position = sc.pos; atoms.marks = sc.sel;
         if (src == SRC_MOL) {
             /* what a position change costs on top of the raster: the copy, and the copy after a regroup */
             const struct { const char* name; md_render_mol_update_flags_t flags; } ups[] = {
@@ -1325,7 +1324,7 @@ static int run_gpu(int argc, char** argv) {
                 }
             }
             md_render_points_t pts = {0};
-            pts.count = sc.atoms; pts.position = sc.pos; pts.radius = sc.rad; pts.color = sc.color; pts.state[0] = sc.sel;
+            pts.count = sc.atoms; pts.position = sc.pos; pts.radius = sc.rad; pts.color = sc.color; pts.marks = sc.sel;
             if (src != SRC_MOL) {
                 b[nb].key = 1; b[nb].kind = MD_RENDER_SPHERES; b[nb].count = sc.atoms; b[nb].points = pts;
                 if (src == SRC_HOST_GRID) { b[nb].cluster_offset = sc.atom_clusters; b[nb].cluster_count = sc.clusters; }
@@ -1619,14 +1618,13 @@ static int run_heavy(int argc, char** argv) {
             }
         }
         /* about 1 % of the atoms selected: the mask has something to draw */
-        const uint32_t words = (n + 31) / 32;
-        uint32_t* sel = calloc(words ? words : 1, 4);
-        for (uint32_t i = 0; i < n; i += 97) sel[i / 32] |= 1u << (i % 32);
+        uint8_t* sel = calloc(n ? n : 1, 1);                                          /* the marks */
+        for (uint32_t i = 0; i < n; i += 97) sel[i] = MD_RENDER_MARK_STATE0;
 
         md_gpu_addr_t P   = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, (size_t)n * 12).gpu;
         md_gpu_addr_t C   = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, (size_t)n * 4).gpu;
         md_gpu_addr_t CC  = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, (size_t)n * 4).gpu;
-        md_gpu_addr_t S   = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, (size_t)(words ? words : 1) * 4).gpu;
+        md_gpu_addr_t S   = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, n ? n : 1).gpu;
         md_gpu_addr_t dyn = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, topo.dynamic_size).gpu;
         const uint64_t prof_size = md_render_mol_cartoon_size(&topo) ? md_render_mol_cartoon_size(&topo) : 256;
         md_gpu_addr_t PROF = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, prof_size).gpu;
@@ -1634,10 +1632,10 @@ static int run_heavy(int argc, char** argv) {
         md_gpu_upload(s, P, state.xyz, (size_t)n * 12);
         md_gpu_upload(s, C, colors, (size_t)n * 4);
         md_gpu_upload(s, CC, cc, (size_t)n * 4);
-        md_gpu_upload(s, S, sel, (size_t)(words ? words : 1) * 4);
+        md_gpu_upload(s, S, sel, n ? n : 1);
         md_render_mol_atoms_t atoms = {0};
         atoms.position  = P;
-        atoms.selection = S;
+        atoms.marks     = S;
         md_render_mol_frame_cell(atoms.cell, md_unitcell_flags(&state.unitcell) ? &state.unitcell : NULL);
         if (!md_render_mol_update(kernels, s, &topo, dyn, &atoms, MD_RENDER_MOL_UPDATE_REGROUP, content)) { fprintf(stderr, "md_render_mol_update failed\n"); return 1; }
         const float unit[3] = { 1.0f, 1.0f, 1.0f };

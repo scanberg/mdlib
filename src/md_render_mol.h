@@ -473,8 +473,9 @@ typedef struct md_render_mol_atoms_t {
     md_gpu_addr_t radius_table;    /* float per particle type [topo.type_count]: for
                                       MD_RENDER_MOL_UPDATE_RADII                      */
     md_gpu_addr_t visible;         /* bitset over atoms: globally shown, optional     */
-    md_gpu_addr_t selection;       /* bitset over atoms, optional                     */
-    md_gpu_addr_t highlight;       /* bitset over atoms, optional                     */
+    md_gpu_addr_t marks;           /* uint8 per atom, optional: md_render's marks (the
+                                      selection, the highlight and its group's tag;
+                                      md_render_marks_write)                         */
     float         cell[9];         /* the positions' periodic cell (without frames:
                                       theirs is used), md_render_mol_frame_cell's;
                                       the derived points take their atoms at the

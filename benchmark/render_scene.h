@@ -58,7 +58,7 @@ typedef struct scene_t {
     float*                xf;            /* the instances' transforms, read by every draw */
     double                ctr[3], rad;   /* the bounding sphere of every instance */
     uint32_t*             colors;
-    uint32_t*             sel;
+    uint8_t*              sel;      /* the marks */
 } scene_t;
 
 /* "spacefill[:radius scale]", "licorice[:radius]", "ball[:ball scale]",
@@ -178,23 +178,22 @@ static inline bool scene_upload(scene_t* sc, const scene_desc_t* d, md_gpu_strea
         if (!c) c = md_atomic_number_cpk_color(md_atom_atomic_number(&sc->sys.atom, i));
         sc->colors[i] = c | 0xFF000000u;
     }
-    const uint32_t words = (n + 31) / 32;
-    sc->sel = calloc(words ? words : 1, 4);
+    sc->sel = calloc(n ? n : 1, 1);
     uint32_t n_sel = 0;
-    for (int64_t i = d->sel_beg < 0 ? 0 : d->sel_beg; i < d->sel_end && i < (int64_t)n; ++i) { sc->sel[i / 32] |= 1u << (i % 32); n_sel++; }
+    for (int64_t i = d->sel_beg < 0 ? 0 : d->sel_beg; i < d->sel_end && i < (int64_t)n; ++i) { sc->sel[i] = MD_RENDER_MARK_STATE0; n_sel++; }
 
     md_gpu_addr_t P = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, (size_t)n * 12).gpu;
     md_gpu_addr_t C = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, (size_t)n * 4).gpu;
-    md_gpu_addr_t S = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, (size_t)(words ? words : 1) * 4).gpu;
+    md_gpu_addr_t S = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, n ? n : 1).gpu;
     sc->dyn = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sc->topo.dynamic_size).gpu;
     if (!P || !C || !S || !sc->dyn) { fprintf(stderr, "out of GPU memory\n"); return false; }
     md_gpu_upload(s, P, sc->state.xyz, (size_t)n * 12);
     md_gpu_upload(s, C, sc->colors, (size_t)n * 4);
-    md_gpu_upload(s, S, sc->sel, (size_t)(words ? words : 1) * 4);
+    md_gpu_upload(s, S, sc->sel, n ? n : 1);
     memset(&sc->atoms, 0, sizeof(sc->atoms));
     sc->atoms.position = P;
     md_render_mol_frame_cell(sc->atoms.cell, md_unitcell_flags(&sc->state.unitcell) ? &sc->state.unitcell : NULL);   /* the lipids whole across it */
-    if (n_sel) sc->atoms.selection = S;
+    if (n_sel) sc->atoms.marks = S;
     if (!md_render_mol_update(kernels, s, &sc->topo, sc->dyn, &sc->atoms, MD_RENDER_MOL_UPDATE_REGROUP, sc->content)) { fprintf(stderr, "md_render_mol_update failed\n"); return false; }
 
     /* Instances along the cell (or the bounds) */

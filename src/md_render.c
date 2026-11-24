@@ -116,8 +116,7 @@ enum {
     F_ATTR_INDEX   = 1u << 3,
     F_VISIBLE0     = 1u << 4,
     F_VISIBLE1     = 1u << 5,
-    F_STATE0       = 1u << 6,
-    F_STATE1       = 1u << 7,
+    F_MARKS        = 1u << 6,
     F_ID           = 1u << 8,
     F_RADIUS_SCALE = 1u << 9,
     F_COLOR        = 1u << 10,
@@ -143,7 +142,9 @@ typedef struct gpu_batch_t {
     uint32_t      kind, count, instance_count, flags;
     uint32_t      stride, vel_stride, attr_count, color_mode;
     md_gpu_addr_t position, velocity, radius, attr_index, color, palette_index, palette;
-    md_gpu_addr_t visible0, visible1, state0, state1, index, id, radius_scale;
+    md_gpu_addr_t visible0, visible1, marks;
+    uint32_t      _mpad0, _mpad1;                                 /* (tint on 16 bytes) */
+    md_gpu_addr_t index, id, radius_scale;
     md_gpu_addr_t transforms, transforms_prev;
     float         s0, s1;
     uint32_t      uniform_color, palette_count;
@@ -642,8 +643,7 @@ static void canonical_geometry(md_render_batch_t* out, const md_render_batch_t* 
     out->points.attr_index      = b->points.attr_index;
     out->points.visible[0]      = b->points.visible[0];
     out->points.visible[1]      = b->points.visible[1];
-    out->points.state[0]        = b->points.state[0];   /* addresses: the mask pass draws from them */
-    out->points.state[1]        = b->points.state[1];
+    out->points.marks           = b->points.marks;      /* an address: the mask pass draws from it */
     out->index           = b->index;
     out->id              = b->id;
     out->cluster_offset  = b->cluster_offset;
@@ -962,7 +962,7 @@ static bool gpu_realloc(md_gpu_stream_t s, md_gpu_addr_t* addr, size_t* cap, siz
    that speculates loads out of branches would do the same. */
 static void no_null(gpu_batch_t* g, md_gpu_addr_t zero) {
     md_gpu_addr_t* opt[] = { &g->position, &g->velocity, &g->radius, &g->attr_index, &g->color, &g->palette_index, &g->palette,
-                             &g->visible0, &g->visible1, &g->state0, &g->state1, &g->index, &g->id, &g->radius_scale,
+                             &g->visible0, &g->visible1, &g->marks, &g->index, &g->id, &g->radius_scale,
                              &g->radius_table, &g->cluster_offset, &g->spl_axis, &g->spl_profile, &g->cap_side, &g->fade_key };
     for (size_t i = 0; i < sizeof(opt) / sizeof(opt[0]); ++i) if (!*opt[i]) *opt[i] = zero;
 }
@@ -995,8 +995,7 @@ static void fill_batch(gpu_batch_t* g, const md_render_batch_t* b, uint32_t n_in
     g->palette        = b->color.palette;
     g->visible0       = p->visible[0];
     g->visible1       = p->visible[1];
-    g->state0         = p->state[0];
-    g->state1         = p->state[1];
+    g->marks          = p->marks;
     g->index          = b->index;
     g->id             = b->id;
     g->transforms      = xf;
@@ -1009,8 +1008,7 @@ static void fill_batch(gpu_batch_t* g, const md_render_batch_t* b, uint32_t n_in
     if (p->attr_index)     f |= F_ATTR_INDEX;
     if (p->visible[0])     f |= F_VISIBLE0;
     if (p->visible[1])     f |= F_VISIBLE1;
-    if (p->state[0])       f |= F_STATE0;
-    if (p->state[1])       f |= F_STATE1;
+    if (p->marks)          f |= F_MARKS;
     if (b->id)             f |= F_ID;
     if (p->color)          f |= F_COLOR;
     if (p->palette_index)  f |= F_PALETTE_IDX;
@@ -1440,7 +1438,7 @@ static bool run_masks(md_gpu_stream_t s, md_render_view_t v, const md_render_fra
     bool has[HW_KINDS] = { false, false, false, false };
     for (uint32_t i = 0; i < f->batch_count; ++i) {
         const md_render_batch_t* b = &f->batches[i];
-        if (b->count && (b->points.state[0] || b->points.state[1])) {
+        if (b->count && b->points.marks) {
             if (culled_kind(b->kind)) has[hw_kind(b->kind)] = true;
         }
     }
@@ -1860,6 +1858,32 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
         out->jitter[1] = v->jitter[1];
     }
     return true;
+}
+
+/* ---- Marks ------------------------------------------------------------- */
+
+void md_render_marks_write(uint8_t* dst, size_t count, md_bitset_t state0, md_bitset_t state1) {
+    if (!dst) return;
+    for (size_t base = 0; base < count; base += 64) {
+        const uint64_t w0 = md_bitset_word(state0, (uint32_t)base);
+        const uint64_t w1 = md_bitset_word(state1, (uint32_t)base);
+        const size_t   n  = count - base < 64 ? count - base : 64;
+        for (size_t i = 0; i < n; ++i) dst[base + i] = (uint8_t)(((w0 >> i) & 1u) | (((w1 >> i) & 1u) << 1));
+    }
+}
+
+void md_render_marks_tag(uint8_t* dst, size_t count, md_bitset_t set, uint32_t tag) {
+    if (!dst) return;
+    const uint8_t t = MD_RENDER_MARK_TAG(tag), keep = (uint8_t)~MD_RENDER_MARK_TAG(7u);
+    for (size_t base = 0; base < count; base += 64) {
+        uint64_t w = md_bitset_word(set, (uint32_t)base);
+        if (count - base < 64) w &= (1ull << (count - base)) - 1u;
+        while (w) {
+            const size_t i = base + md_ctz64(w);
+            dst[i] = (uint8_t)((dst[i] & keep) | t);
+            w &= w - 1u;
+        }
+    }
 }
 
 md_render_targets_t md_render_view_targets(md_render_view_t v) {

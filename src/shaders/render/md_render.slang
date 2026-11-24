@@ -71,8 +71,7 @@ static const uint F_RADIUS       = 1u << 2;
 static const uint F_ATTR_INDEX   = 1u << 3;
 static const uint F_VISIBLE0     = 1u << 4;
 static const uint F_VISIBLE1     = 1u << 5;
-static const uint F_STATE0       = 1u << 6;
-static const uint F_STATE1       = 1u << 7;
+static const uint F_MARKS        = 1u << 6;
 static const uint F_ID           = 1u << 8;
 static const uint F_RADIUS_SCALE = 1u << 9;
 static const uint F_COLOR        = 1u << 10;
@@ -126,8 +125,8 @@ struct Batch {
     uint*   palette;
     uint*   visible0;
     uint*   visible1;
-    uint*   state0;
-    uint*   state1;
+    uint*   marks;              // uint8 per attribute: states (bits 0, 1), tag (2..4)
+    uint    _mpad0, _mpad1;     // (tint on 16 bytes)
     uint*   index;
     uint*   id;
     float*  radius_scale;
@@ -335,11 +334,26 @@ bool attr_visible(Batch b, uint a) {
     return true;
 }
 
+// The marks of attribute a: the state bits (0, 1) and the tag (2..4); 0 with
+// neither state (a tag is of a state)
 uint attr_state(Batch b, uint a) {
-    uint s = 0u;
-    if ((b.flags & F_STATE0) != 0u && test_bit(b.state0, gated(b, F_STATE0, a))) s |= 1u;
-    if ((b.flags & F_STATE1) != 0u && test_bit(b.state1, gated(b, F_STATE1, a))) s |= 2u;
-    return s;
+    if ((b.flags & F_MARKS) == 0u) return 0u;
+    uint i = gated(b, F_MARKS, a);
+    uint m = (b.marks[i >> 2u] >> ((i & 3u) * 8u)) & 0x1Fu;
+    return (m & 3u) != 0u ? m : 0u;
+}
+
+// Of a primitive of several points: the states all have, the largest tag
+static const uint ST_ALL = 3u;
+uint st_meet(uint s, uint t) {
+    uint m = s & t & 3u;
+    return m != 0u ? m | max(s & 0x1Cu, t & 0x1Cu) : 0u;
+}
+
+// A mask channel of a state: 0 where not, else (8 + tag) / 15 (exact in unorm8,
+// over a half, and the largest tag wins the max blend)
+float mark_value(uint st, uint bit) {
+    return (st & bit) != 0u ? float(8u + ((st >> 2u) & 7u)) / 15.0 : 0.0;
 }
 
 // Point k (0 or 1) of element e with `per` points per element
@@ -1388,7 +1402,7 @@ Geo element_geo(ViewData v, Batch b, uint inst, uint e, bool fade) {
         uint a0 = attr_of(b, p0);
         uint a1 = attr_of(b, p1);
         if (!attr_visible(b, a0) || !attr_visible(b, a1)) return g;
-        g.st = attr_state(b, a0) & attr_state(b, a1);
+        g.st = st_meet(attr_state(b, a0), attr_state(b, a1));
         g.r  = capsule_radius(b, e) * s;
         g.a  = mulp(M(v, view), mulp(T, load_pos(b, p0)));
         g.b  = mulp(M(v, view), mulp(T, load_pos(b, p1)));
@@ -1766,11 +1780,11 @@ PolyPart poly_part(ViewData v, Batch b, uint inst, uint e, bool fade) {
 bool poly_visible(Batch b, uint e, out uint st) {
     uint n = poly_n(b);
     bool vis = true;
-    st = 0xFFFFFFFFu;
+    st = ST_ALL;
     for (uint k = 0u; k < n; ++k) {
         uint ai = attr_of(b, point_of(b, e, k, n));
         vis = vis && attr_visible(b, ai);
-        st &= attr_state(b, ai);
+        st = st_meet(st, attr_state(b, ai));
     }
     return vis;
 }
@@ -2346,7 +2360,7 @@ LocalElem element_local(Batch b, uint e, bool geo) {
         uint a0 = attr_of(b, p0);
         uint a1 = attr_of(b, p1);
         if (!attr_visible(b, a0) || !attr_visible(b, a1)) return l;
-        l.st = attr_state(b, a0) & attr_state(b, a1);
+        l.st = st_meet(attr_state(b, a0), attr_state(b, a1));
         l.factor = ((b.flags & F_RADIUS_SCALE) != 0u) ? b.radius_scale[gated(b, F_RADIUS_SCALE, e)] : 1.0;
         if ((b.flags & F_DISPLACED) != 0u) l.factor *= 1.0 + abs(b.cap_offset);    // off its points in any direction
         if (geo) { l.a = load_pos(b, p0); l.b = load_pos(b, p1); }
@@ -3183,7 +3197,7 @@ MaskOut sphere_mask_fs(SphereV i) {
     float t = sphere_hit(r, i.sph.xyz, i.sph.w, false);
     if (t < 0.0) discard;
     MaskOut o;
-    o.m     = float4(0.0, (i.state & 1u) != 0u ? 1.0 : 0.0, 0.0, (i.state & 2u) != 0u ? 1.0 : 0.0);
+    o.m     = float4(0.0, mark_value(i.state, 1u), 0.0, mark_value(i.state, 2u));
     o.depth = clip_depth(v, r.o + r.d * t);
     return o;
 }
@@ -3280,7 +3294,7 @@ MaskOut capsule_mask_fs(CapsuleV i) {
     float t = capsule_fragment_hit(r, i);
     if (t < 0.0) discard;
     MaskOut o;
-    o.m     = float4(0.0, (i.state & 1u) != 0u ? 1.0 : 0.0, 0.0, (i.state & 2u) != 0u ? 1.0 : 0.0);
+    o.m     = float4(0.0, mark_value(i.state, 1u), 0.0, mark_value(i.state, 2u));
     o.depth = capsule_depth(clip_depth(v, r.o + r.d * t));
     return o;
 }
@@ -3371,7 +3385,7 @@ MaskOut spline_mask_fs(SplineV i) {
     float t = spline_fragment_hit(v, r, i).t;
     if (t < 0.0) discard;
     MaskOut o;
-    o.m     = float4(0.0, (i.state & 1u) != 0u ? 1.0 : 0.0, 0.0, (i.state & 2u) != 0u ? 1.0 : 0.0);
+    o.m     = float4(0.0, mark_value(i.state, 1u), 0.0, mark_value(i.state, 2u));
     o.depth = capsule_depth(clip_depth(v, r.o + r.d * t));
     return o;
 }
@@ -3429,7 +3443,7 @@ MaskOut polygon_mask_fs(SplineV i) {
     float t = poly_fragment_hit(v, r, i).t;
     if (t < 0.0) discard;
     MaskOut o;
-    o.m     = float4(0.0, (i.state & 1u) != 0u ? 1.0 : 0.0, 0.0, (i.state & 2u) != 0u ? 1.0 : 0.0);
+    o.m     = float4(0.0, mark_value(i.state, 1u), 0.0, mark_value(i.state, 2u));
     o.depth = capsule_depth(clip_depth(v, r.o + r.d * t));
     return o;
 }
@@ -3792,9 +3806,9 @@ void mask_visible(uint3 tid : SV_DispatchThreadID) {
             } else if (b.kind == KIND_POLYGONS) {
                 poly_visible(b, e, st);
             } else {
-                st = attr_state(b, attr_of(b, point_of(b, e, 0u, 2u))) & attr_state(b, attr_of(b, point_of(b, e, 1u, 2u)));
+                st = st_meet(attr_state(b, attr_of(b, point_of(b, e, 0u, 2u))), attr_state(b, attr_of(b, point_of(b, e, 1u, 2u))));
             }
-            m = float4((st & 1u) != 0u ? 1.0 : 0.0, 0.0, (st & 2u) != 0u ? 1.0 : 0.0, 0.0);
+            m = float4(mark_value(st, 1u), 0.0, mark_value(st, 2u), 0.0);
         }
     }
     a.mask[px] = m;
@@ -3813,7 +3827,10 @@ void export_targets(uint3 tid : SV_DispatchThreadID) {
     if ((a.mode & 2u) != 0u) {
         float4 m    = a.mask[px];
         uint   bits = (m.x > 0.5 ? 1u : 0u) | (m.y > 0.5 ? 2u : 0u) | (m.z > 0.5 ? 4u : 0u) | (m.w > 0.5 ? 8u : 0u);
-        a.out_color[px] = float4(a.color[px].rgb, float(bits) / 255.0);
+        // The tag of state 1: the visible surface's, else the largest anywhere
+        float  t1   = m.z > 0.5 ? m.z : m.w;
+        uint   tag  = t1 > 0.5 ? uint(t1 * 15.0 + 0.5) - 8u : 0u;
+        a.out_color[px] = float4(a.color[px].rgb, float(bits | (tag << 4u)) / 255.0);
     }
     if ((a.mode & 4u) != 0u) a.out_surface[px] = float4(a.normal[px], a.motion[px]);
 }

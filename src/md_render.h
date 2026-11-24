@@ -33,9 +33,10 @@ The model, in full
 
   * Points carry positions and, optionally, a VELOCITY. Through an optional
     index they also carry ATTRIBUTES (usually per atom): a colour or a palette
-    index, two visibility bitsets and two state bitsets (an application's
-    selection and highlight). A primitive is visible when all its points are,
-    and has a state bit when all its points have it.
+    index, two visibility bitsets and MARKS, a byte each of two state bits (an
+    application's selection and highlight) and a tag (a highlight's group). A
+    primitive is visible when all its points are, and has a state bit when all
+    its points have it, with the largest of their tags.
 
   * A FRAME is the list of batches, a camera, a time stamp and three content
     counters. It is copied at the call. There is no scene graph and no object
@@ -45,7 +46,7 @@ The model, in full
     64-bit id per pixel. The view then RESOLVES the surfaces (base colour,
     normal, motion) by intersecting again the one primitive that won each
     pixel, and makes MASKS of the two state bits (visible, and present at all
-    including behind other surfaces).
+    including behind other surfaces), with their tags.
 
   * A view does the least work that keeps its targets correct:
 
@@ -115,6 +116,7 @@ Conventions
 #include <stddef.h>
 
 #include <core/md_gpu.h>
+#include <core/md_bitset.h>
 
 struct md_allocator_i;
 
@@ -152,7 +154,18 @@ void md_render_destroy(md_render_ctx_t render);
    `attr_index` maps points onto another array (usually the atoms of a
    system). Every address but `position` is optional, and 0 has a defined
    meaning: no radius is 0, no colour is white, no palette index is entry 0,
-   no visibility bitset is all visible, no state bitset is none set. */
+   no visibility bitset is all visible, no marks are none set.
+
+   The marks are the caller's memory, written by it: on unified memory straight
+   from the CPU (md_render_marks_write fills a byte array from sets, for that or
+   for an upload). md_render reads them when it makes the masks, so bump
+   MD_RENDER_CONTENT_STATE when they change, and keep what a frame in flight
+   reads unchanged until it is done (md_gpu_temp memory, or an upload). */
+#define MD_RENDER_MARK_STATE0     0x01u
+#define MD_RENDER_MARK_STATE1     0x02u
+#define MD_RENDER_MARK_TAG_SHIFT  2
+#define MD_RENDER_MARK_TAG_COUNT  8          /* tags 0 .. 7                         */
+#define MD_RENDER_MARK_TAG(tag)   ((uint8_t)(((tag) & 7u) << MD_RENDER_MARK_TAG_SHIFT))
 
 typedef struct md_render_points_t {
     uint32_t      count;
@@ -178,8 +191,16 @@ typedef struct md_render_points_t {
     md_gpu_addr_t color;           /* uint32 RGBA8 per attribute, COLOR_POINTS        */
     md_gpu_addr_t palette_index;   /* uint16 per attribute, COLOR_PALETTE             */
     md_gpu_addr_t visible[2];      /* bitsets over the attributes, ANDed; 0: all set  */
-    md_gpu_addr_t state[2];        /* bitsets over the attributes; 0: none set        */
+    md_gpu_addr_t marks;           /* uint8 per attribute: bit 0 state 0, bit 1 state
+                                      1, bits 2..4 the tag (MD_RENDER_MARK_*), 5..7
+                                      zero; 0: none set                               */
 } md_render_points_t;
+
+/* The marks of `count` attributes into `dst`: the states from two sets (empty:
+   none) and no tag. Then md_render_marks_tag for each set of a tag. */
+void md_render_marks_write(uint8_t* dst, size_t count, md_bitset_t state0, md_bitset_t state1);
+/* The tag of the attributes of `set` (the later call wins where sets overlap) */
+void md_render_marks_tag(uint8_t* dst, size_t count, md_bitset_t set, uint32_t tag);
 
 /* =========================================================================
    Batches
@@ -476,7 +497,7 @@ typedef struct md_render_camera_t {
 enum {
     MD_RENDER_CONTENT_GEOMETRY = 0, /* positions, velocities, radii, indices, visibility */
     MD_RENDER_CONTENT_APPEARANCE,   /* colours, palette indices, palettes               */
-    MD_RENDER_CONTENT_STATE,        /* the state bitsets                                */
+    MD_RENDER_CONTENT_STATE,        /* the marks                                        */
     MD_RENDER_CONTENT_COUNT,
 };
 
@@ -552,7 +573,9 @@ typedef struct md_render_targets_t {
     md_gpu_texture_t motion;   /* RG16_FLOAT, pixels from where the surface was at
                                   the previous raster to where it is              */
     md_gpu_texture_t mask;     /* RGBA8_UNORM: state 0 visible, state 0 anywhere
-                                  (also hidden), state 1 visible, state 1 anywhere */
+                                  (also hidden), state 1 visible, state 1 anywhere;
+                                  0 where not, else (8 + tag) / 15: the visible
+                                  surface's tag, of anywhere the largest            */
 } md_render_targets_t;
 
 md_render_targets_t md_render_view_targets(md_render_view_t view);
@@ -567,7 +590,9 @@ md_render_targets_t md_render_view_targets(md_render_view_t view);
        color    RGBA8_UNORM   rgb: the colour target's; a: the mask target's
                               four channels as bits over 255 (1 state 0
                               visible, 2 state 0 anywhere, 4 state 1 visible,
-                              8 state 1 anywhere). Coverage is depth > 0
+                              8 state 1 anywhere), and bits 4..6 the tag of
+                              state 1 (visible, else anywhere). Coverage is
+                              depth > 0
        surface  RGBA16_FLOAT  xy: the normal target's; zw: the motion target's
 
    Rows as the targets': the first is the top. As of the last draw; ordered in
