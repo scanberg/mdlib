@@ -46,22 +46,15 @@ typedef struct md_topology_desc_t {
     md_str_t         title;
 } md_topology_desc_t;
 
-// Loads the topology into the system (md_io.h, LOAD).
+// Builds the system of the topology onto a system without atoms (md_io.h, LOAD): its particle types, residues, bonds
+// (those of every atom, so none is inferred: md_atom_data_t::bonds_complete), and chains where the topology has them.
+// Massless particles without an element are virtual sites, and bonds to them are left out (a site is tied to its atom
+// by its construction). The state is made for no atoms (md_system_state_has_coords is false): the coordinates come
+// from another file. It holds the topology's cell. Published: 'atom/charge' (e) and 'atom/mass' (Da) where the
+// topology has them. Not inferred.
 //
-// Onto a system without atoms it builds them: their particle types, residues, bonds (those of every atom, so none is
-// inferred: md_atom_data_t::bonds_complete), and chains where the topology has them. Massless particles without an
-// element are virtual sites, and bonds to them are left out (a site is tied to its atom by its construction). The state
-// is made for no atoms (md_system_state_has_coords is false): the coordinates come from another file. It holds the
-// topology's cell.
-//
-// Onto a system with atoms it is checked against them: the atom count and every atom name (compared as structure files
-// cut them short) agree, and the residue boundaries where the residue counts do, or it is MD_LOAD_MISMATCH and nothing
-// changes. The topology's bonds replace the covalent bonds given before (the non-covalent ones given are kept, the user's
-// are apart) and every atom has its bonds given complete; the system keeps its residue names, and has the topology's
-// chains where it has none of its own; the state has the topology's cell where it has none.
-//
-// Either way 'atom/charge' (e) and 'atom/mass' (Da) are published where the topology has them, and the system is not
-// inferred: its topology_version tells the caller it changed.
+// Onto a system with atoms it is MD_LOAD_FAILED, and nothing changes: the topology is a system of its own, which joins
+// one of its atoms through md_system_merge.
 md_load_result_t md_topology_system_load(struct md_system_t* sys, struct md_system_state_t* state, const md_topology_desc_t* desc, md_str_t filename);
 
 #ifdef __cplusplus

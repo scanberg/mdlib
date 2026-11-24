@@ -118,6 +118,9 @@ typedef struct md_nb_forcefield_t {
 
 void md_nb_forcefield_free(md_nb_forcefield_t* ff);
 
+// A copy of src in alloc, which dst keeps; what dst had is freed
+bool md_nb_forcefield_copy(md_nb_forcefield_t* dst, const md_nb_forcefield_t* src, struct md_allocator_i* alloc);
+
 // Whether the force field excludes the pair from non-bonded interactions (same molecule, bonded neighbours)
 bool md_nb_forcefield_excluded(const md_nb_forcefield_t* ff, uint32_t a, uint32_t b);
 

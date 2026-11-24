@@ -30,6 +30,7 @@ set (SRC_FILES
     test_dcd.c
     test_amber.c
     test_psf.c
+    test_system_merge.c
     test_intrinsics.c
     test_simd.c
     test_simd_ops.c

@@ -525,7 +525,20 @@ static const char* prmtop_gro_text =
     "    2HOH    EPW   10   1.515   1.515   1.500\n"
     "   2.50000   2.60000   2.70000\n";
 
-UTEST(amber_prmtop, loads_onto_a_system_of_its_atoms) {
+// The two of a topology and a structure file of its atoms: the structure, built from the GRO, and the topology joined to
+// it (gro_first), or the other way around
+static bool prmtop_and_gro(md_system_t* sys, md_system_state_t* state, md_str_t gro, md_str_t prmtop, bool gro_first, md_allocator_i* alloc) {
+    md_system_t other = { .alloc = alloc };
+    md_system_state_t other_state = { .alloc = alloc };
+    bool ok = gro_first
+        ? md_gro_system_init_from_file(sys, state, gro, NULL) && md_amber_prmtop_system_load_from_file(&other, &other_state, prmtop, NULL) == MD_LOAD_OK
+        : md_amber_prmtop_system_load_from_file(sys, state, prmtop, NULL) == MD_LOAD_OK && md_gro_system_init_from_file(&other, &other_state, gro, NULL);
+    ok = ok && md_system_merge(sys, state, &other, &other_state);
+    md_system_free(&other);
+    return ok;
+}
+
+UTEST(amber_prmtop, joins_a_system_of_its_atoms) {
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     const md_str_t gro  = MD_STR_LIT("md_unittest_amber_onto.gro");
     const md_str_t path = MD_STR_LIT("md_unittest_amber_onto.prmtop");
@@ -539,8 +552,19 @@ UTEST(amber_prmtop, loads_onto_a_system_of_its_atoms) {
     const md_unitcell_t cell = state.unitcell;
     const md_float3_t xyz0 = state.xyz[0];
 
+    // A system of its own: not loaded onto atoms
     const uint64_t version = sys.topology_version;
-    ASSERT_EQ(MD_LOAD_OK, md_amber_prmtop_system_load_from_file(&sys, &state, path, NULL));
+    EXPECT_EQ(MD_LOAD_FAILED, md_amber_prmtop_system_load_from_file(&sys, &state, path, NULL));
+    EXPECT_EQ(version, sys.topology_version);
+
+    md_system_t top = { .alloc = arena };
+    md_system_state_t top_state = { .alloc = arena };
+    ASSERT_EQ(MD_LOAD_OK, md_amber_prmtop_system_load_from_file(&top, &top_state, path, NULL));
+    // Of the same atoms, filling in what the structure lacks and replacing nothing
+    uint32_t override = ~0u;
+    EXPECT_TRUE(md_system_match(&override, &sys, &state, &top, &top_state));
+    EXPECT_EQ(0u, override);
+    ASSERT_TRUE(md_system_merge(&sys, &state, &top, &top_state));
     EXPECT_EQ(10u, sys.atom.count);
     EXPECT_NE(version, sys.topology_version);
     // BONDS: the topology's, of every atom, without the one to the extra point, as when it builds the system
@@ -558,23 +582,70 @@ UTEST(amber_prmtop, loads_onto_a_system_of_its_atoms) {
     const md_attribute_t* charge = md_attributes_find(&sys.attributes, MD_STR_LIT("atom/charge"));
     ASSERT_TRUE(charge != NULL);
     EXPECT_NEAR(-1.05804f, ((const float*)charge->data)[9], 1e-4f);
+    md_system_free(&top);
 
-    // Other atoms: MD_LOAD_MISMATCH, and nothing changed
+    // Other atoms: not of them, and nothing changed
     char other[8192];
     snprintf(other, sizeof(other), "%s", prmtop_text);
     char* name = strstr(other, "HO1 ");
     md_memcpy(name, "XX1 ", 4);
     ASSERT_TRUE(write_text(path, other));
-    const uint64_t loaded = sys.topology_version;
-    EXPECT_EQ(MD_LOAD_MISMATCH, md_amber_prmtop_system_load_from_file(&sys, &state, path, NULL));
-    EXPECT_EQ(loaded, sys.topology_version);
+    md_system_t wrong = { .alloc = arena };
+    md_system_state_t wrong_state = { .alloc = arena };
+    ASSERT_EQ(MD_LOAD_OK, md_amber_prmtop_system_load_from_file(&wrong, &wrong_state, path, NULL));
+    const uint64_t joined = sys.topology_version;
+    EXPECT_FALSE(md_system_match(NULL, &sys, &state, &wrong, &wrong_state));
+    EXPECT_FALSE(md_system_merge(&sys, &state, &wrong, &wrong_state));
+    EXPECT_EQ(joined, sys.topology_version);
     EXPECT_EQ(8u, md_bond_list_count(&sys.given_bond));
+    md_system_free(&wrong);
 
-    // Not a topology at all: MD_LOAD_FAILED, not a mismatch
+    // Not a topology at all
     ASSERT_TRUE(write_text(path, "not a topology\n"));
-    EXPECT_EQ(MD_LOAD_FAILED, md_amber_prmtop_system_load_from_file(&sys, &state, path, NULL));
+    md_system_t none = { .alloc = arena };
+    md_system_state_t none_state = { .alloc = arena };
+    EXPECT_EQ(MD_LOAD_FAILED, md_amber_prmtop_system_load_from_file(&none, &none_state, path, NULL));
 
     md_system_free(&sys);
+    remove(gro.ptr);
+    remove(path.ptr);
+    md_arena_allocator_destroy(arena);
+}
+
+// A topology and a structure file of its atoms make one system in either order: the order decides only the names
+UTEST(amber_prmtop, either_order_with_a_structure) {
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
+    const md_str_t gro  = MD_STR_LIT("md_unittest_amber_order.gro");
+    const md_str_t path = MD_STR_LIT("md_unittest_amber_order.prmtop");
+    ASSERT_TRUE(write_text(gro, prmtop_gro_text));
+    ASSERT_TRUE(write_text(path, prmtop_text));
+    md_system_t a = { .alloc = arena }, b = { .alloc = arena };
+    md_system_state_t as = { .alloc = arena }, bs = { .alloc = arena };
+    ASSERT_TRUE(prmtop_and_gro(&a, &as, gro, path, true, arena));
+    ASSERT_TRUE(prmtop_and_gro(&b, &bs, gro, path, false, arena));
+
+    ASSERT_EQ(a.atom.count, b.atom.count);
+    ASSERT_EQ(md_bond_list_count(&a.given_bond), md_bond_list_count(&b.given_bond));
+    for (size_t i = 0; i < md_bond_list_count(&a.given_bond); ++i) {
+        EXPECT_EQ(a.given_bond.pairs[i].idx[0], b.given_bond.pairs[i].idx[0]);
+        EXPECT_EQ(a.given_bond.pairs[i].idx[1], b.given_bond.pairs[i].idx[1]);
+    }
+    for (size_t i = 0; i < a.atom.count; ++i) {
+        EXPECT_EQ(a.atom.bonds_complete[i], b.atom.bonds_complete[i]);
+        EXPECT_EQ(as.xyz[i].x, bs.xyz[i].x);
+        EXPECT_EQ(md_atom_atomic_number(&a.atom, i), md_atom_atomic_number(&b.atom, i));
+    }
+    EXPECT_EQ(a.instance.count, b.instance.count);
+    EXPECT_EQ(a.residue.count, b.residue.count);
+    EXPECT_NEAR(as.unitcell.x, bs.unitcell.x, 1e-4f);
+    EXPECT_TRUE(md_attributes_find(&a.attributes, MD_STR_LIT("atom/charge")) != NULL);
+    EXPECT_TRUE(md_attributes_find(&b.attributes, MD_STR_LIT("atom/charge")) != NULL);
+    // The names are the first file's
+    EXPECT_TRUE(md_str_eq_cstr(md_system_residue_name(&a, 1), "HOH"));
+    EXPECT_TRUE(md_str_eq_cstr(md_system_residue_name(&b, 1), "WAT"));
+
+    md_system_free(&a);
+    md_system_free(&b);
     remove(gro.ptr);
     remove(path.ptr);
     md_arena_allocator_destroy(arena);

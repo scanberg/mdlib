@@ -79,9 +79,9 @@ static const md_io_format_info_t formats[MD_IO_FORMAT_COUNT] = {
         .publish_run = md_trr_system_publish_run, .atom_count = md_trr_file_atom_count },
     [MD_IO_FORMAT_DCD] = { S("DCD Trajectory (dcd)"), S("dcd"), MD_IO_FLAG_RUN | MD_IO_FLAG_MM,
         .publish_run = md_dcd_system_publish_run, .atom_count = md_dcd_file_atom_count },
-    // VeloxChem: a system, or the QM data of a region of the atoms of one loaded (md_vlx_system_load_from_file). RUN as
-    // it is read along with the trajectories of a system; it publishes none of its own.
-    [MD_IO_FORMAT_VLX] = { S("VeloxChem (h5)"), S("h5"), MD_IO_FLAG_SYSTEM | MD_IO_FLAG_RUN | MD_IO_FLAG_MM | MD_IO_FLAG_QM,
+    // VeloxChem: a system of its own, and the QM data of a region of the atoms of one loaded (md_vlx_system_load_from_file).
+    // RUN as it is read along with the trajectories of a system; it publishes none of its own.
+    [MD_IO_FORMAT_VLX] = { S("VeloxChem (h5)"), S("h5"), MD_IO_FLAG_SYSTEM | MD_IO_FLAG_SUPPLEMENT | MD_IO_FLAG_RUN | MD_IO_FLAG_MM | MD_IO_FLAG_QM,
 #if MD_HDF5
         .load = md_vlx_system_load_from_file,
 #endif
@@ -114,8 +114,8 @@ static const md_io_format_info_t formats[MD_IO_FORMAT_COUNT] = {
         .supplement = md_csv_system_supplement_from_file },
     [MD_IO_FORMAT_ASE_TRAJ] = { S("ASE Trajectory (traj)"), S("traj"), MD_IO_FLAG_SYSTEM | MD_IO_FLAG_RUN | MD_IO_FLAG_MM,
         .system_init = md_ase_traj_system_init_from_file, .publish_run = md_ase_traj_system_publish_run },
-    // A topology: the atoms of a system without coordinates (they come from another file, as state_init of its format
-    // reads), or the bonds, charges and masses of a loaded system of its atoms
+    // A topology: a system without coordinates, which joins one of its atoms (md_system_merge) or is given them by a
+    // file of coordinates (state_init of its format reads them, until those load too)
     [MD_IO_FORMAT_AMBER_PRMTOP] = { S("Amber Topology (prmtop/parm7)"), S("prmtop"),
         MD_IO_FLAG_SYSTEM | MD_IO_FLAG_MM | MD_IO_FLAG_TOPOLOGY | MD_IO_FLAG_NEEDS_COORDINATES,
         .load = md_amber_prmtop_system_load_from_file,

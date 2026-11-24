@@ -61,13 +61,23 @@ UTEST(psf, builds_a_system_without_coordinates) {
     ASSERT_TRUE(charge != NULL);
     EXPECT_NEAR(-0.834f, ((const float*)charge->data)[0], 1e-5f);
 
-    // Loaded onto its own atoms: checked against them, and its bonds given anew; nothing is inferred
+    // A system of its own: not loaded onto atoms, which it leaves as they are
     const uint64_t version = sys.topology_version;
-    ASSERT_EQ(MD_LOAD_OK, md_psf_system_load_from_file(&sys, &state, path, NULL));
+    EXPECT_EQ(MD_LOAD_FAILED, md_psf_system_load_from_file(&sys, &state, path, NULL));
+    EXPECT_EQ(version, sys.topology_version);
+
+    // Built again and joined to its own atoms: the same, its complete bonds replacing those of the same atoms
+    md_system_t again = { .alloc = arena };
+    md_system_state_t again_state = { .alloc = arena };
+    ASSERT_EQ(MD_LOAD_OK, md_psf_system_load_from_file(&again, &again_state, path, NULL));
+    uint32_t override = 0;
+    EXPECT_TRUE(md_system_match(&override, &sys, &state, &again, &again_state));
+    EXPECT_EQ((uint32_t)(MD_SYSTEM_KIND_BONDS | MD_SYSTEM_KIND_ATTRIBUTES), override);
+    ASSERT_TRUE(md_system_merge(&sys, &state, &again, &again_state));
     EXPECT_EQ(4u, sys.atom.count);
     EXPECT_EQ(3u, md_bond_list_count(&sys.given_bond));
-    EXPECT_EQ(0u, sys.bond.count);
-    EXPECT_NE(version, sys.topology_version);
+    EXPECT_EQ(0u, sys.bond.count);      // not inferred
+    md_system_free(&again);
 
     ASSERT_TRUE(psf_write_text(path, "ATOM      1  N   ALA A   1      11.104   6.134  -6.504  1.00  0.00           N\n"));
     EXPECT_FALSE(md_psf_file_is_psf(path));

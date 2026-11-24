@@ -631,6 +631,34 @@ void md_system_derived_clear(md_system_t* sys);
 // field (nonbonded): what is computed on a copy (inference, in the background) reads neither. What dst had is freed.
 bool md_system_copy(md_system_t* dst, const md_system_t* src);
 
+// JOINING SYSTEMS. Two systems of the same atoms made one: src, built from a file, joined onto dst, by the kinds of what
+// each holds (md_io.h, LOAD).
+
+// What of a system another replaces when it joins it, as bits (md_system_match): where both have it, so that dst loses
+// its own
+enum {
+    MD_SYSTEM_KIND_COORDINATES = 1u << 0,   // The coordinates (and the cell with them)
+    MD_SYSTEM_KIND_BONDS       = 1u << 1,   // The bonds of atoms whose bonds both give complete
+    MD_SYSTEM_KIND_ATTRIBUTES  = 1u << 2,   // An attribute published under the same path in both
+    MD_SYSTEM_KIND_FORCEFIELD  = 1u << 3,   // The non-bonded force field
+};
+
+// Whether src is of dst's atoms, changing neither: a system without atoms has every system's; else the atom counts are
+// equal, the elements where both give them, the atom names (equal ignoring case, or one cut short of the other) and the
+// residue boundaries where both name their atoms in residues (the boundaries where the residue counts agree too). Two
+// the same by their count alone are checked by their bonds: where one gives the bonds of its atoms complete and the
+// other has coordinates, no more than half of those bonds are longer than 10 Angstrom in them (the shortest periodic
+// image), as coordinates of other atoms put most of them far apart. When it is, out_override (may be NULL) receives
+// what of dst src would replace (MD_SYSTEM_KIND_*), 0 when src only fills in and adds to it.
+bool md_system_match(uint32_t* out_override, const md_system_t* dst, const md_system_state_t* dst_state, const md_system_t* src, const md_system_state_t* src_state);
+
+// Joins src onto dst, src's state onto dst_state, by kind (md_io.h, LOAD), copying into dst's and dst_state's
+// allocators: what dst lacks of src's is filled in, what both have is replaced where md_system_match says so (whether
+// it should be is for the caller to decide), and the rest is added. False, with the reason logged and nothing
+// changed, when src is not of dst's atoms. Infers nothing: a change of the topology is recorded (topology_version),
+// and what is derived of it is to be inferred again.
+bool md_system_merge(md_system_t* dst, md_system_state_t* dst_state, const md_system_t* src, const md_system_state_t* src_state);
+
 #ifdef __cplusplus
 }
 #endif

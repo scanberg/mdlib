@@ -172,6 +172,36 @@ void md_nb_forcefield_free(md_nb_forcefield_t* ff) {
     md_memset(ff, 0, sizeof(md_nb_forcefield_t));
 }
 
+static void* nb_copy_array(md_allocator_i* alloc, const void* src, size_t size) {
+    if (!src) return NULL;
+    void* dst = md_alloc(alloc, MD_MAX(size, 1));
+    if (size) md_memcpy(dst, src, size);
+    return dst;
+}
+
+bool md_nb_forcefield_copy(md_nb_forcefield_t* dst, const md_nb_forcefield_t* src, md_allocator_i* alloc) {
+    MD_ASSERT(dst);
+    MD_ASSERT(src);
+    MD_ASSERT(alloc);
+    if (dst == src) return true;
+    md_nb_forcefield_free(dst);
+    // The counts and the potential as they are, the arrays anew (sized as md_nb_forcefield_free frees them)
+    *dst = *src;
+    dst->alloc = alloc;
+    const size_t T2 = src->num_types * src->num_types;
+    dst->c6        = nb_copy_array(alloc, src->c6,        sizeof(float)    * T2);
+    dst->c12       = nb_copy_array(alloc, src->c12,       sizeof(float)    * T2);
+    dst->type      = nb_copy_array(alloc, src->type,      sizeof(uint16_t) * src->num_atoms);
+    dst->charge    = nb_copy_array(alloc, src->charge,    sizeof(float)    * src->num_atoms);
+    dst->mol_beg   = nb_copy_array(alloc, src->mol_beg,   sizeof(uint32_t) * src->num_atoms);
+    dst->mol_type  = nb_copy_array(alloc, src->mol_type,  sizeof(uint32_t) * src->num_atoms);
+    dst->off_base  = nb_copy_array(alloc, src->off_base,  sizeof(uint32_t) * src->num_mol_types);
+    dst->excl_base = nb_copy_array(alloc, src->excl_base, sizeof(uint32_t) * src->num_mol_types);
+    dst->excl_off  = nb_copy_array(alloc, src->excl_off,  sizeof(uint32_t) * src->excl_off_count);
+    dst->excl      = nb_copy_array(alloc, src->excl,      sizeof(uint32_t) * src->excl_count);
+    return true;
+}
+
 bool md_nb_forcefield_excluded(const md_nb_forcefield_t* ff, uint32_t a, uint32_t b) {
     if (a == b) return true;
     if (ff->mol_beg[a] != ff->mol_beg[b]) return false;

@@ -360,6 +360,11 @@ md_attribute_id_t md_attributes_alias(md_attributes_t* attributes, md_attribute_
 // Removes one attribute and its aliases.
 bool md_attributes_remove(md_attributes_t* attributes, md_attribute_id_t id);
 
+// Every attribute of src into dst, replacing what dst has under the same path: resident data and text copied, a virtual
+// attribute with its provider and a copy of the user data it owns (borrowed user data borrowed again), an alias as an
+// alias of what its target became in dst. Returns the number copied.
+size_t md_attributes_copy(md_attributes_t* dst, const md_attributes_t* src);
+
 // Removes everything at or below prefix, and aliases of it elsewhere. An empty prefix is refused.
 // Returns the number removed, aliases included.
 size_t md_attributes_remove_prefix(md_attributes_t* attributes, md_str_t prefix);

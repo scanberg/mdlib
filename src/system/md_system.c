@@ -72,10 +72,7 @@ const char* md_group_role_name(md_group_role_t role) {
     return (uint32_t)role < MD_GROUP_ROLE_COUNT ? group_role_names[role] : NULL;
 }
 
-static void md_system_groups_free(md_system_t* sys) {
-    MD_ASSERT(sys);
-    md_allocator_i* alloc = sys->alloc;
-    md_group_data_t* g = &sys->group;
+static void groups_free(md_group_data_t* g, md_allocator_i* alloc) {
     for (size_t i = 0; i < g->count; ++i) {
         if (!md_str_empty(g->name[i])) md_free_str(alloc, g->name[i]);
         md_bitset_free(&g->atoms[i], alloc);
@@ -86,6 +83,11 @@ static void md_system_groups_free(md_system_t* sys) {
     md_array_free(g->origin, alloc);
     md_array_free(g->role_order.group, alloc);
     md_memset(g, 0, sizeof(md_group_data_t));
+}
+
+static void md_system_groups_free(md_system_t* sys) {
+    MD_ASSERT(sys);
+    groups_free(&sys->group, sys->alloc);
 }
 
 static void groups_copy(md_group_data_t* dst, const md_group_data_t* src, md_allocator_i* alloc) {
@@ -834,6 +836,345 @@ bool md_system_copy(md_system_t* dst, const md_system_t* src) {
     }
     return true;
 }
+
+// ### JOINING SYSTEMS ###
+
+// How a system knows its atoms: by their count alone, their elements, or their names in residues (md_io.h, LOAD)
+typedef enum {
+    IDENTITY_NONE = 0,
+    IDENTITY_COUNT,
+    IDENTITY_ELEMENTS,
+    IDENTITY_NAMED,
+} identity_t;
+
+static identity_t system_identity(const md_system_t* sys) {
+    const size_t N = sys->atom.count;
+    if (N == 0) return IDENTITY_NONE;
+    if (sys->residue.count) return IDENTITY_NAMED;
+    for (size_t i = 0; i < N; ++i) {
+        if (md_atom_atomic_number(&sys->atom, i)) return IDENTITY_ELEMENTS;
+    }
+    return IDENTITY_COUNT;
+}
+
+// Names as two files give them: equal ignoring case, or one a structure file's cut short form of the other
+static bool atom_name_matches(md_str_t a, md_str_t b) {
+    if (md_str_eq_ignore_case(a, b)) return true;
+    if (a.len > b.len) { const md_str_t t = a; a = b; b = t; }
+    return a.len >= 3 && md_str_begins_with_ignore_case(b, a);
+}
+
+static bool atom_bonds_complete(const md_system_t* sys, size_t i) {
+    return sys->atom.bonds_complete && i < md_array_size(sys->atom.bonds_complete) && sys->atom.bonds_complete[i];
+}
+
+static bool any_bonds_complete(const md_system_t* sys) {
+    for (size_t i = 0; i < md_array_size(sys->atom.bonds_complete); ++i) {
+        if (sys->atom.bonds_complete[i]) return true;
+    }
+    return false;
+}
+
+// The bonds sys gives of its atoms complete, in the coordinates of state: of plausible length unless more than half of
+// them are longer than 10 Angstrom (the shortest periodic image)
+#define MERGE_BOND_MAX_LENGTH 10.0f
+
+static bool bonds_plausible(const md_system_t* sys, const md_system_state_t* state) {
+    if (!md_system_state_has_coords(state) || state->num_atoms != sys->atom.count || !any_bonds_complete(sys)) return true;
+    const md_bond_list_t* bonds = &sys->given_bond;
+    const size_t count = md_bond_list_count(bonds);
+    size_t checked = 0, stretched = 0;
+    for (size_t b = 0; b < count; ++b) {
+        if (md_bond_is_interaction(bonds->flags[b])) continue;
+        const size_t i = (size_t)bonds->pairs[b].idx[0];
+        const size_t j = (size_t)bonds->pairs[b].idx[1];
+        if (!atom_bonds_complete(sys, i) || !atom_bonds_complete(sys, j)) continue;
+        float d[3] = { state->xyz[j].x - state->xyz[i].x, state->xyz[j].y - state->xyz[i].y, state->xyz[j].z - state->xyz[i].z };
+        md_geom_min_image(d, 3 * sizeof(float), 1, &state->unitcell);
+        checked += 1;
+        stretched += (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) > MERGE_BOND_MAX_LENGTH * MERGE_BOND_MAX_LENGTH;
+    }
+    return 2 * stretched <= checked;
+}
+
+#define MATCH_FAIL(...) do { if (verbose) MD_LOG_ERROR(__VA_ARGS__); return false; } while (0)
+
+static bool system_match(uint32_t* out_override, const md_system_t* dst, const md_system_state_t* dst_state, const md_system_t* src, const md_system_state_t* src_state, bool verbose) {
+    if (out_override) *out_override = 0;
+    const size_t N = dst->atom.count;
+    if (N == 0) return true;
+    if (src->atom.count != N) MATCH_FAIL("Not of the system's atoms: %zu atoms, the system %zu", src->atom.count, N);
+
+    // ## ATOMS: at the strongest identity both have
+    bool compared = false;
+    for (size_t i = 0; i < N; ++i) {
+        const md_atomic_number_t a = md_atom_atomic_number(&dst->atom, i);
+        const md_atomic_number_t b = md_atom_atomic_number(&src->atom, i);
+        if (!a || !b) continue;
+        compared = true;
+        if (a != b) MATCH_FAIL("Not of the system's atoms: atom %zu is element %d in the system and %d in the file", i + 1, (int)a, (int)b);
+    }
+    if (system_identity(dst) == IDENTITY_NAMED && system_identity(src) == IDENTITY_NAMED) {
+        compared = true;
+        for (size_t i = 0; i < N; ++i) {
+            const md_str_t a = md_atom_name(&dst->atom, i);
+            const md_str_t b = md_atom_name(&src->atom, i);
+            if (!atom_name_matches(a, b)) {
+                MATCH_FAIL("Not of the system's atoms: atom %zu is '" MD_STR_FMT "' in the system and '" MD_STR_FMT "' in the file", i + 1, MD_STR_ARG(a), MD_STR_ARG(b));
+            }
+        }
+        // The residues may be cut otherwise (a PDB file of several chains which reuse residue numbers): compared only
+        // when they are as many
+        if (dst->residue.count == src->residue.count) {
+            for (size_t r = 0; r < dst->residue.count; ++r) {
+                const md_urange_t a = md_system_residue_atom_range(dst, r);
+                const md_urange_t b = md_system_residue_atom_range(src, r);
+                if (a.beg != b.beg || a.end != b.end) MATCH_FAIL("Not of the system's atoms: residue %zu has other atoms in the file", r + 1);
+            }
+        }
+    }
+    if (!compared) {
+        // By their count alone: the bonds of one in the coordinates of the other
+        if (!bonds_plausible(dst, src_state) || !bonds_plausible(src, dst_state)) {
+            MATCH_FAIL("Not of the system's atoms: as many, but most bonds are longer than %.0f Angstrom in the other's coordinates", MERGE_BOND_MAX_LENGTH);
+        }
+    }
+
+    // ## What src would replace
+    if (out_override) {
+        uint32_t o = 0;
+        if (md_system_state_has_coords(dst_state) && md_system_state_has_coords(src_state)) o |= MD_SYSTEM_KIND_COORDINATES;
+        for (size_t i = 0; i < N; ++i) {
+            if (atom_bonds_complete(dst, i) && atom_bonds_complete(src, i)) { o |= MD_SYSTEM_KIND_BONDS; break; }
+        }
+        md_attribute_iter_t it = md_attributes_iter(&src->attributes, (md_str_t){0});
+        while (md_attributes_next(&it)) {
+            if (md_attributes_find(&dst->attributes, it.attr->path)) { o |= MD_SYSTEM_KIND_ATTRIBUTES; break; }
+        }
+        if (dst->nonbonded && src->nonbonded) o |= MD_SYSTEM_KIND_FORCEFIELD;
+        *out_override = o;
+    }
+    return true;
+}
+
+#undef MATCH_FAIL
+
+bool md_system_match(uint32_t* out_override, const md_system_t* dst, const md_system_state_t* dst_state, const md_system_t* src, const md_system_state_t* src_state) {
+    MD_ASSERT(dst && dst_state && src && src_state);
+    return system_match(out_override, dst, dst_state, src, src_state, false);
+}
+
+static uint64_t pair_key(md_atom_pair_t p) {
+    const uint64_t a = (uint32_t)MD_MIN(p.idx[0], p.idx[1]);
+    const uint64_t b = (uint32_t)MD_MAX(p.idx[0], p.idx[1]);
+    return (a << 32) | b;
+}
+
+// The bonds given onto dst's (BONDS): of the atoms whose bonds complete gives complete (NULL: none), these bonds replace
+// dst's covalent ones (its interactions stay); of the rest, a bond dst does not give is added between atoms whose bonds
+// dst does not give complete. Whether dst's bonds changed.
+static bool bonds_merge(md_system_t* dst, const md_bond_list_t* bonds, const uint8_t* complete) {
+    md_allocator_i* alloc = dst->alloc;
+    const size_t N = dst->atom.count;
+    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+    const size_t num_complete = complete ? md_array_size(complete) : 0;
+    #define COMPLETE(i) ((size_t)(i) < num_complete && complete[i])
+
+    md_bond_list_t out = {0};
+    md_hashmap32_t have = { .allocator = md_temp_allocator(temp) };
+    bool changed = false;
+    const size_t num_old = md_bond_list_count(&dst->given_bond);
+    for (size_t b = 0; b < num_old; ++b) {
+        const md_atom_pair_t p = dst->given_bond.pairs[b];
+        if (!md_bond_is_interaction(dst->given_bond.flags[b]) && (COMPLETE(p.idx[0]) || COMPLETE(p.idx[1]))) {
+            changed = true;
+            continue;
+        }
+        md_array_push(out.pairs, p, alloc);
+        md_array_push(out.flags, dst->given_bond.flags[b], alloc);
+        md_hashmap_add(&have, pair_key(p), 1);
+    }
+    const size_t num_new = md_bond_list_count(bonds);
+    for (size_t b = 0; b < num_new; ++b) {
+        const md_atom_pair_t p = bonds->pairs[b];
+        if ((size_t)p.idx[0] >= N || (size_t)p.idx[1] >= N) continue;
+        const bool given_complete = COMPLETE(p.idx[0]) || COMPLETE(p.idx[1]);
+        if (!given_complete) {
+            if (atom_bonds_complete(dst, (size_t)p.idx[0]) || atom_bonds_complete(dst, (size_t)p.idx[1])) continue;
+            if (md_hashmap_get(&have, pair_key(p))) continue;
+        }
+        md_array_push(out.pairs, p, alloc);
+        md_array_push(out.flags, bonds->flags[b], alloc);
+        md_hashmap_add(&have, pair_key(p), 1);
+        changed = true;
+    }
+
+    if (changed) {
+        md_bond_list_free(&dst->given_bond, alloc);
+        dst->given_bond = out;
+    } else {
+        md_bond_list_free(&out, alloc);
+    }
+    if (complete) {
+        if (md_array_size(dst->atom.bonds_complete) != N) {
+            const size_t had = md_array_size(dst->atom.bonds_complete);
+            md_array_resize(dst->atom.bonds_complete, N, alloc);
+            if (N > had) md_memset(dst->atom.bonds_complete + had, 0, N - had);
+        }
+        for (size_t i = 0; i < N; ++i) {
+            if (COMPLETE(i) && !dst->atom.bonds_complete[i]) {
+                dst->atom.bonds_complete[i] = 1;
+                changed = true;
+            }
+        }
+    }
+    #undef COMPLETE
+    md_temp_end(temp);
+    return changed;
+}
+
+// src's groups added to dst's, and the roles dst gives none of as src gives them
+static void groups_merge(md_system_t* dst, const md_group_data_t* src) {
+    if (!src->count) return;
+    md_temp_scope_t temp = md_temp_begin_avoid(dst->alloc);
+    uint32_t* map = md_temp_alloc_array(temp, uint32_t, src->count);
+    for (size_t i = 0; i < src->count; ++i) {
+        map[i] = (uint32_t)md_system_group_add(dst, src->name[i], src->atoms[i], (md_group_origin_t)src->origin[i]);
+    }
+    for (int r = 0; r < MD_GROUP_ROLE_COUNT; ++r) {
+        size_t have = 0, give = 0;
+        md_system_group_role_order(&dst->group, (md_group_role_t)r, &have);
+        const uint32_t* order = md_system_group_role_order(src, (md_group_role_t)r, &give);
+        if (have || !give) continue;
+        uint32_t* idx = md_temp_alloc_array(temp, uint32_t, give);
+        for (size_t k = 0; k < give; ++k) idx[k] = map[order[k]];
+        md_system_group_set_role(dst, (md_group_role_t)r, idx, give);
+    }
+    md_temp_end(temp);
+}
+
+// The arrays of the instances and of the assemblies, which index them: what the data gives as labels (md_io.h, LOAD)
+#define MERGE_LABEL_ARRAYS(X) \
+    X(instance.id) X(instance.auth_id) X(instance.res_offset) X(instance.part_type_idx) X(instance.mol_type_idx) \
+    X(instance.part_type.id) X(instance.part_type.flags) X(instance.mol_type.flags) \
+    X(assembly.id) X(assembly.group_offset) X(assembly.group_inst_offset) X(assembly.inst) X(assembly.group_oper_offset) \
+    X(assembly.oper) X(assembly.oper_id) X(assembly.oper_transform)
+#define MERGE_LABEL_STRINGS(X) \
+    X(instance.part_type.description) X(instance.mol_type.name)
+
+bool md_system_merge(md_system_t* dst, md_system_state_t* dst_state, const md_system_t* src, const md_system_state_t* src_state) {
+    MD_ASSERT(dst && dst_state && src && src_state);
+    if (dst == src) return true;
+    if (!dst->alloc || !dst_state->alloc) {
+        MD_LOG_ERROR("System or state allocator not set");
+        return false;
+    }
+    if (!system_match(NULL, dst, dst_state, src, src_state, true)) return false;
+    md_allocator_i* alloc = dst->alloc;
+    bool topology = false;
+
+    // ## ATOMS: where src knows them better, its atoms, types, residues and labels are dst's. What dst has beside them,
+    // its own, stays: its table, the user's bonds, its groups, its force field, its description, and the bonds it gives,
+    // which join src's as the bonds of a file which gives them in part.
+    if (system_identity(src) > system_identity(dst)) {
+        md_attributes_t attributes = dst->attributes;
+        md_bond_list_t given = dst->given_bond;
+        md_bond_list_t edit = dst->bond_edit;
+        md_group_data_t groups = dst->group;
+        md_nb_forcefield_t* nonbonded = dst->nonbonded;
+        md_str_t description = dst->description;
+        md_memset(&dst->attributes, 0, sizeof(dst->attributes));
+        md_memset(&dst->given_bond, 0, sizeof(dst->given_bond));
+        md_memset(&dst->bond_edit, 0, sizeof(dst->bond_edit));
+        md_memset(&dst->group, 0, sizeof(dst->group));
+        dst->nonbonded = NULL;
+        dst->description = (md_str_t){0};
+
+        md_system_copy(dst, src);
+
+        md_attributes_free(&dst->attributes);
+        dst->attributes = attributes;
+        md_bond_list_free(&dst->bond_edit, alloc);
+        dst->bond_edit = edit;
+        dst->nonbonded = nonbonded;
+        if (!md_str_empty(description)) {
+            if (!md_str_empty(dst->description)) md_free_str(alloc, dst->description);
+            dst->description = description;
+        }
+        bonds_merge(dst, &given, NULL);
+        md_bond_list_free(&given, alloc);
+        groups_merge(dst, &groups);
+        groups_free(&groups, alloc);
+        topology = true;
+    } else {
+        // ## BONDS
+        topology |= bonds_merge(dst, &src->given_bond, src->atom.bonds_complete);
+
+        // ## LABELS: the instances (and the assemblies of them), where dst has none and the residues are the same
+        if (dst->instance.count == 0 && src->instance.count && dst->residue.count == src->residue.count) {
+            md_system_assemblies_free(dst);
+            md_part_type_data_free(&dst->instance.part_type, alloc);
+            md_molecule_type_data_free(&dst->instance.mol_type, alloc);
+            dst->instance.count = src->instance.count;
+            dst->instance.part_type.count = src->instance.part_type.count;
+            dst->instance.mol_type.count = src->instance.mol_type.count;
+            dst->assembly.count = src->assembly.count;
+            dst->assembly.group_count = src->assembly.group_count;
+            dst->assembly.oper_count = src->assembly.oper_count;
+            md_array_free(dst->instance.id, alloc);
+            md_array_free(dst->instance.auth_id, alloc);
+            md_array_free(dst->instance.res_offset, alloc);
+            md_array_free(dst->instance.part_type_idx, alloc);
+            md_array_free(dst->instance.mol_type_idx, alloc);
+#define COPY_FIELD(f) COPY_ARRAY(dst->f, src->f, alloc);
+#define COPY_STRINGS(f) copy_strings(&dst->f, src->f, alloc);
+            MERGE_LABEL_ARRAYS(COPY_FIELD)
+            MERGE_LABEL_STRINGS(COPY_STRINGS)
+#undef COPY_FIELD
+#undef COPY_STRINGS
+            topology = true;
+        }
+        // The QM region, where dst flags none
+        if (!md_array_size(dst->atom.qm) && md_array_size(src->atom.qm)) {
+            COPY_ARRAY(dst->atom.qm, src->atom.qm, alloc);
+            topology = true;
+        }
+        if (md_str_empty(dst->description) && !md_str_empty(src->description)) {
+            dst->description = md_alloc_str(alloc, src->description);
+        }
+        groups_merge(dst, &src->group);
+    }
+
+    // ## COORDINATES, with the cell where they bring one; a cell without them (a topology's) where dst_state has none
+    if (md_system_state_has_coords(src_state)) {
+        const md_unitcell_t cell = dst_state->unitcell;
+        md_system_state_copy(dst_state, src_state);
+        if (!md_system_state_has_unitcell(src_state)) dst_state->unitcell = cell;
+    } else if (!md_system_state_has_unitcell(dst_state) && md_system_state_has_unitcell(src_state)) {
+        dst_state->unitcell = src_state->unitcell;
+    }
+
+    // ## ATTRIBUTES, of the system and of its state
+    if (!dst->attributes.alloc) dst->attributes.alloc = alloc;
+    if (!dst_state->attributes.alloc) dst_state->attributes.alloc = dst_state->alloc;
+    md_attributes_copy(&dst->attributes, &src->attributes);
+    md_attributes_copy(&dst_state->attributes, &src_state->attributes);
+
+    // ## FORCE FIELD
+    if (src->nonbonded) {
+        if (!dst->nonbonded) {
+            dst->nonbonded = md_alloc(alloc, sizeof(md_nb_forcefield_t));
+            md_memset(dst->nonbonded, 0, sizeof(md_nb_forcefield_t));
+        }
+        md_nb_forcefield_copy(dst->nonbonded, src->nonbonded, alloc);
+    }
+
+    if (topology) md_system_topology_changed(dst);
+    return true;
+}
+
+#undef MERGE_LABEL_ARRAYS
+#undef MERGE_LABEL_STRINGS
 
 #undef COPY_ARRAY
 

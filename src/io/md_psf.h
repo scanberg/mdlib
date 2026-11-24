@@ -40,9 +40,9 @@ bool md_psf_file_is_psf(md_str_t filename);
 // The atom count of the file (!NATOM), 0 when the file is not a PSF
 size_t md_psf_file_atom_count(md_str_t filename);
 
-// Loads the PSF into the system (md_io.h, LOAD; md_topology_system_load): onto a system without atoms, its atoms
-// without coordinates; onto a system of its atoms in its order (a PDB file of the same atoms), its bonds and segments.
-// Published: 'atom/charge' (e), 'atom/mass' (Da).
+// Builds the system of the PSF (md_io.h, LOAD; md_topology_system_load): its atoms without coordinates, and its
+// segments as chains. Published: 'atom/charge' (e), 'atom/mass' (Da). It joins a system of its atoms in its order (a PDB
+// file of the same atoms) through md_system_merge.
 md_load_result_t md_psf_system_load_from_file(struct md_system_t* sys, struct md_system_state_t* state, md_str_t filename, const struct md_load_desc_t* desc);
 
 #ifdef __cplusplus

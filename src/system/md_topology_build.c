@@ -184,100 +184,6 @@ static void topology_build(md_system_t* sys, md_system_state_t* state, const md_
     md_temp_end(temp);
 }
 
-// Names as a structure file has them against the topology's: equal ignoring case, or the structure's a cut short
-// form of the topology's.
-static bool topology_name_matches(md_str_t structure, md_str_t topology) {
-    if (md_str_eq_ignore_case(structure, topology)) return true;
-    return structure.len >= 3 && topology.len > structure.len && md_str_begins_with_ignore_case(topology, structure);
-}
-
-// The topology onto a system with atoms: MD_LOAD_MISMATCH, with nothing changed, unless they are its atoms
-static md_load_result_t topology_merge(md_system_t* sys, md_system_state_t* state, const md_topology_desc_t* desc, md_str_t filename) {
-    const md_topology_desc_t d = *desc;
-    const size_t N = sys->atom.count;
-    if (d.num_atoms != N) {
-        TOPO_LOG_ERROR(d.format, "'" MD_STR_FMT "' has %zu atoms, the loaded system %zu", MD_STR_ARG(filename), d.num_atoms, N);
-        return MD_LOAD_MISMATCH;
-    }
-    // The atoms in the same order: every name matches. The residues may be cut otherwise in the structure (a PDB file
-    // of several chains which reuse residue numbers), so their boundaries are compared only when the counts agree.
-    for (size_t i = 0; i < N; ++i) {
-        const md_str_t name = md_atom_name(&sys->atom, i);
-        if (!topology_name_matches(name, d.atom_name[i])) {
-            TOPO_LOG_ERROR(d.format, "atom %zu is '" MD_STR_FMT "' in the loaded system and '" MD_STR_FMT "' in '" MD_STR_FMT "'; the topology is not of these atoms in this order",
-                i + 1, MD_STR_ARG(name), MD_STR_ARG(d.atom_name[i]), MD_STR_ARG(filename));
-            return MD_LOAD_MISMATCH;
-        }
-    }
-    const bool same_residues = sys->residue.count == d.num_residues;
-    if (same_residues) {
-        size_t renamed = 0;
-        for (size_t r = 0; r < d.num_residues; ++r) {
-            const md_urange_t range = md_system_residue_atom_range(sys, r);
-            if (range.beg != d.res_offset[r] || range.end != d.res_offset[r + 1]) {
-                TOPO_LOG_ERROR(d.format, "residue %zu of '" MD_STR_FMT "' does not have the atoms of the loaded system's", r + 1, MD_STR_ARG(filename));
-                return MD_LOAD_MISMATCH;
-            }
-            renamed += !topology_name_matches(md_system_residue_name(sys, r), d.res_name[r]);
-        }
-        if (renamed) {
-            TOPO_LOG_INFO(d.format, "%zu residues are named otherwise in the topology (HIE for HIS, ...); the loaded names are kept", renamed);
-        }
-    }
-
-    md_temp_scope_t temp = md_temp_begin_avoid(sys->alloc);
-
-    // ## Bonds: the topology's, of every atom, replace those the data gave of the graph; its interactions are kept,
-    // and the user's edits are apart (md_system_t::bond_edit). Bonds to the topology's virtual sites are left out, as
-    // when it builds the system: the same bonds whichever file came first.
-    {
-        md_atomic_number_t* z = md_temp_alloc_array(temp, md_atomic_number_t, N);
-        topology_elements(z, &d);
-        const md_bond_list_t* old = &sys->given_bond;
-        const size_t old_count = md_bond_list_count(old);
-        size_t num_interactions = 0;
-        for (size_t i = 0; i < old_count; ++i) num_interactions += md_bond_is_interaction(old->flags[i]);
-        md_bond_list_t given = {0};
-        md_array_ensure(given.pairs, d.num_bonds + num_interactions, sys->alloc);
-        md_array_ensure(given.flags, d.num_bonds + num_interactions, sys->alloc);
-        for (size_t b = 0; b < d.num_bonds; ++b) {
-            const md_atom_pair_t pair = d.bonds[b];
-            if (topology_is_virtual(&d, (size_t)pair.idx[0], z[pair.idx[0]]) || topology_is_virtual(&d, (size_t)pair.idx[1], z[pair.idx[1]])) continue;
-            md_array_push_no_grow(given.pairs, pair);
-            md_array_push_no_grow(given.flags, md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_TOPOLOGY));
-        }
-        const size_t num_topology = md_array_size(given.pairs);
-        for (size_t i = 0; i < old_count; ++i) {
-            if (!md_bond_is_interaction(old->flags[i])) continue;
-            md_array_push_no_grow(given.pairs, old->pairs[i]);
-            md_array_push_no_grow(given.flags, old->flags[i]);
-        }
-        md_bond_list_free(&sys->given_bond, sys->alloc);
-        sys->given_bond = given;
-        md_system_set_bonds_complete(sys);
-        TOPO_LOG_INFO(d.format, "%zu bonds of the topology replace those given before", num_topology);
-    }
-
-    // ## Labels: the chains, where the system has none and the residues are the topology's
-    if (sys->instance.count == 0 && same_residues && d.res_chain) {
-        bool any = false;
-        for (size_t r = 0; r < d.num_residues && !any; ++r) any = !md_str_empty(d.res_chain[r]);
-        if (any) md_system_instances_from_chain_ids(sys, d.res_chain, NULL);
-    }
-    if (md_str_empty(sys->description) && !md_str_empty(d.title)) {
-        sys->description = md_alloc_str(sys->alloc, d.title);
-    }
-
-    topology_publish_quantities(sys, &d, md_temp_alloc_array(temp, float, N));
-
-    // ## The cell, where the state has none: the coordinates' own stands
-    if (!md_system_state_has_unitcell(state)) state->unitcell = d.cell;
-
-    md_system_topology_changed(sys);
-    md_temp_end(temp);
-    return MD_LOAD_OK;
-}
-
 md_load_result_t md_topology_system_load(md_system_t* sys, md_system_state_t* state, const md_topology_desc_t* desc, md_str_t filename) {
     MD_ASSERT(sys);
     MD_ASSERT(state);
@@ -290,7 +196,11 @@ md_load_result_t md_topology_system_load(md_system_t* sys, md_system_state_t* st
         TOPO_LOG_ERROR(desc->format, "no atoms or residues");
         return MD_LOAD_FAILED;
     }
-    if (sys->atom.count) return topology_merge(sys, state, desc, filename);
+    if (sys->atom.count) {
+        // A topology is a system of its own: joined to one of its atoms by md_system_merge
+        TOPO_LOG_ERROR(desc->format, "'" MD_STR_FMT "' builds a system of its own; join it to a loaded one with md_system_merge", MD_STR_ARG(filename));
+        return MD_LOAD_FAILED;
+    }
     topology_build(sys, state, desc);
     return MD_LOAD_OK;
 }

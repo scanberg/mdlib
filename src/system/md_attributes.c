@@ -1314,6 +1314,71 @@ md_attribute_id_t md_attributes_replace(md_attributes_t* attributes, const md_at
     return id;
 }
 
+size_t md_attributes_copy(md_attributes_t* dst, const md_attributes_t* src) {
+    MD_ASSERT(dst);
+    MD_ASSERT(src);
+    if (dst == src) return 0;
+    size_t copied = 0;
+
+    // The owners first, so that an alias finds what it names
+    for (size_t i = 0; i < md_array_size(src->attr); ++i) {
+        const md_attribute_t* a = src->attr + i;
+        if (md_attribute_is_alias(a)) continue;
+        md_attribute_desc_t desc = {
+            .path        = a->path,
+            .format      = a->format,
+            .flags       = a->flags,
+            .unit        = a->unit,
+            .label       = a->label,
+            .description = a->description,
+        };
+        md_temp_scope_t temp = md_temp_begin();
+        md_attribute_virtual_t virt = a->virt;
+        if (md_attribute_is_virtual(a)) {
+            if (virt.user_data && virt.user_data_size) {
+                virt.user_data = md_attributes_alloc_user_data(dst, virt.user_data_size);
+                if (!virt.user_data) {
+                    md_temp_end(temp);
+                    continue;
+                }
+                md_memcpy(virt.user_data, a->virt.user_data, virt.user_data_size);
+            }
+            desc.virt = &virt;
+        } else if (a->data && a->format.type == MD_ATTRIBUTE_TYPE_STR) {
+            // Handles into src's pool: the text, which dst interns in its own
+            const size_t count = md_attribute_element_count(&a->format);
+            md_str_t* text = md_temp_alloc_array(temp, md_str_t, count);
+            md_attribute_extract_str(text, count, src, a);
+            desc.data = text;
+            desc.byte_size = count * sizeof(md_str_t);
+        } else if (a->data) {
+            desc.data = a->data;
+            desc.byte_size = md_attribute_byte_size(&a->format);
+        }
+        const md_attribute_id_t id = md_attributes_replace(dst, &desc);
+        if (id == MD_ATTRIBUTE_INVALID && desc.virt && virt.user_data && virt.user_data_size) {
+            md_free(dst->alloc, virt.user_data, virt.user_data_size);
+        }
+        copied += id != MD_ATTRIBUTE_INVALID;
+        md_temp_end(temp);
+    }
+
+    for (size_t i = 0; i < md_array_size(src->attr); ++i) {
+        const md_attribute_t* a = src->attr + i;
+        if (!md_attribute_is_alias(a)) continue;
+        const size_t root_idx = attr_index_from_id(src, a->root);
+        if (root_idx == SIZE_MAX) continue;
+        const md_attribute_t* target = md_attributes_find(dst, src->attr[root_idx].path);
+        if (!target) continue;
+        const md_attribute_t* existing = md_attributes_find(dst, a->path);
+        if (existing) md_attributes_remove(dst, existing->id);
+        // Found again: the removal may have moved what target pointed at
+        target = md_attributes_find(dst, src->attr[root_idx].path);
+        copied += target && md_attributes_alias(dst, target->id, a->path, a->label, a->description) != MD_ATTRIBUTE_INVALID;
+    }
+    return copied;
+}
+
 bool md_attributes_remove(md_attributes_t* attributes, md_attribute_id_t id) {
     MD_ASSERT(attributes);
 
