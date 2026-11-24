@@ -282,7 +282,7 @@ Names are singular, as every function's is, whatever the shape of what they give
 | `ring(...)` | `set[n]`, one per ring | a ring of the bonds, 3 to 7 atoms, the smallest rings: naphthalene has two. Fused rings share particles. Labelled by its number in the residue it starts in, `ring2/TRP5` |
 | `fragment(...)` | `set[n]`, one per fragment | a chemical piece of a molecule, by its name: a ring system (`phenyl`, `indolyl`), a functional group (`carboxylate`, `hydroxyl`), a piece of a backbone (`peptide`, `alpha carbon`, `ribose`), an alkyl or a linker (`methyl`, `C3 linker`), a lipid tail; every atom is in one. Fragments are no level of residues: a peptide group is the C and O of one residue and the N of the next. Labelled by its name and the residue its first particle is in, `phenyl/TYR24/A`. See Fragments |
 | `molecule(...)` | `set[n]`, one per molecule | what the bonds hold together, or a topology's molecule |
-| `chain(...)` | `set[n]`, one per chain | everything filed under one author chain id; E0207 where the data gives none |
+| `chain(...)` | `set[n]`, one per chain; `set` by one id | everything filed under one author chain id: `chain('A')` is one set; E0207 where the data gives none |
 | `group(...)` | `set[n]`, one per group; `set` by one name | a named set of particles: the index groups of a GROMACS tpr or .ndx file, and the user's own. Groups are no level of the structure: one holds any particles, and groups overlap. See Groups |
 
 ### Keywords
@@ -522,7 +522,7 @@ lys  = group('Protein').residue(name='LYS')            # -> set: the lysines' pa
 # on T
 n_all  = len(residue)                                # -> 880: 442 in A, 437 in B, 1 in C
 ch     = chain                                       # -> set[3]
-a      = chain('A')                                  # -> set[1]
+a      = chain('A')                                  # -> set: every particle filed under chain A
 pa     = particle(chain='A')                         # -> set
 n_gtp  = count(particle(resname='GTP'))              # -> 32
 both   = residue(id=501)                                # -> set[2]: GTP in A, GDP in B; the shape shows it

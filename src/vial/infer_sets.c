@@ -360,13 +360,16 @@ static const vial_filter_t* find_filter(const vial_select_t* q, uint8_t key) {
     return NULL;
 }
 
-// group('Protein'): a group by one name, not a pattern, is one set, the particles of every group of that name. A name
-// is the user's handle on a set, so that is the default; group('*d*'), group(role='energy'), group(s) and group alone
-// are a set per group. Names shared by groups (each role's 'rest') are told apart by role=.
+// A name or an id is the user's handle on a set, so one of them is one set. group('Protein'), one name and not a
+// pattern, is the particles of every group of that name: those that share one (each role's 'rest') are told apart by
+// role=. chain('A') is every particle filed under the author's chain id A, as v1 has it. A pattern, several names or
+// ids, a positional set, or the selector bare, are a set per unit: group('*d*'), chain(id=['A', 'B']), group(s), chain.
 static bool one_name(const vial_select_t* q) {
-    if (q->level != VIAL_LEVEL_GROUP) return false;
-    const vial_filter_t* f = find_filter(q, VIAL_KEY_NAME);
-    return f && md_array_size(f->expr) == 1 && f->expr[0].kind == VIAL_MATCH_STR && !vial_is_glob(f->expr[0].s);
+    const uint8_t key = q->level == VIAL_LEVEL_GROUP ? VIAL_KEY_NAME : q->level == VIAL_LEVEL_CHAIN ? VIAL_KEY_ID : VIAL_KEY_NONE;
+    if (key == VIAL_KEY_NONE) return false;
+    const vial_filter_t* f = find_filter(q, key);
+    if (!f || md_array_size(f->expr) != 1 || f->expr[0].kind != VIAL_MATCH_STR) return false;
+    return key != VIAL_KEY_NAME || !vial_is_glob(f->expr[0].s);    // a chain's id is matched as it is, never as a pattern
 }
 
 // The keyword values with and/or/not of a call: the node of each and its filter's position among the call's

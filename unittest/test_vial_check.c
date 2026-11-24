@@ -543,6 +543,15 @@ UTEST_F(vial_check, selector_diagnostics) {
     EXPECT_TYPE_ON(T, "s = polymer(chain='B')\n", 1, "set[1], static");
     EXPECT_TYPE_ON(T, "s = part(kind='polymer', chain='B')\n", 1, "set[1], static");
     EXPECT_TYPE_ON(T, "n = count(chain[0].polymer[0])\n", 1, "int, static = 3393");
+    // A chain by one id is one set, everything filed under it; several ids, a set per chain
+    EXPECT_TYPE_ON(T, "c = chain('A')\n", 1, "set, static");
+    EXPECT_TYPE_ON(T, "c = chain(id='B')\n", 1, "set, static");
+    EXPECT_TYPE_ON(T, "n = count(chain('A')) == count(chain[0])\n", 1, "bool, static = True");
+    // A position in it is a particle of it: the first particle filed under chain A
+    EXPECT_TYPE_ON(T, "n = count(chain('A')[0])\n", 1, "int, static = 1");
+    EXPECT_TYPE_ON(T, "b = count(chain('A')[0] and chain[0].particle[0]) == 1\n", 1, "bool, static = True");
+    EXPECT_TYPE_ON(T, "c = chain(id=['A', 'B'])\n", 1, "set[2], static");
+    EXPECT_TYPE_ON(T, "c = chain\n", 1, "set[3], static");
     EXPECT_DIAGS_ON(T, "s = polymers\n", "E0201 1: `polymers` is not defined | polymer\n");
     // What __all__ leaves out is not published, so it need not keep its shape (E0401)
     EXPECT_DIAGS_ON(T, "near = residue(within(5.0, of=particle(resname='GTP')))\nd = distance(near.com, particle(name='MG'))\n__all__ = ['d']\n",

@@ -3460,7 +3460,7 @@ static bool k_select(vial_kctx_t* k, const char* name, const bargs_t* ba, vial_v
     if (!s) return vial_rt_fail(k, "R0103", "%s selects nothing it can", name);
     vial_val_t o = vial_val_sets(s);
     // A selector the check typed as one set gives one set: one with a positional set that is one set, a group by one
-    // name (group('Protein'), the groups of that name merged)
+    // name or a chain by one id (group('Protein'), chain('A'): the units of that name or id merged)
     if (k->type && k->type->ndim == 0 && !s->single) {
         vial_sets_t* m = vial_sets_merge(s, k->alloc);
         m->single = true;
