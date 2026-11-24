@@ -1183,7 +1183,8 @@ void md_gl_mol_set_atom_flags(md_gl_mol_t handle, uint32_t offset, uint32_t coun
 }
 
 void md_gl_mol_set_bonds(md_gl_mol_t handle, uint32_t offset, uint32_t count, const md_atom_pair_t* bonds, uint32_t byte_stride) {
-    if (bonds == NULL) {
+    // None is a count of bonds as any other (a system not inferred yet, points without bonds)
+    if (bonds == NULL && count > 0) {
         MD_LOG_ERROR("One or more arguments are missing");
         return;
     }
