@@ -529,29 +529,62 @@ Ray pixel_ray(ViewData v, float2 pix) {
     return r;
 }
 
-// Nearest t >= 0, or -1. `h_clamped`: return the closest approach for a miss
-// (resolve must not lose a pixel the raster kept to a rounding difference).
+// The ray moved along itself to its point nearest p, and tc, how far: a t of
+// the moved ray plus tc is one of the ray. The intersections whose t is a
+// root of a quadratic or a quartic are solved from there, near their
+// primitive (a plane's is linear in its distance: from the origin). From the
+// ray's origin the primitive's distance enters squared, and a float rounds
+// that square by more than the primitive's own squares far away (some A^2 at
+// 8000 A): hits lost and normals turned, in rings about the view's centre,
+// where the rounding of r.d (which grows with the distance from it) adds its
+// share. From near the primitive the squares are of its size; of the
+// distance only the moved origin's rounding is left, an ulp of it, far below
+// a pixel.
+Ray ray_near(Ray r, float3 p, out float tc) {
+    tc = dot(p - r.o, r.d);
+    Ray n;
+    n.o = fma(r.d, float3(tc), r.o);
+    n.d = r.d;
+    return n;
+}
+
+// ray_near the point of the segment pa-pb nearest the ray: a long one (a line
+// through the near plane, a cell's edge) is hit far from its middle.
+Ray ray_near_segment(Ray r, float3 pa, float3 pb, out float tc) {
+    float3 ba  = pb - pa, ao = pa - r.o;
+    float3 bx  = cross(ba, r.d);
+    float  den = dot(bx, bx);
+    float  s   = den > 0.0 ? saturate((dot(ao, r.d) * dot(ba, r.d) - dot(ba, ao)) / den) : 0.5;
+    return ray_near(r, fma(ba, float3(s), pa), tc);
+}
+
+// The nearer root's t, or -1 for a miss. `h_clamped`: return the closest
+// approach for a miss (resolve must not lose a pixel the raster kept to a
+// rounding difference).
 float sphere_hit(Ray r, float3 c, float rad, bool h_clamped) {
-    float3 oc = r.o - c;
-    float  b  = dot(oc, r.d);
+    float  tc;
+    Ray    l  = ray_near(r, c, tc);
+    float3 oc = l.o - c;
+    float  b  = dot(oc, l.d);
     float  cc = dot(oc, oc) - rad * rad;
     float  h  = b * b - cc;
     if (h < 0.0) {
         if (!h_clamped) return -1.0;
         h = 0.0;
     }
-    float t = -b - sqrt(h);
-    return t;
+    return tc - b - sqrt(h);
 }
 
 // Ray against the capsule pa-pb of radius rad (Quilez). t, or -1.
 float capsule_hit(Ray r, float3 pa, float3 pb, float rad) {
+    float  tc;
+    Ray    l    = ray_near_segment(r, pa, pb, tc);
     float3 ba   = pb - pa;
-    float3 oa   = r.o - pa;
+    float3 oa   = l.o - pa;
     float  baba = dot(ba, ba);
-    float  bard = dot(ba, r.d);
+    float  bard = dot(ba, l.d);
     float  baoa = dot(ba, oa);
-    float  rdoa = dot(r.d, oa);
+    float  rdoa = dot(l.d, oa);
     float  oaoa = dot(oa, oa);
     float  a    = baba - bard * bard;
     float  b    = baba * rdoa - baoa * bard;
@@ -560,7 +593,7 @@ float capsule_hit(Ray r, float3 pa, float3 pb, float rad) {
     if (h >= 0.0 && a > 1e-12 * baba) {
         float t = (-b - sqrt(h)) / a;
         float y = baoa + t * bard;
-        if (y > 0.0 && y < baba) return t;
+        if (y > 0.0 && y < baba) return tc + t;
     }
     // the caps
     float best = -1.0;
@@ -616,9 +649,11 @@ float dash_hit(Ray r, float3 pa, float3 pb, float rad, float dash, float period,
     float  len = length(ba);
     if (!(len > 0.0) || !(period > 0.0)) return -1.0;
     float3 u  = ba / len;
-    float3 oa = r.o - pa;
-    float  du = dot(r.d, u), ou = dot(oa, u);
-    float3 dp = r.d - u * du, op = oa - u * ou;      // across the axis
+    float  tc;
+    Ray    l  = ray_near_segment(r, pa, pb, tc);    // the t below are of l
+    float3 oa = l.o - pa;
+    float  du = dot(l.d, u), ou = dot(oa, u);
+    float3 dp = l.d - u * du, op = oa - u * ou;      // across the axis
     float  A = dot(dp, dp), B = dot(dp, op), C = dot(op, op) - rad * rad;
     float  t0 = -3.0e38, t1 = 3.0e38;
     if (A > 1e-12) {
@@ -630,13 +665,13 @@ float dash_hit(Ray r, float3 pa, float3 pb, float rad, float dash, float period,
     } else if (C > 0.0) {
         return -1.0;                                 // along the axis, outside it
     }
-    float ts = max(t0, 0.0);
+    float ts = max(t0, -tc);                         // from r's origin on
     if (ts > t1) return -1.0;
     float y  = ou + ts * du;
     float kf = floor(y / period);
     if (y >= 0.0 && y <= len && y - kf * period <= dash) {
         if (ts == t0) n = (op + dp * ts) / rad;       // the side
-        return ts;
+        return tc + ts;
     }
     float yb;                                        // the end it reaches next
     if (du > 0.0) {
@@ -652,7 +687,7 @@ float dash_hit(Ray r, float3 pa, float3 pb, float rad, float dash, float period,
     float tb = ts + (yb - y) / du;
     if (tb > t1) return -1.0;
     n = du > 0.0 ? -u : u;
-    return tb;
+    return tc + tb;
 }
 
 // The unit direction a displaced capsule pa-pb (view space) of element e is
@@ -1173,27 +1208,30 @@ uint spline_element_pieces(ViewData v, Batch b, uint inst, uint e, Geo g) {
 // v along q00 -> q01 (Reshetov, "Cool Patches", Ray Tracing Gems ch. 8).
 // A piece's face is one: two triangles would stand off a twisting face by
 // half its turn times its width, a patch by an eighth of the turn squared.
-void patch_root(Ray r, float3 a0, float3 b0, float3 e00, float3 e11, float u, inout float t, inout float hu, inout float hv) {
+// l: the ray moved by tc (ray_near); t: of the ray, -1 none yet.
+void patch_root(Ray l, float tc, float3 a0, float3 b0, float3 e00, float3 e11, float u, inout float t, inout float hu, inout float hv) {
     if (!(u >= 0.0 && u <= 1.0)) return;
     float3 pa = lerp(a0, b0, u);
     float3 pb = lerp(e00, e11, u);
-    float3 n  = cross(r.d, pb);
+    float3 n  = cross(l.d, pb);
     float  dd = dot(n, n);
     n = cross(n, pa);
     float tt = dot(n, pb) / dd;
-    float vv = dot(n, r.d);
-    if (tt > 0.0 && vv >= 0.0 && vv <= dd && (t < 0.0 || tt < t)) { t = tt; hu = u; hv = vv / dd; }
+    float vv = dot(n, l.d);
+    if (tt > -tc && vv >= 0.0 && vv <= dd && (t < 0.0 || tc + tt < t)) { t = tc + tt; hu = u; hv = vv / dd; }
 }
 
 float patch_hit(Ray r, float3 q00, float3 q10, float3 q11, float3 q01, out float hu, out float hv) {
     hu = 0.0;
     hv = 0.0;
+    float  tc;
+    Ray    l   = ray_near(r, 0.25 * (q00 + q10 + q11 + q01), tc);
     float3 e10 = q10 - q00, e11 = q11 - q10, e00 = q01 - q00;
     float3 qn  = cross(e10, q01 - q11);
-    float3 a0  = q00 - r.o, b0 = q10 - r.o;
-    float  a   = dot(cross(a0, r.d), e00);              // a + b u + c u^2 = 0
-    float  c   = dot(qn, r.d);
-    float  b   = dot(cross(b0, r.d), e11) - (a + c);
+    float3 a0  = q00 - l.o, b0 = q10 - l.o;
+    float  a   = dot(cross(a0, l.d), e00);              // a + b u + c u^2 = 0
+    float  c   = dot(qn, l.d);
+    float  b   = dot(cross(b0, l.d), e11) - (a + c);
     float  det = b * b - 4.0 * a * c;
     if (det < 0.0) return -1.0;
     det = sqrt(det);
@@ -1201,8 +1239,8 @@ float patch_hit(Ray r, float3 q00, float3 q10, float3 q11, float3 q01, out float
     if (c == 0.0) { u1 = -a / b; u2 = -1.0; }          // planar: one root (a NaN or inf misses)
     else          { u1 = 0.5 * (-b - (b >= 0.0 ? det : -det)); u2 = a / u1; u1 /= c; }
     float t = -1.0;
-    patch_root(r, a0, b0, e00, e11, u1, t, hu, hv);
-    patch_root(r, a0, b0, e00, e11, u2, t, hu, hv);
+    patch_root(l, tc, a0, b0, e00, e11, u1, t, hu, hv);
+    patch_root(l, tc, a0, b0, e00, e11, u2, t, hu, hv);
     return t;
 }
 
@@ -1226,11 +1264,11 @@ void spline_take_capsule(Ray r, inout SplineHit h, float3 pa, float3 pb, float r
 // A round cone: the balls of radius ra at pa to rb at pb, the radius linear
 // between (their hull). Quilez's intersector, the body's root taken whatever
 // the sign of its leading term (steep rays along a tapering cone); with one
-// ball inside the other, the balls alone. Unit r.d. His products of dot
-// products that are a cross product's square (|ba|^2 |oa|^2 - (ba.oa)^2,
-// and the like) are taken as that square: a difference of two squares of
-// the distance to the eye loses a long thin cone far away to rounding (a
-// cell's edges in pixels).
+// ball inside the other, the balls alone. Unit r.d. From near the cone
+// (ray_near). His products of dot products that are a cross product's square
+// (|ba|^2 |oa|^2 - (ba.oa)^2, and the like) are taken as that square: a
+// difference of two squares of its length loses a long thin cone to rounding
+// (a cell's edges in pixels).
 struct ConeHit {
     float  t;                   // < 0: none
     float3 n;
@@ -1240,13 +1278,15 @@ ConeHit round_cone_hit(Ray r, float3 pa, float3 pb, float ra, float rb) {
     ConeHit h;
     h.t = -1.0;
     h.n = float3(0.0, 0.0, 1.0);
-    float3 ba = pb - pa, oa = r.o - pa, ob = r.o - pb;
+    float  tc;
+    Ray    l  = ray_near_segment(r, pa, pb, tc);      // the t below are of l
+    float3 ba = pb - pa, oa = l.o - pa, ob = l.o - pb;
     float  rr = ra - rb;
-    float  m0 = dot(ba, ba), m1 = dot(ba, oa), m2 = dot(ba, r.d), m3 = dot(r.d, oa);
-    float  m6 = dot(ob, r.d);
+    float  m0 = dot(ba, ba), m1 = dot(ba, oa), m2 = dot(ba, l.d), m3 = dot(l.d, oa);
+    float  m6 = dot(ob, l.d);
     float  d2 = m0 - rr * rr;
     if (d2 > 0.0) {
-        float3 cd = cross(ba, r.d), co = cross(ba, oa);
+        float3 cd = cross(ba, l.d), co = cross(ba, oa);
         float3 q  = oa * rr - ba * ra;
         float k2 = dot(cd, cd) - rr * rr;                       // d2 - m2^2
         float k1 = dot(cd, co) - rr * rr * m3 + m2 * rr * ra;   // d2 m3 - m1 m2 + m2 rr ra
@@ -1255,27 +1295,27 @@ ConeHit round_cone_hit(Ray r, float3 pa, float3 pb, float ra, float rb) {
         if (hh >= 0.0 && abs(k2) > 1e-12 * m0) {
             float t = (-sqrt(hh) - k1) / k2;
             float y = m1 - ra * rr + t * m2;
-            if (y > 0.0 && y < d2 && t >= 0.0) { h.t = t; h.n = normalize(d2 * (oa + t * r.d) - ba * y); return h; }
+            if (y > 0.0 && y < d2 && t >= -tc) { h.t = tc + t; h.n = normalize(d2 * (oa + t * l.d) - ba * y); return h; }
         }
     }
-    float3 ca = cross(r.d, oa), cb = cross(r.d, ob);
+    float3 ca = cross(l.d, oa), cb = cross(l.d, ob);
     float h1 = ra * ra - dot(ca, ca);                           // m3^2 - m5 + ra^2
     float h2 = rb * rb - dot(cb, cb);
     if (h1 > 0.0) {
         float t = -m3 - sqrt(h1);
-        if (t >= 0.0) { h.t = t; h.n = (oa + t * r.d) / ra; }
+        if (t >= -tc) { h.t = tc + t; h.n = (oa + t * l.d) / ra; }
     }
     if (h2 > 0.0) {
         float t = -m6 - sqrt(h2);
-        if (t >= 0.0 && (h.t < 0.0 || t < h.t)) { h.t = t; h.n = (ob + t * r.d) / rb; }
+        if (t >= -tc && (h.t < 0.0 || tc + t < h.t)) { h.t = tc + t; h.n = (ob + t * l.d) / rb; }
     }
     return h;
 }
 
 // A capped cone: radius ra at pa to rb at pb, linear between, flat ends (a
-// cylinder, a truncated cone, a cone). In the axis' frame (u along it), the
-// ray's parts across it (wp, dp) apart from those along it: no difference
-// of squares of the distance to the eye. Unit r.d.
+// cylinder, a truncated cone, a cone). From near it (ray_near), in the
+// axis' frame (u along it): the ray's parts across it (wp, dp) apart from
+// those along it. Unit r.d.
 ConeHit capped_cone_hit(Ray r, float3 pa, float3 pb, float ra, float rb) {
     ConeHit h;
     h.t = -1.0;
@@ -1284,19 +1324,22 @@ ConeHit capped_cone_hit(Ray r, float3 pa, float3 pb, float ra, float rb) {
     float  L  = length(ba);
     if (!(L > 0.0)) return h;
     float3 u  = ba / L;
-    float3 w  = r.o - pa;
-    float  wy = dot(w, u), dy = dot(r.d, u);
-    float3 wp = w - u * wy, dp = r.d - u * dy;
-    // An end, from outside its plane: the first hit if within its disc (the
-    // side lies beyond the plane)
-    if (wy < 0.0 && dy > 0.0) {
+    float  tc;
+    Ray    l  = ray_near_segment(r, pa, pb, tc);    // the t below are of l
+    float3 w  = l.o - pa;
+    float  wy = dot(w, u), dy = dot(l.d, u);
+    float3 wp = w - u * wy, dp = l.d - u * dy;
+    float  wo = wy - tc * dy;                        // r's origin's place along the axis
+    // An end, with r's origin outside its plane: the first hit if within its
+    // disc (the side lies beyond the plane)
+    if (wo < 0.0 && dy > 0.0) {
         float  t = -wy / dy;
         float3 q = wp + dp * t;
-        if (dot(q, q) <= ra * ra) { h.t = t; h.n = -u; return h; }
-    } else if (wy > L && dy < 0.0) {
+        if (dot(q, q) <= ra * ra) { h.t = tc + t; h.n = -u; return h; }
+    } else if (wo > L && dy < 0.0) {
         float  t = (L - wy) / dy;
         float3 q = wp + dp * t;
-        if (dot(q, q) <= rb * rb) { h.t = t; h.n = u; return h; }
+        if (dot(q, q) <= rb * rb) { h.t = tc + t; h.n = u; return h; }
     }
     // The side: |wp + t dp| = e - sl dy t, e the radius at the origin's
     // place along the axis; both roots (a steep ray along a cone, or from
@@ -1314,13 +1357,13 @@ ConeHit capped_cone_hit(Ray r, float3 pa, float3 pb, float ra, float rb) {
     float t0 = q / A, t1 = C / q;                       // a 0 / 0 or x / 0 misses below
     float y0 = wy + t0 * dy, y1 = wy + t1 * dy;
     float ye = 1e-5 * (abs(wy) + L);
-    bool  k0 = t0 >= 0.0 && y0 >= -ye && y0 <= L + ye;
-    bool  k1 = t1 >= 0.0 && y1 >= -ye && y1 <= L + ye;
+    bool  k0 = t0 >= -tc && y0 >= -ye && y0 <= L + ye;
+    bool  k1 = t1 >= -tc && y1 >= -ye && y1 <= L + ye;
     if (k1 && (!k0 || t1 < t0)) { t0 = t1; k0 = true; }
     if (!k0) return h;
     float3 m  = wp + dp * t0;                           // across the axis, its radius long
     float  ml = length(m);
-    h.t = t0;
+    h.t = tc + t0;
     h.n = ml > 0.0 ? normalize(m / ml + u * sl) : u * sign(sl);
     return h;
 }
@@ -1500,13 +1543,15 @@ SplineHit spline_hit_range(Ray r, SplinePart sp, uint pieces, uint k0, uint k1) 
         // the piece's bounding sphere: its chord, widened by the profile
         float3 ctr = 0.5 * (c0 + c1);
         float  br  = 0.5 * length(c1 - c0) + max(a0, a1) + max(r0, r1);
-        float3 oc  = r.o - ctr;
-        float  bb  = dot(oc, r.d);
+        float  tc;
+        Ray    lb  = ray_near(r, ctr, tc);
+        float3 oc  = lb.o - ctr;
+        float  bb  = dot(oc, lb.d);
         float  hh  = bb * bb - (dot(oc, oc) - br * br);
         bool   have1 = false;
         SplineFrame f1;
         f1.c = f1.w = f1.n = f1.fp = f1.fc = f1.fm = f1.bp = f1.bc = f1.bm = f1.tp = f1.tm = float3(0.0);
-        if (hh >= 0.0 && (h.t < 0.0 || -bb - sqrt(hh) < h.t)) {
+        if (hh >= 0.0 && (h.t < 0.0 || tc - bb - sqrt(hh) < h.t)) {
             if (!have0) { f0 = spline_frame(sp, spline_piece_u(sp, k - 1u, pieces), a0, au, lerp(sp.ru0, sp.ru1, float(k - 1u) / float(pieces))); have0 = true; }
             f1 = spline_frame(sp, u1, a1, au, lerp(sp.ru0, sp.ru1, float(k) / float(pieces))); have1 = true;
             float3 p0 = f0.c + f0.w * a0, m0 = f0.c - f0.w * a0;      // the rims' ends
@@ -2210,16 +2255,19 @@ SplineHit circle_hit(Ray r, PolyPart pp) {
     float3 bit  = cross(pp.nrm, pp.tng);
     float  invR = 1.0 / pp.R;
     float2 tor  = float2(1.0, pp.r * invR);
-    float3 o    = r.o - pp.c;
+    float  tc;
+    Ray    l    = ray_near(r, pp.c, tc);
+    float3 o    = l.o - pp.c;
     float3 lo   = float3(dot(o, pp.tng), dot(o, bit), dot(o, pp.nrm)) * invR;
-    float3 ld   = float3(dot(r.d, pp.tng), dot(r.d, bit), dot(r.d, pp.nrm));
+    float3 ld   = float3(dot(l.d, pp.tng), dot(l.d, bit), dot(l.d, pp.nrm));
+    float  to   = -tc * invR;                   // r's origin, a t of (lo, ld)
     float  rb   = 1.0 + 2.0 * tor.y;            // re-origin, a tube radius clear of the torus
     float  bb   = dot(lo, ld);
     float  hh   = bb * bb - (dot(lo, lo) - rb * rb);
     if (hh < 0.0) return h;
     hh = sqrt(hh);
-    if (-bb + hh < 0.0) return h;
-    float t0 = max(-bb - hh, 0.0);
+    if (-bb + hh < to) return h;
+    float t0 = max(-bb - hh, to);
     lo += ld * t0;
     float roots[4];
     int   count = tor_roots(lo, ld, tor, roots);
@@ -2248,7 +2296,7 @@ SplineHit circle_hit(Ray r, PolyPart pp) {
     } else {
         ln = en;
     }
-    h.t = (t0 + t) * pp.R;
+    h.t = tc + (t0 + t) * pp.R;
     h.n = normalize(pp.tng * ln.x + bit * ln.y + pp.nrm * ln.z);
     return h;
 }
@@ -4212,11 +4260,13 @@ Hit eval_hit<let SPL : int>(ViewData v, Batch* batches, uint2 idv, float2 pix, f
         if (t < 0.0) {
             // A rounding miss at the silhouette: the nearest point of the ray
             // to the axis stands in.
+            float  tc;
+            Ray    l  = ray_near_segment(r, pa, pb, tc);
             float3 ba = pb - pa;
-            float3 oa = r.o - pa;
-            float  bd = dot(ba, r.d);
+            float3 oa = l.o - pa;
+            float  bd = dot(ba, l.d);
             float  den = max(dot(ba, ba) - bd * bd, 1e-20);
-            t = max((dot(oa, ba) * bd - dot(oa, r.d) * dot(ba, ba)) / den, 0.0);
+            t = max(tc + (dot(oa, ba) * bd - dot(oa, l.d) * dot(ba, ba)) / den, 0.0);
         }
         h.p_view   = r.o + r.d * t;
         float k    = capsule_param(h.p_view, fa, fb);

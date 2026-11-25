@@ -4042,6 +4042,174 @@ UTEST(render, depth_only) {
     f_close(&fx);
 }
 
+/* Far from the eye. A ray's intersection with a primitive solved from the ray's origin squares the primitive's
+   distance, and a float's rounding of that (some 4 A^2 at 8000 A) outgrows the primitive's own squares: hits lost and
+   normals turned, in rings about the view's centre (where the rounding of the ray's direction, which goes with the
+   distance from it, adds to it). Spheres 6000 A away in a narrow perspective, against their analytic coverage, depth
+   and normals; then every kind of primitive in an orthographic view 10 A away and 8000 A away, where the distance
+   moves nothing: the same ids and normals. */
+static void far_poly(float (*q)[3], int n, double cx, double cy, double cz, double rad, double tilt) {
+    for (int k = 0; k < n; ++k) {
+        double a = 2.0 * 3.14159265358979 * k / n, x = rad * cos(a), y = rad * sin(a);
+        q[k][0] = (float)(cx + x); q[k][1] = (float)(cy + y); q[k][2] = (float)(cz + tilt * x);
+    }
+}
+
+UTEST(render, far_from_the_eye) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+
+    /* A 4 x 3 grid of spheres 6000 A away, filling a view 4.8 A high */
+    {
+        const uint32_t W = 96, H = 72;
+        cam_t c = { .tan_half = 0.0008f, .aspect = (float)W / H, .n = 0.1f };
+        md_render_camera_t cam = make_camera(&c);
+        enum { N = 12 };
+        float pos[3 * N], radius[N];
+        double ctr[N][3], rad[N];
+        for (int i = 0; i < N; ++i) {
+            pos[3 * i + 0] = (float)((i % 4 - 1.5) * 1.6);
+            pos[3 * i + 1] = (float)((i / 4 - 1.0) * 1.6);
+            pos[3 * i + 2] = (float)(-6000.0 - 0.7 * (i % 3));
+            radius[i] = (float)(0.55 + 0.1 * (i % 5));
+            for (int k = 0; k < 3; ++k) ctr[i][k] = pos[3 * i + k];      /* as drawn */
+            rad[i] = radius[i];
+        }
+        md_render_batch_t b = {0};
+        b.key = 1; b.kind = MD_RENDER_SPHERES; b.count = N; b.points.count = N;
+        b.points.position = f_buf(&fx, pos, sizeof(pos));
+        b.points.radius   = f_buf(&fx, radius, sizeof(radius));
+        b.style.spheres.radius_scale = 1.0f;
+        md_render_frame_t f = frame_of(W, H, cam, &b, 1);
+        ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+        int judged = 0;
+        EXPECT_EQ(0, check_spheres(&fx, &c, cam, W, H, (const double (*)[3])ctr, rad, N, &judged));
+        EXPECT_GT(judged, (int)(W * H * 8 / 10));
+        /* the normals: the hit's offset from the centre of the sphere it shows, away from the silhouettes */
+        uint32_t* id = malloc(W * H * 8);
+        uint32_t* nb = malloc(W * H * 4);
+        ASSERT_TRUE(f_read(&fx, md_render_view_targets(fx.view).id, id, W * H * 8));
+        ASSERT_TRUE(f_read(&fx, md_render_view_targets(fx.view).normal, nb, W * H * 4));
+        double worst = 0.0;
+        int nn = 0;
+        for (uint32_t y = 0; y < H; ++y) for (uint32_t x = 0; x < W; ++x) {
+            uint32_t i = y * W + x, e = id[2 * i];
+            if (!id[2 * i + 1] || e >= N) continue;
+            ray_t r = pixel_ray(&c, W, H, x + 0.5, y + 0.5);
+            double dist, t = sphere_t(r, ctr[e], rad[e], &dist);
+            if (t < 0 || dist > 0.95 * rad[e]) continue;
+            double ne[3], ng[3];
+            for (int k = 0; k < 3; ++k) ne[k] = (r.o[k] + r.d[k] * t - ctr[e][k]) / rad[e];
+            oct_decode(nb[i], ng);
+            double cs = dot3(ne, ng), deg = acos(cs > 1 ? 1 : cs < -1 ? -1 : cs) * 180.0 / 3.14159265358979;
+            if (deg > worst) worst = deg;
+            nn++;
+        }
+        printf("    perspective at 6000 A: %d pixels judged; normals of %d, %.3f degrees off at most\n", judged, nn, worst);
+        EXPECT_GT(nn, (int)(W * H / 8));                                  /* the spheres cover a sixth of it */
+        EXPECT_LT(worst, 0.5);
+        free(id); free(nb);
+    }
+
+    /* Every kind, orthographic: the same batches seen 10 A away and 8000 A away */
+    {
+        const uint32_t W = 96, H = 64, P = W * H;
+        cam_t c = { .ortho = true, .half_h = 3.0f, .aspect = (float)W / H, .n = 0.0f, .far_ = 8100.0f };
+        md_render_camera_t near_cam = make_camera(&c), far_cam = near_cam;
+        far_cam.view[14] = -8000.0f;
+        const float sp[9] = { -1.5f, 0.0f, -10.0f,   1.0f, 0.5f, -12.0f,   0.2f, -1.0f, -8.0f };
+        const float rad[3] = { 1.0f, 1.4f, 0.6f };
+        float small[3 * 40];
+        for (int i = 0; i < 40; ++i) { small[3 * i] = -4.0f + 0.2f * (float)i; small[3 * i + 1] = 2.5f; small[3 * i + 2] = -9.0f; }
+        const float cap[6]  = { -4.0f, -2.5f, -11.0f,   -2.0f, -1.5f, -9.0f };
+        const float dash[6] = { -4.2f, -0.9f, -10.0f,   -2.6f, 0.1f, -11.0f };
+        const float cone[6] = { 1.6f, -2.6f, -10.0f,    3.6f, -1.6f, -11.5f };
+        const float cyl[6]  = { -1.2f, -2.7f, -9.5f,    0.8f, -2.0f, -10.5f };
+        float hex[6][3], ring[6][3], pent[5][3];
+        far_poly(hex, 6, 3.2, 1.2, -9.5, 0.6, 0.5);
+        far_poly(ring, 6, -3.3, 1.3, -10.0, 0.8, -0.6);
+        far_poly(pent, 5, -1.0, 1.9, -9.0, 0.6, 0.3);
+        float tube[15], rib[15], axis[20], profile[20];
+        uint32_t tube_index[5], rib_index[5];
+        for (int k = 0; k < 5; ++k) {
+            tube[3 * k] = 3.4f + 0.2f * (float)(k & 1); tube[3 * k + 1] = -1.2f + 0.45f * (float)k; tube[3 * k + 2] = -8.5f;
+            rib[3 * k] = -0.8f + 0.8f * (float)k; rib[3 * k + 1] = -0.2f + 0.15f * (float)(k & 1); rib[3 * k + 2] = -7.0f - 0.2f * (float)k;
+            axis[4 * k] = 0.0f; axis[4 * k + 1] = 0.8f; axis[4 * k + 2] = 0.6f; axis[4 * k + 3] = 0.0f;
+            profile[4 * k] = profile[4 * k + 1] = 0.25f; profile[4 * k + 2] = profile[4 * k + 3] = 0.08f;
+            const uint32_t ends = (k == 0 ? MD_RENDER_SPLINE_FIRST : 0u) | (k == 4 ? MD_RENDER_SPLINE_LAST : 0u);
+            tube_index[k] = (uint32_t)k | ends;
+            rib_index[k]  = (uint32_t)k | ends;
+        }
+        enum { NB = 11 };
+        md_render_batch_t b[NB];
+        memset(b, 0, sizeof(b));
+        for (int k = 0; k < NB; ++k) { b[k].key = 1u + (uint32_t)k; b[k].color.mode = MD_RENDER_COLOR_UNIFORM; b[k].color.uniform = 0xFF00FF00u; }
+        b[0].kind = MD_RENDER_SPHERES; b[0].count = 3; b[0].points.count = 3; b[0].points.position = f_buf(&fx, sp, sizeof(sp));
+        b[0].points.radius = f_buf(&fx, rad, sizeof(rad)); b[0].style.spheres.radius_scale = 1.0f;
+        b[1].kind = MD_RENDER_SPHERES; b[1].count = 40; b[1].points.count = 40; b[1].points.position = f_buf(&fx, small, sizeof(small));
+        b[1].style.spheres.radius_add = 0.06f;                                  /* a pixel or so: the compute raster's */
+        b[2].kind = MD_RENDER_CAPSULES; b[2].count = 1; b[2].points.count = 2; b[2].points.position = f_buf(&fx, cap, sizeof(cap));
+        b[2].style.capsules.radius = 0.3f;
+        b[3].kind = MD_RENDER_CAPSULES; b[3].count = 1; b[3].points.count = 2; b[3].points.position = f_buf(&fx, dash, sizeof(dash));
+        b[3].style.capsules.radius = 0.2f; b[3].style.capsules.dash_length = 0.3f; b[3].style.capsules.gap_length = 0.2f;
+        b[4].kind = MD_RENDER_CAPSULES; b[4].count = 1; b[4].points.count = 2; b[4].points.position = f_buf(&fx, cone, sizeof(cone));
+        b[4].style.capsules.radius = 0.35f; b[4].style.capsules.tapered = true; b[4].style.capsules.end_radius = 0.12f;
+        b[5].kind = MD_RENDER_CAPSULES; b[5].count = 1; b[5].points.count = 2; b[5].points.position = f_buf(&fx, cyl, sizeof(cyl));
+        b[5].style.capsules.radius = 0.3f; b[5].style.capsules.flat = true; b[5].style.capsules.tapered = true; b[5].style.capsules.end_radius = 0.15f;
+        b[6].kind = MD_RENDER_POLYGONS; b[6].count = 1; b[6].points.count = 6; b[6].points.position = f_buf(&fx, hex, sizeof(hex));
+        b[6].style.polygons.corners = 6; b[6].style.polygons.radius = 0.15f;
+        b[7].kind = MD_RENDER_POLYGONS; b[7].count = 1; b[7].points.count = 6; b[7].points.position = f_buf(&fx, ring, sizeof(ring));
+        b[7].style.polygons.corners = 6; b[7].style.polygons.radius = 0.07f; b[7].style.polygons.inset = 0.25f;
+        b[8].kind = MD_RENDER_POLYGONS; b[8].count = 1; b[8].points.count = 5; b[8].points.position = f_buf(&fx, pent, sizeof(pent));
+        b[8].style.polygons.corners = 5; b[8].style.polygons.radius = 0.07f; b[8].style.polygons.inset = 0.15f; b[8].style.polygons.dashes = 2;
+        b[9].kind = MD_RENDER_SPLINES; b[9].count = 5; b[9].points.count = 5; b[9].points.position = f_buf(&fx, tube, sizeof(tube));
+        b[9].index = f_buf(&fx, tube_index, sizeof(tube_index)); b[9].style.splines.radius = 0.25f;
+        b[10].kind = MD_RENDER_SPLINES; b[10].count = 5; b[10].points.count = 5; b[10].points.position = f_buf(&fx, rib, sizeof(rib));
+        b[10].index = f_buf(&fx, rib_index, sizeof(rib_index));
+        b[10].style.splines.axis = f_buf(&fx, axis, sizeof(axis)); b[10].style.splines.profile = f_buf(&fx, profile, sizeof(profile));
+
+        md_render_frame_t fn = frame_of(W, H, near_cam, b, NB), ff = frame_of(W, H, far_cam, b, NB);
+        md_render_view_t vf = md_render_view_create(fx.r, "far");
+        ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &fn, NULL));
+        ASSERT_TRUE(md_render_view_draw(fx.gfx, vf, &ff, NULL));
+        uint32_t* in = malloc(P * 8); uint32_t* jf = malloc(P * 8);
+        uint32_t* nn = malloc(P * 4); uint32_t* nf = malloc(P * 4);
+        double* errs = malloc(P * sizeof(double));
+        ASSERT_TRUE(f_read(&fx, md_render_view_targets(fx.view).id, in, P * 8) && f_read(&fx, md_render_view_targets(vf).id, jf, P * 8));
+        ASSERT_TRUE(f_read(&fx, md_render_view_targets(fx.view).normal, nn, P * 4) && f_read(&fx, md_render_view_targets(vf).normal, nf, P * 4));
+        int covered = 0, differ = 0, ne = 0;
+        int differ_of[NB + 1] = {0};
+        uint32_t kinds = 0;
+        for (uint32_t i = 0; i < P; ++i) {
+            const uint32_t key = in[2 * i + 1] >> 20;
+            if (in[2 * i + 1]) { covered++; kinds |= 1u << key; }
+            if (in[2 * i] != jf[2 * i] || in[2 * i + 1] != jf[2 * i + 1]) {
+                differ++;
+                differ_of[key <= NB ? key : 0]++;
+                continue;
+            }
+            if (!in[2 * i + 1]) continue;
+            double a[3], g[3];
+            oct_decode(nn[i], a);
+            oct_decode(nf[i], g);
+            double cs = dot3(a, g);
+            errs[ne++] = acos(cs > 1 ? 1 : cs < -1 ? -1 : cs) * 180.0 / 3.14159265358979;
+        }
+        qsort(errs, (size_t)ne, sizeof(double), cmp_double);
+        const double p99 = ne ? errs[(ne * 99) / 100] : 0, pmax = ne ? errs[ne - 1] : 0;
+        printf("    orthographic at 8000 A against 10 A: %d pixels covered, %d differ (by batch:", covered, differ);
+        for (int k = 1; k <= NB; ++k) printf(" %d", differ_of[k]);
+        printf("); normals of %d, 99th %.3f, largest %.3f degrees off\n", ne, p99, pmax);
+        EXPECT_EQ((uint32_t)(((1u << NB) - 1u) << 1), kinds);          /* each batch shows */
+        EXPECT_LE(differ, covered / 200);                                /* silhouettes' pixels, an ulp of 8000 A apart */
+        EXPECT_LT(p99, 0.5);
+        EXPECT_LT(pmax, 10.0);          /* where a ribbon's face meets its rim, either may win by an ulp (4 degrees) */
+        free(in); free(jf); free(nn); free(nf); free(errs);
+        md_render_view_destroy(fx.gfx, vf);
+    }
+    f_close(&fx);
+}
+
 /* A slice seen edge on, in perspective: a rectangle on the floor before the camera, its plane running off to its
    horizon in the middle of the view. Its edge is where its border is, and nothing along the horizon, where the plane
    is so far that a pixel covers more than the rectangle (where an estimate of its border from the rays of the next
