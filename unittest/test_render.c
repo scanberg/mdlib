@@ -4,6 +4,7 @@
 #include <md_render_mol.h>
 #include <md_render_debug.h>
 #include <md_compose.h>
+#include <md_post.h>
 
 #include <md_system.h>
 #include <md_system_state.h>
@@ -3279,6 +3280,291 @@ UTEST(render, compose_occlusion) {
 }
 
 static uint16_t float_to_half(float f);
+
+/* ---- Post ----------------------------------------------------------------------------- */
+
+/* md_post.slang's display transform, in C: the reference */
+static cf3 c_neutral(cf3 c) {
+    const float sc = 0.8f - 0.04f, des = 0.15f;
+    float x = fminf(c.x, fminf(c.y, c.z));
+    float off = x < 0.08f ? x - 6.25f * x * x : 0.04f;
+    c = cf(c.x - off, c.y - off, c.z - off);
+    float peak = fmaxf(c.x, fmaxf(c.y, c.z));
+    if (peak < sc) return c;
+    const float d = 1.0f - sc;
+    float np = 1.0f - d * d / (peak + d - sc);
+    c = cmul(c, np / peak);
+    float g = 1.0f - 1.0f / (des * (peak - np) + 1.0f);
+    return cmix3(c, cf(np, np, np), g);
+}
+static cf3 c_aces(cf3 c) {
+    cf3 v = cf(0.59719f * c.x + 0.35458f * c.y + 0.04823f * c.z, 0.07600f * c.x + 0.90834f * c.y + 0.01566f * c.z, 0.02840f * c.x + 0.13383f * c.y + 0.83777f * c.z);
+    float r[3], vv[3] = { v.x, v.y, v.z };
+    for (int i = 0; i < 3; ++i) r[i] = (vv[i] * (vv[i] + 0.0245786f) - 0.000090537f) / (vv[i] * (0.983729f * vv[i] + 0.4329510f) + 0.238081f);
+    return cf(1.60475f * r[0] - 0.53108f * r[1] - 0.07367f * r[2], -0.10208f * r[0] + 1.10813f * r[1] - 0.00605f * r[2], -0.00327f * r[0] - 0.07276f * r[1] + 1.07602f * r[2]);
+}
+static float c_hable1(float x) { return ((x * (0.15f * x + 0.05f) + 0.004f) / (x * (0.15f * x + 0.5f) + 0.06f)) - 0.02f / 0.3f; }
+static cf3 c_curve(int mode, cf3 x) {
+    if (mode == 1) { float w = c_neutral(cf(8, 8, 8)).x; return cmul(c_neutral(x), 1.0f / w); }
+    if (mode == 2) { float w = c_aces(cf(8, 8, 8)).x;    return cmul(c_aces(x), 1.0f / w); }
+    if (mode == 3) { float w = c_hable1(11.2f); return cf(c_hable1(2 * x.x) / w, c_hable1(2 * x.y) / w, c_hable1(2 * x.z) / w); }
+    return x;
+}
+static float c_l2s(float c) { c = csat(c); return c < 0.0031308f ? c * 12.92f : 1.055f * powf(c, 1.0f / 2.4f) - 0.055f; }
+
+static md_gpu_texture_t f_tex(fix_t* fx, md_gpu_format_t format, md_gpu_tex_usage_t usage, uint32_t w, uint32_t h, const char* label) {
+    md_gpu_texture_desc_t td = {0};
+    td.type = MD_GPU_TEX_2D; td.usage = usage; td.width = w; td.height = h; td.format = format; td.label = label;
+    return md_gpu_texture_create(fx->gfx, &td);
+}
+
+static bool f_upload_tex(fix_t* fx, md_gpu_texture_t t, const void* src, size_t size) {
+    md_gpu_tex_region_t r = {0};
+    r.extent[2] = 1;
+    return md_gpu_upload_texture(fx->gfx, t, &r, src, size);
+}
+
+/* The display transform of every curve over premultiplied radiance of
+   coverage 0, a quarter, 0.6 and 1, against the reference */
+UTEST(render, post_display_curves) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    const uint32_t W = 32, H = 8, P = W * H;
+    uint16_t* in = malloc(P * 8);
+    uint16_t* px = malloc(P * 8);
+    for (uint32_t i = 0; i < P; ++i) {
+        const float a = (float[]){ 0.0f, 0.25f, 0.6f, 1.0f }[i % 4];
+        const float L[3] = { 12.0f * fmodf(i * 0.6180339f, 1.0f), 3.0f * fmodf(i * 0.4142135f, 1.0f), 0.5f * fmodf(i * 0.7320508f, 1.0f) };
+        for (int k = 0; k < 3; ++k) in[4 * i + k] = float_to_half(L[k] * a);
+        in[4 * i + 3] = float_to_half(a);
+    }
+    md_gpu_texture_t scene = f_tex(&fx, MD_GPU_FORMAT_RGBA16_FLOAT, MD_GPU_TEX_SAMPLED, W, H, "scene");
+    md_gpu_texture_t out   = f_tex(&fx, MD_GPU_FORMAT_RGBA16_FLOAT, MD_GPU_TEX_STORAGE, W, H, "display");
+    ASSERT_TRUE(f_upload_tex(&fx, scene, in, P * 8));
+    md_post_ctx_t pc = md_post_create(fx.dev);
+    ASSERT_TRUE(pc != NULL);
+    for (int curve = 0; curve < 4; ++curve) {
+        md_post_display_t d = { .scene = scene, .target = out, .curve = (md_post_curve_t)curve, .exposure = 1.3f, .gamma = 2.0f,
+                                .background = { 0.9f, 0.5f, 0.1f } };
+        ASSERT_TRUE(md_post_display(fx.gfx, pc, &d));
+        ASSERT_TRUE(f_read(&fx, out, px, P * 8));
+        /* without a curve: exposure 1, gamma 2.2 */
+        const float e = curve ? 1.3f : 1.0f, g = curve ? 2.0f : 2.2f, kg = g / 2.2f;
+        const cf3 bg = cf(c_s2l(powf(0.9f, kg)), c_s2l(powf(0.5f, kg)), c_s2l(powf(0.1f, kg)));
+        double worst = 0;
+        int bad = 0;
+        for (uint32_t i = 0; i < P; ++i) {
+            const float a = half_bits_to_float(in[4 * i + 3]);
+            cf3 L = cf(half_bits_to_float(in[4 * i]), half_bits_to_float(in[4 * i + 1]), half_bits_to_float(in[4 * i + 2]));
+            cf3 sc = a > 1e-4f ? c_curve(curve, cmul(L, e / a)) : cf(0, 0, 0);
+            cf3 col = cadd(cmul(cf(csat(sc.x), csat(sc.y), csat(sc.z)), a), cmul(bg, 1 - a));
+            const float exp[3] = { powf(c_l2s(col.x), 2.2f / g), powf(c_l2s(col.y), 2.2f / g), powf(c_l2s(col.z), 2.2f / g) };
+            for (int k = 0; k < 3; ++k) {
+                const double err = fabs(half_bits_to_float(px[4 * i + k]) - exp[k]);
+                worst = fmax(worst, err);
+                if (err > 2e-3) { bad++; if (bad < 6) printf("    curve %d pixel %u channel %d: %g against %g\n", curve, i, k, half_bits_to_float(px[4 * i + k]), exp[k]); }
+            }
+            if (half_bits_to_float(px[4 * i + 3]) != 1.0f) bad++;
+        }
+        printf("    curve %d: %.5f off at most\n", curve, worst);
+        EXPECT_EQ(0, bad);
+    }
+    md_post_destroy(pc);
+    md_gpu_texture_destroy(scene);
+    md_gpu_texture_destroy(out);
+    free(in); free(px);
+    f_close(&fx);
+}
+
+/* A view's frame through md_compose and md_post_display */
+typedef struct {
+    md_compose_ctx_t cx;
+    md_post_ctx_t    pc;
+    md_gpu_texture_t scene, frame;
+} f_post_t;
+
+static bool f_frame(fix_t* fx, f_post_t* fp, md_render_frame_t* f, md_render_status_t* st) {
+    if (!md_render_view_draw(fx->gfx, fx->view, f, st)) return false;
+    md_compose_desc_t d = {0};
+    d.camera = f->camera;
+    d.target = fp->scene;
+    d.shading.mode = MD_COMPOSE_SHADING_PBR;
+    d.shading.light_dir[0] = 0.4f; d.shading.light_dir[1] = 0.6f; d.shading.light_dir[2] = 0.7f;
+    d.shading.light_strength = 1.0f;
+    for (int i = 0; i < 3; ++i) { d.shading.dir_radiance[i] = 2.7f; d.shading.sky_radiance[i] = 0.59f; d.shading.ground_radiance[i] = 0.49f; }
+    d.shading.roughness = 0.4f; d.shading.f0 = 0.04f;
+    if (!md_compose(fx->gfx, fp->cx, fx->view, &d)) return false;
+    md_post_display_t pd = { .scene = fp->scene, .target = fp->frame, .curve = MD_POST_CURVE_NEUTRAL, .exposure = 1.0f, .gamma = 2.2f,
+                             .background = { 1, 1, 1 } };
+    return md_post_display(fx->gfx, fp->pc, &pd);
+}
+
+/* The temporal resolve. A frame jittered by j, resolved alone, is the
+   unjittered frame (bilinearly, where it is smooth), and far less so with
+   the jitter's sign turned; a still view resolved over 16 jittered frames
+   settles on the unjittered image. */
+UTEST(render, post_resolve_unjitters_and_settles) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    const uint32_t W = 96, H = 72, P = W * H;
+    cam_t c = { .tan_half = 0.4f, .aspect = (float)W / H, .n = 0.1f };
+    const float ctr[3] = { 0.0f, 0.0f, -12.0f };
+    md_render_batch_t b = {0};
+    b.key = 1; b.kind = MD_RENDER_SPHERES; b.count = 1; b.points.count = 1; b.points.position = f_buf(&fx, ctr, sizeof(ctr));
+    b.style.spheres.radius_add = 3.0f; b.color.mode = MD_RENDER_COLOR_UNIFORM; b.color.uniform = 0xFF3080D0u;
+    f_post_t fp = { md_compose_create(fx.dev), md_post_create(fx.dev),
+                    f_tex(&fx, MD_GPU_FORMAT_RGBA16_FLOAT, MD_GPU_TEX_STORAGE | MD_GPU_TEX_SAMPLED, W, H, "scene"),
+                    f_tex(&fx, MD_GPU_FORMAT_RGBA16_FLOAT, MD_GPU_TEX_STORAGE | MD_GPU_TEX_SAMPLED, W, H, "frame") };
+    ASSERT_TRUE(fp.cx && fp.pc);
+    md_gpu_texture_t hist[2] = { f_tex(&fx, MD_GPU_FORMAT_RGBA16_FLOAT, MD_GPU_TEX_STORAGE | MD_GPU_TEX_SAMPLED, W, H, "history 0"),
+                                 f_tex(&fx, MD_GPU_FORMAT_RGBA16_FLOAT, MD_GPU_TEX_STORAGE | MD_GPU_TEX_SAMPLED, W, H, "history 1") };
+    uint16_t* ref = malloc(P * 8);
+    uint16_t* got = malloc(P * 8);
+    uint16_t* last = malloc(P * 8);
+
+    /* the unjittered frame */
+    md_render_frame_t f = frame_of(W, H, make_camera(&c), &b, 1);
+    f.jitter = MD_RENDER_JITTER_NONE;
+    ASSERT_TRUE(f_frame(&fx, &fp, &f, NULL));
+    ASSERT_TRUE(f_read(&fx, fp.frame, ref, P * 8));
+    /* the sphere's inside, away from its edge: r < 0.7 of its radius on the screen */
+    const double rs = 3.0 / (12.0 * c.tan_half) * 0.5 * H;
+    #define INSIDE(x, y) (((x) + 0.5 - 0.5 * W) * ((x) + 0.5 - 0.5 * W) + ((y) + 0.5 - 0.5 * H) * ((y) + 0.5 - 0.5 * H) < 0.49 * rs * rs)
+    double err[2] = { 0, 0 }, worst = 0;
+    int n = 0;
+    const float j[2] = { 0.3f, -0.2f };
+    f.jitter = MD_RENDER_JITTER_GIVEN;
+    f.jitter_offset[0] = j[0]; f.jitter_offset[1] = j[1];
+    ASSERT_TRUE(f_frame(&fx, &fp, &f, NULL));
+    for (int sign = 0; sign < 2; ++sign) {
+        md_post_resolve_t r = { .view = fx.view, .camera = f.camera, .jitter = { sign ? -j[0] : j[0], sign ? -j[1] : j[1] },
+                                .frame = fp.frame, .history = hist[0], .feedback_min = 0.8f, .feedback_max = 0.95f };
+        ASSERT_TRUE(md_post_resolve(fx.gfx, fp.pc, &r));
+        ASSERT_TRUE(f_read(&fx, hist[0], got, P * 8));
+        n = 0;
+        for (uint32_t y = 0; y < H; ++y) for (uint32_t x = 0; x < W; ++x) {
+            if (!INSIDE(x, y)) continue;
+            const size_t p = (size_t)y * W + x;
+            for (int k = 0; k < 3; ++k) {
+                const double e = fabs(half_bits_to_float(got[4 * p + k]) - half_bits_to_float(ref[4 * p + k]));
+                err[sign] += e;
+                if (!sign) worst = fmax(worst, e);
+            }
+            n++;
+        }
+        err[sign] /= 3.0 * n;
+    }
+    printf("    a frame jittered by (%.1f, %.1f) resolved alone, against the unjittered over %d pixels: %.5f mean (%.5f at most); the jitter's sign turned: %.5f\n",
+           j[0], j[1], n, err[0], worst, err[1]);
+    EXPECT_LT(err[0], 0.2 * err[1]);
+    EXPECT_LT(err[0], 0.002);
+    EXPECT_LT(worst, 0.03);     /* bilinear across the highlight's peak */
+
+    /* still: 16 frames of the Halton sequence, each resolved into the other history */
+    int cur = 0, nan = 0;
+    double settle = 0, still = 0;
+    for (int i = 0; i < 16; ++i) {
+        float hx = 0, hy = 0;
+        for (int base = 2, k = 0; k < 2; base = 3, ++k) {
+            float r = 0, fr = 1.0f / base;
+            for (int m = i + 1; m > 0; m /= base, fr /= base) r += fr * (m % base);
+            if (k == 0) hx = r - 0.5f; else hy = r - 0.5f;
+        }
+        f.jitter_offset[0] = hx; f.jitter_offset[1] = hy;
+        ASSERT_TRUE(f_frame(&fx, &fp, &f, NULL));
+        md_post_resolve_t r = { .view = fx.view, .camera = f.camera, .jitter = { hx, hy }, .frame = fp.frame,
+                                .history_prev = i ? hist[cur ^ 1] : (md_gpu_texture_t)0, .history = hist[cur], .feedback_min = 0.8f, .feedback_max = 0.95f };
+        ASSERT_TRUE(md_post_resolve(fx.gfx, fp.pc, &r));
+        if (i == 14) ASSERT_TRUE(f_read(&fx, hist[cur], last, P * 8));
+        cur ^= 1;
+    }
+    ASSERT_TRUE(f_read(&fx, hist[cur ^ 1], got, P * 8));
+    for (uint32_t p = 0; p < P; ++p) for (int k = 0; k < 4; ++k) nan += !isfinite(half_bits_to_float(got[4 * p + k]));
+    for (uint32_t y = 0; y < H; ++y) for (uint32_t x = 0; x < W; ++x) {
+        if (!INSIDE(x, y)) continue;
+        const size_t p = (size_t)y * W + x;
+        for (int k = 0; k < 3; ++k) {
+            settle = fmax(settle, fabs(half_bits_to_float(got[4 * p + k]) - half_bits_to_float(ref[4 * p + k])));
+            still  = fmax(still,  fabs(half_bits_to_float(got[4 * p + k]) - half_bits_to_float(last[4 * p + k])));
+        }
+    }
+    #undef INSIDE
+    printf("    still, 16 jittered frames: %.5f off the unjittered at most, %.5f from the frame before\n", settle, still);
+    EXPECT_EQ(0, nan);
+    EXPECT_LT(settle, 0.03);
+    EXPECT_LT(still, 0.005);
+    md_gpu_texture_destroy(hist[0]); md_gpu_texture_destroy(hist[1]);
+    md_gpu_texture_destroy(fp.scene); md_gpu_texture_destroy(fp.frame);
+    md_post_destroy(fp.pc); md_compose_destroy(fp.cx);
+    free(ref); free(got); free(last);
+    f_close(&fx);
+}
+
+/* The marks over an image: a selected sphere in front of a highlighted one
+   of tag 3 (its group's colour): the selection's tint where it is, the
+   highlight's in its group's colour where it shows, its fill where it is
+   behind the selected sphere, the image (dithered) elsewhere */
+UTEST(render, post_present_marks) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    const uint32_t W = 96, H = 64, P = W * H;
+    cam_t c = { .ortho = true, .half_h = 4.0f, .aspect = (float)W / H, .n = 0.0f, .far_ = 100.0f };
+    float pos[6] = { -1.0f, 0.0f, -10.0f,   1.0f, 0.0f, -20.0f };
+    uint8_t marks[2] = { MD_RENDER_MARK_STATE0, MD_RENDER_MARK_STATE1 | MD_RENDER_MARK_TAG(3) };
+    md_render_batch_t b = {0};
+    b.key = 1; b.kind = MD_RENDER_SPHERES; b.count = 2; b.points.count = 2;
+    b.points.position = f_buf(&fx, pos, sizeof(pos)); b.points.marks = f_buf(&fx, marks, sizeof(marks));
+    b.style.spheres.radius_add = 1.6f;
+    md_render_frame_t f = frame_of(W, H, make_camera(&c), &b, 1);
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+
+    uint16_t* img = malloc(P * 8);
+    for (uint32_t i = 0; i < P * 4; ++i) img[i] = float_to_half((i & 3) == 3 ? 1.0f : 0.5f);
+    md_gpu_texture_t image  = f_tex(&fx, MD_GPU_FORMAT_RGBA16_FLOAT, MD_GPU_TEX_SAMPLED, W, H, "image");
+    md_gpu_texture_t target = f_tex(&fx, MD_GPU_FORMAT_RGBA8_UNORM, MD_GPU_TEX_STORAGE, W, H, "shown");
+    ASSERT_TRUE(f_upload_tex(&fx, image, img, P * 8));
+    md_post_marks_t mk = {0};
+    mk.visible[0][0] = 1.0f; mk.visible[0][3] = 0.5f;                       /* the selection: red, half */
+    mk.visible[1][2] = 1.0f; mk.visible[1][3] = 0.5f;                       /* the highlight: blue, half (but its group's) */
+    mk.hidden[1][1]  = 1.0f; mk.hidden[1][3]  = 1.0f;                       /* hidden: green, all of it (but its group's) */
+    mk.groups[2][0] = 1.0f; mk.groups[2][1] = 1.0f;                         /* tag 3: yellow */
+    mk.highlight = 1.0f;
+    mk.outline_px = 1;
+    md_post_ctx_t pc = md_post_create(fx.dev);
+    ASSERT_TRUE(pc != NULL);
+    md_post_present_t pr = { .image = image, .marks_view = fx.view, .marks = &mk, .target = target, .frame = 7 };
+    ASSERT_TRUE(md_post_present(fx.gfx, pc, &pr));
+    uint32_t* out = malloc(P * 4);
+    ASSERT_TRUE(f_read(&fx, target, out, P * 4));
+    /* at a world point: the pixel's channel k, 0..1 */
+    #define PIX(wx, wy, k) (((out[(uint32_t)((0.5 - (wy) / (2.0 * c.half_h)) * H) * W + (uint32_t)(((wx) / (2.0 * c.half_h * c.aspect)) * W + 0.5 * W)] >> (8 * (k))) & 0xFFu) / 255.0)
+    const struct { float x, y; float rgb[3]; const char* what; } at[] = {
+        { -1.8f, 0.0f, { 0.75f, 0.25f, 0.25f }, "the selection" },
+        {  1.8f, 0.0f, { 0.75f, 0.75f, 0.25f }, "the highlight in view (its group's)" },
+        {  0.3f, 0.0f, { 1.00f, 1.00f, 0.00f }, "the highlight behind the selection (its fill, its group's)" },
+        {  3.8f, 2.5f, { 0.50f, 0.50f, 0.50f }, "nothing" },
+    };
+    int bad = 0;
+    for (size_t i = 0; i < sizeof(at) / sizeof(at[0]); ++i) {
+        for (int k = 0; k < 3; ++k) {
+            const double v = PIX(at[i].x, at[i].y, k);
+            if (fabs(v - at[i].rgb[k]) > 2.5 / 255.0) { bad++; printf("    %s: channel %d %.3f against %.3f\n", at[i].what, k, v, at[i].rgb[k]); }
+        }
+    }
+    #undef PIX
+    EXPECT_EQ(0, bad);
+    /* without marks: the image, dithered by at most a step */
+    md_post_present_t pn = { .image = image, .target = target, .frame = 8 };
+    ASSERT_TRUE(md_post_present(fx.gfx, pc, &pn));
+    ASSERT_TRUE(f_read(&fx, target, out, P * 4));
+    int off = 0;
+    for (uint32_t p = 0; p < P; ++p) for (int k = 0; k < 3; ++k) off += abs((int)((out[p] >> (8 * k)) & 0xFFu) - 128) > 1;
+    EXPECT_EQ(0, off);
+    md_post_destroy(pc);
+    md_gpu_texture_destroy(image); md_gpu_texture_destroy(target);
+    free(img); free(out);
+    f_close(&fx);
+}
 
 /* md_render.h's side of a displaced capsule, in double: pa, pb in view space,
    side (already in view space, divided by the scale) or NULL */

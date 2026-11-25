@@ -96,6 +96,13 @@ float3 oct_decode(float2 e) {
 
 float3 normal_at(Args a, int2 q) { return oct_decode(a.normal.Load(int3(q, 0))); }
 
+// A half float's bits as a float (finite values; f16tof32 declares Int16,
+// which not every device has): its bits moved into a float's, rebiased
+float half_to_float(uint h) {
+    float f = asfloat((h & 0x7FFFu) << 13) * 5.192296858534828e33;   // 2^112
+    return (h & 0x8000u) != 0u ? -f : f;
+}
+
 // The full resolution pixel a texel of level 1 holds (the rotated grid's pick)
 int2 pick(int2 p) { return p * 2 + int2(p.y & 1, p.x & 1); }
 
@@ -391,7 +398,7 @@ void compose(uint3 tid : SV_DispatchThreadID) {
         uint   c8 = a.layers[k * a.stride + p];
         float4 c  = float4(float(c8 & 0xFFu), float((c8 >> 8) & 0xFFu), float((c8 >> 16) & 0xFFu), float(c8 >> 24)) / 255.0;
         uint   nb = a.layers[a.count * a.stride + k * a.stride + p];
-        float3 N  = oct_decode(float2(f16tof32(nb & 0xFFFFu), f16tof32(nb >> 16)));
+        float3 N  = oct_decode(float2(half_to_float(nb & 0xFFFFu), half_to_float(nb >> 16)));
         float3 L  = shade(a, c.rgb, toward_eye(a, ndc, d), N, 1.0);
         C += T * c.a * L;
         T *= 1.0 - c.a;

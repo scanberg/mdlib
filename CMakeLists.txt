@@ -902,6 +902,14 @@ if (MD_ENABLE_GPU)
     SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/render/md_compose.slang
     ENTRIES   ao_linear ao_estimate ao_blur compose
   )
+  # md_post: the scene into the image shown, display transform, temporal resolve, marks (md_post.h)
+  target_sources(mdlib PRIVATE src/md_post.c src/md_post.h)
+  compile_gpu_shaders(md_post_shaders.inl
+    TARGET    mdlib
+    NAMESPACE md_shader
+    SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/render/md_post.slang
+    ENTRIES   display resolve present
+  )
   compile_gpu_shaders(md_render_mol_shaders.inl
     TARGET    mdlib
     NAMESPACE md_shader
