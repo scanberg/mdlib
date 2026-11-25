@@ -237,6 +237,13 @@ typedef struct md_compose_desc_t {
     uint32_t             slice_count;      /* at most MD_COMPOSE_MAX_SLICES         */
     uint32_t             frame;            /* seeds the emission's jitter, and the
                                               shadows' samples                      */
+    float                jitter[2];        /* the raster's subpixel offset, pixels,
+                                              x right and y down (md_render_status_t.
+                                              jitter): each pixel's ray is through
+                                              the sample its surfaces are of, so the
+                                              volumes are jittered as the raster is
+                                              and a temporal resolve smooths their
+                                              edges too; 0: the pixels' centres     */
     const md_compose_shadow_t* shadow;     /* null: none (read at the call)         */
     md_gpu_texture_t     target;   /* RGBA16_FLOAT, STORAGE, of the view's size:
                                       the scene's radiance premultiplied by its

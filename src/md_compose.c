@@ -36,7 +36,7 @@ typedef struct gpu_compose_args_t {
     md_gpu_float4        sp;            /* the shadow map's texels across and down, a texel's world size along x, y */
     md_gpu_float4        sq;            /* world per unit of its depth, tan of the light's angular radius, 1: shadows, the contact ray's texels */
     md_gpu_sampled_tex_t shadow;
-    uint32_t             _sh0, _sh1;
+    float                jit[2];        /* the raster's subpixel offset: the rays through it */
 } gpu_compose_args_t;
 _Static_assert(sizeof(gpu_compose_args_t) == 752, "Args mirror");
 
@@ -314,6 +314,8 @@ bool md_compose(md_gpu_stream_t s, md_compose_ctx_t c, md_render_view_t view, co
 
     a.vol_count = nv;
     a.frame     = d->frame;
+    a.jit[0]    = d->jitter[0];
+    a.jit[1]    = d->jitter[1];
     a.trilinear = c->trilinear;
 
     /* The shadows: the frame's view space to the light's clip space, the map */

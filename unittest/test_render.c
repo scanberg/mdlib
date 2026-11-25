@@ -3454,8 +3454,11 @@ UTEST(render, compose_volumes) {
             EXPECT_GT(onto, 100);
         }
 
-        /* an isosurface of the distance: a sphere of radius 1.3 about the box's centre, opaque, lit */
-        {
+        /* an isosurface of the distance: a sphere of radius 1.3 about the box's centre, opaque, lit; through
+           the pixels' centres, then through a jittered sample */
+        uint8_t* cov0 = malloc(P);      /* the pixels covered through their centres */
+        for (int jit = 0; jit < 2; ++jit) {
+            const double jx = jit ? 0.37 : 0.0, jy = jit ? -0.29 : 0.0;
             md_render_frame_t f = frame_of(W, H, cam, NULL, 0);
             ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
             md_compose_volume_t v = {0};
@@ -3466,6 +3469,7 @@ UTEST(render, compose_volumes) {
             v.iso_colors[0][0] = 0.9f; v.iso_colors[0][1] = 0.5f; v.iso_colors[0][2] = 0.2f; v.iso_colors[0][3] = 1.0f;
             md_compose_desc_t d = {0};
             d.camera = cam; d.target = out; d.volumes = &v; d.volume_count = 1;
+            d.jitter[0] = (float)jx; d.jitter[1] = (float)jy;
             md_compose_shading_t* sh = &d.shading;
             sh->mode = MD_COMPOSE_SHADING_PBR; sh->linear_colors = true;
             sh->light_dir[0] = 0.4f; sh->light_dir[1] = 0.6f; sh->light_dir[2] = 0.7f; sh->light_strength = 1.0f;
@@ -3473,11 +3477,15 @@ UTEST(render, compose_volumes) {
             sh->roughness = 0.4f; sh->f0 = 0.04f;
             ASSERT_TRUE(md_compose(fx.gfx, cx, fx.view, &d));
             ASSERT_TRUE(f_read(&fx, out, px, P * 8));
-            int bad = 0, covered = 0;
+            int bad = 0, covered = 0, moved = 0;
             double worst = 0;
+            for (size_t p = 0; p < P; ++p) {
+                const uint8_t on = half_bits_to_float(px[4 * p + 3]) > 0.5f;
+                if (jit) moved += on != cov0[p]; else cov0[p] = on;
+            }
             for (uint32_t y = 0; y < H; ++y) for (uint32_t x = 0; x < W; ++x) {
                 const size_t p = (size_t)y * W + x;
-                ray_t r = pixel_ray(&c, W, H, x + 0.5, y + 0.5);
+                ray_t r = pixel_ray(&c, W, H, x + 0.5 + jx, y + 0.5 + jy);
                 double t0, t1, u0, u1;
                 const bool hit = ray_sphere(r, ctr, 1.3, &t0, &t1);
                 /* a voxel (1/12) from the silhouette either way */
@@ -3494,13 +3502,16 @@ UTEST(render, compose_volumes) {
                 for (int k = 0; k < 4; ++k) {
                     const double err = fabs(half_bits_to_float(px[4 * p + k]) - e[k]);
                     worst = fmax(worst, err);
-                    if (err > 0.02) { bad++; if (bad < 6) printf("    isosurface%s pixel (%u, %u) channel %d: %g against %g\n", ortho ? ", orthographic" : "", x, y, k, half_bits_to_float(px[4 * p + k]), e[k]); }
+                    if (err > 0.02) { bad++; if (bad < 6) printf("    isosurface%s%s pixel (%u, %u) channel %d: %g against %g\n", ortho ? ", orthographic" : "", jit ? ", jittered" : "", x, y, k, half_bits_to_float(px[4 * p + k]), e[k]); }
                 }
             }
-            printf("    isosurface%s: %d pixels on it, against the analytic sphere %.4f off at most\n", ortho ? ", orthographic" : "", covered, worst);
+            printf("    isosurface%s%s: %d pixels on it, against the analytic sphere %.4f off at most; %d covered or not as without\n",
+                   ortho ? ", orthographic" : "", jit ? ", jittered" : "", covered, worst, moved);
             EXPECT_EQ(0, bad);
             EXPECT_GT(covered, 300);
+            if (jit) EXPECT_GT(moved, 10);  /* the silhouette moved with the sample */
         }
+        free(cov0);
 
         /* optical density: an isosurface of coverage 0 (radius 1.5) absorbing,
            around an opaque white sphere, then around a transparent one */

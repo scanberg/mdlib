@@ -57,7 +57,7 @@ struct Args {
     float4 sq;                  // x: world per unit of its depth (1 / P22), y: tan of the light's angular
                                 // radius, z: 1 shadows, w: the contact ray's reach, the map's texels
     DescriptorHandle<Texture2D<float>>    shadow;   // the light view's depth: reverse Z, orthographic
-    uint   _sh0, _sh1;
+    float2 jit;                 // the raster's subpixel offset, pixels: the rays through it
 };
 MD_SHADER_ARGS(Args);
 
@@ -1014,7 +1014,7 @@ void compose(uint3 tid : SV_DispatchThreadID) {
     if (tid.x >= a.width || tid.y >= a.height) return;
     int2   q   = int2(tid.xy);
     uint   p   = tid.y * a.width + tid.x;
-    float2 ndc = ndc_of(a, float2(q) + 0.5);
+    float2 ndc = ndc_of(a, float2(q) + 0.5 + a.jit);
 
     // the ray: from the near plane, toward the eye V
     float3 O = unproject(a, ndc, 1.0);
