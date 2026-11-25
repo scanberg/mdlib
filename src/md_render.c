@@ -176,7 +176,8 @@ typedef struct gpu_batch_t {
     uint32_t      group;                                          /* transparent: the first batch of its group */
     float         opacity;                                        /* 1: opaque; below, transparent (0: not drawn) */
     float         desat_unmarked;                                 /* of the elements without state 0 (F_MARKS) */
-    uint32_t      _opad[2];
+    uint32_t      unlit;                                          /* 1: its colour's alpha 1/255 (color.unlit) */
+    uint32_t      _opad;
 } gpu_batch_t;
 _Static_assert(sizeof(gpu_batch_t) == 400, "Batch mirror");
 
@@ -772,6 +773,7 @@ static void canonical_color(md_render_color_t* out, const md_render_batch_t* b) 
     out->desaturate_unmarked = b->color.desaturate_unmarked;
     out->transparency  = b->color.transparency;
     out->group         = b->color.transparency > 0.0f ? b->color.group : 0;
+    out->unlit         = b->color.unlit;
 }
 
 /* The kinds md_render culls and rasterises; and which hardware raster draws
@@ -1250,6 +1252,7 @@ static void fill_batch(gpu_batch_t* g, const md_render_batch_t* b, uint32_t n_in
     g->sharpness  = b->color.sharpness;
     g->desaturate = b->color.desaturate;
     g->desat_unmarked = b->color.desaturate_unmarked;
+    g->unlit = b->color.unlit ? 1u : 0u;
     g->opacity    = b->color.transparency > 0.0f ? MD_MAX(1.0f - b->color.transparency, 0.0f) : 1.0f;
 }
 

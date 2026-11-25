@@ -437,6 +437,12 @@ typedef struct md_render_color_t {
        layer. 0: none, every fragment is a layer (a closed isosurface's front
        and back, what is inside it between them) */
     uint64_t      group;
+    /* Shown as it is, not shaded: its pixels' alpha in the colour target is
+       1/255 (still covered), which md_compose shows as the radiance of a
+       white Lambertian surface under the reference irradiance, without
+       light, occlusion or shadow (glyphs of a colour scale read as its
+       legend). Opaque batches. */
+    bool          unlit;
 } md_render_color_t;
 
 /* Fading with distance. A band is a range of the projection's scale at an
@@ -653,7 +659,8 @@ bool md_render_view_draw(md_gpu_stream_t stream, md_render_view_t view,
 typedef struct md_render_targets_t {
     md_gpu_texture_t depth;    /* D32_FLOAT, reverse Z; 0 where nothing was drawn   */
     md_gpu_texture_t id;       /* RG32_UINT, see "Ids"                             */
-    md_gpu_texture_t color;    /* RGBA8_UNORM, sRGB-encoded base colour; a: covered */
+    md_gpu_texture_t color;    /* RGBA8_UNORM, sRGB-encoded base colour; a: covered
+                                  (1, or 1/255 unlit: color.unlit)                  */
     md_gpu_texture_t normal;   /* RG16_FLOAT, view-space unit normal, octahedral    */
     md_gpu_texture_t motion;   /* RG16_FLOAT, pixels from where the surface was at
                                   the previous raster to where it is: of the

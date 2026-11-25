@@ -3923,6 +3923,89 @@ UTEST(render, compose_slice_edge_on) {
     f_close(&fx);
 }
 
+/* Unlit: a ball unlit beside one lit, of the same colour, under the key light, the environment and the occlusion.
+   The unlit one's pixels have alpha 1/255 in the colour target and compose to the colour itself (its sRGB decoded),
+   the same at every pixel; the lit one's are shaded. Switching it off is appearance: a resolve, no raster. */
+UTEST(render, compose_unlit) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    const uint32_t W = 96, H = 64, P = W * H;
+    cam_t c = { .ortho = true, .half_h = 2.0f, .aspect = (float)W / H, .n = 0.0f, .far_ = 40.0f };
+    md_render_camera_t cam = make_camera(&c);
+    const uint32_t color = 0xFF3366CCu;
+    float pos[6] = { -1.4f, 0.0f, -10.0f,   1.4f, 0.0f, -10.0f };
+    md_gpu_addr_t PB = f_buf(&fx, pos, sizeof(pos));
+    md_render_batch_t b[2];
+    memset(b, 0, sizeof(b));
+    for (int k = 0; k < 2; ++k) {
+        b[k].key = 300u + (uint32_t)k; b[k].kind = MD_RENDER_SPHERES; b[k].count = 1; b[k].points.count = 1;
+        b[k].points.position = PB + 12u * (uint32_t)k; b[k].style.spheres.radius_add = 1.2f;
+        b[k].color.mode = MD_RENDER_COLOR_UNIFORM; b[k].color.uniform = color;
+    }
+    b[0].color.unlit = true;
+    md_render_frame_t f = frame_of(W, H, cam, b, 2);
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+    uint32_t* oc = malloc(P * 4);
+    ASSERT_TRUE(f_read(&fx, md_render_view_targets(fx.view).color, oc, P * 4));
+
+    md_compose_ctx_t cx = md_compose_create(fx.dev);
+    ASSERT_TRUE(cx != NULL);
+    md_gpu_texture_desc_t td = {0};
+    td.type = MD_GPU_TEX_2D; td.usage = MD_GPU_TEX_STORAGE; td.width = W; td.height = H;
+    td.format = MD_GPU_FORMAT_RGBA16_FLOAT; td.label = "compose";
+    md_gpu_texture_t out = md_gpu_texture_create(fx.gfx, &td);
+    uint16_t* px = malloc(P * 8);
+    md_compose_desc_t d = {0};
+    d.camera = cam;
+    d.target = out;
+    d.shading.mode = MD_COMPOSE_SHADING_PBR;
+    const float L[3] = { 0.5f, 0.6f, 0.62f };
+    for (int i = 0; i < 3; ++i) { d.shading.light_dir[i] = L[i]; d.shading.dir_radiance[i] = 1.0f; d.shading.sky_radiance[i] = 0.3f; d.shading.ground_radiance[i] = 0.1f; }
+    d.shading.light_strength = 2.0f;
+    d.shading.roughness = 0.5f; d.shading.f0 = 0.04f;
+    d.ao = 2.0f;
+    d.ao_mode = MD_COMPOSE_AO_QUALITY;
+    ASSERT_TRUE(md_compose(fx.gfx, cx, fx.view, &d) && f_read(&fx, out, px, P * 8));
+    const float want[3] = { c_s2l((float)(color & 0xFF) / 255.0f), c_s2l((float)((color >> 8) & 0xFF) / 255.0f), c_s2l((float)((color >> 16) & 0xFF) / 255.0f) };
+    int unlit = 0, lit = 0, bad = 0, shaded = 0;
+    for (uint32_t i = 0; i < P; ++i) {
+        const uint32_t a = oc[i] >> 24;
+        if (a == 0) continue;
+        const bool left = (i % W) < W / 2;
+        if (left) {
+            unlit++;
+            if (a != 1) bad++;
+            for (int k = 0; k < 3; ++k) if (fabsf(half_bits_to_float(px[4 * i + k]) - want[k]) > 2e-3f + 2e-3f * want[k]) { bad++; break; }
+            if (fabsf(half_bits_to_float(px[4 * i + 3]) - 1.0f) > 1e-3f) bad++;
+        } else {
+            lit++;
+            if (a != 255) bad++;
+            if (fabsf(half_bits_to_float(px[4 * i + 1]) - want[1]) > 0.05f) shaded++;
+        }
+    }
+    printf("    %d pixels unlit, %d lit (%d shaded off the colour), %d wrong\n", unlit, lit, shaded, bad);
+    EXPECT_GT(unlit, 600);
+    EXPECT_GT(lit, 600);
+    EXPECT_EQ(0, bad);
+    EXPECT_GT(shaded * 2, lit);
+
+    /* lit again: appearance alone */
+    b[0].color.unlit = false;
+    md_render_status_t st;
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, &st));
+    EXPECT_EQ(0u, st.work & MD_RENDER_WORK_RASTER);
+    EXPECT_NE(0u, st.work & MD_RENDER_WORK_RESOLVE);
+    ASSERT_TRUE(f_read(&fx, md_render_view_targets(fx.view).color, oc, P * 4));
+    int ones = 0;
+    for (uint32_t i = 0; i < P; ++i) ones += (oc[i] >> 24) == 1;
+    EXPECT_EQ(0, ones);
+
+    md_gpu_texture_destroy(out);
+    md_compose_destroy(cx);
+    free(px); free(oc);
+    f_close(&fx);
+}
+
 /* Shadows, by what they must do: a ball over a floor in an orthographic view looking straight down on it, lit from
    aside with no sky and no ground, so a pixel's value over its value unshadowed is the key light's visibility there.
    From the ball's shadow cylinder (its silhouette along the light), the penumbra's reach out of it from the light's

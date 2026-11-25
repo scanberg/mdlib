@@ -1027,7 +1027,12 @@ void compose(uint3 tid : SV_DispatchThreadID) {
     float  cov = col.a > 0.0 ? 1.0 : 0.0;
     float  dop = a.depth.Load(int3(q, 0));
     float  top = T_FAR;
-    if (cov > 0.0) {
+    if (cov > 0.0 && col.a < 1.5 / 255.0) {
+        // unlit (md_render_color_t's): the colour as the radiance of a white
+        // Lambertian surface under the reference irradiance, as it is given
+        S   = a.misc.z > 0.5 ? saturate(col.rgb) : srgb_to_linear(col.rgb);
+        top = dot(unproject(a, ndc, dop) - O, D);
+    } else if (cov > 0.0) {
         float3 N  = normal_at(a, q);
         float  ao = a.use_ao != 0u ? ao_at(a, q, a.lin[tid.y * a.width + tid.x]) : 1.0;
         float3 P  = unproject(a, ndc, dop);

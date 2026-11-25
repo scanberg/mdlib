@@ -197,7 +197,8 @@ struct Batch {
     uint    group;              // transparent: the first batch of its group (resolve_layers); ~0: none
     float   opacity;            // 1: opaque; below, transparent (the K-buffer); 0: not drawn
     float   desat_unmarked;     // F_MARKS: more desaturation of the elements without state 0
-    uint    _opad1, _opad2;
+    uint    unlit;              // 1: the colour's alpha 1/255 (md_render_color_t's unlit)
+    uint    _opad1;
 };
 
 // The per-view lists the cull writes and everything after it reads. Cluster
@@ -4216,7 +4217,7 @@ uint resolve_body<let SPL : int>(uint3 tid) {
     if (b.desat_unmarked > 0.0 && (b.flags & F_MARKS) != 0u && (elem_state(b, h.element) & 1u) == 0u) ds = 1.0 - (1.0 - ds) * (1.0 - b.desat_unmarked);
     lin = lerp(lin, float3(g), saturate(ds));
     lin = lerp(lin, lin * b.tint.rgb, saturate(b.tint.a));
-    a.color[px]  = float4(linear_to_srgb(saturate(lin)), 1.0);
+    a.color[px]  = float4(linear_to_srgb(saturate(lin)), b.unlit != 0u ? 1.0 / 255.0 : 1.0);
     if (SPL == 0) a.normal[px] = oct_encode(h.n_view);   // the heavy kinds': the raster's (VisOut)
 
     float4 cur  = mul4(M(v, proj_cur),  mul4(M(v, view),      float4(h.p_world, 1.0)));

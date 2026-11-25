@@ -26,7 +26,10 @@ an opaque surface of one colour under one light look alike:
          themselves along a wrapped Lambert, (0.5 + 0.5 N.L)^2, with a
          Blinn-Phong highlight blended toward white; the occlusion darkens
          all of it (the depth cue it is there)
-No occlusion on transparent surfaces, and no shadows anywhere (yet).
+No occlusion on transparent surfaces; the shadows are the opaque surface's
+(below). An unlit surface (md_render_color_t's unlit) is not shaded: its
+colour is its radiance, as a white Lambertian surface's under the reference
+irradiance, without light, occlusion or shadow.
 
 THE AMBIENT OCCLUSION is one of viamd's two scale-free screen-space
 estimators, at half resolution, from a mip chain of the linear depth that
