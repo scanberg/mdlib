@@ -3183,7 +3183,7 @@ UTEST(render, compose_shades_the_scene) {
    sphere's face toward the eye is open. Scale free: the scene and the camera
    scaled by 40 give the same visibility. Perspective and orthographic. An
    intensity of 0 estimates nothing (1 everywhere). */
-static bool occ_draw(fix_t* fx, md_render_camera_t cam, uint32_t W, uint32_t H, float k, md_compose_ctx_t cx, md_gpu_texture_t out, float ao, uint16_t* px) {
+static bool occ_draw(fix_t* fx, md_render_camera_t cam, uint32_t W, uint32_t H, float k, md_compose_ctx_t cx, md_gpu_texture_t out, float ao, md_compose_ao_mode_t mode, uint16_t* px) {
     const float z0 = -20.0f;
     float quad[12] = { -30, -30, z0,  30, -30, z0,  30, 30, z0,  -30, 30, z0 };
     const uint32_t tri[6] = { 0, 1, 2, 0, 2, 3 };
@@ -3204,6 +3204,7 @@ static bool occ_draw(fix_t* fx, md_render_camera_t cam, uint32_t W, uint32_t H, 
     d.camera = cam;
     d.target = out;
     d.ao = ao;
+    d.ao_mode = mode;
     d.shading.mode = MD_COMPOSE_SHADING_BASIC;
     d.shading.linear_colors = true;
     d.shading.light_dir[2] = 1.0f;
@@ -3224,14 +3225,17 @@ UTEST(render, compose_occlusion) {
     md_gpu_texture_t out = md_gpu_texture_create(fx.gfx, &td);
     uint16_t* v1 = malloc(P * 8);
     uint16_t* v2 = malloc(P * 8);
-    for (int ortho = 0; ortho < 2; ++ortho) {
+    for (int run = 0; run < 4; ++run) {
+        const int ortho = run & 1;
+        const md_compose_ao_mode_t mode = run < 2 ? MD_COMPOSE_AO_QUALITY : MD_COMPOSE_AO_PERFORMANCE;
+        const char* mname = mode == MD_COMPOSE_AO_QUALITY ? "quality" : "performance";
         const float k = 40.0f;
         cam_t c1 = ortho ? (cam_t){ .ortho = true, .half_h = 6.0f, .aspect = (float)W / H, .n = 0.0f, .far_ = 100.0f }
                          : (cam_t){ .tan_half = 0.3f, .aspect = (float)W / H, .n = 0.1f };
         cam_t c2 = c1;
         if (ortho) { c2.half_h *= k; c2.far_ *= k; } else { c2.n *= k; }
-        ASSERT_TRUE(occ_draw(&fx, make_camera(&c1), W, H, 1.0f, cx, out, 5.0f, v1));
-        ASSERT_TRUE(occ_draw(&fx, make_camera(&c2), W, H, k, cx, out, 5.0f, v2));
+        ASSERT_TRUE(occ_draw(&fx, make_camera(&c1), W, H, 1.0f, cx, out, 5.0f, mode, v1));
+        ASSERT_TRUE(occ_draw(&fx, make_camera(&c2), W, H, k, cx, out, 5.0f, mode, v2));
         /* the sphere's silhouette: its radius on the screen, about its centre */
         const double rs = ortho ? 0.5 / c1.half_h * 0.5 * H : 0.5 / (19.5 * c1.tan_half) * 0.5 * H;
         const double cx0 = 0.5 * W, cy0 = 0.5 * H;
@@ -3249,29 +3253,30 @@ UTEST(render, compose_occlusion) {
                 else if (r < 0.3 * rs) top_min = fmin(top_min, v);
             }
         }
-        printf("    %s: far from the sphere %.3f at least (%d px), around its contact %.3f mean, %.3f least (%d px); its face %.3f at least; scaled by %g: %.4f off at most\n",
-               ortho ? "orthographic" : "perspective", far_min, far_n, ring_sum / fmax(ring_n, 1), ring_min, ring_n, top_min, k, worst);
+        printf("    %s, %s: far from the sphere %.3f at least (%d px), around its contact %.3f mean, %.3f least (%d px); its face %.3f at least; scaled by %g: %.4f off at most\n",
+               mname, ortho ? "orthographic" : "perspective", far_min, far_n, ring_sum / fmax(ring_n, 1), ring_min, ring_n, top_min, k, worst);
         EXPECT_EQ(0, bad);
         EXPECT_GT(far_min, 0.97);
         EXPECT_GT(top_min, 0.97);
         EXPECT_LT(ring_sum / fmax(ring_n, 1), 0.92);
         EXPECT_LT(worst, 0.02);
-        /* the intensity scales the obscurance: twice of it, twice as dark */
-        ASSERT_TRUE(occ_draw(&fx, make_camera(&c1), W, H, 1.0f, cx, out, 10.0f, v2));
+        /* the intensity: twice of it, twice the obscurance (performance, exactly: the blur is linear in
+           it) or the visibility squared (quality, before the blur: after it, within its spread) */
+        ASSERT_TRUE(occ_draw(&fx, make_camera(&c1), W, H, 1.0f, cx, out, 10.0f, mode, v2));
         double lin = 0;
         for (size_t p = 0; p < P; ++p) {
             const double v = half_bits_to_float(v1[4 * p]), w = half_bits_to_float(v2[4 * p]);
-            lin = fmax(lin, fabs(w - (1.0 - 2.0 * (1.0 - v))));
+            lin = fmax(lin, fabs(w - (mode == MD_COMPOSE_AO_PERFORMANCE ? 1.0 - 2.0 * (1.0 - v) : v * v)));
         }
-        printf("    intensity doubled: %.4f off the obscurance doubled at most\n", lin);
-        EXPECT_LT(lin, 4e-3);
+        printf("    intensity doubled: %.4f off at most\n", lin);
+        EXPECT_LT(lin, mode == MD_COMPOSE_AO_PERFORMANCE ? 4e-3 : 0.03);
         EXPECT_GT(far_n, 1000);
         EXPECT_GT(ring_n, 50);
     }
     /* no occlusion asked: none */
     {
         cam_t c1 = { .tan_half = 0.3f, .aspect = (float)W / H, .n = 0.1f };
-        ASSERT_TRUE(occ_draw(&fx, make_camera(&c1), W, H, 1.0f, cx, out, 0.0f, v1));
+        ASSERT_TRUE(occ_draw(&fx, make_camera(&c1), W, H, 1.0f, cx, out, 0.0f, MD_COMPOSE_AO_QUALITY, v1));
         int open = 0, covered = 0;
         for (size_t p = 0; p < P; ++p) {
             if (half_bits_to_float(v1[4 * p + 3]) == 0.0f) continue;

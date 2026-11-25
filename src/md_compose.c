@@ -31,7 +31,7 @@ enum { AO_LEVELS = 6, VOL_STRIDE = 28 };   /* md_compose.slang's */
 
 struct md_compose {
     md_gpu_device_t  dev;
-    md_gpu_kernel_t  k_linear, k_estimate, k_blur, k_compose;
+    md_gpu_kernel_t  k_linear, k_estimate, k_quality, k_blur, k_compose;
     md_gpu_sampler_t trilinear;
     /* What the compose's volume arguments hold without volumes, never read: a
        null pointer or handle there let lavapipe crash (a load hoisted out of
@@ -51,12 +51,13 @@ md_compose_ctx_t md_compose_create(md_gpu_device_t device) {
     md_gpu_kernel_desc_t kd;
     kd = md_shader_md_compose_ao_linear_kernel();   c->k_linear   = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_compose_ao_estimate_kernel(); c->k_estimate = md_gpu_kernel_create(device, &kd);
+    kd = md_shader_md_compose_ao_estimate_quality_kernel(); c->k_quality = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_compose_ao_blur_kernel();     c->k_blur     = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_compose_compose_kernel();     c->k_compose  = md_gpu_kernel_create(device, &kd);
     md_gpu_sampler_desc_t sd = {0};
     sd.min_filter = sd.mag_filter = MD_GPU_FILTER_LINEAR;
     c->trilinear = md_gpu_sampler(device, &sd);
-    if (!c->k_linear || !c->k_estimate || !c->k_blur || !c->k_compose || !c->trilinear.handle) {
+    if (!c->k_linear || !c->k_estimate || !c->k_quality || !c->k_blur || !c->k_compose || !c->trilinear.handle) {
         MD_LOG_ERROR("md_compose: kernel creation failed: %s", md_gpu_last_error());
         md_compose_destroy(c);
         return NULL;
@@ -68,6 +69,7 @@ void md_compose_destroy(md_compose_ctx_t c) {
     if (!c) return;
     if (c->k_linear)   md_gpu_kernel_destroy(c->k_linear);
     if (c->k_estimate) md_gpu_kernel_destroy(c->k_estimate);
+    if (c->k_quality)  md_gpu_kernel_destroy(c->k_quality);
     if (c->k_blur)     md_gpu_kernel_destroy(c->k_blur);
     if (c->k_compose)  md_gpu_kernel_destroy(c->k_compose);
     if (c->none_field)    md_gpu_texture_destroy(c->none_field);
@@ -228,7 +230,7 @@ bool md_compose(md_gpu_stream_t s, md_compose_ctx_t c, md_render_view_t view, co
             a.level = l;
             ok = launch(s, c->k_linear, level_dim(W, l), level_dim(H, l), &a);
         }
-        ok = ok && launch(s, c->k_estimate, hw, hh, &a);
+        ok = ok && launch(s, d->ao_mode == MD_COMPOSE_AO_PERFORMANCE ? c->k_estimate : c->k_quality, hw, hh, &a);
         a.dir = 0; a.src = 0;
         ok = ok && launch(s, c->k_blur, hw, hh, &a);
         a.dir = 1; a.src = 1;

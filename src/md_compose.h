@@ -28,13 +28,21 @@ an opaque surface of one colour under one light look alike:
          all of it (the depth cue it is there)
 No occlusion on transparent surfaces, and no shadows anywhere (yet).
 
-THE AMBIENT OCCLUSION is viamd's scale-free screen-space obscurance (its
-"performance" estimator): at half resolution, 16 samples spread
-log-uniformly between 2 pixels and a tenth of the view's height, each judged
-at its own scale (its falloff radius 2.5 times its distance), from a mip
-chain of the linear depth that keeps one real pixel per texel (a rotated
-grid); a separable bilateral blur over two periods of its 4 x 4 pattern; a
-joint bilateral upsample. The pattern is fixed: no history (a temporal
+THE AMBIENT OCCLUSION is one of viamd's two scale-free screen-space
+estimators, at half resolution, from a mip chain of the linear depth that
+keeps one real pixel per texel (a rotated grid), with samples spread
+log-uniformly between 2 pixels and a tenth of the view's height:
+  QUALITY      horizon based with a visibility bitmask (ssao_bitmask.frag):
+               2 slices of 8 steps a side; each sample occludes the arc from
+               its front to its front pushed back by twice its distance
+               beside the point; 32 sectors of equal shares of the
+               cosine-weighted hemisphere. A thin occluder hides only the
+               arc it covers. Visibility^(ao / 5)
+  PERFORMANCE  obscurance (ssao.frag): 16 point samples, each judged at its
+               own scale (its falloff radius 2.5 times its distance).
+               1 - ao x the obscurance
+Then a separable bilateral blur over two periods of their 4 x 4 pattern and
+a joint bilateral upsample. The pattern is fixed: no history (a temporal
 resolve after it accumulates what it would).
 
 A transparent surface is a dielectric film of coverage a (its layer's
@@ -138,14 +146,19 @@ typedef struct md_compose_volume_t {
                                                      extinction per world unit      */
 } md_compose_volume_t;
 
+typedef enum md_compose_ao_mode_t {
+    MD_COMPOSE_AO_QUALITY = 0,
+    MD_COMPOSE_AO_PERFORMANCE,
+} md_compose_ao_mode_t;
+
 typedef struct md_compose_desc_t {
     md_render_camera_t   camera;   /* as the view was drawn (its projection: the
                                       direction each pixel looks along, and the
                                       depths' distances)                            */
     md_compose_shading_t shading;
-    float                ao;       /* the occlusion's intensity: the visibility is
-                                      1 - ao x the obscurance (viamd's: 5); 0: none,
-                                      not estimated                                 */
+    float                ao;       /* the occlusion's intensity (viamd's: 5); 0:
+                                      none, not estimated                           */
+    md_compose_ao_mode_t ao_mode;
     const md_compose_volume_t* volumes;    /* read at the call                      */
     uint32_t             volume_count;     /* at most MD_COMPOSE_MAX_VOLUMES        */
     uint32_t             frame;            /* seeds the emission's jitter           */

@@ -210,6 +210,140 @@ void ao_estimate(uint3 tid : SV_DispatchThreadID) {
     a.ao[o] = float2(saturate(1.0 - a.pc.w * ao), z);
 }
 
+// The QUALITY estimator (viamd's ssao_bitmask.frag): scale-free horizon-based
+// occlusion with a visibility bitmask, at half resolution, into plane 0 as
+// ao_estimate. Each pixel walks AO_NUM_SLICES screen-space slices through
+// itself (Jimenez et al. 2016); every depth sample along a slice occludes the
+// arc between the directions to its front and to the same point pushed back
+// by an assumed thickness (AO_THICKNESS times its lateral distance); the
+// union of the arcs is a 32-sector bitmask per slice (Therrien et al. 2023),
+// the sectors spaced to carry equal shares of the cosine-weighted
+// hemisphere, so the visibility is 1 - occupied / 32. A thin occluder hides
+// only the arc it covers, not everything below it. Out: the visibility to
+// the power of the intensity x AO_POWER_SCALE (viamd's default intensity, 5,
+// gives the plain cosine-weighted visibility).
+
+static const uint  AO_NUM_SLICES  = 2u;
+static const uint  AO_NUM_STEPS   = 8u;      // per side of a slice
+static const float AO_THICKNESS   = 2.0;
+static const float AO_POWER_SCALE = 0.2;
+static const float HALF_PI        = 1.57079633;
+
+// acos, Abramowitz & Stegun 4.4.45: |error| <= 6.7e-5
+float fast_acos(float x) {
+    float t = abs(x);
+    float r = sqrt(1.0 - t) * (1.5707288 + t * (-0.2121144 + t * (0.0742610 + t * -0.0187293)));
+    return x >= 0.0 ? r : PI - r;
+}
+
+// The cosine-weighted measure of the slice from the view direction (theta 0)
+// to the in-plane direction (a, b) = (cos theta, sin theta), for a projected
+// normal at angle gamma: sign(theta) (cos g + 2 theta sin g - cos(2 theta - g)) / 4
+float slice_measure(float a, float b, float cos_g, float sin_g) {
+    float theta    = (b < 0.0 ? -1.0 : 1.0) * fast_acos(a);
+    float cos_2t_g = (a * a - b * b) * cos_g + 2.0 * a * b * sin_g;
+    return (b < 0.0 ? -0.25 : 0.25) * (cos_g + 2.0 * theta * sin_g - cos_2t_g);
+}
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void ao_estimate_quality(uint3 tid : SV_DispatchThreadID) {
+    Args  a  = MD_ARGS;
+    uint2 hs = level_size(a, 1u);
+    if (tid.x >= hs.x || tid.y >= hs.y) return;
+    int2  hp = int2(tid.xy);
+    uint  o  = tid.y * hs.x + tid.x;
+    float z  = lin_at(a, 1u, hp);
+    if (z >= Z_MAX) { a.ao[o] = float2(1.0, z); return; }
+    int2   fp   = pick(hp);
+    float2 fpx  = float2(fp) + 0.5;
+    float3 P    = view_at(a, fpx, z);
+    float3 N    = normal_at(a, fp);
+    bool   orth = a.misc.w > 0.5;
+    float3 V    = orth ? float3(0.0, 0.0, 1.0) : -normalize(P);
+    float  pw   = px_world(a, z);
+    float2 full = float2(float(a.width), float(a.height));
+    float  r_max = max(AO_R_MAX * full.y, 2.0 * AO_R_MIN);
+
+    // the 4 x 4 interleaved (rotation, radial phase) pattern of ao_estimate
+    uint   k    = BAYER[(hp.y & 3) * 4 + (hp.x & 3)];
+    float  rk   = float(bit_reverse4(k)) / 16.0;
+    float  phi0 = PI * (float(k) + 0.5) / (16.0 * float(AO_NUM_SLICES));
+    float2 d    = float2(cos(phi0), sin(phi0));
+    const float  SLICE_STEP = PI / float(AO_NUM_SLICES);
+    const float2 slice_rot  = float2(cos(SLICE_STEP), sin(SLICE_STEP));
+
+    // steps at r_min * ratio^(i + phase): an exp2 a side, then a multiply a step
+    float log_ratio  = log2(r_max / AO_R_MIN);
+    float step_ratio = exp2(log_ratio / float(AO_NUM_STEPS));
+    float s_first0   = AO_R_MIN * exp2(rk * log_ratio / float(AO_NUM_STEPS));
+    float s_first1   = AO_R_MIN * exp2(frac(rk + 0.5) * log_ratio / float(AO_NUM_STEPS));
+
+    float vis_sum = 0.0, w_sum = 0.0;
+    for (uint sl = 0u; sl < AO_NUM_SLICES; ++sl) {
+        if (sl > 0u) d = float2(d.x * slice_rot.x - d.y * slice_rot.y, d.x * slice_rot.y + d.y * slice_rot.x);
+        // the slice's frame: o in its plane, perpendicular to V, toward +d on
+        // the screen (pixels run y down, view space y up)
+        float3 dir3  = float3(d.x, -d.y, 0.0);
+        float3 ov    = normalize(dir3 - V * dot(dir3, V));
+        float3 axis  = cross(ov, V);
+        float3 n_p   = N - axis * dot(N, axis);
+        float  n_len = length(n_p);
+        if (n_len < 1e-4) continue;
+        float cos_g = clamp(dot(n_p, V) / n_len, -1.0, 1.0);
+        float sgn_g = dot(n_p, ov) < 0.0 ? -1.0 : 1.0;
+        float gamma = sgn_g * fast_acos(cos_g);
+        float sin_g = sgn_g * sqrt(1.0 - cos_g * cos_g);
+        float total = cos_g + gamma * sin_g;                        // measure(hi) - measure(lo)
+        float m_lo  = -0.5 * (cos_g + (gamma - HALF_PI) * sin_g);   // measure(lo), lo = gamma - pi / 2
+        float inv_total = 1.0 / total;
+        // the arcs onto the sectors with a stochastic rounding: small arcs unbiased on average
+        float bit_ofs = frac(rk * 7.0 + float(sl) * 0.618034);
+        uint  bits = 0u;
+        for (uint side = 0u; side < 2u; ++side) {
+            float2 sd = side == 0u ? d : -d;
+            float  s  = side == 0u ? s_first0 : s_first1;
+            for (uint i = 0u; i < AO_NUM_STEPS; ++i, s *= step_ratio) {
+                float2 spx = fpx + sd * s;
+                if (any(spx < float2(0.0)) || any(spx >= full)) break;
+                int   m  = clamp(int(firstbithigh(uint(s))) - AO_LOG_Q, 1, AO_MAX_MIP);
+                int2  tx = clamp(int2(spx) >> m, int2(0), int2(level_size(a, uint(m))) - 1);
+                float sz = lin_at(a, uint(m), tx);
+                if (sz >= Z_MAX) continue;
+                for (int l = m; l > 0; --l) tx = pick(tx);
+                float3 S = view_at(a, float2(tx) + 0.5, sz);
+                // its front, and the same point pushed back along its view ray
+                float  thick = AO_THICKNESS * s * pw;
+                float3 push  = orth ? float3(0.0, 0.0, -thick) : normalize(S) * thick;
+                float3 Df = S - P;
+                float  hf = dot(Df, n_p);
+                float  hb = hf + dot(push, n_p);
+                if (hf <= 0.0 && hb <= 0.0) continue;   // both behind the tangent plane
+                float3 Db = Df + push;
+                // their directions in the slice; outside the hemisphere, its edge on their side
+                float2 ef = float2(dot(Df, V), dot(Df, ov));
+                float2 eb = float2(dot(Db, V), dot(Db, ov));
+                ef *= rsqrt(max(dot(ef, ef), 1e-30));
+                eb *= rsqrt(max(dot(eb, eb), 1e-30));
+                float uf = hf > 0.0 ? (slice_measure(ef.x, ef.y, cos_g, sin_g) - m_lo) * inv_total : (ef.y > 0.0 ? 1.0 : 0.0);
+                float ub = hb > 0.0 ? (slice_measure(eb.x, eb.y, cos_g, sin_g) - m_lo) * inv_total : (eb.y > 0.0 ? 1.0 : 0.0);
+                uint  b0 = uint(clamp(floor(min(uf, ub) * 32.0 + bit_ofs), 0.0, 32.0));
+                uint  b1 = uint(clamp(floor(max(uf, ub) * 32.0 + bit_ofs), 0.0, 32.0));
+                if (b1 > b0) {
+                    uint count = b1 - b0;
+                    bits |= (count >= 32u ? 0xFFFFFFFFu : ((1u << count) - 1u)) << b0;
+                }
+            }
+        }
+        // a slice's weight: the projected normal's length x its share of the hemisphere
+        float w = n_len * total;
+        vis_sum += w * (1.0 - float(countbits(bits)) / 32.0);
+        w_sum   += w;
+    }
+    float vis = w_sum > 0.0 ? vis_sum / w_sum : 1.0;
+    a.ao[o] = float2(pow(saturate(vis), a.pc.w * AO_POWER_SCALE), z);
+}
+
 // A separable bilateral blur at half resolution: a box with half-weight end
 // taps over two periods of the pattern, stopped by the distance of a tap from
 // the centre's tangent plane in pixel footprints (scale free)
