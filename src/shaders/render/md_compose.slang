@@ -771,8 +771,9 @@ float4 surface_color(Args a, uint v, uint i, float3 pt, float3 P, float3 N, floa
 //   4..7   view space to its field's texture space
 //   8      the transfer function's range begin, 1 / its extent, the opacity, the edge's half width (pixels)
 //   9      the edge's colour (linear), alpha
+//   10..13 its rectangle's space to view space
 
-static const uint SLICE_STRIDE = 10u;
+static const uint SLICE_STRIDE = 14u;
 static const uint MAX_SLICES   = 8u;
 
 float4 srec(Args a, uint i, uint k) { return a.slices[i * SLICE_STRIDE + k]; }
@@ -816,6 +817,15 @@ float3 slice_hit(Args a, uint i, float3 o, float3 d) {
     float t = -ro.z / rd.z;
     float2 q = (ro + rd * t).xy;
     return float3(q, t);
+}
+
+// The pixels from the pixel at ndc to the point b of slice i's rectangle, projected; far behind the camera
+float slice_px(Args a, uint i, float2 b, float2 ndc) {
+    float3 v = mulp4(srec(a, i, 10u), srec(a, i, 11u), srec(a, i, 12u), srec(a, i, 13u), float3(b, 0.0));
+    float  w = a.pc.x * v.z + a.pc.y;
+    if (w <= 0.0) return 1e9;
+    float2 n = float2(a.pa.x * v.x + a.pa.z * v.z + a.pb.x, a.pa.y * v.y + a.pa.w * v.z + a.pb.y) / w;
+    return length((n - ndc) * float2(float(a.width), float(a.height)) * 0.5);
 }
 
 // A film shaded onto the ray: what it reflects, and what it lets through
@@ -914,27 +924,24 @@ void compose(uint3 tid : SV_DispatchThreadID) {
         nl = k + 1u;
     }
     uint ns = min(a.slice_count, MAX_SLICES);
-    if (ns > 0u) {
-        // the rays of the next pixels across and down
-        float2 nx = ndc + float2(2.0 / float(a.width), 0.0), ny = ndc - float2(0.0, 2.0 / float(a.height));
-        float3 ox = unproject(a, nx, 1.0), oy = unproject(a, ny, 1.0);
-        float3 dx = a.misc.w > 0.5 ? D : normalize(ox), dy = a.misc.w > 0.5 ? D : normalize(oy);
-        for (uint i = 0u; i < ns; ++i) {
-            float3 h = slice_hit(a, i, O, D);
-            if (h.z < 0.0 || h.z > top) continue;
-            float3 hx = slice_hit(a, i, ox, dx), hy = slice_hit(a, i, oy, dy);
-            float2 qx = hx.xy - h.xy, qy = hy.xy - h.xy;
-            // pixels per unit of each of the rectangle's coordinates, and how
-            // far in from each pair of its sides
-            float2 ppu = 1.0 / max(float2(length(float2(qx.x, qy.x)), length(float2(qx.y, qy.y))), float2(1e-12));
-            float2 in2 = min(h.xy, 1.0 - h.xy) * ppu;
-            float  d   = (in2.x >= 0.0 && in2.y >= 0.0) ? min(in2.x, in2.y) : -length(max(-in2, float2(0.0)));
-            float4 r = srec(a, i, 8u), e = srec(a, i, 9u);
-            if (!((r.z > 0.0 && d > -0.5) || (e.a > 0.0 && abs(d) < r.w + 1.5))) continue;
-            uint j = nl++;
-            while (j > 0u && tl[j - 1u] > h.z) { tl[j] = tl[j - 1u]; kd[j] = kd[j - 1u]; sd[j] = sd[j - 1u]; --j; }
-            tl[j] = h.z; kd[j] = 0x100u | i; sd[j] = d;
+    for (uint i = 0u; i < ns; ++i) {
+        float3 h = slice_hit(a, i, O, D);
+        if (h.z < 0.0 || h.z > top) continue;
+        // the pixels in from the rectangle's border: to its nearest point projected, which holds where the plane
+        // runs off to its horizon, as an estimate from the rays of the next pixels does not (the whole of the far
+        // plane would be within a pixel of the border). Within it, the nearest of the points across on its sides.
+        float d;
+        if (all(h.xy >= 0.0) && all(h.xy <= 1.0)) {
+            d = min(min(slice_px(a, i, float2(0.0, h.y), ndc), slice_px(a, i, float2(1.0, h.y), ndc)),
+                    min(slice_px(a, i, float2(h.x, 0.0), ndc), slice_px(a, i, float2(h.x, 1.0), ndc)));
+        } else {
+            d = -slice_px(a, i, saturate(h.xy), ndc);
         }
+        float4 r = srec(a, i, 8u), e = srec(a, i, 9u);
+        if (!((r.z > 0.0 && d > -0.5) || (e.a > 0.0 && abs(d) < r.w + 1.5))) continue;
+        uint j = nl++;
+        while (j > 0u && tl[j - 1u] > h.z) { tl[j] = tl[j - 1u]; kd[j] = kd[j - 1u]; sd[j] = sd[j - 1u]; --j; }
+        tl[j] = h.z; kd[j] = 0x100u | i; sd[j] = d;
     }
 
     float3 C = float3(0.0);

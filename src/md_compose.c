@@ -35,7 +35,7 @@ typedef struct gpu_compose_args_t {
 } gpu_compose_args_t;
 _Static_assert(sizeof(gpu_compose_args_t) == 640, "Args mirror");
 
-enum { AO_LEVELS = 6, VOL_STRIDE = 36, SLICE_STRIDE = 10 };   /* md_compose.slang's */
+enum { AO_LEVELS = 6, VOL_STRIDE = 36, SLICE_STRIDE = 14 };   /* md_compose.slang's */
 
 struct md_compose {
     md_gpu_device_t  dev;
@@ -280,14 +280,17 @@ bool md_compose(md_gpu_stream_t s, md_compose_ctx_t c, md_render_view_t view, co
         md_memcpy(&R, sl->rect, sizeof(R));
         md_memcpy(&F, sl->field_from_world, sizeof(F));
         const md_float4x4_t IV = md_float4x4_inverse(V);
-        const md_float4x4_t VR = md_float4x4_inverse(md_float4x4_mul(V, R));     /* view to the rectangle's */
+        const md_float4x4_t RV = md_float4x4_mul(V, R);                           /* the rectangle's to view */
+        const md_float4x4_t VR = md_float4x4_inverse(RV);                         /* view to the rectangle's */
         const md_float4x4_t VF = md_float4x4_mul(F, IV);                          /* view to the field's */
         const float* vr = (const float*)&VR;
         const float* vf = (const float*)&VF;
+        const float* rv = (const float*)&RV;
         md_gpu_float4* r = srec + i * SLICE_STRIDE;
         for (int c4 = 0; c4 < 4; ++c4) {
-            r[c4]     = f4(vr[4 * c4], vr[4 * c4 + 1], vr[4 * c4 + 2], vr[4 * c4 + 3]);
-            r[4 + c4] = f4(vf[4 * c4], vf[4 * c4 + 1], vf[4 * c4 + 2], vf[4 * c4 + 3]);
+            r[c4]      = f4(vr[4 * c4], vr[4 * c4 + 1], vr[4 * c4 + 2], vr[4 * c4 + 3]);
+            r[4 + c4]  = f4(vf[4 * c4], vf[4 * c4 + 1], vf[4 * c4 + 2], vf[4 * c4 + 3]);
+            r[10 + c4] = f4(rv[4 * c4], rv[4 * c4 + 1], rv[4 * c4 + 2], rv[4 * c4 + 3]);
         }
         const float ext = sl->transfer_range[1] - sl->transfer_range[0];
         r[8] = f4(sl->transfer_range[0], ext != 0.0f ? 1.0f / ext : 0.0f, sl->opacity, sl->edge_px);

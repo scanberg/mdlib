@@ -3819,6 +3819,48 @@ UTEST(render, compose_slices) {
     f_close(&fx);
 }
 
+/* A slice seen edge on, in perspective: a rectangle on the floor before the camera, its plane running off to its
+   horizon in the middle of the view. Its edge is where its border is, and nothing along the horizon, where the plane
+   is so far that a pixel covers more than the rectangle (where an estimate of its border from the rays of the next
+   pixels drew the border's line across the view). */
+UTEST(render, compose_slice_edge_on) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    const uint32_t W = 128, H = 96, P = W * H;
+    cam_t c = { .ortho = false, .tan_half = 0.57735027f, .aspect = (float)W / H, .n = 0.1f, .far_ = 100.0f };
+    md_render_camera_t cam = make_camera(&c);
+    md_compose_ctx_t cx = md_compose_create(fx.dev);
+    ASSERT_TRUE(cx != NULL);
+    md_gpu_texture_t out = f_tex(&fx, MD_GPU_FORMAT_RGBA16_FLOAT, MD_GPU_TEX_STORAGE, W, H, "compose");
+    uint16_t* px = malloc(P * 8);
+    md_render_frame_t f = frame_of(W, H, cam, NULL, 0);
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+
+    /* x in [-1, 1], z in [-6, -4] on the floor y = -1: its unit square's x along x, y toward -z */
+    md_compose_slice_t sl = {0};
+    sl.rect[0] = 2.0f; sl.rect[6] = -2.0f; sl.rect[9] = 1.0f; sl.rect[12] = -1.0f; sl.rect[13] = -1.0f; sl.rect[14] = -4.0f; sl.rect[15] = 1.0f;
+    sl.edge[0] = sl.edge[1] = sl.edge[2] = 1.0f; sl.edge[3] = 1.0f; sl.edge_px = 1.0f;
+    md_compose_desc_t d = {0};
+    d.camera = cam; d.target = out; d.slices = &sl; d.slice_count = 1;
+    unlit_shading(&d.shading);
+    ASSERT_TRUE(md_compose(fx.gfx, cx, fx.view, &d));
+    ASSERT_TRUE(f_read(&fx, out, px, P * 8));
+    /* the horizon at the middle row; the rectangle from row 62 (z -6) to 69 (z -4) */
+    int near_horizon = 0, edge = 0;
+    for (uint32_t y = 0; y < H; ++y) for (uint32_t x = 0; x < W; ++x) {
+        const double a = half_bits_to_float(px[4 * ((size_t)y * W + x) + 3]);
+        if (y >= 36 && y <= 56) near_horizon += a > 0.0;
+        if (y >= 58 && y <= 72 && a > 0.5) edge++;
+    }
+    printf("    the border: %d pixels; along the horizon: %d\n", edge, near_horizon);
+    EXPECT_GT(edge, 60);
+    EXPECT_EQ(0, near_horizon);
+    md_gpu_texture_destroy(out);
+    md_compose_destroy(cx);
+    free(px);
+    f_close(&fx);
+}
+
 /* ---- Post ----------------------------------------------------------------------------- */
 
 /* md_post.slang's display transform, in C: the reference */
