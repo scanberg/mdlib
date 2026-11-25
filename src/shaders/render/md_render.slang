@@ -3252,6 +3252,14 @@ void raster_small(uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
     }
 }
 
+// Whether a fragment's pixel is in the target. A quad at its right or bottom
+// edge can run invocations past it (helpers, or a CPU rasteriser's whole
+// block: llvmpipe's), whose writes go nowhere but whose loads are made: what
+// a buffer of the target's pixels is read at, they read past its end, and
+// what they make of it they must not read with (the merge's index into the
+// small list, the K-buffer's slots)
+bool in_target(Args a, uint2 px) { return px.x < a.width && px.y < a.height; }
+
 // The compute raster's result into depth and ids, so that it occludes and is
 // occluded like any other raster. A fullscreen triangle.
 struct FullV {
@@ -3277,6 +3285,7 @@ struct MergeOut {
 MergeOut merge_fs(FullV i) {
     Args a = MD_ARGS;
     uint2 px = uint2(i.pos.xy);
+    if (!in_target(a, px)) discard;
     uint64_t val = a.lists->vis64[px.y * a.width + px.x];
     if (val == 0ull) discard;
     MergeOut o;
@@ -3291,6 +3300,7 @@ MergeOut merge_fs(FullV i) {
 float merge_depth_fs(FullV i) : SV_Depth {
     Args a = MD_ARGS;
     uint2 px = uint2(i.pos.xy);
+    if (!in_target(a, px)) discard;
     uint64_t val = a.lists->vis64[px.y * a.width + px.x];
     if (val == 0ull) discard;
     return asfloat(uint(val >> 32));
@@ -3869,6 +3879,7 @@ uint64_t atomic_fetch_max_u64(uint64_t* p, uint64_t v) {
 
 // A fragment of the element of `idv` at depth `d` (reverse Z), pixel px
 void kb_insert(Args a, uint2 px, uint2 idv, float d) {
+    if (!in_target(a, px)) return;
     if (!(d > a.src.Load(int3(int2(px), 0)))) return;      // behind or on the opaque surface
     uint      K  = (*a.lists).kbuf_k;
     uint64_t* sl = kb_slots(a, px);
@@ -3890,6 +3901,7 @@ void kb_insert(Args a, uint2 px, uint2 idv, float d) {
 // slots of a depth are as many as its fragments in the K nearest, which
 // all claim one.
 void kb2_insert(Args a, uint2 px, uint2 idv, float d) {
+    if (!in_target(a, px)) return;
     if (!(d > a.src.Load(int3(int2(px), 0)))) return;
     uint  K  = (*a.lists).kbuf_k;
     uint* w  = kb_words(a, px);
