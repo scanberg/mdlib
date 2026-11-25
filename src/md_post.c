@@ -53,7 +53,7 @@ struct md_post {
     md_gpu_device_t   dev;
     md_gpu_kernel_t   k_display, k_resolve, k_present;
     md_gpu_pipeline_t overlay;
-    md_gpu_pipeline_t ui[2];       /* ui_formats' */
+    md_gpu_pipeline_t ui[2][2];    /* ui_formats', straight and premultiplied */
     md_gpu_sampler_t  bilinear;
     md_gpu_texture_t  white;       /* 1 x 1, the UI's texture where none is given: made at its first call */
 };
@@ -95,16 +95,20 @@ md_post_ctx_t md_post_create(md_gpu_device_t device) {
     pd.topology = MD_GPU_TOPOLOGY_TRIANGLES;
     pd.color_count = 1;
     pd.color[0].blend.enable    = true;
-    pd.color[0].blend.src_color = MD_GPU_BLEND_SRC_ALPHA;
     pd.color[0].blend.dst_color = MD_GPU_BLEND_ONE_MINUS_SRC_ALPHA;
     pd.color[0].blend.src_alpha = MD_GPU_BLEND_ONE;
     pd.color[0].blend.dst_alpha = MD_GPU_BLEND_ONE_MINUS_SRC_ALPHA;
     pd.label = "md_post.ui";
+    bool ui_ok = true;
     for (int i = 0; i < 2; ++i) {
-        pd.color[0].format = ui_formats[i];
-        p->ui[i] = md_gpu_pipeline_create(device, &pd);
+        for (int m = 0; m < 2; ++m) {
+            pd.color[0].format = ui_formats[i];
+            pd.color[0].blend.src_color = m ? MD_GPU_BLEND_ONE : MD_GPU_BLEND_SRC_ALPHA;
+            p->ui[i][m] = md_gpu_pipeline_create(device, &pd);
+            ui_ok = ui_ok && p->ui[i][m];
+        }
     }
-    if (!p->k_display || !p->k_resolve || !p->k_present || !p->overlay || !p->ui[0] || !p->ui[1] || !p->bilinear.handle) {
+    if (!p->k_display || !p->k_resolve || !p->k_present || !p->overlay || !ui_ok || !p->bilinear.handle) {
         MD_LOG_ERROR("md_post: kernel creation failed: %s", md_gpu_last_error());
         md_post_destroy(p);
         return NULL;
@@ -119,7 +123,9 @@ void md_post_destroy(md_post_ctx_t p) {
     if (p->k_present) md_gpu_kernel_destroy(p->k_present);
     if (p->overlay)   md_gpu_pipeline_destroy(p->overlay);
     for (int i = 0; i < 2; ++i) {
-        if (p->ui[i]) md_gpu_pipeline_destroy(p->ui[i]);
+        for (int m = 0; m < 2; ++m) {
+            if (p->ui[i][m]) md_gpu_pipeline_destroy(p->ui[i][m]);
+        }
     }
     if (p->white)     md_gpu_texture_destroy(p->white);
     md_free(md_get_heap_allocator(), p, sizeof(*p));
@@ -420,7 +426,7 @@ bool md_post_ui(md_gpu_stream_t s, md_post_ctx_t p, const md_post_ui_t* d) {
                 a.vertices = va[l] + (md_gpu_addr_t)C->vertex_offset * sizeof(md_post_ui_vertex_t);
                 a.tex = C->texture.handle ? C->texture : white;
                 a.smp = C->sampler.handle ? C->sampler : p->bilinear;
-                ok = md_gpu_draw_indexed(s, p->ui[f], ia[l] + (md_gpu_addr_t)C->first_index * isz, d->index_type, C->index_count, 1, &a, sizeof(a));
+                ok = md_gpu_draw_indexed(s, p->ui[f][(C->flags & MD_POST_UI_PREMULTIPLIED) ? 1 : 0], ia[l] + (md_gpu_addr_t)C->first_index * isz, d->index_type, C->index_count, 1, &a, sizeof(a));
             }
         }
         ok = md_gpu_render_end(s) && ok;

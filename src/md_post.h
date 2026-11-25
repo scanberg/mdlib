@@ -179,7 +179,8 @@ bool md_post_overlay(md_gpu_stream_t stream, md_post_ctx_t post, const md_post_o
    command, each command with its texture, sampler and clip rectangle. The
    colour (RGBA8, r in the low byte) times the texture's sample, straight
    alpha, blended over the target in its encoded values, as UIs are: colour
-   src_alpha, 1 - src_alpha; alpha 1, 1 - src_alpha. Vertices are 20 bytes,
+   src_alpha, 1 - src_alpha; alpha 1, 1 - src_alpha (premultiplied commands:
+   1, 1 - src_alpha for both). Vertices are 20 bytes,
    ImDrawVert's layout. A position p is drawn at (p - origin) * scale. */
 typedef struct md_post_ui_vertex_t {
     float    pos[2];
@@ -197,8 +198,14 @@ typedef struct md_post_ui_cmd_t {
     uint32_t             first_index;  /* in the list's indices                      */
     uint32_t             index_count;
     uint32_t             vertex_offset;/* added to each of its indices               */
-    uint32_t             _pad;
+    uint32_t             flags;        /* MD_POST_UI_PREMULTIPLIED                   */
 } md_post_ui_cmd_t;
+
+enum {
+    /* The colour times the sample is premultiplied by its alpha (an image
+       composited so): blended ONE, ONE_MINUS_SRC_ALPHA */
+    MD_POST_UI_PREMULTIPLIED = 1u << 0,
+};
 
 typedef struct md_post_ui_list_t {
     const md_post_ui_vertex_t* vertices;   /* copied at the call                     */

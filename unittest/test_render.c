@@ -4733,6 +4733,16 @@ UTEST(render, post_ui) {
     ASSERT_TRUE(f_read(&fx, bgra, out, P * 4));
     EXPECT_EQ(0xFF00FF00u, out[4 * W + 4]);              /* green: B 0, G 255, R 0 */
     EXPECT_EQ(0xFFFF0000u, out[20 * W + 20]);            /* the red clear, its R in the third byte */
+
+    /* premultiplied: green at half coverage (0, 128, 0, 128) over the red: (127, 128, 0) */
+    QUAD(g, 10, 10, 18, 18, 0x80008000u);
+    gc.flags = MD_POST_UI_PREMULTIPLIED;
+    ASSERT_TRUE(md_post_ui(fx.gfx, pc, &ui2));
+    ASSERT_TRUE(f_read(&fx, bgra, out, P * 4));
+    const uint32_t pm = out[14 * W + 14];
+    EXPECT_NEAR(127, (int)((pm >> 16) & 0xFF), 2);       /* R */
+    EXPECT_NEAR(128, (int)((pm >> 8) & 0xFF), 2);        /* G */
+    EXPECT_NEAR(0, (int)(pm & 0xFF), 2);                 /* B */
     #undef QUAD
 
     md_post_destroy(pc);
