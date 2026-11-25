@@ -1655,25 +1655,33 @@ static const char* run_resolve(md_gpu_stream_t s, md_render_view_t v, const md_r
     a.src = md_gpu_texture_sampled(v->t.depth);
     md_gpu_grid_t g = md_gpu_grid_for(v->r->k_resolve, v->width, v->height, 1);
     if (!md_gpu_launch(s, v->r->k_resolve, g, &a, sizeof(a))) return NULL;
+    const char* last = "resolve";
+    if (spl || poly) {
+        /* the heavy ones over the tiles the main one listed (C_TILES): a group
+           a tile, so many groups taking them in turn (Args.mode) */
+        const uint32_t tiles  = ((v->width + 7u) / 8u) * ((v->height + 7u) / 8u);
+        const uint32_t groups = tiles < 4096u ? tiles : 4096u;
+        gpu_args_t ah = a;
+        ah.mode = groups;
+        if (spl) {
+            PASS_DONE(last);
+            if (!md_gpu_launch(s, v->r->k_resolve_heavy, md_gpu_grid(groups, 1, 1), &ah, sizeof(ah))) return NULL;
+            last = "resolve splines";
+        }
+        if (poly) {
+            PASS_DONE(last);
+            if (!md_gpu_launch(s, v->r->k_resolve_poly, md_gpu_grid(groups, 1, 1), &ah, sizeof(ah))) return NULL;
+            last = "resolve polygons";
+        }
+    }
+    /* The layers last: where one makes more of the pixel than the opaque
+       surface, the motion is the layer's (over every kind's resolve) */
     if (v->kbuf_k) {
-        PASS_DONE("resolve");
+        PASS_DONE(last);
         if (!md_gpu_launch(s, v->r->k_resolve_layers, md_gpu_grid_for(v->r->k_resolve_layers, v->width, v->height, 1), &a, sizeof(a))) return NULL;
-        if (!spl && !poly) return "resolve layers";
+        last = "resolve layers";
     }
-    if (!spl && !poly) return "resolve";
-    PASS_DONE("resolve");
-    /* the heavy ones over the tiles the main one listed (C_TILES): a group a
-       tile, so many groups taking them in turn (Args.mode) */
-    const uint32_t tiles  = ((v->width + 7u) / 8u) * ((v->height + 7u) / 8u);
-    const uint32_t groups = tiles < 4096u ? tiles : 4096u;
-    a.mode = groups;
-    if (spl) {
-        if (!md_gpu_launch(s, v->r->k_resolve_heavy, md_gpu_grid(groups, 1, 1), &a, sizeof(a))) return NULL;
-        if (!poly) return "resolve splines";
-        PASS_DONE("resolve splines");
-    }
-    if (!md_gpu_launch(s, v->r->k_resolve_poly, md_gpu_grid(groups, 1, 1), &a, sizeof(a))) return NULL;
-    return "resolve polygons";
+    return last;
 }
 
 /* The visible part from the ids; the hidden part by rasterising the state

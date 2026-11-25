@@ -95,7 +95,8 @@ The model, in full
     group only its nearest fragment at a pixel makes a layer, so a ghost of
     spheres and capsules has no inner layers where they meet. Without a
     group every fragment is a layer. Transparent
-    surfaces are not picked, marked or in the ids and depth.
+    surfaces are not picked, marked or in the ids and depth; the motion is
+    theirs where they make the most of a pixel (targets.motion).
 
   * Ordering and memory follow md_gpu: every call that records GPU work takes
     the stream first, and nothing blocks. A view may resolve, mask or pick
@@ -646,7 +647,13 @@ typedef struct md_render_targets_t {
     md_gpu_texture_t color;    /* RGBA8_UNORM, sRGB-encoded base colour; a: covered */
     md_gpu_texture_t normal;   /* RG16_FLOAT, view-space unit normal, octahedral    */
     md_gpu_texture_t motion;   /* RG16_FLOAT, pixels from where the surface was at
-                                  the previous raster to where it is              */
+                                  the previous raster to where it is: of the
+                                  surface that makes the most of the pixel, for
+                                  its reprojection (TAA). The opaque surface's
+                                  (0 on the background), unless a transparent
+                                  layer's share of it (its opacity times what
+                                  the layers in front leave) is larger than
+                                  what the layers leave of the surface behind */
     md_gpu_texture_t mask;     /* RGBA8_UNORM: state 0 visible, state 0 anywhere
                                   (also hidden), state 1 visible, state 1 anywhere;
                                   0 where not, else (8 + tag) / 15: the visible

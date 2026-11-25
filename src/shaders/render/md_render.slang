@@ -4261,7 +4261,9 @@ void resolve_poly(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID) { resol
 // its slots front to back, each the hit of its element again as the main
 // resolve takes them, but of a group already laid down (a nearer fragment of
 // the same surface: a sphere inside the capsule it joins; a batch without a
-// group has none). The layers after the last get depth 0.
+// group has none). The layers after the last get depth 0. Last of the
+// resolves: the motion becomes the layer's where one makes more of the pixel
+// than the opaque surface behind them (md_render_targets_t.motion).
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void resolve_layers(uint3 tid : SV_DispatchThreadID) {
@@ -4278,6 +4280,9 @@ void resolve_layers(uint3 tid : SV_DispatchThreadID) {
     uint*     ld = L.layers + 2u * K * P;
     uint groups[8];
     uint n = 0u;
+    float  T  = 1.0;        // the share of the pixel behind the layers so far
+    float  wm = 0.0;        // the largest layer's share, and its motion
+    float2 mm = float2(0.0);
     for (uint k = 0u; k < K; ++k) {
         uint64_t en = kb_entry(a, tid.xy, k);
         if (en == 0u) break;
@@ -4289,6 +4294,14 @@ void resolve_layers(uint3 tid : SV_DispatchThreadID) {
         if (seen) continue;
         Hit h = eval_hit<0>(v, a.batches, elem_id(a.batches, el), float2(tid.xy) + 0.5, 0.0);
         if (!h.valid) continue;
+        float w = T * b.opacity;
+        if (w > wm) {
+            float4 cur  = mul4(M(v, proj_cur),  mul4(M(v, view),      float4(h.p_world, 1.0)));
+            float4 prev = mul4(M(v, proj_prev), mul4(M(v, view_prev), float4(h.p_world_prev, 1.0)));
+            wm = w;
+            mm = to_pixels(v, cur) - to_pixels(v, prev);
+        }
+        T *= 1.0 - b.opacity;
         float3 lin = srgb_to_linear(h.color.rgb);
         float  gr  = dot(lin, float3(0.2126, 0.7152, 0.0722));
         lin = lerp(lin, float3(gr), saturate(b.desaturate));
@@ -4302,6 +4315,10 @@ void resolve_layers(uint3 tid : SV_DispatchThreadID) {
         n += 1u;
     }
     for (uint k = n; k < K; ++k) ld[k * P + p] = 0u;
+    // The pixel's motion, for its reprojection: of the surface that makes the
+    // most of it, a layer or what is behind them (the opaque surface's, or the
+    // background's: 0)
+    if (wm > T) a.motion[int2(tid.xy)] = mm;
 }
 
 // Phase 1's spline boxes, nearest first: a thread a part puts its boxes in

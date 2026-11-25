@@ -3860,6 +3860,72 @@ UTEST(render, motion_from_velocity) {
     f_close(&fx);
 }
 
+/* The motion of a pixel is that of the surface that makes the most of it: a
+   moving transparent sphere in front of a still opaque one has its own motion
+   where it is nearly opaque (0.8 of the pixel against 0.2 behind it), and
+   leaves the opaque one's (0) where it is faint (0.2 against 0.8) */
+static float half_to_float(uint32_t h);
+
+UTEST(render, motion_of_the_dominant_surface) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    md_gpu_device_info_t info;
+    md_gpu_device_info(fx.dev, &info);
+    if (!info.fragment_stores) UTEST_SKIP("no stores in fragment stages (the K-buffer's)");
+    const uint32_t W = 64, H = 64;
+    cam_t c = { .tan_half = 0.5f, .aspect = 1.0f, .n = 0.1f };
+    md_render_camera_t cam = make_camera(&c);
+    const float vel[3] = { 2.0f, -1.0f, 0.0f };
+    const double dt = 0.25;
+    uint32_t pv[2];
+    md_render_pack_velocity(vel, pv);
+    const float opq[3] = { 0.0f, 0.0f, -20.0f };
+    const float tp0[3] = { 0.0f, 0.0f, -10.0f };
+    const float tp1[3] = { (float)(tp0[0] + vel[0] * dt), (float)(tp0[1] + vel[1] * dt), tp0[2] };
+    /* the moved sphere's front point (depth 8.5) under its centre's pixel, and its motion there */
+    const uint32_t px = (uint32_t)(tp1[0] / 10.0 / c.tan_half * 0.5 * W + W / 2);
+    const uint32_t py = (uint32_t)(H / 2 - tp1[1] / 10.0 / c.tan_half * 0.5 * H);
+    const double ex = vel[0] * dt / 8.5 / c.tan_half * 0.5 * W;
+    const double ey = -vel[1] * dt / 8.5 / c.tan_half * 0.5 * H;
+
+    md_gpu_addr_t O = f_buf(&fx, opq, sizeof(opq));
+    md_gpu_addr_t T = f_buf(&fx, tp0, sizeof(tp0));
+    md_render_batch_t b[2];
+    memset(b, 0, sizeof(b));
+    b[0].key = 1; b[0].kind = MD_RENDER_SPHERES; b[0].count = 1; b[0].points.count = 1; b[0].points.position = O;
+    b[0].style.spheres.radius_add = 6.0f;
+    b[1].key = 2; b[1].kind = MD_RENDER_SPHERES; b[1].count = 1; b[1].points.count = 1; b[1].points.position = T;
+    b[1].points.velocity = f_buf(&fx, pv, sizeof(pv));
+    b[1].style.spheres.radius_add = 1.5f;
+    uint32_t* mo = malloc(W * H * 4);
+    static const float transparency[2] = { 0.2f, 0.8f };
+    for (int i = 0; i < 2; ++i) {
+        b[1].color.transparency = transparency[i];
+        md_gpu_upload(fx.gfx, T, tp0, sizeof(tp0));
+        md_render_frame_t f = frame_of(W, H, cam, b, 2);
+        f.time = 0.0;
+        ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+        md_gpu_upload(fx.gfx, T, tp1, sizeof(tp1));
+        f.content[MD_RENDER_CONTENT_GEOMETRY]++;
+        f.time = dt;
+        ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+        ASSERT_TRUE(f_read(&fx, md_render_view_targets(fx.view).motion, mo, W * H * 4));
+        const uint32_t w = mo[py * W + px];
+        const double mx = half_to_float(w & 0xFFFFu), my = half_to_float(w >> 16);
+        if (i == 0) {
+            EXPECT_NEAR(ex, mx, 0.15 * fabs(ex));
+            EXPECT_NEAR(ey, my, 0.15 * fabs(ey));
+        } else {
+            EXPECT_EQ(0.0, mx);
+            EXPECT_EQ(0.0, my);
+        }
+        /* outside the transparent sphere: the opaque one's */
+        EXPECT_EQ(0u, mo[(H / 2 + 12) * W + W / 2 - 12]);
+    }
+    free(mo);
+    f_close(&fx);
+}
+
 /* The marks' tags: a set mask channel holds (8 + tag) / 15, the visible
    surface's tag in the visible channels and the largest in the anywhere
    ones; a capsule has a state when both its points have it, with the larger
