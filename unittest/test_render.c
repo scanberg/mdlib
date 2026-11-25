@@ -3054,9 +3054,9 @@ UTEST(render, masks_carry_tags) {
     md_render_export_t ex = { 0, xc, 0 };
     ASSERT_TRUE(md_render_view_export(fx.gfx, fx.view, &ex));
     ASSERT_TRUE(f_read(&fx, xc, m, W * H * 4));
-    EXPECT_EQ(12u | (2u << 4), AT(-0.5, 0.0) >> 24);
-    EXPECT_EQ(12u | (6u << 4), AT(0.5, 0.0) >> 24);
-    EXPECT_EQ(3u, AT(2.5, 0.0) >> 24);
+    EXPECT_EQ(12u | (2u << 4) | 128u, AT(-0.5, 0.0) >> 24);        /* 128: of a batch with marks */
+    EXPECT_EQ(12u | (6u << 4) | 128u, AT(0.5, 0.0) >> 24);
+    EXPECT_EQ(3u | 128u, AT(2.5, 0.0) >> 24);
     #undef CH
     #undef AT
     md_gpu_texture_destroy(xc);
