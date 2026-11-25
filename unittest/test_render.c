@@ -2933,6 +2933,27 @@ UTEST(render, transparency_layers) {
         for (uint32_t j = 0; j < K; ++j) EXPECT_EQ(stc[j] & 0xFFFFFFu, L[j * P + py * W + px] & 0xFFFFFFu);
     }
 
+    /* The two-pass fallback (32-bit atomics): the same layers, to the bit */
+    {
+        uint32_t* L2 = malloc(P * K * 12);
+        md_render_debug_view(fx.view, MD_RENDER_DEBUG_KBUFFER_SPLIT, 0.0f);
+        ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, &stt));
+        EXPECT_NE(0u, stt.work & MD_RENDER_WORK_RASTER);
+        ASSERT_TRUE(f_read_buf(&fx, md_render_view_targets(fx.view).layers, L2, P * K * 12));
+        size_t diff = 0;
+        for (size_t i = 0; i < P * K * 3; ++i) {
+            /* the colour and normal behind a layer of depth 0 are left as they were */
+            const size_t j = i % (P * K), plane = i / (P * K);
+            if (plane < 2 && *(const float*)&L[2 * P * K + j] == 0.0f) continue;
+            diff += L[i] != L2[i];
+        }
+        printf("    two passes: %zu words of %zu differ\n", diff, P * K * 3);
+        EXPECT_EQ((size_t)0, diff);
+        md_render_debug_view(fx.view, 0, 0.0f);
+        ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, &stt));     /* the one pass again (the change rasterises) */
+        free(L2);
+    }
+
     /* Appearance alone: a new transparency is a resolve, and the layers'
        opacity follows */
     b[1].color.transparency = b[2].color.transparency = 0.75f;

@@ -20,11 +20,13 @@ extern "C" {
 /* ---- md_render ---------------------------------------------------------------- */
 
 /* A view's raster: without occlusion culling, without the compute raster,
-   and the compute raster up to small_pixels across (0: 6). The next draw
-   of the view rasterises. */
+   and the compute raster up to small_pixels across (0: 6); the K-buffer by
+   its two-pass fallback (32-bit atomics) where the device has the one-pass
+   way (the same layers). The next draw of the view rasterises. */
 enum {
     MD_RENDER_DEBUG_NO_OCCLUSION     = 1u << 0,
     MD_RENDER_DEBUG_NO_COMPUTE_RASTER = 1u << 1,
+    MD_RENDER_DEBUG_KBUFFER_SPLIT    = 1u << 2,
 };
 void md_render_debug_view(md_render_view_t view, uint32_t options, float small_pixels);
 

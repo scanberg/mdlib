@@ -208,6 +208,9 @@ typedef struct gpu_lists_t {
     md_gpu_addr_t layers;           /* the transparent layers: three planes (md_render_targets_t) */
     uint32_t      tiles_cap;        /* tiles of the target */
     uint32_t      kbuf_k;           /* K; 0: no transparency this frame */
+    md_gpu_addr_t kbuf32;           /* the same, as 32-bit words (split) */
+    uint32_t      kbuf_split;       /* two passes of 32-bit atomics: per pixel K depths, then K payloads */
+    uint32_t      _lpad;
 } gpu_lists_t;
 
 /* counters[] (md_render.slang C_*) */
@@ -269,12 +272,14 @@ struct md_render {
     md_allocator_i*   alloc;
     md_gpu_pipeline_t sphere_vis, sphere_mask, capsule_vis, capsule_mask, spline_vis, spline_mask, polygon_vis, polygon_mask, triangle_vis, triangle_mask, merge;
     md_gpu_pipeline_t sphere_kb, capsule_kb, triangle_kb;     /* transparent: into the K-buffer */
+    md_gpu_pipeline_t sphere_kb2, capsule_kb2, triangle_kb2;  /* ... its two-pass fallback (32-bit atomics) */
     md_gpu_kernel_t   k_resolve, k_mask_visible, k_export, k_pick, k_cull, k_finalize, k_raster_small, k_hiz, k_refit, k_cull_clusters;
     md_gpu_kernel_t   k_resolve_layers;
     /* the heavy twins (md_render.slang, kind_taken): run only for frames with splines or polygons */
     md_gpu_kernel_t   k_refit_heavy, k_cull_heavy, k_resolve_heavy, k_resolve_poly, k_spline_order;
     bool              atomic_int64;    /* the compute raster is possible */
     bool              atomic_int64_fetch;  /* the K-buffer's cascade is (in fragment stages) */
+    bool              fragment_stores;     /* its two-pass fallback is */
     uint32_t          vendor_id;       /* the device's (spline_group_for) */
 };
 
@@ -343,6 +348,13 @@ md_render_ctx_t md_render_create(md_gpu_device_t device, const md_render_desc_t*
     r->merge        = make_pipeline(device, md_shader_md_render_merge_vs_shader(),   md_shader_md_render_merge_fs_shader(),        PIPE_VIS,  "md_render.merge");
     r->atomic_int64 = info.atomic_int64_min_max;
     r->atomic_int64_fetch = info.atomic_int64 && info.fragment_stores;
+    r->fragment_stores    = info.fragment_stores;
+    if (r->fragment_stores) {
+        r->sphere_kb2   = make_pipeline(device, md_shader_md_render_sphere_vs_shader(),   md_shader_md_render_sphere_kb2_fs_shader(),   PIPE_KB, "md_render.sphere_kb2");
+        r->capsule_kb2  = make_pipeline(device, md_shader_md_render_capsule_vs_shader(),  md_shader_md_render_capsule_kb2_fs_shader(),  PIPE_KB, "md_render.capsule_kb2");
+        r->triangle_kb2 = make_pipeline(device, md_shader_md_render_triangle_vs_shader(), md_shader_md_render_triangle_kb2_fs_shader(), PIPE_KB, "md_render.triangle_kb2");
+        if (!r->sphere_kb2 || !r->capsule_kb2 || !r->triangle_kb2) r->fragment_stores = r->atomic_int64_fetch = false;
+    }
     if (r->atomic_int64_fetch) {
         /* the K-buffer's cascade needs the 64-bit maximum that returns the
            old value; without it no transparency (yet: TRANSPARENCY) */
@@ -401,6 +413,9 @@ void md_render_destroy(md_render_ctx_t r) {
     if (r->sphere_kb)      md_gpu_pipeline_destroy(r->sphere_kb);
     if (r->capsule_kb)     md_gpu_pipeline_destroy(r->capsule_kb);
     if (r->triangle_kb)    md_gpu_pipeline_destroy(r->triangle_kb);
+    if (r->sphere_kb2)     md_gpu_pipeline_destroy(r->sphere_kb2);
+    if (r->capsule_kb2)    md_gpu_pipeline_destroy(r->capsule_kb2);
+    if (r->triangle_kb2)   md_gpu_pipeline_destroy(r->triangle_kb2);
     if (r->k_resolve_layers) md_gpu_kernel_destroy(r->k_resolve_layers);
     if (r->k_refit_heavy)    md_gpu_kernel_destroy(r->k_refit_heavy);
     if (r->k_cull_heavy)     md_gpu_kernel_destroy(r->k_cull_heavy);
@@ -556,6 +571,7 @@ struct md_render_view {
     md_gpu_addr_t       layer_mem;
     size_t              layer_cap;
     uint32_t            kbuf_k;            /* of the last raster; 0: none */
+    bool                kbuf_split;        /* by the two-pass fallback */
     md_gpu_addr_t       bounds_mem;        /* per cluster: 2 float4 bounds, 1 uint state */
     size_t              bounds_cap;
     bool                bounds_valid;      /* of the last raster's geometry   */
@@ -1429,9 +1445,13 @@ static bool ensure_lists(md_gpu_stream_t s, md_render_view_t v, const uint64_t w
         v->kbuf_cap = v->layer_cap = 0;
     }
     v->kbuf_k = kbuf_k;
+    v->kbuf_split = kbuf_k && (!v->r->atomic_int64_fetch || (v->dbg_options & MD_RENDER_DEBUG_KBUFFER_SPLIT));
     l.kbuf    = v->kbuf;
+    l.kbuf32  = v->kbuf;
     l.layers  = v->layer_mem;
     l.kbuf_k  = kbuf_k;
+    l.kbuf_split = v->kbuf_split ? 1u : 0u;
+    l._lpad   = 0;
     v->t.layers       = kbuf_k ? v->layer_mem : 0;
     v->t.layer_count  = kbuf_k;
     v->t.layer_stride = kbuf_k ? (uint32_t)px : 0;
@@ -1588,27 +1608,34 @@ static bool run_raster(md_gpu_stream_t s, md_render_view_t v, uint32_t phase, bo
 static bool run_raster_kb(md_gpu_stream_t s, md_render_view_t v, const uint64_t trw[3]) {
     md_render_ctx_t r = v->r;
     if (!md_gpu_memset(s, v->kbuf, 0, (size_t)v->width * v->height * v->kbuf_k * 8u)) return false;
-    md_gpu_render_desc_t rd = {0};
-    rd.color_count      = 1;
-    rd.color[0].texture = v->t.mask;
-    rd.color[0].load    = MD_GPU_LOAD;
-    rd.color[0].store   = MD_GPU_STORE;
-    rd.label            = "md_render.raster_kb";
-    if (!md_gpu_render_begin(s, &rd)) return false;
-    gpu_args_t a = base_args(v);
-    a.src  = md_gpu_texture_sampled(v->t.depth);
-    a.mode = 2;
-    md_gpu_draw_state_t ds = {0};
-    for (uint32_t k = 0; k < 3; ++k) {
-        if (!trw[k]) continue;
-        ds.cull = k == 1 ? MD_GPU_CULL_BACK : MD_GPU_CULL_NONE;
-        md_gpu_set_draw_state(s, &ds);
-        a.list = 10 + k;
-        if (k == 0)      md_gpu_draw_indirect(s, r->sphere_kb, CTR(v, C_TRCMD), 1, &a, sizeof(a));
-        else if (k == 1) md_gpu_draw_indexed_indirect(s, r->capsule_kb, v->box_idx, MD_GPU_INDEX_U16, CTR(v, C_TRCMD + 4), 1, &a, sizeof(a));
-        else             md_gpu_draw_indirect(s, r->triangle_kb, CTR(v, C_TRCMD + 12), 1, &a, sizeof(a));
+    /* One pass (Args.mode 2), or the fallback's two over the same fragments:
+       the depths (3), then each fragment's payload into a slot of its depth (4) */
+    const uint32_t first = v->kbuf_split ? 3u : 2u, last = v->kbuf_split ? 4u : 2u;
+    for (uint32_t mode = first; mode <= last; ++mode) {
+        md_gpu_render_desc_t rd = {0};
+        rd.color_count      = 1;
+        rd.color[0].texture = v->t.mask;
+        rd.color[0].load    = MD_GPU_LOAD;
+        rd.color[0].store   = MD_GPU_STORE;
+        rd.label            = mode == 2u ? "md_render.raster_kb" : mode == 3u ? "md_render.raster_kb_depths" : "md_render.raster_kb_payloads";
+        if (!md_gpu_render_begin(s, &rd)) return false;
+        gpu_args_t a = base_args(v);
+        a.src  = md_gpu_texture_sampled(v->t.depth);
+        a.mode = mode;
+        md_gpu_draw_state_t ds = {0};
+        for (uint32_t k = 0; k < 3; ++k) {
+            if (!trw[k]) continue;
+            ds.cull = k == 1 ? MD_GPU_CULL_BACK : MD_GPU_CULL_NONE;
+            md_gpu_set_draw_state(s, &ds);
+            a.list = 10 + k;
+            md_gpu_pipeline_t p = k == 0 ? (mode == 2u ? r->sphere_kb : r->sphere_kb2) : k == 1 ? (mode == 2u ? r->capsule_kb : r->capsule_kb2)
+                                                                                         : (mode == 2u ? r->triangle_kb : r->triangle_kb2);
+            if (k == 1) md_gpu_draw_indexed_indirect(s, p, v->box_idx, MD_GPU_INDEX_U16, CTR(v, C_TRCMD + 4), 1, &a, sizeof(a));
+            else        md_gpu_draw_indirect(s, p, CTR(v, k == 0 ? C_TRCMD : C_TRCMD + 12), 1, &a, sizeof(a));
+        }
+        if (!md_gpu_render_end(s)) return false;
     }
-    return md_gpu_render_end(s);
+    return true;
 }
 
 /* The main resolve, then its heavy twin over the spline and polygon pixels */
@@ -1821,11 +1848,10 @@ static void store_raster_meta(md_render_view_t v, const md_render_frame_t* f) {
 bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_frame_t* f, md_render_status_t* out) {
     if (out) memset(out, 0, sizeof(*out));
     if (!s || !v || !f || !validate(f)) return false;
-    if (!v->r->atomic_int64_fetch) {
+    if (!v->r->fragment_stores) {
         for (uint32_t i = 0; i < f->batch_count; ++i) {
             if (transparent(&f->batches[i])) {
-                MD_LOG_ERROR("md_render: batch %u is transparent; this device has no 64-bit atomic maximum that returns the old value "
-                             "in fragment stages, which the K-buffer needs (the two-pass fallback is not there yet)", i);
+                MD_LOG_ERROR("md_render: batch %u is transparent; this device's fragment stages cannot write memory, which the K-buffer needs", i);
                 return false;
             }
         }

@@ -231,6 +231,9 @@ struct Lists {
     uint*     layers;           // the transparent layers: colour, normal, depth planes (resolve_layers)
     uint      tiles_cap;        // tiles of the target
     uint      kbuf_k;           // K; 0: no transparency this frame
+    uint*     kbuf32;           // the K-buffer as 32-bit words (kbuf_split)
+    uint      kbuf_split;       // the two-pass fallback's: per pixel K depths, then K payloads
+    uint      _lpad;
 };
 
 // counters[]: counts, then the indirect commands made of them
@@ -3761,10 +3764,28 @@ TriMaskOut triangle_mask_fs(TriangleV i) {
 // no depth attachment.
 
 // Where a pixel's slots are: the one place that knows the K-buffer's layout
-// (a tiled one would page here)
+// (a tiled one would page here). The fallback's are the same 8 bytes a
+// slot as 32-bit words: K depths, then K payloads.
 uint64_t* kb_slots(Args a, uint2 px) {
     Lists L = *a.lists;
     return L.kbuf + (px.y * a.width + px.x) * L.kbuf_k;
+}
+uint* kb_words(Args a, uint2 px) {
+    Lists L = *a.lists;
+    return L.kbuf32 + (px.y * a.width + px.x) * 2u * L.kbuf_k;
+}
+
+// Slot k of a pixel as (depth << 32 | work index), either way: 0 past the
+// last; ~0 a slot of the fallback's that no fragment claimed (never, unless
+// its two passes saw different fragments)
+uint64_t kb_entry(Args a, uint2 px, uint k) {
+    Lists L = *a.lists;
+    if (L.kbuf_split == 0u) return kb_slots(a, px)[k];
+    uint* w = kb_words(a, px);
+    uint  d = w[k], e = w[L.kbuf_k + k];
+    if (d == 0u) return 0u;
+    if (e == 0u) return ~uint64_t(0);
+    return (uint64_t(d) << 32) | uint64_t(e - 1u);
 }
 
 // A fragment of the element of `idv` at depth `d` (reverse Z), pixel px
@@ -3780,6 +3801,63 @@ void kb_insert(Args a, uint2 px, uint2 idv, float d) {
         if (old == 0u) return;
         val = min(old, val);
     }
+}
+
+// The fallback without the fetching 64-bit maximum: two passes over the
+// same fragments, whose depths are bit for bit the same in both (one
+// shader). Args.mode 3: the depths' cascade, as kb_insert's with 32-bit
+// maxima (equal depths take a slot each). Mode 4: each fragment claims a
+// slot of its depth that has no payload yet (the work index + 1): the
+// slots of a depth are as many as its fragments in the K nearest, which
+// all claim one.
+void kb2_insert(Args a, uint2 px, uint2 idv, float d) {
+    if (!(d > a.src.Load(int3(int2(px), 0)))) return;
+    uint  K  = (*a.lists).kbuf_k;
+    uint* w  = kb_words(a, px);
+    uint  dv = asuint(d);
+    if (a.mode == 3u) {
+        if (w[K - 1u] >= dv) return;
+        for (uint k = 0u; k < K; ++k) {
+            uint old = ((Atomic<uint>*)(w + k))->max(dv);
+            if (old == 0u) return;
+            dv = min(old, dv);
+        }
+        return;
+    }
+    uint ent1 = a.batches[(idv.y >> 20) - 1u].work_offset + idv.x + 1u;
+    for (uint k = 0u; k < K; ++k) {
+        uint dk = w[k];
+        if (dk < dv) return;                                // sorted: no slot of its depth further on
+        if (dk == dv && ((Atomic<uint>*)(w + K + k))->compareExchange(0u, ent1) == 0u) return;
+    }
+}
+
+[shader("fragment")]
+float4 sphere_kb2_fs(SphereV i) : SV_Target0 {
+    Args     a = MD_ARGS;
+    ViewData v = *a.view;
+    Ray   r = pixel_ray(v, i.pos.xy);
+    float t = sphere_hit(r, i.sph.xyz, i.sph.w, false);
+    if (t < 0.0) discard;
+    kb2_insert(a, uint2(i.pos.xy), i.idv, clip_depth(v, r.o + r.d * t));
+    return float4(0.0);
+}
+
+[shader("fragment")]
+float4 capsule_kb2_fs(CapsuleV i) : SV_Target0 {
+    Args     a = MD_ARGS;
+    ViewData v = *a.view;
+    Ray   r = pixel_ray(v, i.pos.xy);
+    float t = capsule_fragment_hit(r, i);
+    if (t < 0.0) discard;
+    kb2_insert(a, uint2(i.pos.xy), i.idv, capsule_depth(clip_depth(v, r.o + r.d * t)));
+    return float4(0.0);
+}
+
+[shader("fragment")]
+float4 triangle_kb2_fs(TriangleV i) : SV_Target0 {
+    kb2_insert(MD_ARGS, uint2(i.pos.xy), i.idv, i.pos.z);
+    return float4(0.0);
 }
 
 [shader("fragment")]
@@ -4195,15 +4273,15 @@ void resolve_layers(uint3 tid : SV_DispatchThreadID) {
     ViewData  v  = *a.view;
     uint      P  = a.width * a.height;
     uint      p  = tid.y * a.width + tid.x;
-    uint64_t* sl = kb_slots(a, tid.xy);
     uint*     lc = L.layers;
     uint*     ln = L.layers + K * P;
     uint*     ld = L.layers + 2u * K * P;
     uint groups[8];
     uint n = 0u;
     for (uint k = 0u; k < K; ++k) {
-        uint64_t en = sl[k];
+        uint64_t en = kb_entry(a, tid.xy, k);
         if (en == 0u) break;
+        if (en == ~uint64_t(0)) continue;
         Elem  el = decode_work(a.batches, v.batch_count, uint(en & 0xFFFFFFFFu));
         Batch b  = a.batches[el.slot];
         bool seen = false;

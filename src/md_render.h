@@ -86,7 +86,11 @@ The model, in full
     (targets.layers): md_render stops at surfaces here too. They are culled
     with the rest, then rasterised after the opaque surfaces, against their
     depth, into a K-buffer: per pixel the K nearest fragments as (depth,
-    element), kept by a cascade of 64-bit atomic maxima, exact up to K. A
+    element), kept by a cascade of 64-bit atomic maxima, exact up to K
+    (without the 64-bit maximum that returns the old value, Metal before
+    Apple9: two passes over the same fragments with 32-bit atomics, the
+    depths' cascade then each fragment's element into a slot of its depth,
+    for the same layers). A
     GROUP (color.group: a representation's batches) is one surface: of a
     group only its nearest fragment at a pixel makes a layer, so a ghost of
     spheres and capsules has no inner layers where they meet. Transparent
