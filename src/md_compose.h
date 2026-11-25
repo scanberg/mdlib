@@ -89,6 +89,55 @@ typedef struct md_compose_shading_t {
     float specular;
 } md_compose_shading_t;
 
+/* ---- Volumes ------------------------------------------------------------------
+   A scalar field on a 3D texture over a box, seen along each pixel's ray in
+   front of the opaque surface, front to back with the layers: wherever a
+   layer lies along the ray, what is in front of it is composited first. Each
+   volume, cut to its clip box and to the kept side of its planes:
+     EMISSION   what it emits and absorbs, through its transfer function
+                (direct volume rendering), unshaded: the colour map's colour
+     ISOSURFACES where the ray crosses one of its isovalues, a film shaded as
+                a layer is (its colour's alpha the coverage), the optical
+                density of the surfaces the ray is inside of absorbing the
+                light in between. INSIDE isosurface i: the field on the far
+                side of its value from 0 (f >= v for v >= 0, f <= v for v < 0)
+   Marched at half a voxel of the finest volume the ray is in, all of them
+   together (overlapping volumes are sampled at the same points); the
+   emission's samples jittered by a pixel's hash (a temporal resolve after it
+   averages them); a crossing found between two samples and refined on the
+   trilinear field, so where it is does not depend on the sampling, but one
+   the ray enters and leaves within a step is missed (as viamd's fast mode).
+   To come: the colour of the isosurfaces from a colour volume or a field
+   through a colour map (with isolines), the analytic normals, the exact
+   intersection (cell by cell), slices. */
+
+#define MD_COMPOSE_MAX_VOLUMES 4
+#define MD_COMPOSE_MAX_ISO     8
+#define MD_COMPOSE_MAX_PLANES  8
+
+typedef struct md_compose_volume_t {
+    md_gpu_texture_t field;        /* 3D, R32_FLOAT or R16_FLOAT, SAMPLED: values at
+                                      the voxels' centres, filtered trilinearly      */
+    float    model[16];            /* its texture space [0, 1]^3 to the world
+                                      (column-major)                                 */
+    float    clip_min[3];          /* the box drawn, in texture space: 0 and 1 all */
+    float    clip_max[3];
+    uint32_t plane_count;
+    float    planes[MD_COMPOSE_MAX_PLANES][4]; /* texture space, n . x + d >= 0 kept */
+
+    /* Emission (none without a transfer function) */
+    md_gpu_texture_t transfer;     /* 2D, N x 1, RGBA8_UNORM, SAMPLED: sRGB colour,
+                                      the opacity of a slab 1/150 of the box thick  */
+    float    transfer_range[2];    /* the field's values at its first and last texel */
+
+    /* Isosurfaces */
+    uint32_t iso_count;
+    float    iso_values[MD_COMPOSE_MAX_ISO];
+    float    iso_colors[MD_COMPOSE_MAX_ISO][4];   /* a: coverage                    */
+    float    iso_densities[MD_COMPOSE_MAX_ISO];   /* optical density inside it:
+                                                     extinction per world unit      */
+} md_compose_volume_t;
+
 typedef struct md_compose_desc_t {
     md_render_camera_t   camera;   /* as the view was drawn (its projection: the
                                       direction each pixel looks along, and the
@@ -97,6 +146,9 @@ typedef struct md_compose_desc_t {
     float                ao;       /* the occlusion's intensity: the visibility is
                                       1 - ao x the obscurance (viamd's: 5); 0: none,
                                       not estimated                                 */
+    const md_compose_volume_t* volumes;    /* read at the call                      */
+    uint32_t             volume_count;     /* at most MD_COMPOSE_MAX_VOLUMES        */
+    uint32_t             frame;            /* seeds the emission's jitter           */
     md_gpu_texture_t     target;   /* RGBA16_FLOAT, STORAGE, of the view's size:
                                       the scene's radiance premultiplied by its
                                       coverage (alpha), 0 where nothing was drawn   */

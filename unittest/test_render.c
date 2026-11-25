@@ -3289,6 +3289,291 @@ UTEST(render, compose_occlusion) {
 
 static uint16_t float_to_half(float f);
 
+/* ---- Volumes in the compose ---------------------------------------------------------- */
+
+static md_gpu_texture_t f_tex(fix_t* fx, md_gpu_format_t format, md_gpu_tex_usage_t usage, uint32_t w, uint32_t h, const char* label);
+static bool f_upload_tex(fix_t* fx, md_gpu_texture_t t, const void* src, size_t size);
+
+/* A box [-2, 2]^2 x [-14, -10] of world: texture space [0, 1]^3 scaled by 4 */
+static void vol_model(float m[16]) {
+    memset(m, 0, 16 * sizeof(float));
+    m[0] = m[5] = m[10] = 4.0f;
+    m[12] = -2.0f; m[13] = -2.0f; m[14] = -14.0f; m[15] = 1.0f;
+}
+
+static md_gpu_texture_t f_tex3d(fix_t* fx, uint32_t n, const float* v) {
+    md_gpu_texture_desc_t td = {0};
+    td.type = MD_GPU_TEX_3D; td.usage = MD_GPU_TEX_SAMPLED; td.width = td.height = td.depth_or_layers = n;
+    td.format = MD_GPU_FORMAT_R32_FLOAT; td.label = "volume";
+    md_gpu_texture_t t = md_gpu_texture_create(fx->gfx, &td);
+    md_gpu_tex_region_t r = {0};
+    if (t && !md_gpu_upload_texture(fx->gfx, t, &r, v, (size_t)n * n * n * 4)) return 0;
+    return t;
+}
+
+/* The interval of the ray inside the sphere (c, r); false if it misses */
+static bool ray_sphere(ray_t r, const double c[3], double rad, double* t0, double* t1) {
+    double oc[3] = { r.o[0] - c[0], r.o[1] - c[1], r.o[2] - c[2] };
+    double b = dot3(oc, r.d), cc = dot3(oc, oc) - rad * rad, disc = b * b - cc;
+    if (disc < 0) return false;
+    *t0 = -b - sqrt(disc); *t1 = -b + sqrt(disc);
+    return true;
+}
+
+/* The interval of the ray inside the box [lo, hi] */
+static bool ray_box(ray_t r, const double lo[3], const double hi[3], double* t0, double* t1) {
+    double a = -1e30, b = 1e30;
+    for (int k = 0; k < 3; ++k) {
+        if (fabs(r.d[k]) < 1e-15) { if (r.o[k] < lo[k] || r.o[k] > hi[k]) return false; continue; }
+        double u = (lo[k] - r.o[k]) / r.d[k], v = (hi[k] - r.o[k]) / r.d[k];
+        a = fmax(a, fmin(u, v)); b = fmin(b, fmax(u, v));
+    }
+    *t0 = fmax(a, 0.0); *t1 = b;
+    return *t0 < *t1;
+}
+
+static void unlit_shading(md_compose_shading_t* sh) {   /* BASIC, no light, ambient 1, linear: a colour shows as it is */
+    memset(sh, 0, sizeof(*sh));
+    sh->mode = MD_COMPOSE_SHADING_BASIC;
+    sh->linear_colors = true;
+    sh->light_dir[2] = 1.0f;
+    sh->ambient = 1.0f;
+}
+
+/* Volumes composited with what md_render drew, against analytic references:
+   - emission of a constant field through a constant transfer function: the
+     radiance c (1 - T) and the transmittance (1 - alpha)^(150 x the path in
+     texture space), cut by the box, a plane and an opaque sphere inside it
+     (white, seen through what is left), perspective and orthographic
+   - an isosurface of a distance field: a sphere, its shading against the
+     analytic sphere's at the analytic hit
+   - optical density: an invisible isosurface (coverage 0) absorbing outside a
+     ball, around an opaque sphere inside the ball, then around a transparent
+     one (its front a layer met inside the volume) */
+UTEST(render, compose_volumes) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    md_gpu_device_info_t info;
+    md_gpu_device_info(fx.dev, &info);
+    const bool layers_ok = info.fragment_stores;
+    const uint32_t W = 96, H = 72, P = W * H, N = 48;
+    const double box_lo[3] = { -2, -2, -14 }, box_hi[3] = { 2, 2, -10 }, ctr[3] = { 0, 0, -12 };
+    md_compose_ctx_t cx = md_compose_create(fx.dev);
+    ASSERT_TRUE(cx != NULL);
+    md_gpu_texture_t out = f_tex(&fx, MD_GPU_FORMAT_RGBA16_FLOAT, MD_GPU_TEX_STORAGE, W, H, "compose");
+    uint16_t* px = malloc(P * 8);
+
+    /* the fields: constant, and the distance from the box's centre in world units */
+    float* fc = malloc(N * N * N * 4);
+    float* fd = malloc(N * N * N * 4);
+    for (uint32_t z = 0; z < N; ++z) for (uint32_t y = 0; y < N; ++y) for (uint32_t x = 0; x < N; ++x) {
+        const size_t i = ((size_t)z * N + y) * N + x;
+        const double u[3] = { (x + 0.5) / N - 0.5, (y + 0.5) / N - 0.5, (z + 0.5) / N - 0.5 };
+        fc[i] = 0.5f;
+        fd[i] = (float)(4.0 * sqrt(dot3(u, u)));
+    }
+    md_gpu_texture_t vc = f_tex3d(&fx, N, fc), vdist = f_tex3d(&fx, N, fd);
+    ASSERT_TRUE(vc && vdist);
+    const uint8_t tfc[3] = { 200, 120, 40 }, tfa = 3;
+    uint32_t tf[16];
+    for (int i = 0; i < 16; ++i) tf[i] = tfc[0] | (tfc[1] << 8) | (tfc[2] << 16) | ((uint32_t)tfa << 24);
+    md_gpu_texture_t tft = f_tex(&fx, MD_GPU_FORMAT_RGBA8_UNORM, MD_GPU_TEX_SAMPLED, 16, 1, "transfer");
+    ASSERT_TRUE(f_upload_tex(&fx, tft, tf, sizeof(tf)));
+    const cf3 tfl = c_srgb(cf(tfc[0] / 255.0f, tfc[1] / 255.0f, tfc[2] / 255.0f));
+    const double alpha = tfa / 255.0;
+
+    /* an opaque white sphere inside the box, or nothing */
+    const float opq[3] = { 0.3f, -0.2f, -11.8f };
+    const double opq_c[3] = { opq[0], opq[1], opq[2] }, opq_r = 0.7;
+    md_render_batch_t ob = {0};
+    ob.key = 1; ob.kind = MD_RENDER_SPHERES; ob.count = 1; ob.points.count = 1; ob.points.position = f_buf(&fx, opq, 12);
+    ob.style.spheres.radius_add = (float)opq_r; ob.color.mode = MD_RENDER_COLOR_UNIFORM; ob.color.uniform = 0xFFFFFFFFu;
+
+    for (int ortho = 0; ortho < 2; ++ortho) {
+        cam_t c = ortho ? (cam_t){ .ortho = true, .half_h = 3.0f, .aspect = (float)W / H, .n = 0.0f, .far_ = 100.0f }
+                        : (cam_t){ .tan_half = 0.25f, .aspect = (float)W / H, .n = 0.1f };
+        md_render_camera_t cam = make_camera(&c);
+        for (int cut = 0; cut < 2; ++cut) {
+            md_render_frame_t f = frame_of(W, H, cam, &ob, 1);
+            ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+            md_compose_volume_t v = {0};
+            v.field = vc;
+            vol_model(v.model);
+            v.clip_max[0] = v.clip_max[1] = v.clip_max[2] = 1.0f;
+            v.transfer = tft; v.transfer_range[0] = 0.0f; v.transfer_range[1] = 1.0f;
+            if (cut) { v.plane_count = 1; v.planes[0][0] = 1.0f; v.planes[0][3] = -0.4f; }   /* x >= 0.4 kept */
+            md_compose_desc_t d = {0};
+            d.camera = cam; d.target = out; d.volumes = &v; d.volume_count = 1; d.frame = 3;
+            unlit_shading(&d.shading);
+            ASSERT_TRUE(md_compose(fx.gfx, cx, fx.view, &d));
+            ASSERT_TRUE(f_read(&fx, out, px, P * 8));
+            int bad = 0, through = 0, onto = 0;
+            double worst = 0;
+            for (uint32_t y = 0; y < H; ++y) for (uint32_t x = 0; x < W; ++x) {
+                const size_t p = (size_t)y * W + x;
+                ray_t r = pixel_ray(&c, W, H, x + 0.5, y + 0.5);
+                double t0, t1, s0, s1;
+                bool in = ray_box(r, box_lo, box_hi, &t0, &t1);
+                const bool hit = ray_sphere(r, opq_c, opq_r, &s0, &s1) && s0 > 0;
+                if (cut && in) {        /* x >= -2 + 0.4 x 4 = -0.4 */
+                    if (fabs(r.d[0]) < 1e-12) { if (r.o[0] < -0.4) in = false; }
+                    else { const double tx = (-0.4 - r.o[0]) / r.d[0]; if (r.d[0] > 0) t0 = fmax(t0, tx); else t1 = fmin(t1, tx); in = t0 < t1; }
+                }
+                if (in && hit) t1 = fmin(t1, s0);
+                const double len = in ? fmax(t1 - t0, 0.0) / 4.0 : 0.0;       /* texture space */
+                const double T = pow(1.0 - alpha, 150.0 * len);
+                const double e[4] = { tfl.x * (1 - T) + (hit ? T : 0), tfl.y * (1 - T) + (hit ? T : 0), tfl.z * (1 - T) + (hit ? T : 0), hit ? 1.0 : 1 - T };
+                /* not judged: a pixel the box's or the plane's or the sphere's edge crosses */
+                bool edge = false;
+                for (int k = 0; k < 4 && !edge; ++k) {
+                    ray_t q = pixel_ray(&c, W, H, x + 0.5 + (k & 1 ? 0.6 : -0.6), y + 0.5 + (k & 2 ? 0.6 : -0.6));
+                    double a0, a1, b0, b1;
+                    bool qin = ray_box(q, box_lo, box_hi, &a0, &a1), qhit = ray_sphere(q, opq_c, opq_r, &b0, &b1);
+                    if (cut && qin) qin = qin && (q.o[0] + q.d[0] * a1 >= -0.4 || q.o[0] + q.d[0] * a0 >= -0.4);
+                    const bool qcut = cut && ((q.o[0] + q.d[0] * a0 < -0.4) != (r.o[0] + r.d[0] * t0 < -0.4));
+                    edge = qin != in || qhit != hit || qcut;
+                }
+                if (edge) continue;
+                through += in && !hit;
+                onto    += in && hit;
+                for (int k = 0; k < 4; ++k) {
+                    const double err = fabs(half_bits_to_float(px[4 * p + k]) - e[k]);
+                    worst = fmax(worst, err);
+                    if (err > 4e-3) { bad++; if (bad < 6) printf("    emission%s%s pixel (%u, %u) channel %d: %g against %g\n", ortho ? ", orthographic" : "", cut ? ", cut" : "", x, y, k, half_bits_to_float(px[4 * p + k]), e[k]); }
+                }
+            }
+            printf("    emission%s%s: %d pixels through the volume, %d onto the sphere in it; %.4f off at most\n",
+                   ortho ? ", orthographic" : "", cut ? ", cut by a plane" : "", through, onto, worst);
+            EXPECT_EQ(0, bad);
+            EXPECT_GT(through, 300);
+            EXPECT_GT(onto, 100);
+        }
+
+        /* an isosurface of the distance: a sphere of radius 1.3 about the box's centre, opaque, lit */
+        {
+            md_render_frame_t f = frame_of(W, H, cam, NULL, 0);
+            ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+            md_compose_volume_t v = {0};
+            v.field = vdist;
+            vol_model(v.model);
+            v.clip_max[0] = v.clip_max[1] = v.clip_max[2] = 1.0f;
+            v.iso_count = 1; v.iso_values[0] = 1.3f;
+            v.iso_colors[0][0] = 0.9f; v.iso_colors[0][1] = 0.5f; v.iso_colors[0][2] = 0.2f; v.iso_colors[0][3] = 1.0f;
+            md_compose_desc_t d = {0};
+            d.camera = cam; d.target = out; d.volumes = &v; d.volume_count = 1;
+            md_compose_shading_t* sh = &d.shading;
+            sh->mode = MD_COMPOSE_SHADING_PBR; sh->linear_colors = true;
+            sh->light_dir[0] = 0.4f; sh->light_dir[1] = 0.6f; sh->light_dir[2] = 0.7f; sh->light_strength = 1.0f;
+            for (int i = 0; i < 3; ++i) { sh->dir_radiance[i] = 2.7f; sh->sky_radiance[i] = 0.59f; sh->ground_radiance[i] = 0.49f; }
+            sh->roughness = 0.4f; sh->f0 = 0.04f;
+            ASSERT_TRUE(md_compose(fx.gfx, cx, fx.view, &d));
+            ASSERT_TRUE(f_read(&fx, out, px, P * 8));
+            int bad = 0, covered = 0;
+            double worst = 0;
+            for (uint32_t y = 0; y < H; ++y) for (uint32_t x = 0; x < W; ++x) {
+                const size_t p = (size_t)y * W + x;
+                ray_t r = pixel_ray(&c, W, H, x + 0.5, y + 0.5);
+                double t0, t1, u0, u1;
+                const bool hit = ray_sphere(r, ctr, 1.3, &t0, &t1);
+                /* a voxel (1/12) from the silhouette either way */
+                const bool inner = ray_sphere(r, ctr, 1.3 - 0.12, &u0, &u1), outer = ray_sphere(r, ctr, 1.3 + 0.12, &u0, &u1);
+                if (inner != outer) continue;
+                const double a = half_bits_to_float(px[4 * p + 3]);
+                if (!hit) { if (a != 0.0) bad++; continue; }
+                covered++;
+                double hp[3], n[3];
+                for (int k = 0; k < 3; ++k) hp[k] = r.o[k] + r.d[k] * t0;
+                for (int k = 0; k < 3; ++k) n[k] = (hp[k] - ctr[k]) / 1.3;
+                c_lit_t l = c_shade(sh, cf(0.9f, 0.5f, 0.2f), cf((float)-r.d[0], (float)-r.d[1], (float)-r.d[2]), cf((float)n[0], (float)n[1], (float)n[2]), 1.0f);
+                const double e[4] = { l.d.x + l.s.x, l.d.y + l.s.y, l.d.z + l.s.z, 1.0 };
+                for (int k = 0; k < 4; ++k) {
+                    const double err = fabs(half_bits_to_float(px[4 * p + k]) - e[k]);
+                    worst = fmax(worst, err);
+                    if (err > 0.02) { bad++; if (bad < 6) printf("    isosurface%s pixel (%u, %u) channel %d: %g against %g\n", ortho ? ", orthographic" : "", x, y, k, half_bits_to_float(px[4 * p + k]), e[k]); }
+                }
+            }
+            printf("    isosurface%s: %d pixels on it, against the analytic sphere %.4f off at most\n", ortho ? ", orthographic" : "", covered, worst);
+            EXPECT_EQ(0, bad);
+            EXPECT_GT(covered, 300);
+        }
+
+        /* optical density: an isosurface of coverage 0 (radius 1.5) absorbing,
+           around an opaque white sphere, then around a transparent one */
+        for (int inner_layers = 0; inner_layers < 2; ++inner_layers) {
+            if (inner_layers && !layers_ok) break;
+            const double sig = 0.6, R = 1.5, rs = 0.6, ta = 0.5;
+            const float sp[3] = { (float)ctr[0], (float)ctr[1], (float)ctr[2] };
+            md_render_batch_t b = {0};
+            b.key = 7; b.kind = MD_RENDER_SPHERES; b.count = 1; b.points.count = 1; b.points.position = f_buf(&fx, sp, 12);
+            b.style.spheres.radius_add = (float)rs; b.color.mode = MD_RENDER_COLOR_UNIFORM; b.color.uniform = 0xFFFFFFFFu;
+            if (inner_layers) b.color.transparency = (float)(1.0 - ta);
+            md_render_frame_t f = frame_of(W, H, cam, &b, 1);
+            ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+            md_compose_volume_t v = {0};
+            v.field = vdist;
+            vol_model(v.model);
+            v.clip_max[0] = v.clip_max[1] = v.clip_max[2] = 1.0f;
+            v.iso_count = 1; v.iso_values[0] = (float)R; v.iso_densities[0] = (float)sig;
+            v.iso_colors[0][0] = v.iso_colors[0][1] = v.iso_colors[0][2] = 1.0f;     /* coverage 0 */
+            md_compose_desc_t d = {0};
+            d.camera = cam; d.target = out; d.volumes = &v; d.volume_count = 1;
+            unlit_shading(&d.shading);
+            ASSERT_TRUE(md_compose(fx.gfx, cx, fx.view, &d));
+            ASSERT_TRUE(f_read(&fx, out, px, P * 8));
+            int bad = 0, judged = 0;
+            double worst = 0;
+            for (uint32_t y = 0; y < H; ++y) for (uint32_t x = 0; x < W; ++x) {
+                const size_t p = (size_t)y * W + x;
+                ray_t r = pixel_ray(&c, W, H, x + 0.5, y + 0.5);
+                double a0, a1, b0, b1, u0, u1;
+                /* "inside": the distance field's value at or above the isovalue is inside (v >= 0), so the
+                   absorbing part is OUTSIDE radius R within the box; the ray's path in the box minus the ball */
+                double t0, t1;
+                if (!ray_box(r, box_lo, box_hi, &t0, &t1)) continue;
+                bool box_edge = false;
+                for (int k = 0; k < 4; ++k) {
+                    ray_t q = pixel_ray(&c, W, H, x + 0.5 + (k & 1 ? 0.6 : -0.6), y + 0.5 + (k & 2 ? 0.6 : -0.6));
+                    double q0, q1;
+                    box_edge |= !ray_box(q, box_lo, box_hi, &q0, &q1);
+                }
+                if (box_edge) continue;
+                const bool ball = ray_sphere(r, ctr, R, &a0, &a1);
+                const bool hit  = ray_sphere(r, ctr, rs, &b0, &b1);
+                /* not judged near the silhouettes */
+                if (ray_sphere(r, ctr, R - 0.1, &u0, &u1) != ray_sphere(r, ctr, R + 0.1, &u0, &u1)) continue;
+                if (ray_sphere(r, ctr, rs - 0.05, &u0, &u1) != ray_sphere(r, ctr, rs + 0.05, &u0, &u1)) continue;
+                double C = 0, T = 1, t = t0;
+                /* the absorbing stretches: [t0, a0] and [a1, t1] when the ray meets the ball, else [t0, t1] */
+                #define ABSORB_TO(tt) do { double e0 = t, e1 = (tt); if (ball) { double s = fmax(0, fmin(e1, a0) - e0) + fmax(0, e1 - fmax(e0, a1)); T *= exp(-sig * s); } else T *= exp(-sig * (e1 - e0)); t = (tt); } while (0)
+                if (hit && !inner_layers) {
+                    ABSORB_TO(b0);
+                    C += T; T = 0;
+                } else if (hit) {       /* a sphere is one surface to md_render: its front, a layer */
+                    ABSORB_TO(b0); C += T * ta; T *= 1 - ta;
+                    ABSORB_TO(t1);
+                } else {
+                    ABSORB_TO(t1);
+                }
+                #undef ABSORB_TO
+                judged++;
+                const double e[4] = { C, C, C, 1 - T };
+                for (int k = 0; k < 4; ++k) {
+                    const double err = fabs(half_bits_to_float(px[4 * p + k]) - e[k]);
+                    worst = fmax(worst, err);
+                    if (err > 6e-3) { bad++; if (bad < 6) printf("    density%s%s pixel (%u, %u) channel %d: %g against %g\n", ortho ? ", orthographic" : "", inner_layers ? ", layers" : "", x, y, k, half_bits_to_float(px[4 * p + k]), e[k]); }
+                }
+            }
+            printf("    density%s, %s: %d pixels; %.4f off at most\n", ortho ? ", orthographic" : "", inner_layers ? "a transparent sphere's layers inside" : "an opaque sphere inside", judged, worst);
+            EXPECT_EQ(0, bad);
+            EXPECT_GT(judged, 1000);
+        }
+    }
+    md_gpu_texture_destroy(vc); md_gpu_texture_destroy(vdist); md_gpu_texture_destroy(tft); md_gpu_texture_destroy(out);
+    md_compose_destroy(cx);
+    free(px); free(fc); free(fd);
+    f_close(&fx);
+}
+
 /* ---- Post ----------------------------------------------------------------------------- */
 
 /* md_post.slang's display transform, in C: the reference */

@@ -37,6 +37,12 @@ struct Args {
     DescriptorHandle<Texture2D<float>>    depth;    // md_render's: reverse Z, 0 where nothing
     DescriptorHandle<Texture2D<float4>>   color;    // sRGB-encoded base colour, a: covered
     DescriptorHandle<Texture2D<float2>>   normal;   // view space, octahedral
+    float4* vols;               // the volumes' records, VOL_STRIDE float4 each (md_compose.c's vol_record)
+    uint   vol_count;
+    uint   frame;               // seeds the emission's jitter
+    DescriptorHandle<Texture3D<float>>    vf0, vf1, vf2, vf3;   // the volumes' fields
+    DescriptorHandle<Texture2D<float4>>   vt0, vt1, vt2, vt3;   // and transfer functions
+    DescriptorHandle<SamplerState>        trilinear;            // clamp to edge
 };
 MD_SHADER_ARGS(Args);
 
@@ -375,14 +381,144 @@ Lit shade(Args a, float3 color, float3 V, float3 N, float ao) {
     return a.misc.y > 0.5 ? shade_basic(a, color, V, N, ao) : shade_pbr(a, color, V, N, ao);
 }
 
-// Toward the eye from the point at a pixel's centre and depth d (reverse Z)
-float3 toward_eye(Args a, float2 ndc, float d) {
-    if (a.misc.w > 0.5) return float3(0.0, 0.0, 1.0);
-    float4 h = a.ip0 * ndc.x + a.ip1 * ndc.y + a.ip2 * d + a.ip3;
-    return -normalize(h.xyz / h.w);
+
+// ---- Volumes ------------------------------------------------------------------
+// A volume's record: VOL_STRIDE float4
+//   0..3   view space to its texture space (columns)
+//   4      clip_min, w: the transfer function's range begin
+//   5      clip_max, w: 1 / its extent
+//   6      its voxels per axis, w: 1 with a transfer function
+//   7      x: isovalues, y: planes
+//   8, 9   isovalues; 10..17 their colours; 18, 19 their optical densities
+//   20..27 planes (texture space, n . x + d >= 0 kept)
+
+static const uint  VOL_STRIDE       = 28u;
+static const uint  MAX_VOL          = 4u;
+static const uint  MAX_ISO          = 8u;
+static const uint  MAX_STEPS        = 4096u;
+static const float REF_SAMPLING     = 150.0;   // a transfer function's opacity is of a slab 1/150 of the box
+static const float STEPS_PER_VOXEL  = 2.0;
+static const float T_MIN            = 0.005;   // below this transmittance the ray is opaque
+static const float T_FAR            = 1.0e30;
+
+float4 vrec(Args a, uint v, uint i) { return a.vols[v * VOL_STRIDE + i]; }
+
+float vol_field(Args a, uint v, float3 p) {
+    switch (v) {
+    case 0u: return a.vf0.SampleLevel(a.trilinear, p, 0.0);
+    case 1u: return a.vf1.SampleLevel(a.trilinear, p, 0.0);
+    case 2u: return a.vf2.SampleLevel(a.trilinear, p, 0.0);
+    default: return a.vf3.SampleLevel(a.trilinear, p, 0.0);
+    }
+}
+
+float4 vol_transfer(Args a, uint v, float t) {
+    float2 uv = float2(t, 0.5);
+    switch (v) {
+    case 0u: return a.vt0.SampleLevel(a.trilinear, uv, 0.0);
+    case 1u: return a.vt1.SampleLevel(a.trilinear, uv, 0.0);
+    case 2u: return a.vt2.SampleLevel(a.trilinear, uv, 0.0);
+    default: return a.vt3.SampleLevel(a.trilinear, uv, 0.0);
+    }
+}
+
+float iso_value(Args a, uint v, uint i)   { float4 q = vrec(a, v, 8u + i / 4u);  return q[i % 4u]; }
+float iso_density(Args a, uint v, uint i) { float4 q = vrec(a, v, 18u + i / 4u); return q[i % 4u]; }
+
+bool is_inside(float f, float iv) { return iv >= 0.0 ? f >= iv : f <= iv; }
+
+uint membership(Args a, uint v, float f) {
+    uint m = 0u, n = uint(vrec(a, v, 7u).x);
+    for (uint i = 0u; i < n; ++i) if (is_inside(f, iso_value(a, v, i))) m |= 1u << i;
+    return m;
+}
+
+float tau_of(Args a, uint v, uint m) {
+    float t = 0.0;
+    uint  n = uint(vrec(a, v, 7u).x);
+    for (uint i = 0u; i < n; ++i) if ((m & (1u << i)) != 0u) t += max(iso_density(a, v, i), 0.0);
+    return t;
+}
+
+// Where between ta and tb (fa, fb the field there, on either side of iv)
+// the field along o + t d takes the value iv: false position and bisection
+// in turn, on the trilinear field
+float refine(Args a, uint v, float3 o, float3 d, float ta, float tb, float fa, float fb, float iv) {
+    float ga = fa - iv, gb = fb - iv;
+    for (int k = 0; k < 6; ++k) {
+        float t = (k & 1) == 0 && ga != gb ? clamp(ta + (tb - ta) * ga / (ga - gb), ta, tb) : 0.5 * (ta + tb);
+        float g = vol_field(a, v, o + d * t) - iv;
+        if ((g < 0.0) == (ga < 0.0)) { ta = t; ga = g; } else { tb = t; gb = g; }
+    }
+    return ga != gb ? ta + (tb - ta) * ga / (ga - gb) : 0.5 * (ta + tb);
+}
+
+// The field's gradient at p (texture space) as a view-space direction
+float3 vol_normal(Args a, uint v, float3 p) {
+    float3 dim = vrec(a, v, 6u).xyz;
+    float3 h   = 1.0 / dim;
+    float3 g   = float3(vol_field(a, v, p + float3(h.x, 0, 0)) - vol_field(a, v, p - float3(h.x, 0, 0)),
+                        vol_field(a, v, p + float3(0, h.y, 0)) - vol_field(a, v, p - float3(0, h.y, 0)),
+                        vol_field(a, v, p + float3(0, 0, h.z)) - vol_field(a, v, p - float3(0, 0, h.z))) * dim;
+    // the gradient in view space: the transpose of view to texture's linear part
+    return float3(dot(vrec(a, v, 0u).xyz, g), dot(vrec(a, v, 1u).xyz, g), dot(vrec(a, v, 2u).xyz, g));
+}
+
+// The range of t (o + t d, texture space) inside the volume's clip box and
+// on the kept side of its planes, within [lo, hi]
+float2 vol_range(Args a, uint v, float3 o, float3 d, float lo, float hi) {
+    float3 bmin = vrec(a, v, 4u).xyz, bmax = vrec(a, v, 5u).xyz;
+    float3 inv  = 1.0 / select(abs(d) < float3(1e-20), float3(1e-20), d);
+    float3 t0 = (bmin - o) * inv, t1 = (bmax - o) * inv;
+    float3 tn = min(t0, t1), tf = max(t0, t1);
+    lo = max(lo, max(tn.x, max(tn.y, tn.z)));
+    hi = min(hi, min(tf.x, min(tf.y, tf.z)));
+    uint np = uint(vrec(a, v, 7u).y);
+    for (uint i = 0u; i < np; ++i) {
+        float4 pl = vrec(a, v, 20u + i);
+        float  pa = dot(pl.xyz, o) + pl.w, pb = dot(pl.xyz, d);
+        if (abs(pb) < 1e-20) { if (pa < 0.0) hi = lo - 1.0; continue; }
+        float t = -pa / pb;
+        if (pb > 0.0) lo = max(lo, t); else hi = min(hi, t);
+    }
+    return float2(lo, hi);
+}
+
+uint hash_u(uint x) {
+    x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16;
+    return x;
 }
 
 // ---- The compose --------------------------------------------------------------
+
+float3 unproject(Args a, float2 ndc, float d) {
+    float4 h = a.ip0 * ndc.x + a.ip1 * ndc.y + a.ip2 * d + a.ip3;
+    return h.xyz / h.w;
+}
+
+// A film shaded onto the ray: what it reflects, and what it lets through
+void film(Args a, inout float3 C, inout float T, float3 color, float alpha, float3 V, float3 N) {
+    Lit l = shade(a, color, V, N, 1.0);
+    C += T * (alpha * l.diffuse + l.specular);
+    T *= (1.0 - alpha) * (1.0 - l.Fe);
+}
+
+// Layer k of the pixel p onto the ray
+void layer(Args a, inout float3 C, inout float T, uint k, uint p, float3 V) {
+    uint   c8 = a.layers[k * a.stride + p];
+    float4 c  = float4(float(c8 & 0xFFu), float((c8 >> 8) & 0xFFu), float((c8 >> 16) & 0xFFu), float(c8 >> 24)) / 255.0;
+    uint   nb = a.layers[a.count * a.stride + k * a.stride + p];
+    float3 N  = oct_decode(float2(half_to_float(nb & 0xFFFFu), half_to_float(nb >> 16)));
+    film(a, C, T, c.rgb, c.a, V, N);
+}
+
+// The events along the ray in a step, in order: (t, v | i << 8), i an
+// isosurface crossed, 254 the volume v begins, 255 it ends. Parallel arrays
+// of the kernel's own, filled in place (no arrays through parameters: Slang
+// copies them in and out).
+static const uint MAX_HITS = 12u;
+static const uint EV_BEGIN = 254u;
+static const uint EV_END   = 255u;
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
@@ -393,31 +529,145 @@ void compose(uint3 tid : SV_DispatchThreadID) {
     uint   p   = tid.y * a.width + tid.x;
     float2 ndc = ndc_of(a, float2(q) + 0.5);
 
+    // the ray: from the near plane, toward the eye V
+    float3 O = unproject(a, ndc, 1.0);
+    float3 D = a.misc.w > 0.5 ? float3(0.0, 0.0, -1.0) : normalize(O);
+    float3 V = -D;
+
     // the opaque surface
     float3 S   = float3(0.0);
     float4 col = a.color.Load(int3(q, 0));
     float  cov = col.a > 0.0 ? 1.0 : 0.0;
+    float  dop = a.depth.Load(int3(q, 0));
+    float  top = T_FAR;
     if (cov > 0.0) {
-        float  d  = a.depth.Load(int3(q, 0));
         float3 N  = normal_at(a, q);
         float  ao = a.use_ao != 0u ? ao_at(a, q, a.lin[tid.y * a.width + tid.x]) : 1.0;
-        Lit l = shade(a, col.rgb, toward_eye(a, ndc, d), N, ao);
-        S = l.diffuse + l.specular;
+        Lit l = shade(a, col.rgb, V, N, ao);
+        S   = l.diffuse + l.specular;
+        top = dot(unproject(a, ndc, dop) - O, D);
     }
 
-    // the layers over it, front to back
-    float3 C = float3(0.0);
-    float  T = 1.0;
-    for (uint k = 0u; k < a.count; ++k) {
+    // the layers, front to back, and where they are along the ray
+    uint  nl = 0u;
+    float tl[8];
+    for (uint k = 0u; k < a.count && k < 8u; ++k) {
         float d = asfloat(a.layers[2u * a.count * a.stride + k * a.stride + p]);
         if (d == 0.0) break;
-        uint   c8 = a.layers[k * a.stride + p];
-        float4 c  = float4(float(c8 & 0xFFu), float((c8 >> 8) & 0xFFu), float((c8 >> 16) & 0xFFu), float(c8 >> 24)) / 255.0;
-        uint   nb = a.layers[a.count * a.stride + k * a.stride + p];
-        float3 N  = oct_decode(float2(half_to_float(nb & 0xFFFFu), half_to_float(nb >> 16)));
-        Lit    l  = shade(a, c.rgb, toward_eye(a, ndc, d), N, 1.0);
-        C += T * (c.a * l.diffuse + l.specular);
-        T *= (1.0 - c.a) * (1.0 - l.Fe);
+        tl[k] = dot(unproject(a, ndc, d) - O, D);
+        nl = k + 1u;
     }
+
+    float3 C = float3(0.0);
+    float  T = 1.0;
+    uint   kl = 0u;     // the next layer
+
+    // the volumes: each ray in its texture space, the part of it inside
+    uint   nv = min(a.vol_count, MAX_VOL);
+    float3 vo[MAX_VOL], vd[MAX_VOL];
+    float2 vr[MAX_VOL];
+    float  t_beg = T_FAR, t_end = -T_FAR, rate = 0.0;
+    for (uint v = 0u; v < nv; ++v) {
+        float4 c0 = vrec(a, v, 0u), c1 = vrec(a, v, 1u), c2 = vrec(a, v, 2u), c3 = vrec(a, v, 3u);
+        vo[v] = (c0 * O.x + c1 * O.y + c2 * O.z + c3).xyz;
+        vd[v] = (c0 * D.x + c1 * D.y + c2 * D.z).xyz;
+        vr[v] = vol_range(a, v, vo[v], vd[v], 0.0, top);
+        if (vr[v].x < vr[v].y) {
+            t_beg = min(t_beg, vr[v].x);
+            t_end = max(t_end, vr[v].y);
+            rate  = max(rate, length(vd[v] * vrec(a, v, 6u).xyz));     // voxels per unit of t
+        }
+    }
+    if (t_beg < t_end && rate > 0.0) {
+        uint   n   = min(uint(ceil((t_end - t_beg) * rate * STEPS_PER_VOXEL)), MAX_STEPS);
+        n = max(n, 1u);
+        float  dt  = (t_end - t_beg) / float(n);
+        float  jit = float(hash_u(p * 0x9E3779B9u ^ hash_u(a.frame)) >> 8) / 16777216.0;
+        float  fprev[MAX_VOL];
+        uint   inside[MAX_VOL];
+        uint   state = 0u;          // bit v: volume v entered; bit 8 + v: left
+        float  tau = 0.0, t_abs = t_beg;
+        [ForceUnroll] for (uint v = 0u; v < MAX_VOL; ++v) { fprev[v] = 0.0; inside[v] = 0u; }
+        for (uint s = 0u; s < n && T >= T_MIN; ++s) {
+            float ta = t_beg + dt * float(s), tb = ta + dt, ts = ta + dt * jit;
+            // the crossings and the volumes' ends in (ta, tb], in order along the ray
+            float ht[MAX_HITS];
+            uint  he[MAX_HITS];
+            uint  nh = 0u;
+            for (uint v = 0u; v < nv; ++v) {
+                if (vr[v].x >= vr[v].y || vr[v].y < ta || vr[v].x > tb || (state & (0x100u << v)) != 0u) continue;
+                float ua = max(ta, vr[v].x), ub = min(tb, vr[v].y);
+                if ((state & (1u << v)) == 0u) {     // it begins here: its densities from there on
+                    fprev[v]  = vol_field(a, v, vo[v] + vd[v] * ua);
+                    inside[v] = membership(a, v, fprev[v]);
+                    state    |= 1u << v;
+                    { float et = ua; uint ee = v | (EV_BEGIN << 8); if (nh < MAX_HITS) { uint j = nh++; while (j > 0u && ht[j - 1u] > et) { ht[j] = ht[j - 1u]; he[j] = he[j - 1u]; --j; } ht[j] = et; he[j] = ee; } }
+                }
+                float fb = vol_field(a, v, vo[v] + vd[v] * ub);
+                uint  ni = uint(vrec(a, v, 7u).x);
+                for (uint i = 0u; i < ni; ++i) {
+                    float iv = iso_value(a, v, i);
+                    if (is_inside(fprev[v], iv) == is_inside(fb, iv)) continue;
+                    { float et = refine(a, v, vo[v], vd[v], ua, ub, fprev[v], fb, iv); uint ee = v | (i << 8); if (nh < MAX_HITS) { uint j = nh++; while (j > 0u && ht[j - 1u] > et) { ht[j] = ht[j - 1u]; he[j] = he[j - 1u]; --j; } ht[j] = et; he[j] = ee; } }
+                }
+                fprev[v] = fb;
+                if (ub >= vr[v].y) { float et = vr[v].y; uint ee = v | (EV_END << 8); if (nh < MAX_HITS) { uint j = nh++; while (j > 0u && ht[j - 1u] > et) { ht[j] = ht[j - 1u]; he[j] = he[j - 1u]; --j; } ht[j] = et; he[j] = ee; } }    // it ends here: no more of its density
+            }
+            // the events in order: crossings, layers, the emission's sample
+            uint ih = 0u;
+            bool emitted = false;
+            for (uint guard = 0u; guard < 32u; ++guard) {
+                float th = ih < nh ? ht[ih] : T_FAR;
+                float tk = kl < nl && tl[kl] <= tb ? tl[kl] : T_FAR;
+                float te = emitted ? T_FAR : ts;
+                float t  = min(th, min(tk, te));
+                if (t >= T_FAR) break;
+                if (tau > 0.0) T *= exp(-tau * max(t - t_abs, 0.0));
+                t_abs = max(t_abs, t);
+                if (t == tk) {
+                    layer(a, C, T, kl, p, V);
+                    ++kl;
+                } else if (t == th) {
+                    uint ev = he[ih] & 0xFFu, ei = he[ih] >> 8;
+                    ++ih;
+                    if (ei == EV_BEGIN) {
+                        tau += tau_of(a, ev, inside[ev]);
+                    } else if (ei == EV_END) {
+                        tau -= tau_of(a, ev, inside[ev]);
+                        inside[ev] = 0u;
+                        state |= 0x100u << ev;
+                    } else {
+                        float3 pt = vo[ev] + vd[ev] * t;
+                        float3 N  = vol_normal(a, ev, pt);
+                        float  ln = length(N);
+                        N = ln > 1e-20 ? N / ln : V;
+                        if (dot(N, V) < 0.0) N = -N;
+                        float4 c = vrec(a, ev, 10u + ei);
+                        film(a, C, T, c.rgb, saturate(c.a), V, N);
+                        tau -= tau_of(a, ev, inside[ev]);
+                        inside[ev] ^= 1u << ei;
+                        tau += tau_of(a, ev, inside[ev]);
+                    }
+                } else {
+                    emitted = true;
+                    // each volume there through its transfer function, the
+                    // opacity for the step's length in texture space
+                    for (uint v = 0u; v < nv; ++v) {
+                        if (vrec(a, v, 6u).w < 0.5 || ts < vr[v].x || ts > vr[v].y) continue;
+                        float  f  = vol_field(a, v, vo[v] + vd[v] * ts);
+                        float  u  = saturate((f - vrec(a, v, 4u).w) * vrec(a, v, 5u).w);
+                        float4 tf = vol_transfer(a, v, u);
+                        float  w  = dt * length(vd[v]) * REF_SAMPLING;
+                        float  al = 1.0 - pow(max(1.0 - tf.a, 1e-6), w);
+                        C += T * al * srgb_to_linear(tf.rgb);
+                        T *= 1.0 - al;
+                    }
+                }
+            }
+        }
+        if (tau > 0.0 && t_end > t_abs) T *= exp(-tau * (t_end - t_abs));
+    }
+    // the layers behind the volumes
+    for (; kl < nl; ++kl) layer(a, C, T, kl, p, V);
     a.target[q] = float4(C + T * cov * S, 1.0 - T * (1.0 - cov));
 }
