@@ -172,15 +172,19 @@ typedef struct gpu_batch_t {
     md_gpu_addr_t id_visible0, id_visible1;                       /* F_ID_VISIBLE0, 1: bitsets over the ids */
     float         cap_end, cap_px;                                /* CAPSULES shaped: the second radius, the radius in pixels */
     md_gpu_addr_t tri_normal;                                     /* TRIANGLES: float3 per point (F_TRI_NORMAL), */
-    uint32_t      tri_nstride, _tpad;                             /* that many bytes apart */
+    uint32_t      tri_nstride;                                    /* that many bytes apart */
+    uint32_t      group;                                          /* transparent: the first batch of its group */
+    float         opacity;                                        /* 1: opaque; below, transparent (0: not drawn) */
+    uint32_t      _opad[3];
 } gpu_batch_t;
-_Static_assert(sizeof(gpu_batch_t) == 384, "Batch mirror");
+_Static_assert(sizeof(gpu_batch_t) == 400, "Batch mirror");
 
 typedef struct gpu_args_t {
     md_gpu_addr_t        view;
     md_gpu_addr_t        batches;
     uint32_t             mode;      /* raster: 0 visibility, 1 mask. cull etc.: phase 1 or 2 */
-    uint32_t             list;      /* raster: 0 hw0, 1 hw1, 2 st0, 3 st1, 4 hw2, 5 st2, 6 hw3, 7 st3, 8 hw4, 9 st4 */
+    uint32_t             list;      /* raster: 0 hw0, 1 hw1, 2 st0, 3 st1, 4 hw2, 5 st2, 6 hw3, 7 st3, 8 hw4, 9 st4;
+                                       transparent: 10 spheres, 11 capsules, 12 triangles */
     md_gpu_sampled_tex_t id;
     md_gpu_storage_tex_t color, normal, motion, mask;
     uint32_t             width, height, px, py;
@@ -199,7 +203,11 @@ typedef struct gpu_lists_t {
     md_gpu_addr_t hw2g;             /* boxes of groups of the parts' pieces: record << 4 | group, 16 at most a part */
     md_gpu_addr_t tiles;            /* the resolve's 8 x 8 tiles with spline pixels, then those with polygons */
     md_gpu_addr_t hw4, st4;         /* triangles: hardware raster, state */
-    uint32_t      tiles_cap, _lpad; /* tiles of the target */
+    md_gpu_addr_t tr0, tr1, tr4;    /* transparent spheres, capsules, triangles (into the K-buffer) */
+    md_gpu_addr_t kbuf;             /* the K-buffer: kbuf_k uint64 per pixel (kb_slots) */
+    md_gpu_addr_t layers;           /* the transparent layers: three planes (md_render_targets_t) */
+    uint32_t      tiles_cap;        /* tiles of the target */
+    uint32_t      kbuf_k;           /* K; 0: no transparency this frame */
 } gpu_lists_t;
 
 /* counters[] (md_render.slang C_*) */
@@ -226,7 +234,9 @@ enum {
     C_HWT1 = 836, C_HWT2 = 837, C_STT = 838,  /* triangles: hardware raster, phase 1 and 2; state */
     C_CMDT = 840,                   /* md_gpu_draw_cmd_t: triangles, phase 1 and 2: 840..847 */
     C_STCMDT = 848,                 /* the state list's triangles: 848..851 */
-    C_COUNT = 852,
+    C_TR = 852,                     /* transparent elements: spheres, capsules, triangles: 852..854 */
+    C_TRCMD = 856,                  /* their draws: spheres 856..859, capsules (indexed) 860..864, triangles 868..871 */
+    C_COUNT = 872,
 };
 #define IMPLICIT_CLUSTER 64u
 #define CTR(v, i) ((v)->counters + (md_gpu_addr_t)(i) * 4u)
@@ -258,14 +268,17 @@ struct md_render {
     md_gpu_device_t   dev;
     md_allocator_i*   alloc;
     md_gpu_pipeline_t sphere_vis, sphere_mask, capsule_vis, capsule_mask, spline_vis, spline_mask, polygon_vis, polygon_mask, triangle_vis, triangle_mask, merge;
+    md_gpu_pipeline_t sphere_kb, capsule_kb, triangle_kb;     /* transparent: into the K-buffer */
     md_gpu_kernel_t   k_resolve, k_mask_visible, k_export, k_pick, k_cull, k_finalize, k_raster_small, k_hiz, k_refit, k_cull_clusters;
+    md_gpu_kernel_t   k_resolve_layers;
     /* the heavy twins (md_render.slang, kind_taken): run only for frames with splines or polygons */
     md_gpu_kernel_t   k_refit_heavy, k_cull_heavy, k_resolve_heavy, k_resolve_poly, k_spline_order;
     bool              atomic_int64;    /* the compute raster is possible */
+    bool              atomic_int64_fetch;  /* the K-buffer's cascade is (in fragment stages) */
     uint32_t          vendor_id;       /* the device's (spline_group_for) */
 };
 
-enum { PIPE_VIS, PIPE_MASK };
+enum { PIPE_VIS, PIPE_MASK, PIPE_KB };
 static md_gpu_pipeline_t make_pipeline(md_gpu_device_t dev, md_gpu_shader_t vs, md_gpu_shader_t fs, int kind, const char* label) {
     const bool mask = kind == PIPE_MASK;
     md_gpu_pipeline_desc_t pd = {0};
@@ -275,7 +288,14 @@ static md_gpu_pipeline_t make_pipeline(md_gpu_device_t dev, md_gpu_shader_t vs, 
     pd.color_count  = 1;
     pd.depth_format = MD_GPU_FORMAT_D32_FLOAT;
     pd.label        = label;
-    if (mask) {
+    if (kind == PIPE_KB) {
+        /* The K-buffer's: no depth attachment (the fragments test the opaque
+           depth themselves, before their atomics), and a colour attachment
+           only because a pass needs one, never written */
+        pd.depth_format             = MD_GPU_FORMAT_INVALID;
+        pd.color[0].format          = MD_GPU_FORMAT_RGBA8_UNORM;
+        pd.color[0].write_disable   = MD_GPU_COLOR_R | MD_GPU_COLOR_G | MD_GPU_COLOR_B | MD_GPU_COLOR_A;
+    } else if (mask) {
         pd.color[0].format              = MD_GPU_FORMAT_RGBA8_UNORM;
         pd.color[0].blend.enable        = true;
         pd.color[0].blend.src_color     = MD_GPU_BLEND_ONE;
@@ -322,6 +342,15 @@ md_render_ctx_t md_render_create(md_gpu_device_t device, const md_render_desc_t*
     r->triangle_mask = make_pipeline(device, md_shader_md_render_triangle_vs_shader(), md_shader_md_render_triangle_mask_fs_shader(), PIPE_MASK, "md_render.triangle_mask");
     r->merge        = make_pipeline(device, md_shader_md_render_merge_vs_shader(),   md_shader_md_render_merge_fs_shader(),        PIPE_VIS,  "md_render.merge");
     r->atomic_int64 = info.atomic_int64_min_max;
+    r->atomic_int64_fetch = info.atomic_int64 && info.fragment_stores;
+    if (r->atomic_int64_fetch) {
+        /* the K-buffer's cascade needs the 64-bit maximum that returns the
+           old value; without it no transparency (yet: TRANSPARENCY) */
+        r->sphere_kb   = make_pipeline(device, md_shader_md_render_sphere_vs_shader(),   md_shader_md_render_sphere_kb_fs_shader(),   PIPE_KB, "md_render.sphere_kb");
+        r->capsule_kb  = make_pipeline(device, md_shader_md_render_capsule_vs_shader(),  md_shader_md_render_capsule_kb_fs_shader(),  PIPE_KB, "md_render.capsule_kb");
+        r->triangle_kb = make_pipeline(device, md_shader_md_render_triangle_vs_shader(), md_shader_md_render_triangle_kb_fs_shader(), PIPE_KB, "md_render.triangle_kb");
+        if (!r->sphere_kb || !r->capsule_kb || !r->triangle_kb) r->atomic_int64_fetch = false;
+    }
     r->vendor_id    = info.vendor_id;
 
     md_gpu_kernel_desc_t kd;
@@ -339,6 +368,7 @@ md_render_ctx_t md_render_create(md_gpu_device_t device, const md_render_desc_t*
     kd = md_shader_md_render_resolve_heavy_kernel(); r->k_resolve_heavy = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_resolve_poly_kernel();  r->k_resolve_poly  = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_render_spline_order_kernel();  r->k_spline_order  = md_gpu_kernel_create(device, &kd);
+    kd = md_shader_md_render_resolve_layers_kernel(); r->k_resolve_layers = md_gpu_kernel_create(device, &kd);
     if (r->atomic_int64) {
         kd = md_shader_md_render_raster_small_kernel(); r->k_raster_small = md_gpu_kernel_create(device, &kd);
         if (!r->k_raster_small) r->atomic_int64 = false;
@@ -346,6 +376,7 @@ md_render_ctx_t md_render_create(md_gpu_device_t device, const md_render_desc_t*
 
     if (!r->sphere_vis || !r->sphere_mask || !r->capsule_vis || !r->capsule_mask || !r->spline_vis || !r->spline_mask ||
         !r->polygon_vis || !r->polygon_mask || !r->triangle_vis || !r->triangle_mask || !r->merge ||
+        !r->k_resolve_layers ||
         !r->k_resolve || !r->k_mask_visible || !r->k_export || !r->k_pick || !r->k_cull || !r->k_finalize || !r->k_hiz || !r->k_refit || !r->k_cull_clusters ||
         !r->k_refit_heavy || !r->k_cull_heavy || !r->k_resolve_heavy || !r->k_resolve_poly || !r->k_spline_order) {
         MD_LOG_ERROR("md_render: pipeline or kernel creation failed: %s", md_gpu_last_error());
@@ -367,6 +398,10 @@ void md_render_destroy(md_render_ctx_t r) {
     if (r->polygon_mask)   md_gpu_pipeline_destroy(r->polygon_mask);
     if (r->triangle_vis)   md_gpu_pipeline_destroy(r->triangle_vis);
     if (r->triangle_mask)  md_gpu_pipeline_destroy(r->triangle_mask);
+    if (r->sphere_kb)      md_gpu_pipeline_destroy(r->sphere_kb);
+    if (r->capsule_kb)     md_gpu_pipeline_destroy(r->capsule_kb);
+    if (r->triangle_kb)    md_gpu_pipeline_destroy(r->triangle_kb);
+    if (r->k_resolve_layers) md_gpu_kernel_destroy(r->k_resolve_layers);
     if (r->k_refit_heavy)    md_gpu_kernel_destroy(r->k_refit_heavy);
     if (r->k_cull_heavy)     md_gpu_kernel_destroy(r->k_cull_heavy);
     if (r->k_resolve_heavy)  md_gpu_kernel_destroy(r->k_resolve_heavy);
@@ -516,6 +551,11 @@ struct md_render_view {
     md_gpu_addr_t       box_idx;           /* uint16 [36]: a capsule's box over its 8 corners */
     md_gpu_addr_t       vis64;
     size_t              vis64_cap;
+    md_gpu_addr_t       kbuf;              /* K-buffer and layers (TRANSPARENCY), while a raster has them */
+    size_t              kbuf_cap;
+    md_gpu_addr_t       layer_mem;
+    size_t              layer_cap;
+    uint32_t            kbuf_k;            /* of the last raster; 0: none */
     md_gpu_addr_t       bounds_mem;        /* per cluster: 2 float4 bounds, 1 uint state */
     size_t              bounds_cap;
     bool                bounds_valid;      /* of the last raster's geometry   */
@@ -593,6 +633,8 @@ void md_render_view_destroy(md_gpu_stream_t s, md_render_view_t v) {
     if (v->zero)      md_gpu_free(s, v->zero);
     if (v->box_idx)   md_gpu_free(s, v->box_idx);
     if (v->vis64)     md_gpu_free(s, v->vis64);
+    if (v->kbuf)      md_gpu_free(s, v->kbuf);
+    if (v->layer_mem) md_gpu_free(s, v->layer_mem);
     if (v->hiz)       md_gpu_texture_destroy(v->hiz);
     for (uint32_t i = 0; i < STAT_SLOTS; ++i) if (v->stats[i].host.gpu) md_gpu_free(s, v->stats[i].host.gpu);
     for (uint32_t i = 0; i < PICK_SLOTS; ++i) free_pick(v, s, &v->picks[i]);
@@ -695,6 +737,10 @@ static void canonical_geometry(md_render_batch_t* out, const md_render_batch_t* 
     /* not the instances: the view keeps them apart from its copy of the
        batch (remember), and compare checks their count and transforms */
     if (b->fade.mode) out->fade = b->fade;
+    /* opaque, transparent or not drawn: where its elements go (the amount
+       and the group are appearance: canonical_color) */
+    const float tr = b->color.transparency;
+    out->color.transparency = tr > 0.0f ? (tr < 1.0f ? 1.0f : 2.0f) : 0.0f;
 }
 
 static void canonical_color(md_render_color_t* out, const md_render_batch_t* b) {
@@ -706,6 +752,8 @@ static void canonical_color(md_render_color_t* out, const md_render_batch_t* b) 
     out->sharpness     = b->color.sharpness;
     memcpy(out->tint, b->color.tint, sizeof(out->tint));
     out->desaturate    = b->color.desaturate;
+    out->transparency  = b->color.transparency;
+    out->group         = b->color.transparency > 0.0f ? b->color.group : 0;
 }
 
 /* The kinds md_render culls and rasterises; and which hardware raster draws
@@ -732,6 +780,10 @@ static bool validate(const md_render_frame_t* f) {
     }
     if (f->batch_count && !f->batches) {
         MD_LOG_ERROR("md_render: batch_count without batches");
+        return false;
+    }
+    if (f->layers > 8) {
+        MD_LOG_ERROR("md_render: %u transparent layers; at most 8", f->layers);
         return false;
     }
     if (f->jitter == MD_RENDER_JITTER_GIVEN && !(isfinite(f->jitter_offset[0]) && isfinite(f->jitter_offset[1]))) {
@@ -775,6 +827,15 @@ static bool validate(const md_render_frame_t* f) {
                 MD_LOG_ERROR("md_render: batch %u: a fade's key is for spheres and capsules", i);
                 return false;
             }
+        }
+        if (!(b->color.transparency >= 0.0f) || !isfinite(b->color.transparency)) {
+            MD_LOG_ERROR("md_render: batch %u: a transparency is finite and not negative (got %g)", i, b->color.transparency);
+            return false;
+        }
+        if (b->color.transparency > 0.0f && b->color.transparency < 1.0f &&
+            b->kind != MD_RENDER_SPHERES && b->kind != MD_RENDER_CAPSULES && b->kind != MD_RENDER_TRIANGLES && b->kind != MD_RENDER_EXTERNAL) {
+            MD_LOG_ERROR("md_render: batch %u: transparency is for spheres, capsules and triangles (not yet splines and polygons)", i);
+            return false;
         }
         switch (b->kind) {
         case MD_RENDER_SPHERES:
@@ -873,6 +934,12 @@ static uint64_t batch_work(const md_render_batch_t* b) {
     return (uint64_t)b->count * instance_count(b);
 }
 
+/* A batch drawn into the K-buffer (TRANSPARENCY) */
+static bool transparent(const md_render_batch_t* b) {
+    return b->color.transparency > 0.0f && b->color.transparency < 1.0f && batch_work(b) &&
+           (b->kind == MD_RENDER_SPHERES || b->kind == MD_RENDER_CAPSULES || b->kind == MD_RENDER_TRIANGLES);
+}
+
 /* Whether the heavy twins run: a batch of spline parts or polygons to draw */
 static bool frame_has_heavy(const md_render_frame_t* f) {
     for (uint32_t i = 0; i < f->batch_count; ++i) {
@@ -901,6 +968,7 @@ static bool bounds_shared(const md_render_batch_t* a, const md_render_batch_t* b
     if (!x.id_visible[0] && !x.id_visible[1]) x.id = 0;
     if (!y.id_visible[0] && !y.id_visible[1]) y.id = 0;
     x.points.velocity = y.points.velocity = 0;
+    x.color.transparency = y.color.transparency = 0.0f;     /* nor on where the elements go */
     x.points.velocity_stride = y.points.velocity_stride = 0;
     memset(&x.fade, 0, sizeof(x.fade));                     /* the bounds do not depend on it */
     memset(&y.fade, 0, sizeof(y.fade));
@@ -1006,6 +1074,16 @@ static bool gpu_realloc(md_gpu_stream_t s, md_gpu_addr_t* addr, size_t* cap, siz
     size_t c = need < 4096 ? 4096 : need + need / 2;
     *addr = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, c).gpu;
     *cap  = *addr ? c : 0;
+    return *addr != 0;
+}
+
+/* As gpu_realloc, to the byte: for the large buffers of a size that follows
+   the target's (the K-buffer, the layers), which do not grow by steps */
+static bool gpu_realloc_exact(md_gpu_stream_t s, md_gpu_addr_t* addr, size_t* cap, size_t need) {
+    if (*addr && *cap == need) return true;
+    if (*addr) md_gpu_free(s, *addr);
+    *addr = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, need).gpu;
+    *cap  = *addr ? need : 0;
     return *addr != 0;
 }
 
@@ -1147,6 +1225,7 @@ static void fill_batch(gpu_batch_t* g, const md_render_batch_t* b, uint32_t n_in
     g->tint.w = b->color.tint[3];
     g->sharpness  = b->color.sharpness;
     g->desaturate = b->color.desaturate;
+    g->opacity    = b->color.transparency > 0.0f ? MD_MAX(1.0f - b->color.transparency, 0.0f) : 1.0f;
 }
 
 /* The previous transforms of batch i: those of the batch with its key at the
@@ -1257,6 +1336,12 @@ static bool upload_tables(md_gpu_stream_t s, md_render_view_t v, const md_render
         fade_bands(&v->table[i], b, f);
         gpu_batch_t* g = &v->table[i];
         g->work_offset         = work;
+        g->group               = i;                 /* its own, or the first batch of its group */
+        if (b->color.group && g->opacity < 1.0f) {
+            for (uint32_t j = 0; j < i; ++j) {
+                if (f->batches[j].color.group == b->color.group && v->table[j].opacity < 1.0f) { g->group = v->table[j].group; break; }
+            }
+        }
         g->cluster_count       = batch_clusters(b);
         g->cluster_offset      = (b->cluster_offset && b->cluster_count) ? b->cluster_offset : 0;
         if (g->cluster_offset) g->flags |= F_CLUSTERS;
@@ -1311,23 +1396,45 @@ static gpu_args_t base_args(const md_render_view_t v) {
    spline parts, whose hardware entries carry their box, the part itself and
    its pieces' cuts of the box, 320 bytes, and up to 16 boxes of their
    pieces, 4 bytes each), plus 24 per cluster. */
-static bool ensure_lists(md_gpu_stream_t s, md_render_view_t v, const uint64_t work[HW_KINDS], uint64_t cwork, bool compute) {
+/* With transparency (kbuf_k > 0, trw: the transparent batches' work by
+   kind: spheres, capsules, triangles), their lists, the K-buffer (8 bytes a
+   slot) and the layers (12 bytes a layer: md_render_targets_t); without, the
+   K-buffer and the layers are let go of. */
+static bool ensure_lists(md_gpu_stream_t s, md_render_view_t v, const uint64_t work[HW_KINDS], uint64_t cwork, bool compute,
+                         const uint64_t trw[3], uint32_t kbuf_k) {
     const uint64_t tot = work[0] + work[1];
     /* Cluster entries are 8 bytes, element entries 4 (a global work index).
        Triangles are retested (occ) but never small */
     const uint64_t tiles = (uint64_t)((v->width + 7u) / 8u) * ((v->height + 7u) / 8u);
-    const uint64_t sizes[18] = { cwork, cwork, cwork, work[0], work[1], work[0], work[1], tot, tot + work[4], work[2], work[2], work[3], work[3], work[2], 16u * work[2],
-                                 (work[2] || work[3]) ? 2u * tiles : 0u, work[4], work[4] };
-    const uint32_t esize[18] = { 8, 8, 8, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 320, 4, 4, 4, 4 };   /* SPLINE_RECORD float4; spline_pieces' 16 */
+    const uint64_t sizes[21] = { cwork, cwork, cwork, work[0], work[1], work[0], work[1], tot, tot + work[4], work[2], work[2], work[3], work[3], work[2], 16u * work[2],
+                                 (work[2] || work[3]) ? 2u * tiles : 0u, work[4], work[4], trw[0], trw[1], trw[2] };
+    const uint32_t esize[21] = { 8, 8, 8, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 320, 4, 4, 4, 4, 4, 4, 4 };   /* SPLINE_RECORD float4; spline_pieces' 16 */
     size_t need = 0;
-    for (int i = 0; i < 18; ++i) need += (size_t)align_addr((sizes[i] + 1) * esize[i]);
+    for (int i = 0; i < 21; ++i) need += (size_t)align_addr((sizes[i] + 1) * esize[i]);
     if (!gpu_realloc(s, &v->list_mem, &v->list_mem_cap, need)) return false;
     gpu_lists_t l;
     md_gpu_addr_t o = v->list_mem;
-    md_gpu_addr_t* dst[18] = { &l.cvis, &l.cocc, &l.cst, &l.hw0, &l.hw1, &l.st0, &l.st1, &l.small, &l.occ, &l.hw2, &l.st2, &l.hw3, &l.st3, &l.hw2b, &l.hw2g, &l.tiles, &l.hw4, &l.st4 };
-    for (int i = 0; i < 18; ++i) { *dst[i] = o; o += align_addr((sizes[i] + 1) * esize[i]); }
+    md_gpu_addr_t* dst[21] = { &l.cvis, &l.cocc, &l.cst, &l.hw0, &l.hw1, &l.st0, &l.st1, &l.small, &l.occ, &l.hw2, &l.st2, &l.hw3, &l.st3, &l.hw2b, &l.hw2g, &l.tiles, &l.hw4, &l.st4,
+                               &l.tr0, &l.tr1, &l.tr4 };
+    for (int i = 0; i < 21; ++i) { *dst[i] = o; o += align_addr((sizes[i] + 1) * esize[i]); }
     l.tiles_cap = (uint32_t)sizes[15];
-    l._lpad     = 0;
+    const size_t px = (size_t)v->width * v->height;
+    if (kbuf_k) {
+        if (!gpu_realloc_exact(s, &v->kbuf, &v->kbuf_cap, px * kbuf_k * 8u)) return false;
+        if (!gpu_realloc_exact(s, &v->layer_mem, &v->layer_cap, px * kbuf_k * 12u)) return false;
+    } else {
+        if (v->kbuf)      md_gpu_free(s, v->kbuf);
+        if (v->layer_mem) md_gpu_free(s, v->layer_mem);
+        v->kbuf = v->layer_mem = 0;
+        v->kbuf_cap = v->layer_cap = 0;
+    }
+    v->kbuf_k = kbuf_k;
+    l.kbuf    = v->kbuf;
+    l.layers  = v->layer_mem;
+    l.kbuf_k  = kbuf_k;
+    v->t.layers       = kbuf_k ? v->layer_mem : 0;
+    v->t.layer_count  = kbuf_k;
+    v->t.layer_stride = kbuf_k ? (uint32_t)px : 0;
     if (!v->counters) v->counters = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, C_COUNT * 4u).gpu;
     if (!v->lists_buf) v->lists_buf = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(gpu_lists_t)).gpu;
     if (!v->counters || !v->lists_buf) return false;
@@ -1474,6 +1581,36 @@ static bool run_raster(md_gpu_stream_t s, md_render_view_t v, uint32_t phase, bo
     return md_gpu_render_end(s);
 }
 
+/* The transparent elements into the K-buffer, after the opaque raster's last
+   phase: cleared, then each kind in one indirect draw (the cull's counts and
+   C_TRCMD), its fragments tested against the opaque depth (sampled) and their
+   (depth, element) inserted. The pass's attachment is never written. */
+static bool run_raster_kb(md_gpu_stream_t s, md_render_view_t v, const uint64_t trw[3]) {
+    md_render_ctx_t r = v->r;
+    if (!md_gpu_memset(s, v->kbuf, 0, (size_t)v->width * v->height * v->kbuf_k * 8u)) return false;
+    md_gpu_render_desc_t rd = {0};
+    rd.color_count      = 1;
+    rd.color[0].texture = v->t.mask;
+    rd.color[0].load    = MD_GPU_LOAD;
+    rd.color[0].store   = MD_GPU_STORE;
+    rd.label            = "md_render.raster_kb";
+    if (!md_gpu_render_begin(s, &rd)) return false;
+    gpu_args_t a = base_args(v);
+    a.src  = md_gpu_texture_sampled(v->t.depth);
+    a.mode = 2;
+    md_gpu_draw_state_t ds = {0};
+    for (uint32_t k = 0; k < 3; ++k) {
+        if (!trw[k]) continue;
+        ds.cull = k == 1 ? MD_GPU_CULL_BACK : MD_GPU_CULL_NONE;
+        md_gpu_set_draw_state(s, &ds);
+        a.list = 10 + k;
+        if (k == 0)      md_gpu_draw_indirect(s, r->sphere_kb, CTR(v, C_TRCMD), 1, &a, sizeof(a));
+        else if (k == 1) md_gpu_draw_indexed_indirect(s, r->capsule_kb, v->box_idx, MD_GPU_INDEX_U16, CTR(v, C_TRCMD + 4), 1, &a, sizeof(a));
+        else             md_gpu_draw_indirect(s, r->triangle_kb, CTR(v, C_TRCMD + 12), 1, &a, sizeof(a));
+    }
+    return md_gpu_render_end(s);
+}
+
 /* The main resolve, then its heavy twin over the spline and polygon pixels */
 /* The light kinds' kernel, then a kernel for each heavy kind the frame has:
    splines and polygons together held 255 registers on the 1060 and spilled.
@@ -1490,6 +1627,11 @@ static const char* run_resolve(md_gpu_stream_t s, md_render_view_t v, const md_r
     a.src = md_gpu_texture_sampled(v->t.depth);
     md_gpu_grid_t g = md_gpu_grid_for(v->r->k_resolve, v->width, v->height, 1);
     if (!md_gpu_launch(s, v->r->k_resolve, g, &a, sizeof(a))) return NULL;
+    if (v->kbuf_k) {
+        PASS_DONE("resolve");
+        if (!md_gpu_launch(s, v->r->k_resolve_layers, md_gpu_grid_for(v->r->k_resolve_layers, v->width, v->height, 1), &a, sizeof(a))) return NULL;
+        if (!spl && !poly) return "resolve layers";
+    }
     if (!spl && !poly) return "resolve";
     PASS_DONE("resolve");
     /* the heavy ones over the tiles the main one listed (C_TILES): a group a
@@ -1679,6 +1821,15 @@ static void store_raster_meta(md_render_view_t v, const md_render_frame_t* f) {
 bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_frame_t* f, md_render_status_t* out) {
     if (out) memset(out, 0, sizeof(*out));
     if (!s || !v || !f || !validate(f)) return false;
+    if (!v->r->atomic_int64_fetch) {
+        for (uint32_t i = 0; i < f->batch_count; ++i) {
+            if (transparent(&f->batches[i])) {
+                MD_LOG_ERROR("md_render: batch %u is transparent; this device has no 64-bit atomic maximum that returns the old value "
+                             "in fragment stages, which the K-buffer needs (the two-pass fallback is not there yet)", i);
+                return false;
+            }
+        }
+    }
 
     if (!ensure_batch_cap(v, f->batch_count)) return false;
     bool resized = !(v->t.depth && v->width == f->width && v->height == f->height);
@@ -1799,16 +1950,19 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
 
         uint64_t work[HW_KINDS] = { 0, 0, 0, 0, 0 };
         bool has_kind[HW_KINDS] = { false, false, false, false, false };
+        uint64_t trw[3] = { 0, 0, 0 };       /* transparent: spheres, capsules, triangles */
         for (uint32_t i = 0; i < f->batch_count; ++i) {
             const md_render_batch_t* b = &f->batches[i];
             uint32_t k = hw_kind(b->kind);
             work[k] += batch_work(b);
             if (batch_work(b)) has_kind[k] = true;
+            if (transparent(b)) trw[k == 4 ? 2 : k] += batch_work(b);
         }
+        const uint32_t kbuf_k = (trw[0] || trw[1] || trw[2]) ? (f->layers ? f->layers : 4u) : 0u;
         const bool spl = has_kind[2] || has_kind[3];   /* the heavy twins run */
         const uint32_t total = (uint32_t)(work[0] + work[1] + work[2] + work[3] + work[4]);
         const md_gpu_addr_t list_mem_before = v->list_mem;
-        if (!ensure_lists(s, v, work, gv.total_cluster_work, compute)) return false;
+        if (!ensure_lists(s, v, work, gv.total_cluster_work, compute, trw, kbuf_k)) return false;
         /* State lists: rebuilt only when the state bits or the geometry
            changed (they do not depend on the camera); their counts and
            commands survive the counters' reset otherwise */
@@ -1878,6 +2032,10 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
             v->hiz_ok = true;
         } else {
             v->hiz_ok = false;
+        }
+        if (kbuf_k) {
+            if (!run_raster_kb(s, v, trw)) return false;
+            PASS_DONE("raster transparent");
         }
         if (state_lists) {
             if (!run_state_lists(s, v, gv.total_cluster_work, spl)) return false;

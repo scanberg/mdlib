@@ -410,6 +410,9 @@ typedef struct md_gpu_device_info_t {
                                             no fetch form. atomic_int64 implies it */
     bool     atomic_float_add;           /* InterlockedAdd on float in device memory */
     bool     atomic_float_min_max;       /* InterlockedMin/Max on float in device memory */
+    bool     fragment_stores;            /* fragment stages write device memory and take
+                                            atomics on it (Vulkan's
+                                            fragmentStoresAndAtomics; Metal: always) */
     bool     timestamps;                 /* md_gpu_sync_gpu_seconds measures work on
                                             COMPUTE streams                          */
     bool     debug_memory;               /* md_gpu_device_desc_t.debug_memory, or

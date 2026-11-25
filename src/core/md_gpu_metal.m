@@ -3560,6 +3560,7 @@ bool md_gpu_device_info(md_gpu_device_t dev, md_gpu_device_info_t* info) {
     info->atomic_int64_min_max = [d supportsFamily:MTLGPUFamilyApple8];   /* no fetch form, see md_gpu.h */
     info->atomic_float_add     = apple7;
     info->atomic_float_min_max = false;                      /* add and exchange only */
+    info->fragment_stores      = true;                       /* device memory from fragment functions */
     info->timestamps           = true;                       /* command buffer GPU times */
     info->debug_memory         = dev->heap.debug;
     return true;

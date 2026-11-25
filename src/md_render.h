@@ -80,12 +80,17 @@ The model, in full
     tone mapping, volumes and overlays belong to the caller. Anything rendered
     by other means merges at the same targets, under an EXTERNAL batch's id.
 
-  * Transparency (not implemented). The boundary is fixed so that the
-    technique can change behind it: transparent batches resolve into N
-    surface layers per pixel, front to back, which the caller shades and
-    composites. Candidates: K-layer depth peeling into the visibility buffer
-    (exact up to K, portable, no interlock); stochastic coverage under
-    accumulation for heavy transparent geometry.
+  * TRANSPARENCY (color.transparency; spheres, capsules and triangles).
+    Transparent batches resolve into up to K surface layers per pixel
+    (frame.layers), front to back, which the caller shades and composites
+    (targets.layers): md_render stops at surfaces here too. They are culled
+    with the rest, then rasterised after the opaque surfaces, against their
+    depth, into a K-buffer: per pixel the K nearest fragments as (depth,
+    element), kept by a cascade of 64-bit atomic maxima, exact up to K. A
+    GROUP (color.group: a representation's batches) is one surface: of a
+    group only its nearest fragment at a pixel makes a layer, so a ghost of
+    spheres and capsules has no inner layers where they meet. Transparent
+    surfaces are not picked, marked or in the ids and depth.
 
   * Ordering and memory follow md_gpu: every call that records GPU work takes
     the stream first, and nothing blocks. A view may resolve, mask or pick
@@ -413,6 +418,13 @@ typedef struct md_render_color_t {
                                       TRIANGLES: their corners' (above)              */
     float         tint[4];         /* rgb (linear), a: how much, 0 none               */
     float         desaturate;      /* 0 unchanged, 1 grey                             */
+    /* 0: opaque. (0, 1): transparent (TRANSPARENCY), its layers' opacity 1 -
+       transparency; 1 or more: not drawn. Spheres, capsules and triangles.
+       Between 0 and not, a raster; otherwise appearance. */
+    float         transparency;
+    /* Transparent batches of the same group are one surface; 0: the batch
+       is a group of its own */
+    uint64_t      group;
 } md_render_color_t;
 
 /* Fading with distance. A band is a range of the projection's scale at an
@@ -588,6 +600,8 @@ typedef struct md_render_frame_t {
     double                   time;            /* of the positions, in the velocities'
                                                  time unit                           */
     uint64_t                 content[MD_RENDER_CONTENT_COUNT];
+    uint32_t                 layers;          /* K: transparent layers per pixel, at
+                                                 most 8; 0: 4                         */
 } md_render_frame_t;
 
 typedef uint32_t md_render_work_t;
@@ -630,6 +644,16 @@ typedef struct md_render_targets_t {
                                   (also hidden), state 1 visible, state 1 anywhere;
                                   0 where not, else (8 + tag) / 15: the visible
                                   surface's tag, of anywhere the largest            */
+    /* The transparent layers (TRANSPARENCY), while the frame last drawn has
+       transparent batches (else 0): three planes of layer_count x
+       layer_stride words, layer i of pixel p (y * width + x) at
+       i * layer_stride + p of each:
+         colour   RGBA8, sRGB-encoded base colour as `color`, a: opacity
+         normal   two halves, view-space unit normal, octahedral as `normal`
+         depth    float, reverse Z as `depth`; 0: no layer here or behind
+       front to back, nearer than the opaque surface. */
+    md_gpu_addr_t    layers;
+    uint32_t         layer_count, layer_stride;
 } md_render_targets_t;
 
 md_render_targets_t md_render_view_targets(md_render_view_t view);

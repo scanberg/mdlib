@@ -194,7 +194,9 @@ struct Batch {
     float   cap_px;             // ... F_RADIUS_PX: the radius in pixels at either
     uint*   tri_normal;         // TRIANGLES (F_TRI_NORMAL): float3 per point,
     uint    tri_nstride;        // that many bytes apart
-    uint    _tpad;
+    uint    group;              // transparent: the first batch of its group (resolve_layers)
+    float   opacity;            // 1: opaque; below, transparent (the K-buffer); 0: not drawn
+    uint    _opad0, _opad1, _opad2;
 };
 
 // The per-view lists the cull writes and everything after it reads. Cluster
@@ -222,8 +224,13 @@ struct Lists {
     uint*     tiles;            // the resolve's 8 x 8 tiles with spline pixels, then (at tiles_cap) those with polygons: x | y << 16
     uint*     hw4;              // triangles for the hardware raster (theirs alone: no compute raster)
     uint*     st4;              // triangles with a state bit
+    uint*     tr0;              // transparent spheres, for the K-buffer's raster (both phases')
+    uint*     tr1;              // transparent capsules
+    uint*     tr4;              // transparent triangles
+    uint64_t* kbuf;             // the K-buffer: kbuf_k slots a pixel (kb_slots)
+    uint*     layers;           // the transparent layers: colour, normal, depth planes (resolve_layers)
     uint      tiles_cap;        // tiles of the target
-    uint      _lpad;
+    uint      kbuf_k;           // K; 0: no transparency this frame
 };
 
 // counters[]: counts, then the indirect commands made of them
@@ -276,7 +283,9 @@ static const uint C_HWT2       = 837;  // and phase 2
 static const uint C_STT        = 838;  // triangles with a state bit
 static const uint C_CMDT       = 840;  // md_gpu_draw_cmd_t, triangles [phase - 1]: 840..847
 static const uint C_STCMDT     = 848;  // the state list's triangles: 848..851
-static const uint C_COUNT      = 852;
+static const uint C_TR         = 852;  // transparent elements: spheres, capsules, triangles (852..854)
+static const uint C_TRCMD      = 856;  // their draws: spheres 856..859, capsules (indexed) 860..864, triangles 868..871
+static const uint C_COUNT      = 872;
 
 // One argument struct for every entry point (md_gpu shares one root between a
 // draw's two stages, and keeping kernels on it too means one C mirror).
@@ -2840,16 +2849,19 @@ void element_pass<let SPL : int>(Batch* batches, ViewData v, Lists L, uint phase
     g.ok = false; g.faded = false; g.kind = 0u; g.st = 0u; g.a = float3(0.0); g.b = float3(0.0); g.r = 0.0; g.rr = float2(0.0);
     uint ent = 0u;                      // the list entry: global work index
     bool hw_only = false;               // triangles, dashed or shaped capsules: no compute raster
+    bool tr = false;                    // transparent: the K-buffer's lists
     if (valid) {
         Batch b = batches[slot];
         ent = b.work_offset + inst * b.count + e;
-        hw_only = b.kind == KIND_TRIANGLES || (b.flags & (F_DASHED | F_SHAPED)) != 0u;
+        tr  = b.opacity < 1.0;
+        hw_only = tr || b.kind == KIND_TRIANGLES || (b.flags & (F_DASHED | F_SHAPED)) != 0u;
         // the fade: not for the state lists, which do not depend on the
         // camera (the mask's raster applies it), nor in a cluster it does
         // not touch (plain)
         bool fade = !state_only && !plain;
         if (SPL != 0) g = b.kind == KIND_POLYGONS ? poly_geo(v, b, inst, e, fade) : spline_geo(v, b, inst, e, fade);
         else          g = element_geo(v, b, inst, e, fade);
+        if (b.opacity <= 0.0) g.ok = false;            // wholly transparent: not drawn
     }
     uint  out = valid ? OUT_HIDDEN : OUT_NONE;
     if (g.faded) {
@@ -2910,7 +2922,7 @@ void element_pass<let SPL : int>(Batch* batches, ViewData v, Lists L, uint phase
     }
     uint k = g.kind;
     if (state_only) {
-        bool want = g.ok && g.st != 0u;
+        bool want = g.ok && g.st != 0u && !tr;          // transparent surfaces are not marked
         uint is0 = wave_append(L.counters + C_ST + 0u, want && k == 0u);
         uint is1 = wave_append(L.counters + C_ST + 1u, want && k == 1u);
         uint is4 = wave_append(L.counters + C_STT, want && k == 4u);
@@ -2921,10 +2933,17 @@ void element_pass<let SPL : int>(Batch* batches, ViewData v, Lists L, uint phase
     uint hw_base1 = phase == 2u ? L.counters[C_HW1 + 1u] : 0u;
     uint hw_base4 = phase == 2u ? L.counters[C_HWT1] : 0u;
     uint c_hw = phase == 2u ? C_HW2 : C_HW1;
-    uint ih0 = wave_append(L.counters + c_hw + 0u, out == OUT_HW && k == 0u);
-    uint ih1 = wave_append(L.counters + c_hw + 1u, out == OUT_HW && k == 1u);
-    uint ih4 = wave_append(L.counters + (phase == 2u ? C_HWT2 : C_HWT1), out == OUT_HW && k == 4u);
-    if (out == OUT_HW) { if (k == 0u) L.hw0[hw_base0 + ih0] = ent; else if (k == 4u) L.hw4[hw_base4 + ih4] = ent; else L.hw1[hw_base1 + ih1] = ent; }
+    bool ohw = out == OUT_HW && !tr;
+    uint ih0 = wave_append(L.counters + c_hw + 0u, ohw && k == 0u);
+    uint ih1 = wave_append(L.counters + c_hw + 1u, ohw && k == 1u);
+    uint ih4 = wave_append(L.counters + (phase == 2u ? C_HWT2 : C_HWT1), ohw && k == 4u);
+    if (ohw) { if (k == 0u) L.hw0[hw_base0 + ih0] = ent; else if (k == 4u) L.hw4[hw_base4 + ih4] = ent; else L.hw1[hw_base1 + ih1] = ent; }
+    // the transparent ones: one list a kind over both phases, drawn after them
+    bool thw = out == OUT_HW && tr;
+    uint it0 = wave_append(L.counters + C_TR + 0u, thw && k == 0u);
+    uint it1 = wave_append(L.counters + C_TR + 1u, thw && k == 1u);
+    uint it4 = wave_append(L.counters + C_TR + 2u, thw && k == 4u);
+    if (thw) { if (k == 0u) L.tr0[it0] = ent; else if (k == 4u) L.tr4[it4] = ent; else L.tr1[it1] = ent; }
 
     uint sm_base = phase == 2u ? L.counters[C_SMALL1] : 0u;
     uint ism = wave_append(L.counters + (phase == 2u ? C_SMALL2 : C_SMALL1), out == OUT_SMALL);
@@ -3097,6 +3116,13 @@ void finalize(uint3 tid : SV_DispatchThreadID) {
     tcmd[1] = phase == 1u ? c[C_HWT1] : c[C_HWT2];
     tcmd[2] = 0u;
     tcmd[3] = phase == 1u ? 0u : c[C_HWT1];
+    // the transparent ones, of both phases so far: the last phase's are drawn
+    uint* r0 = c + C_TRCMD;
+    r0[0] = 6u;  r0[1] = c[C_TR];      r0[2] = 0u; r0[3] = 0u;
+    uint* r1 = c + C_TRCMD + 4u;
+    r1[0] = 36u; r1[1] = c[C_TR + 1u]; r1[2] = 0u; r1[3] = 0u; r1[4] = 0u;
+    uint* r4 = c + C_TRCMD + 12u;
+    r4[0] = 3u;  r4[1] = c[C_TR + 2u]; r4[2] = 0u; r4[3] = 0u;
     uint ns = phase == 1u ? c[C_SMALL1] : c[C_SMALL2];
     uint* gs = c + C_GRID_SMALL + (phase - 1u) * 4u;
     gs[0] = min((ns + 63u) / 64u, 65535u); gs[1] = 1u; gs[2] = 1u;
@@ -3294,7 +3320,10 @@ uint list_entry(Args a, uint i) {
     case 6u: return L.hw3[i];
     case 7u: return L.st3[i];
     case 8u: return L.hw4[i];
-    default: return L.st4[i];
+    case 9u: return L.st4[i];
+    case 10u: return L.tr0[i];
+    case 11u: return L.tr1[i];
+    default: return L.tr4[i];
     }
 }
 
@@ -3715,6 +3744,73 @@ TriMaskOut triangle_mask_fs(TriangleV i) {
 }
 
 // ---------------------------------------------------------------------------
+// The K-buffer (TRANSPARENCY)
+// ---------------------------------------------------------------------------
+// Per pixel the kbuf_k nearest transparent fragments in front of the opaque
+// surface, as (depth bits << 32 | work index), nearest (largest) first, 0
+// empty: the cascade of 64-bit maxima that return the old value. A fragment
+// takes the first slot; what it displaces (the farther of the two) takes the
+// next, and so on until an empty slot or the last: whatever the order of the
+// fragments, the slots end as the K largest values, sorted. A fragment no
+// nearer than the last slot's reads that once and costs no atomic (a stale
+// read costs only atomics that change nothing). Depth bits compare as
+// unsigned because depths are not negative; ties go by the work index.
+//
+// The fragments test the opaque depth themselves (sampled, Args.src): their
+// atomics come before any depth test the pass could make, and the pass has
+// no depth attachment.
+
+// Where a pixel's slots are: the one place that knows the K-buffer's layout
+// (a tiled one would page here)
+uint64_t* kb_slots(Args a, uint2 px) {
+    Lists L = *a.lists;
+    return L.kbuf + (px.y * a.width + px.x) * L.kbuf_k;
+}
+
+// A fragment of the element of `idv` at depth `d` (reverse Z), pixel px
+void kb_insert(Args a, uint2 px, uint2 idv, float d) {
+    if (!(d > a.src.Load(int3(int2(px), 0)))) return;      // behind or on the opaque surface
+    uint      K  = (*a.lists).kbuf_k;
+    uint64_t* sl = kb_slots(a, px);
+    uint      ent = a.batches[(idv.y >> 20) - 1u].work_offset + idv.x;   // the work index (within 2^31: idv.y's low bits 0)
+    uint64_t  val = (uint64_t(asuint(d)) << 32) | uint64_t(ent);
+    if (sl[K - 1u] >= val) return;
+    for (uint k = 0u; k < K; ++k) {
+        uint64_t old = ((Atomic<uint64_t>*)(sl + k))->max(val);
+        if (old == 0u) return;
+        val = min(old, val);
+    }
+}
+
+[shader("fragment")]
+float4 sphere_kb_fs(SphereV i) : SV_Target0 {
+    Args     a = MD_ARGS;
+    ViewData v = *a.view;
+    Ray   r = pixel_ray(v, i.pos.xy);
+    float t = sphere_hit(r, i.sph.xyz, i.sph.w, false);
+    if (t < 0.0) discard;
+    kb_insert(a, uint2(i.pos.xy), i.idv, clip_depth(v, r.o + r.d * t));
+    return float4(0.0);
+}
+
+[shader("fragment")]
+float4 capsule_kb_fs(CapsuleV i) : SV_Target0 {
+    Args     a = MD_ARGS;
+    ViewData v = *a.view;
+    Ray   r = pixel_ray(v, i.pos.xy);
+    float t = capsule_fragment_hit(r, i);
+    if (t < 0.0) discard;
+    kb_insert(a, uint2(i.pos.xy), i.idv, capsule_depth(clip_depth(v, r.o + r.d * t)));
+    return float4(0.0);
+}
+
+[shader("fragment")]
+float4 triangle_kb_fs(TriangleV i) : SV_Target0 {
+    kb_insert(MD_ARGS, uint2(i.pos.xy), i.idv, i.pos.z);
+    return float4(0.0);
+}
+
+// ---------------------------------------------------------------------------
 // Resolve
 // ---------------------------------------------------------------------------
 
@@ -4082,6 +4178,53 @@ void resolve_heavy(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID) { reso
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void resolve_poly(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID) { resolve_tiles<3>(gid, gtid); }
+
+// The K-buffer into the transparent layers (md_render_targets_t.layers):
+// its slots front to back, each the hit of its element again as the main
+// resolve takes them, but of a group already laid down (a nearer fragment of
+// the same surface: a sphere inside the capsule it joins). The layers after
+// the last get depth 0.
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void resolve_layers(uint3 tid : SV_DispatchThreadID) {
+    Args a = MD_ARGS;
+    if (tid.x >= a.width || tid.y >= a.height) return;
+    Lists L = *a.lists;
+    uint  K = L.kbuf_k;
+    if (K == 0u) return;
+    ViewData  v  = *a.view;
+    uint      P  = a.width * a.height;
+    uint      p  = tid.y * a.width + tid.x;
+    uint64_t* sl = kb_slots(a, tid.xy);
+    uint*     lc = L.layers;
+    uint*     ln = L.layers + K * P;
+    uint*     ld = L.layers + 2u * K * P;
+    uint groups[8];
+    uint n = 0u;
+    for (uint k = 0u; k < K; ++k) {
+        uint64_t en = sl[k];
+        if (en == 0u) break;
+        Elem  el = decode_work(a.batches, v.batch_count, uint(en & 0xFFFFFFFFu));
+        Batch b  = a.batches[el.slot];
+        bool seen = false;
+        for (uint j = 0u; j < n; ++j) seen = seen || groups[j] == b.group;
+        if (seen) continue;
+        Hit h = eval_hit<0>(v, a.batches, elem_id(a.batches, el), float2(tid.xy) + 0.5, 0.0);
+        if (!h.valid) continue;
+        float3 lin = srgb_to_linear(h.color.rgb);
+        float  gr  = dot(lin, float3(0.2126, 0.7152, 0.0722));
+        lin = lerp(lin, float3(gr), saturate(b.desaturate));
+        lin = lerp(lin, lin * b.tint.rgb, saturate(b.tint.a));
+        uint4  c8 = uint4(round(saturate(float4(linear_to_srgb(saturate(lin)), b.opacity)) * 255.0));
+        float2 on = oct_encode(h.n_view);
+        groups[n] = b.group;
+        lc[n * P + p] = c8.x | (c8.y << 8) | (c8.z << 16) | (c8.w << 24);
+        ln[n * P + p] = f32tof16(on.x) | (f32tof16(on.y) << 16);
+        ld[n * P + p] = uint(en >> 32);
+        n += 1u;
+    }
+    for (uint k = n; k < K; ++k) ld[k * P + p] = 0u;
+}
 
 // Phase 1's spline boxes, nearest first: a thread a part puts its boxes in
 // its depth bucket's run of hw2g (spline_bucket; the finalize's starts)

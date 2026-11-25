@@ -2678,6 +2678,299 @@ UTEST(render, triangles_match_their_mesh) {
     f_close(&fx);
 }
 
+/* ---- Transparency ----------------------------------------------------------------- */
+
+static bool f_read_buf(fix_t* f, md_gpu_addr_t src, void* dst, size_t size) {
+    md_gpu_mem_t rb = md_gpu_malloc(f->gfx, MD_GPU_MEM_HOST_READ, size);
+    if (!rb.cpu) return false;
+    bool ok = md_gpu_copy(f->gfx, rb.gpu, src, size);
+    md_gpu_stream_sync(f->gfx);
+    if (ok) memcpy(dst, rb.cpu, size);
+    md_gpu_free(f->gfx, rb.gpu);
+    return ok;
+}
+
+/* A transparent primitive of the reference: a sphere, a capsule (round caps)
+   or a triangle of smooth normals; its group and its batch's colour and
+   opacity */
+typedef struct {
+    int      kind;                     /* 0 sphere, 1 capsule, 2 triangle */
+    double   a[3], b[3], r;            /* sphere: a, r; capsule: a, b, r */
+    tri_ref_t tri;
+    uint32_t group, color;
+    double   opacity;
+} tp_ref_t;
+
+/* Its nearest hit ahead, t and the normal there (outward); false: none */
+static bool tp_hit(const tp_ref_t* q, ray_t r, double* t, double n[3]) {
+    if (q->kind == 0) {
+        double oc[3] = { r.o[0] - q->a[0], r.o[1] - q->a[1], r.o[2] - q->a[2] };
+        double b = dot3(oc, r.d), c = dot3(oc, oc) - q->r * q->r, h = b * b - c;
+        if (h < 0) return false;
+        *t = -b - sqrt(h);
+        if (*t <= 0) return false;
+        for (int i = 0; i < 3; ++i) n[i] = (r.o[i] + r.d[i] * *t - q->a[i]) / q->r;
+        return true;
+    }
+    if (q->kind == 1) {                /* Quilez's capsule */
+        double ba[3] = { q->b[0] - q->a[0], q->b[1] - q->a[1], q->b[2] - q->a[2] };
+        double oa[3] = { r.o[0] - q->a[0], r.o[1] - q->a[1], r.o[2] - q->a[2] };
+        double baba = dot3(ba, ba), bard = dot3(ba, r.d), baoa = dot3(ba, oa), rdoa = dot3(r.d, oa), oaoa = dot3(oa, oa);
+        double A = baba - bard * bard, B = baba * rdoa - baoa * bard, C = baba * oaoa - baoa * baoa - q->r * q->r * baba;
+        double h = B * B - A * C;
+        double tt = -1;
+        if (h >= 0) {
+            tt = (-B - sqrt(h)) / A;
+            double y = baoa + tt * bard;
+            if (y <= 0 || y >= baba) {
+                double oc[3];
+                for (int i = 0; i < 3; ++i) oc[i] = y <= 0 ? oa[i] : r.o[i] - q->b[i];
+                double bb = dot3(r.d, oc), cc = dot3(oc, oc) - q->r * q->r, hh = bb * bb - cc;
+                tt = hh > 0 ? -bb - sqrt(hh) : -1;
+            }
+        }
+        if (tt <= 0) return false;
+        *t = tt;
+        double p[3] = { r.o[0] + r.d[0] * tt, r.o[1] + r.d[1] * tt, r.o[2] + r.d[2] * tt };
+        double pa[3] = { p[0] - q->a[0], p[1] - q->a[1], p[2] - q->a[2] };
+        double k = dot3(pa, ba) / baba;
+        k = k < 0 ? 0 : k > 1 ? 1 : k;
+        for (int i = 0; i < 3; ++i) n[i] = (pa[i] - ba[i] * k) / q->r;
+        return true;
+    }
+    double w[3];
+    if (!tri_ref_hit(&q->tri, r, t, w)) return false;
+    for (int i = 0; i < 3; ++i) n[i] = w[0] * q->tri.n[0][i] + w[1] * q->tri.n[1][i] + w[2] * q->tri.n[2][i];
+    double l = sqrt(dot3(n, n));
+    for (int i = 0; i < 3; ++i) n[i] /= l;
+    return true;
+}
+
+typedef struct { double t; int prim; } tp_frag_t;
+static int tp_frag_cmp(const void* x, const void* y) {
+    const tp_frag_t* a = x; const tp_frag_t* b = y;
+    return a->t < b->t ? -1 : a->t > b->t ? 1 : 0;
+}
+
+/* The layers a ray should get: its fragments in front of the opaque one
+   (t_op), the K nearest, then of each group the first. Out: prims, count. */
+static int tp_layers(const tp_ref_t* q, int nq, ray_t r, double t_op, uint32_t K, int* out, double* out_t, int* nfrag) {
+    tp_frag_t fr[512];
+    int nf = 0;
+    for (int i = 0; i < nq && nf < 512; ++i) {
+        double t, n[3];
+        if (tp_hit(&q[i], r, &t, n) && t < t_op) { fr[nf].t = t; fr[nf].prim = i; ++nf; }
+    }
+    qsort(fr, (size_t)nf, sizeof(fr[0]), tp_frag_cmp);
+    *nfrag = nf;
+    int nl = 0;
+    for (int k = 0; k < nf && k < (int)K; ++k) {
+        bool seen = false;
+        for (int j = 0; j < nl; ++j) seen = seen || q[out[j]].group == q[fr[k].prim].group;
+        if (seen) continue;
+        out[nl] = fr[k].prim;
+        out_t[nl] = fr[k].t;
+        ++nl;
+    }
+    /* the K-th and the next too close to tell apart: -1 */
+    for (int k = 1; k < nf; ++k) if (fabs(fr[k].t - fr[k - 1].t) < 1e-4 * fr[k].t && q[fr[k].prim].group != q[fr[k - 1].prim].group) return -1;
+    return nl;
+}
+
+UTEST(render, transparency_layers) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    md_gpu_device_info_t info;
+    md_gpu_device_info(fx.dev, &info);
+    if (!info.atomic_int64 || !info.fragment_stores) UTEST_SKIP("no 64-bit atomics returning the old value in fragment stages (the K-buffer's)");
+    const uint32_t W = 160, H = 120, K = 4;
+    cam_t c = { .tan_half = 0.4f, .aspect = (float)W / H, .n = 0.1f };
+    md_render_camera_t cam = make_camera(&c);
+
+    /* Opaque: a large sphere behind everything. Group 77, transparency 0.4:
+       a ghost of two spheres and the capsule between them, two batches of
+       different colours. An icosphere of smooth normals, transparency 0.5,
+       a group of its own (its back faces behind its front ones). Six single
+       spheres, groups of their own, transparency 0.3, along one line of
+       sight: more surfaces there than K. */
+    ico_t s = ico_make(2);
+    const float mc[3] = { 0.6f, -0.6f, -14.0f }, mr = 1.6f;
+    float* mpos = malloc(s.nv * 12); float* mnrm = malloc(s.nv * 12);
+    for (uint32_t i = 0; i < s.nv; ++i) for (int k = 0; k < 3; ++k) { mpos[3 * i + k] = mc[k] + mr * s.xyz[3 * i + k]; mnrm[3 * i + k] = s.xyz[3 * i + k]; }
+    float opq[4] = { 0.0f, 0.0f, -22.0f, 0.0f };
+    float ga[6] = { -2.0f, 0.5f, -12.0f,   0.0f, 1.5f, -12.5f };
+    float st[18];
+    const double dir[3] = { 0.24, -0.16, -1.0 };
+    for (int j = 0; j < 6; ++j) for (int k = 0; k < 3; ++k) st[3 * j + k] = (float)(dir[k] * (9.0 + 1.1 * j));
+    enum { NB = 10 };
+    md_render_batch_t b[NB];
+    memset(b, 0, sizeof(b));
+    for (int k = 0; k < NB; ++k) { b[k].key = 100u + (uint32_t)k; b[k].color.mode = MD_RENDER_COLOR_UNIFORM; }
+    b[0].kind = MD_RENDER_SPHERES; b[0].count = 1; b[0].points.count = 1; b[0].points.position = f_buf(&fx, opq, 12);
+    b[0].style.spheres.radius_add = 5.0f; b[0].color.uniform = 0xFF808080u;
+    md_gpu_addr_t GA = f_buf(&fx, ga, sizeof(ga));
+    b[1].kind = MD_RENDER_SPHERES; b[1].count = 2; b[1].points.count = 2; b[1].points.position = GA;
+    b[1].style.spheres.radius_add = 0.9f; b[1].color.uniform = 0xFF2040E0u;
+    b[2].kind = MD_RENDER_CAPSULES; b[2].count = 1; b[2].points.count = 2; b[2].points.position = GA;
+    b[2].style.capsules.radius = 0.35f; b[2].color.uniform = 0xFF20E040u;
+    for (int k = 1; k <= 2; ++k) { b[k].color.transparency = 0.4f; b[k].color.group = 77; }
+    b[3].kind = MD_RENDER_TRIANGLES; b[3].count = s.nt; b[3].points.count = s.nv;
+    b[3].points.position = f_buf(&fx, mpos, s.nv * 12); b[3].index = f_buf(&fx, s.tri, s.nt * 12);
+    b[3].style.triangles.normal = f_buf(&fx, mnrm, s.nv * 12);
+    b[3].color.uniform = 0xFF20A0E0u; b[3].color.transparency = 0.5f;
+    static const uint32_t stc[6] = { 0xFF0000F0u, 0xFF00F000u, 0xFFF00000u, 0xFF00F0F0u, 0xFFF000F0u, 0xFFF0F000u };
+    for (int j = 0; j < 6; ++j) {
+        md_render_batch_t* x = &b[4 + j];
+        x->kind = MD_RENDER_SPHERES; x->count = 1; x->points.count = 1; x->points.position = f_buf(&fx, st + 3 * j, 12);
+        x->style.spheres.radius_add = 0.5f; x->color.uniform = stc[j]; x->color.transparency = 0.3f;
+    }
+
+    /* The reference */
+    int nq = 0;
+    tp_ref_t* q = calloc(16 + s.nt, sizeof(tp_ref_t));
+    for (int j = 0; j < 2; ++j) { tp_ref_t* x = &q[nq++]; x->kind = 0; for (int i = 0; i < 3; ++i) x->a[i] = ga[3 * j + i]; x->r = 0.9; x->group = 77; x->color = b[1].color.uniform; x->opacity = 0.6; }
+    { tp_ref_t* x = &q[nq++]; x->kind = 1; for (int i = 0; i < 3; ++i) { x->a[i] = ga[i]; x->b[i] = ga[3 + i]; } x->r = 0.35; x->group = 77; x->color = b[2].color.uniform; x->opacity = 0.6; }
+    for (uint32_t e = 0; e < s.nt; ++e) {
+        tp_ref_t* x = &q[nq++];
+        x->kind = 2; x->group = 1003; x->color = b[3].color.uniform; x->opacity = 0.5;
+        for (int j = 0; j < 3; ++j) for (int i = 0; i < 3; ++i) { x->tri.q[j][i] = mpos[3 * s.tri[3 * e + j] + i]; x->tri.n[j][i] = mnrm[3 * s.tri[3 * e + j] + i]; }
+    }
+    for (int j = 0; j < 6; ++j) { tp_ref_t* x = &q[nq++]; x->kind = 0; for (int i = 0; i < 3; ++i) x->a[i] = st[3 * j + i]; x->r = 0.5; x->group = 1004 + (uint32_t)j; x->color = stc[j]; x->opacity = 0.7; }
+    tp_ref_t op = { .kind = 0, .a = { opq[0], opq[1], opq[2] }, .r = 5.0 };
+
+    md_render_frame_t f = frame_of(W, H, cam, b, NB);
+    md_render_status_t stt;
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, &stt));
+    md_render_targets_t tg = md_render_view_targets(fx.view);
+    ASSERT_TRUE(tg.layers != 0);
+    ASSERT_EQ(K, tg.layer_count);
+    ASSERT_EQ(W * H, tg.layer_stride);
+    const size_t P = (size_t)W * H;
+    uint32_t* L  = malloc(P * K * 12);
+    uint32_t* id = malloc(P * 8);
+    ASSERT_TRUE(f_read_buf(&fx, tg.layers, L, P * K * 12) && f_read(&fx, tg.id, id, P * 8));
+
+    int bad = 0, sure = 0, deduped = 0, full = 0, ghost = 0, mesh_backs = 0, opaque_only = 0, nerr = 0;
+    double worst_t = 0;
+    double* errs = malloc(P * K * sizeof(double));
+    for (uint32_t y = 0; y < H; ++y) {
+        for (uint32_t x = 0; x < W; ++x) {
+            const uint32_t p = y * W + x;
+            /* the opaque ids: the background sphere's, or nothing; no transparent one */
+            if (id[2 * p + 1] != 0 && (id[2 * p + 1] >> 20) != 1u) { bad++; if (bad < 8) printf("    pixel (%u, %u): a transparent surface in the ids\n", x, y); }
+            int lay[8], nfr;
+            double lt[8];
+            ray_t r = pixel_ray(&c, W, H, x + 0.5, y + 0.5);
+            double t_op, nop[3];
+            if (!tp_hit(&op, r, &t_op, nop)) t_op = 1e30;
+            int nl = tp_layers(q, nq, r, t_op, K, lay, lt, &nfr);
+            if (nl < 0) continue;
+            bool agree = true;
+            static const double off[4][2] = { { 0.05, 0 }, { -0.05, 0 }, { 0, 0.05 }, { 0, -0.05 } };
+            for (int o = 0; o < 4 && agree; ++o) {
+                int l2[8], nf2;
+                double t2[8], to2, n2[3];
+                ray_t r2 = pixel_ray(&c, W, H, x + 0.5 + off[o][0], y + 0.5 + off[o][1]);
+                if (!tp_hit(&op, r2, &to2, n2)) to2 = 1e30;
+                int nl2 = tp_layers(q, nq, r2, to2, K, l2, t2, &nf2);
+                agree = nl2 == nl && nf2 == nfr && (t_op < 1e29) == (to2 < 1e29);
+                for (int j = 0; j < nl && agree; ++j) agree = q[l2[j]].group == q[lay[j]].group;
+            }
+            if (!agree) continue;
+            sure++;
+            deduped += nfr > nl && nl < (int)K;
+            full    += nfr > (int)K;
+            for (int j = 0; j < nl; ++j) ghost += q[lay[j]].group == 77;
+            if (nl == 0 && t_op < 1e29) opaque_only++;
+            for (int j = 0; j < (int)K; ++j) {
+                const float  dl = *(const float*)&L[2 * K * P + j * P + p];
+                if (j >= nl) {
+                    if (j == nl && dl != 0.0f) { bad++; if (bad < 8) printf("    pixel (%u, %u): layer %d of %d has depth %g\n", x, y, j, nl, dl); }
+                    continue;
+                }
+                const tp_ref_t* e = &q[lay[j]];
+                /* depth: reverse Z, n / -z */
+                const double tz = (c.n / dl) / -r.d[2];
+                const double et = fabs(tz - lt[j]) / lt[j];
+                worst_t = fmax(worst_t, et);
+                const uint32_t col = L[j * P + p];
+                const int ea = (int)lround(e->opacity * 255.0);
+                int ce = 0;
+                for (int ch = 0; ch < 3; ++ch) ce = MD_MAX(ce, abs((int)((col >> (8 * ch)) & 0xFF) - (int)((e->color >> (8 * ch)) & 0xFF)));
+                if (et > 1e-4 || ce > 1 || abs((int)(col >> 24) - ea) > 1) {
+                    bad++;
+                    if (bad < 8) printf("    pixel (%u, %u) layer %d: depth %.5f against %.5f, colour %08x against %08x (alpha %d)\n", x, y, j, tz, lt[j], col, e->color, ea);
+                    continue;
+                }
+                /* the normal, facing the eye */
+                double t, n[3], ng[3];
+                tp_hit(e, r, &t, n);
+                if (dot3(n, r.d) > 0) { for (int i = 0; i < 3; ++i) n[i] = -n[i]; mesh_backs += e->kind == 2; }
+                oct_decode(L[K * P + j * P + p], ng);
+                double cs = dot3(n, ng);
+                errs[nerr++] = acos(cs > 1 ? 1 : cs < -1 ? -1 : cs) * 180.0 / 3.14159265358979;
+            }
+        }
+    }
+    qsort(errs, (size_t)nerr, sizeof(double), cmp_double);
+    const double p50 = nerr ? errs[nerr / 2] : 0, p99 = nerr ? errs[(nerr * 99) / 100] : 0;
+    printf("    %d pixels sure: %d with fragments of a group dropped, %d with more than K, %d ghost layers, %d opaque alone; depth %.2e relative at most; normals over %d layers: median %.4f, 99th %.4f degrees\n",
+           sure, deduped, full, ghost, opaque_only, worst_t, nerr, p50, p99);
+    EXPECT_EQ(0, bad);
+    EXPECT_GT(deduped, 50);
+    EXPECT_GT(full, 3);
+    EXPECT_GT(ghost, 200);
+    EXPECT_GT(opaque_only, 200);
+    EXPECT_LT(p50, 0.05);
+    EXPECT_LT(p99, 1.0);
+    (void)mesh_backs;
+
+    /* The line of six: its pixel holds the four nearest, in order */
+    {
+        double pt[3] = { st[0], st[1], st[2] };
+        const uint32_t px = (uint32_t)((pt[0] / -pt[2] / (c.tan_half * c.aspect) * 0.5 + 0.5) * W);
+        const uint32_t py = (uint32_t)((0.5 - pt[1] / -pt[2] / c.tan_half * 0.5) * H);
+        for (uint32_t j = 0; j < K; ++j) EXPECT_EQ(stc[j] & 0xFFFFFFu, L[j * P + py * W + px] & 0xFFFFFFu);
+    }
+
+    /* Appearance alone: a new transparency is a resolve, and the layers'
+       opacity follows */
+    b[1].color.transparency = b[2].color.transparency = 0.75f;
+    f = frame_of(W, H, cam, b, NB);
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, &stt));
+    EXPECT_EQ(0u, stt.work & MD_RENDER_WORK_RASTER);
+    EXPECT_NE(0u, stt.work & MD_RENDER_WORK_RESOLVE);
+    ASSERT_TRUE(f_read_buf(&fx, tg.layers, L, P * K * 12));
+    int quarter = 0;
+    for (size_t p = 0; p < P; ++p) for (uint32_t j = 0; j < K; ++j) {
+        uint32_t col = L[j * P + p];
+        if (*(const float*)&L[2 * K * P + j * P + p] != 0.0f && (col & 0xFFFFFFu) == (b[1].color.uniform & 0xFFFFFFu)) quarter += (col >> 24) == 64u;
+    }
+    EXPECT_GT(quarter, 100);
+
+    /* Opaque again: a raster, and no layers */
+    for (int k = 1; k < NB; ++k) b[k].color.transparency = 0.0f;
+    f = frame_of(W, H, cam, b, NB);
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, &stt));
+    EXPECT_NE(0u, stt.work & MD_RENDER_WORK_RASTER);
+    EXPECT_EQ(0u, (unsigned)md_render_view_targets(fx.view).layers);
+
+    /* Refused: a transparent spline or polygon batch, more than 8 layers */
+    {
+        md_render_batch_t x = b[1];
+        x.kind = MD_RENDER_POLYGONS; x.style.polygons.corners = 3; x.style.polygons.radius = 0.1f; x.count = 0;
+        x.color.transparency = 0.5f;
+        x.count = 1; x.points.count = 3;
+        md_render_frame_t fr = frame_of(W, H, cam, &x, 1);
+        EXPECT_FALSE(md_render_view_draw(fx.gfx, fx.view, &fr, NULL));
+        fr = frame_of(W, H, cam, b, NB);
+        fr.layers = 9;
+        EXPECT_FALSE(md_render_view_draw(fx.gfx, fx.view, &fr, NULL));
+    }
+    free(errs); free(L); free(id); free(q); free(mpos); free(mnrm); free(s.xyz); free(s.tri);
+    f_close(&fx);
+}
+
 static uint16_t float_to_half(float f);
 
 /* md_render.h's side of a displaced capsule, in double: pa, pb in view space,

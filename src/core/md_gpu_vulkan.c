@@ -428,6 +428,7 @@ typedef struct md_vk_dev_caps_t {
     bool dynamic_sampled_image;
     bool shader_int64;
     bool storage_read_without_format;    /* device-wide; otherwise per format */
+    bool fragment_stores;                /* fragmentStoresAndAtomics */
     bool storage_write_without_format;
     /* Above the floor, enabled where present and reported in md_gpu_device_info_t. */
     bool float16;                        /* shaderFloat16 + storageBuffer16BitAccess */
@@ -1264,6 +1265,7 @@ static bool md_vk_probe_device(VkPhysicalDevice pd, struct md_allocator_i* alloc
                             g2.features.multiDrawIndirect && g2.features.drawIndirectFirstInstance &&
                             g2.features.independentBlend;
     out_caps->depth_bias_clamp = g2.features.depthBiasClamp;
+    out_caps->fragment_stores  = g2.features.fragmentStoresAndAtomics;
 
     out_caps->maintenance4                = f13.maintenance4;
     out_caps->update_unused_while_pending = f12.descriptorBindingUpdateUnusedWhilePending;
@@ -1668,6 +1670,7 @@ md_gpu_device_t md_gpu_device_create(const md_gpu_device_desc_t* desc) {
     f2.features.drawIndirectFirstInstance = caps.graphics ? VK_TRUE : VK_FALSE;
     f2.features.independentBlend          = caps.graphics ? VK_TRUE : VK_FALSE;
     f2.features.depthBiasClamp            = (caps.graphics && caps.depth_bias_clamp) ? VK_TRUE : VK_FALSE;
+    f2.features.fragmentStoresAndAtomics  = (caps.graphics && caps.fragment_stores) ? VK_TRUE : VK_FALSE;
     f2.features.largePoints               = VK_FALSE;
     /* Slang's heap arrays carry no format qualifier. */
     f2.features.shaderStorageImageReadWithoutFormat    = caps.storage_read_without_format  ? VK_TRUE : VK_FALSE;
@@ -1892,6 +1895,7 @@ bool md_gpu_device_info(md_gpu_device_t dev, md_gpu_device_info_t* info) {
     info->atomic_int64_min_max = dev->caps.int64_atomics;
     info->atomic_float_add     = dev->caps.atomic_float.shaderBufferFloat32AtomicAdd;
     info->atomic_float_min_max = dev->caps.atomic_float2.shaderBufferFloat32AtomicMinMax;
+    info->fragment_stores      = dev->caps.graphics && dev->caps.fragment_stores;
     info->timestamps           = dev->ts_bits_compute > 0;
     info->debug_memory         = dev->heap.debug;
     return true;
