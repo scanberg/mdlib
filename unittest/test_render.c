@@ -4955,6 +4955,46 @@ UTEST(render, masks_carry_tags) {
     f_close(&fx);
 }
 
+/* desaturate_unmarked: of two spheres, the one without state 0 grey, the other
+   red; the marks changed (the STATE counter), the colours follow */
+UTEST(render, desaturate_unmarked) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    const uint32_t W = 64, H = 32;
+    cam_t c = { .ortho = true, .half_h = 2.0f, .aspect = 2.0f, .n = 0.0f, .far_ = 100.0f };
+    float pos[6] = { -2.0f, 0, -10,   2.0f, 0, -10 };
+    uint8_t marks[2] = { MD_RENDER_MARK_STATE0, 0 };
+    md_gpu_addr_t M = f_buf(&fx, marks, sizeof(marks));
+    md_render_batch_t b = {0};
+    b.key = 1; b.kind = MD_RENDER_SPHERES; b.count = 2; b.points.count = 2; b.points.position = f_buf(&fx, pos, sizeof(pos));
+    b.points.marks = M; b.style.spheres.radius_add = 1.0f;
+    b.color.mode = MD_RENDER_COLOR_UNIFORM; b.color.uniform = 0xFF0000FFu; b.color.desaturate_unmarked = 1.0f;
+    md_render_frame_t f = frame_of(W, H, make_camera(&c), &b, 1);
+    uint32_t* col = malloc(W * H * 4);
+    for (int step = 0; step < 2; ++step) {
+        if (step) {
+            marks[0] = 0; marks[1] = MD_RENDER_MARK_STATE0;
+            md_gpu_upload(fx.gfx, M, marks, sizeof(marks));
+            f.content[MD_RENDER_CONTENT_STATE]++;
+        }
+        md_render_status_t st;
+        ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, &st));
+        if (step) EXPECT_NE(0u, st.work & MD_RENDER_WORK_RESOLVE);
+        ASSERT_TRUE(f_read(&fx, md_render_view_targets(fx.view).color, col, W * H * 4));
+        const uint32_t l = col[(H / 2) * W + W / 4], r = col[(H / 2) * W + 3 * W / 4];
+        const uint32_t red = 0xFFu, grey_l = (l & 0xFF);
+        /* the selected one red, the other grey (its channels equal) */
+        const uint32_t sel = step ? r : l, other = step ? l : r;
+        EXPECT_EQ(red, sel & 0xFFFFFFu);
+        EXPECT_EQ(other & 0xFFu, (other >> 8) & 0xFFu);
+        EXPECT_EQ(other & 0xFFu, (other >> 16) & 0xFFu);
+        EXPECT_GT(other & 0xFFu, 0u);
+        (void)grey_l;
+    }
+    free(col);
+    f_close(&fx);
+}
+
 UTEST(render, masks_visible_and_hidden) {
     fix_t fx;
     if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());

@@ -175,7 +175,8 @@ typedef struct gpu_batch_t {
     uint32_t      tri_nstride;                                    /* that many bytes apart */
     uint32_t      group;                                          /* transparent: the first batch of its group */
     float         opacity;                                        /* 1: opaque; below, transparent (0: not drawn) */
-    uint32_t      _opad[3];
+    float         desat_unmarked;                                 /* of the elements without state 0 (F_MARKS) */
+    uint32_t      _opad[2];
 } gpu_batch_t;
 _Static_assert(sizeof(gpu_batch_t) == 400, "Batch mirror");
 
@@ -768,6 +769,7 @@ static void canonical_color(md_render_color_t* out, const md_render_batch_t* b) 
     out->sharpness     = b->color.sharpness;
     memcpy(out->tint, b->color.tint, sizeof(out->tint));
     out->desaturate    = b->color.desaturate;
+    out->desaturate_unmarked = b->color.desaturate_unmarked;
     out->transparency  = b->color.transparency;
     out->group         = b->color.transparency > 0.0f ? b->color.group : 0;
 }
@@ -1059,7 +1061,13 @@ static change_t compare(const md_render_view_t v, const md_render_frame_t* f) {
         if (memcmp(&cx, &cy, sizeof(cx)) != 0) c = CHANGE_APPEARANCE;
     }
     if (f->content[MD_RENDER_CONTENT_APPEARANCE] != l->content[MD_RENDER_CONTENT_APPEARANCE]) c = CHANGE_APPEARANCE;
-    if (c == CHANGE_NONE && f->content[MD_RENDER_CONTENT_STATE] != l->content[MD_RENDER_CONTENT_STATE]) c = CHANGE_STATE;
+    if (c == CHANGE_NONE && f->content[MD_RENDER_CONTENT_STATE] != l->content[MD_RENDER_CONTENT_STATE]) {
+        c = CHANGE_STATE;
+        /* the colours of a batch that dims the elements without state 0 follow the marks */
+        for (uint32_t i = 0; i < f->batch_count; ++i) {
+            if (f->batches[i].color.desaturate_unmarked > 0.0f && f->batches[i].points.marks) { c = CHANGE_APPEARANCE; break; }
+        }
+    }
     return c;
 }
 
@@ -1241,6 +1249,7 @@ static void fill_batch(gpu_batch_t* g, const md_render_batch_t* b, uint32_t n_in
     g->tint.w = b->color.tint[3];
     g->sharpness  = b->color.sharpness;
     g->desaturate = b->color.desaturate;
+    g->desat_unmarked = b->color.desaturate_unmarked;
     g->opacity    = b->color.transparency > 0.0f ? MD_MAX(1.0f - b->color.transparency, 0.0f) : 1.0f;
 }
 

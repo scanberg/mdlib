@@ -424,6 +424,10 @@ typedef struct md_render_color_t {
                                       TRIANGLES: their corners' (above)              */
     float         tint[4];         /* rgb (linear), a: how much, 0 none               */
     float         desaturate;      /* 0 unchanged, 1 grey                             */
+    /* More of it on the elements without state 0 (the selection, in viamd: what
+       is not selected is dimmed), of a batch with marks: 0 none, 1 grey. While a
+       batch has it, a change of the marks (the STATE counter) resolves again. */
+    float         desaturate_unmarked;
     /* 0: opaque. (0, 1): transparent (TRANSPARENCY), its layers' opacity 1 -
        transparency; 1 or more: not drawn. Spheres, capsules and triangles.
        Between 0 and not, a raster; otherwise appearance. */

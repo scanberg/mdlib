@@ -196,7 +196,8 @@ struct Batch {
     uint    tri_nstride;        // that many bytes apart
     uint    group;              // transparent: the first batch of its group (resolve_layers); ~0: none
     float   opacity;            // 1: opaque; below, transparent (the K-buffer); 0: not drawn
-    uint    _opad0, _opad1, _opad2;
+    float   desat_unmarked;     // F_MARKS: more desaturation of the elements without state 0
+    uint    _opad1, _opad2;
 };
 
 // The per-view lists the cull writes and everything after it reads. Cluster
@@ -4202,7 +4203,9 @@ uint resolve_body<let SPL : int>(uint3 tid) {
     Batch  b   = a.batches[h.batch];
     float3 lin = srgb_to_linear(h.color.rgb);
     float  g   = dot(lin, float3(0.2126, 0.7152, 0.0722));
-    lin = lerp(lin, float3(g), saturate(b.desaturate));
+    float  ds  = b.desaturate;
+    if (b.desat_unmarked > 0.0 && (b.flags & F_MARKS) != 0u && (elem_state(b, h.element) & 1u) == 0u) ds = 1.0 - (1.0 - ds) * (1.0 - b.desat_unmarked);
+    lin = lerp(lin, float3(g), saturate(ds));
     lin = lerp(lin, lin * b.tint.rgb, saturate(b.tint.a));
     a.color[px]  = float4(linear_to_srgb(saturate(lin)), 1.0);
     if (SPL == 0) a.normal[px] = oct_encode(h.n_view);   // the heavy kinds': the raster's (VisOut)
@@ -4339,6 +4342,26 @@ void spline_order(uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex) {
     }
 }
 
+// The state bits of element e of a batch with marks: a sphere's, a spline
+// segment's its control point's, a capsule's (and a polygon's, a triangle's)
+// those all its points have
+uint elem_state(Batch b, uint e) {
+    uint st;
+    if (b.kind == KIND_SPHERES) {
+        st = attr_state(b, attr_of(b, point_of(b, e, 0u, 1u)));
+    } else if (b.kind == KIND_SPLINES) {
+        st = attr_state(b, attr_of(b, b.index[e] & SPLINE_POINT));
+    } else if (b.kind == KIND_POLYGONS) {
+        poly_visible(b, e, st);
+    } else if (b.kind == KIND_TRIANGLES) {
+        bool vis;
+        st = tri_state(b, tri_points(b, e), vis);
+    } else {
+        st = st_meet(attr_state(b, attr_of(b, point_of(b, e, 0u, 2u))), attr_state(b, attr_of(b, point_of(b, e, 1u, 2u))));
+    }
+    return st;
+}
+
 // The visible part of the masks, from the ids: r state 0, b state 1. The
 // raster pass that follows adds g and a (anywhere, hidden too) by max.
 [shader("compute")]
@@ -4356,19 +4379,7 @@ void mask_visible(uint3 tid : SV_DispatchThreadID) {
             uint64_t linear = (uint64_t(idv.y & 0xFFFFFu) << 32) | uint64_t(idv.x);
             uint cnt = max(b.count, 1u);
             uint e   = uint(linear % uint64_t(cnt));
-            uint st;
-            if (b.kind == KIND_SPHERES) {
-                st = attr_state(b, attr_of(b, point_of(b, e, 0u, 1u)));
-            } else if (b.kind == KIND_SPLINES) {
-                st = attr_state(b, attr_of(b, b.index[e] & SPLINE_POINT));
-            } else if (b.kind == KIND_POLYGONS) {
-                poly_visible(b, e, st);
-            } else if (b.kind == KIND_TRIANGLES) {
-                bool vis;
-                st = tri_state(b, tri_points(b, e), vis);
-            } else {
-                st = st_meet(attr_state(b, attr_of(b, point_of(b, e, 0u, 2u))), attr_state(b, attr_of(b, point_of(b, e, 1u, 2u))));
-            }
+            uint st = elem_state(b, e);
             m = float4(mark_value(st, 1u), 0.0, mark_value(st, 2u), 0.0);
         }
     }
