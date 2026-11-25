@@ -24,13 +24,16 @@ The model, in full
                     a radius in pixels (lines)
         POLYGONS    3..8 points around: a rounded slab
         SPLINES     chains of control points, swept stadium
+        TRIANGLES   three points each: a mesh (isosurfaces), with normals
+                    per point or flat, seen from both sides
         EXTERNAL    no primitives: a reserved id range for
                     something the caller renders itself
 
-    Every primitive is raycast exactly; nothing is tessellated. Where a
-    sphere and a capsule are the same surface (licorice joints), the sphere
-    wins, whatever the order of the batches. Not yet: triangle meshes,
-    capsules across a periodic boundary, transparency (below).
+    Every primitive is exact: raycast, or rasterised as the triangle it
+    is; nothing is tessellated. Where a sphere and a capsule are the same
+    surface (licorice joints), the sphere wins, whatever the order of the
+    batches. Not yet: capsules across a periodic boundary, transparency
+    (below).
 
   * Points carry positions and, optionally, a VELOCITY. Through an optional
     index they also carry ATTRIBUTES (usually per atom): a colour or a palette
@@ -214,6 +217,7 @@ typedef enum md_render_kind_t {
     MD_RENDER_POLYGONS,            /* rounded flat polygons: md_render_polygon_style_t */
     MD_RENDER_SPLINES,             /* tubes and ribbons along cubic splines: md_render_spline_style_t */
     MD_RENDER_EXTERNAL,            /* an id range for the caller's own renderer */
+    MD_RENDER_TRIANGLES,           /* a triangle mesh: md_render_triangle_style_t */
 } md_render_kind_t;
 
 typedef struct md_render_sphere_style_t {
@@ -375,6 +379,21 @@ typedef struct md_render_polygon_style_t {
     uint32_t dashes;               /* the circle's dashes over each edge, up to 16    */
 } md_render_polygon_style_t;
 
+/* Triangles over three points each (`index`: three a triangle into the
+   points, as a mesh's index buffer), rasterised as they are. A triangle has
+   no front: seen from behind it shows its back, its normal turned to the
+   eye (an open isosurface, a cut mesh). The normal at a point of it is its
+   corners' normals by its barycentric weights, or its own plane's without
+   them. Its colour (COLOR_POINTS, PALETTE): its corners' by those weights,
+   sharpened by color.sharpness (each weight raised to 1 / (1 - sharpness)),
+   at 1 the corner of the largest alone; picking reports that corner's
+   attribute. No fade. Normals are appearance: a change of them in place is
+   MD_RENDER_CONTENT_APPEARANCE. */
+typedef struct md_render_triangle_style_t {
+    md_gpu_addr_t normal;          /* float3 per point, unit; 0: each triangle's own   */
+    uint32_t      normal_stride;   /* multiple of 4; 0: 12 (16: float4 normals)       */
+} md_render_triangle_style_t;
+
 /* ---- Colour: only appearance; a change of it costs a resolve, not a raster */
 
 typedef enum md_render_color_mode_t {
@@ -390,7 +409,8 @@ typedef struct md_render_color_t {
     md_gpu_addr_t palette;         /* uint32 RGBA8 [palette_count]                    */
     uint32_t      palette_count;   /* indices past it take entry 0                    */
     float         sharpness;       /* CAPSULES: 0 blends the end colours smoothly, 1
-                                      keeps each end's colour up to the middle       */
+                                      keeps each end's colour up to the middle.
+                                      TRIANGLES: their corners' (above)              */
     float         tint[4];         /* rgb (linear), a: how much, 0 none               */
     float         desaturate;      /* 0 unchanged, 1 grey                             */
 } md_render_color_t;
@@ -457,6 +477,7 @@ typedef struct md_render_batch_t {
            CAPSULES    2    0: points 2i and 2i + 1
            POLYGONS    n    0: points n i .. n i + n - 1 (n: style.polygons.corners)
            SPLINES     1    required: the control point and its flags
+           TRIANGLES   3    0: points 3i, 3i + 1 and 3i + 2
        A subset of the points is an index range or a visibility bitset. */
     md_gpu_addr_t      index;
 
@@ -498,6 +519,7 @@ typedef struct md_render_batch_t {
         md_render_capsule_style_t capsules;
         md_render_spline_style_t  splines;
         md_render_polygon_style_t polygons;
+        md_render_triangle_style_t triangles;
     } style;
 
     md_render_color_t  color;

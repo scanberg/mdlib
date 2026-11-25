@@ -86,6 +86,7 @@ static const uint F_FADE_SHRINK  = 1u << 17;  // ... its sizes scaled
 static const uint F_FADE_THIN    = 1u << 18;  // ... its elements dropped one by one
 static const uint F_FADE         = F_FADE_OUT | F_FADE_IN;
 static const uint F_SPL_AXIS     = 1u << 19;  // SPLINES: spl_axis
+static const uint F_TRI_NORMAL   = 1u << 19;  // TRIANGLES: tri_normal (the spline bit, of another kind)
 static const uint F_SPL_PROFILE  = 1u << 20;  // SPLINES: spl_profile
 static const uint F_SPL_THROUGH  = 1u << 21;  // SPLINES: through their control points (spline_controls)
 static const uint F_DASHED       = 1u << 22;  // CAPSULES: dashed (dash_hit)
@@ -105,6 +106,7 @@ static const uint KIND_CAPSULES = 2u;
 static const uint KIND_POLYGONS = 3u;
 static const uint KIND_SPLINES  = 4u;
 static const uint KIND_EXTERNAL = 5u;
+static const uint KIND_TRIANGLES = 6u;
 
 // md_render_color_mode_t
 static const uint COLOR_POINTS  = 0u;
@@ -190,6 +192,9 @@ struct Batch {
     uint*   id_visible1;
     float   cap_end;            // CAPSULES shaped (F_SHAPED): the radius at the second point (as s0 at the first)
     float   cap_px;             // ... F_RADIUS_PX: the radius in pixels at either
+    uint*   tri_normal;         // TRIANGLES (F_TRI_NORMAL): float3 per point,
+    uint    tri_nstride;        // that many bytes apart
+    uint    _tpad;
 };
 
 // The per-view lists the cull writes and everything after it reads. Cluster
@@ -215,6 +220,8 @@ struct Lists {
     float4*   hw2b;             // per hw2 entry, its part's record (spline_record_write): SPLINE_RECORD float4
     uint*     hw2g;             // the boxes of the spline parts' pieces: record (hw2 entry) << 4 | group of pieces
     uint*     tiles;            // the resolve's 8 x 8 tiles with spline pixels, then (at tiles_cap) those with polygons: x | y << 16
+    uint*     hw4;              // triangles for the hardware raster (theirs alone: no compute raster)
+    uint*     st4;              // triangles with a state bit
     uint      tiles_cap;        // tiles of the target
     uint      _lpad;
 };
@@ -264,7 +271,12 @@ static const uint SPLINE_BUCKETS = 256u;   // at most (spl_order)
 static const uint C_BKT        = 320;  // phase 1's spline boxes by depth (spline_bucket): counts, 320..575
 static const uint C_BKO        = 576;  // and where each bucket's go next, 576..831
 static const uint C_TILES      = 832;  // the resolve's tiles with spline pixels, with polygon pixels (Lists.tiles): 832, 833
-static const uint C_COUNT      = 836;
+static const uint C_HWT1       = 836;  // triangles: hardware raster, phase 1
+static const uint C_HWT2       = 837;  // and phase 2
+static const uint C_STT        = 838;  // triangles with a state bit
+static const uint C_CMDT       = 840;  // md_gpu_draw_cmd_t, triangles [phase - 1]: 840..847
+static const uint C_STCMDT     = 848;  // the state list's triangles: 848..851
+static const uint C_COUNT      = 852;
 
 // One argument struct for every entry point (md_gpu shares one root between a
 // draw's two stages, and keeping kernels on it too means one C mirror).
@@ -442,6 +454,24 @@ bool capsule_shape(ViewData v, Batch b, float k, inout float3 a, inout float3 c,
     float px = b.cap_px * k;
     rr = float2(pixel_size(v, w_clip(v, a)), pixel_size(v, w_clip(v, c))) * px;
     return true;
+}
+
+// A triangle's points, its corners in order
+uint3 tri_points(Batch b, uint e) {
+    return uint3(point_of(b, e, 0u, 3u), point_of(b, e, 1u, 3u), point_of(b, e, 2u, 3u));
+}
+
+// A triangle's state bits (all its corners'), and whether all its corners are visible
+uint tri_state(Batch b, uint3 p, out bool vis) {
+    uint a0 = attr_of(b, p.x), a1 = attr_of(b, p.y), a2 = attr_of(b, p.z);
+    vis = attr_visible(b, a0) && attr_visible(b, a1) && attr_visible(b, a2);
+    return st_meet(st_meet(attr_state(b, a0), attr_state(b, a1)), attr_state(b, a2));
+}
+
+// A point's normal (F_TRI_NORMAL), batch space
+float3 load_normal(Batch b, uint i) {
+    uint* p = b.tri_normal + i * (b.tri_nstride >> 2);
+    return float3(asfloat(p[0]), asfloat(p[1]), asfloat(p[2]));
 }
 
 // The larger of a capsule's radii per unit of its factor (capsule_scale):
@@ -725,7 +755,7 @@ bool kind_taken<let SPL : int>(uint kind) {
 struct Geo {
     bool   ok;                  // visible, of positive radius, not faded
     bool   faded;               // would be drawn but for its batch's fade
-    uint   kind;                // the hardware raster's: 0 spheres, 1 capsules, 2 spline parts, 3 polygons
+    uint   kind;                // the hardware raster's: 0 spheres, 1 capsules, 2 spline parts, 3 polygons, 4 triangles
     uint   st;                  // state bits
     float3 a;
     float3 b;
@@ -1495,7 +1525,7 @@ Geo element_geo(ViewData v, Batch b, uint inst, uint e, bool fade) {
     Geo g;
     g.ok   = false;
     g.faded = false;
-    g.kind = b.kind == KIND_SPHERES ? 0u : 1u;
+    g.kind = b.kind == KIND_SPHERES ? 0u : b.kind == KIND_TRIANGLES ? 4u : 1u;
     g.st   = 0u;
     g.a    = float3(0.0);
     g.b    = float3(0.0);
@@ -1550,6 +1580,19 @@ Geo element_geo(ViewData v, Batch b, uint inst, uint e, bool fade) {
             if (!capsule_shape(v, b, g.r, g.a, g.b, g.rr)) return g;
             g.r = max(g.rr.x, g.rr.y);
         }
+    } else if (b.kind == KIND_TRIANGLES) {
+        // the sphere about its centroid through its farthest corner (no fade)
+        uint3 p = tri_points(b, e);
+        bool  vis;
+        g.st = tri_state(b, p, vis);
+        if (!vis) return g;
+        float3 q0 = mulp(M(v, view), mulp(T, load_pos(b, p.x)));
+        float3 q1 = mulp(M(v, view), mulp(T, load_pos(b, p.y)));
+        float3 q2 = mulp(M(v, view), mulp(T, load_pos(b, p.z)));
+        g.a  = (q0 + q1 + q2) / 3.0;
+        g.b  = g.a;
+        g.r  = sqrt(max(max(dot(q0 - g.a, q0 - g.a), dot(q1 - g.a, q1 - g.a)), dot(q2 - g.a, q2 - g.a)));
+        g.rr = float2(g.r);
     } else {
         return g;
     }
@@ -2495,6 +2538,18 @@ LocalElem element_local(Batch b, uint e, bool geo) {
         if ((b.flags & F_DISPLACED) != 0u) l.factor *= 1.0 + abs(b.cap_offset);    // off its points in any direction
         if (geo) { l.a = load_pos(b, p0); l.b = load_pos(b, p1); }
         l.ok = l.factor * capsule_reach(b) > 0.0;
+    } else if (b.kind == KIND_TRIANGLES) {
+        // the box of its corners (factor 0: no pad)
+        uint3 p = tri_points(b, e);
+        bool  vis;
+        l.st = tri_state(b, p, vis);
+        if (!vis) { l.st = 0u; return l; }
+        if (geo) {
+            float3 q0 = load_pos(b, p.x), q1 = load_pos(b, p.y), q2 = load_pos(b, p.z);
+            l.a = min(min(q0, q1), q2);
+            l.b = max(max(q0, q1), q2);
+        }
+        l.ok = true;
     }
     return l;
 }
@@ -2658,7 +2713,7 @@ ClusterSphere cluster_sphere(ViewData v, Batch b, uint inst, uint c) {
     float s  = length(T.c0.xyz);
     float3 ctr = 0.5 * (lo.xyz + hi.xyz);
     float3 ext = 0.5 * (hi.xyz - lo.xyz);
-    float pad = b.kind == KIND_SPHERES ? lo.w * b.s0 + b.s1 : b.kind == KIND_SPLINES ? lo.w : lo.w * capsule_reach(b);
+    float pad = b.kind == KIND_SPHERES ? lo.w * b.s0 + b.s1 : b.kind == KIND_SPLINES ? lo.w : b.kind == KIND_TRIANGLES ? 0.0 : lo.w * capsule_reach(b);
     cs.c   = mulp(M(v, view), mulp(T, ctr));
     if (b.kind == KIND_CAPSULES && (b.flags & F_RADIUS_PX) != 0u) {
         // in pixels: as wide as a pixel is where the sphere is deepest (w at
@@ -2784,11 +2839,11 @@ void element_pass<let SPL : int>(Batch* batches, ViewData v, Lists L, uint phase
     Geo   g;
     g.ok = false; g.faded = false; g.kind = 0u; g.st = 0u; g.a = float3(0.0); g.b = float3(0.0); g.r = 0.0; g.rr = float2(0.0);
     uint ent = 0u;                      // the list entry: global work index
-    bool hw_only = false;               // dashed or shaped capsules: no compute raster
+    bool hw_only = false;               // triangles, dashed or shaped capsules: no compute raster
     if (valid) {
         Batch b = batches[slot];
         ent = b.work_offset + inst * b.count + e;
-        hw_only = (b.flags & (F_DASHED | F_SHAPED)) != 0u;
+        hw_only = b.kind == KIND_TRIANGLES || (b.flags & (F_DASHED | F_SHAPED)) != 0u;
         // the fade: not for the state lists, which do not depend on the
         // camera (the mask's raster applies it), nor in a cluster it does
         // not touch (plain)
@@ -2858,15 +2913,18 @@ void element_pass<let SPL : int>(Batch* batches, ViewData v, Lists L, uint phase
         bool want = g.ok && g.st != 0u;
         uint is0 = wave_append(L.counters + C_ST + 0u, want && k == 0u);
         uint is1 = wave_append(L.counters + C_ST + 1u, want && k == 1u);
-        if (want) { if (k == 0u) L.st0[is0] = ent; else L.st1[is1] = ent; }
+        uint is4 = wave_append(L.counters + C_STT, want && k == 4u);
+        if (want) { if (k == 0u) L.st0[is0] = ent; else if (k == 4u) L.st4[is4] = ent; else L.st1[is1] = ent; }
         return;
     }
     uint hw_base0 = phase == 2u ? L.counters[C_HW1 + 0u] : 0u;
     uint hw_base1 = phase == 2u ? L.counters[C_HW1 + 1u] : 0u;
+    uint hw_base4 = phase == 2u ? L.counters[C_HWT1] : 0u;
     uint c_hw = phase == 2u ? C_HW2 : C_HW1;
     uint ih0 = wave_append(L.counters + c_hw + 0u, out == OUT_HW && k == 0u);
     uint ih1 = wave_append(L.counters + c_hw + 1u, out == OUT_HW && k == 1u);
-    if (out == OUT_HW) { if (k == 0u) L.hw0[hw_base0 + ih0] = ent; else L.hw1[hw_base1 + ih1] = ent; }
+    uint ih4 = wave_append(L.counters + (phase == 2u ? C_HWT2 : C_HWT1), out == OUT_HW && k == 4u);
+    if (out == OUT_HW) { if (k == 0u) L.hw0[hw_base0 + ih0] = ent; else if (k == 4u) L.hw4[hw_base4 + ih4] = ent; else L.hw1[hw_base1 + ih1] = ent; }
 
     uint sm_base = phase == 2u ? L.counters[C_SMALL1] : 0u;
     uint ism = wave_append(L.counters + (phase == 2u ? C_SMALL2 : C_SMALL1), out == OUT_SMALL);
@@ -2998,6 +3056,8 @@ void finalize(uint3 tid : SV_DispatchThreadID) {
         ss[0] = 36u; ss[1] = c[C_STS]; ss[2] = 0u; ss[3] = 0u; ss[4] = 0u;
         uint* sp = c + C_STICMDP;               // polygons: boxes too
         sp[0] = 36u; sp[1] = c[C_STP]; sp[2] = 0u; sp[3] = 0u; sp[4] = 0u;
+        uint* st = c + C_STCMDT;                // triangles: themselves
+        st[0] = 3u; st[1] = c[C_STT]; st[2] = 0u; st[3] = 0u;
         return;
     }
     uint phase = mode == 12u ? 1u : 2u;
@@ -3032,6 +3092,11 @@ void finalize(uint3 tid : SV_DispatchThreadID) {
     pcmd[2] = 0u;
     pcmd[3] = 0u;
     pcmd[4] = phase == 1u ? 0u : c[C_HWP1];
+    uint* tcmd = c + C_CMDT + (phase - 1u) * 4u;    // triangles: themselves, three corners each
+    tcmd[0] = 3u;
+    tcmd[1] = phase == 1u ? c[C_HWT1] : c[C_HWT2];
+    tcmd[2] = 0u;
+    tcmd[3] = phase == 1u ? 0u : c[C_HWT1];
     uint ns = phase == 1u ? c[C_SMALL1] : c[C_SMALL2];
     uint* gs = c + C_GRID_SMALL + (phase - 1u) * 4u;
     gs[0] = min((ns + 63u) / 64u, 65535u); gs[1] = 1u; gs[2] = 1u;
@@ -3227,7 +3292,9 @@ uint list_entry(Args a, uint i) {
     case 4u: return L.hw2[i];
     case 5u: return L.st2[i];
     case 6u: return L.hw3[i];
-    default: return L.st3[i];
+    case 7u: return L.st3[i];
+    case 8u: return L.hw4[i];
+    default: return L.st4[i];
     }
 }
 
@@ -3593,6 +3660,60 @@ MaskOut polygon_mask_fs(SplineV i) {
     return o;
 }
 
+// Triangles, as they are: a corner a vertex, the depth the raster's own. The
+// resolve takes their hit again (eval_hit), with the spheres and capsules;
+// they write no normal here.
+struct TriangleV {
+    float4 pos : SV_Position;
+    nointerpolation uint2 idv   : IDV;
+    nointerpolation uint  state : STATE;
+};
+
+[shader("vertex")]
+TriangleV triangle_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
+                      uint base_vertex : SV_StartVertexLocation, uint base_instance : SV_StartInstanceLocation) {
+    Args      a = MD_ARGS;
+    ViewData  v = *a.view;
+    TriangleV o;
+    uint  corner = md_draw_vertex(vid, base_vertex);
+    Elem  el     = decode_work(a.batches, v.batch_count, list_entry(a, base_instance + md_draw_instance(iid, base_instance)));
+    Batch b      = a.batches[el.slot];
+    Mat   T      = load_transform(b.transforms, el.inst);
+    float3 q     = mulp(M(v, view), mulp(T, load_pos(b, point_of(b, el.e, corner, 3u))));
+    o.pos   = mul4(M(v, proj), float4(q, 1.0));
+    o.idv   = elem_id(a.batches, el);
+    o.state = 0u;
+    if (a.mode == 1u) {                 // the masks': its state bits
+        bool vis;
+        o.state = tri_state(b, tri_points(b, el.e), vis);
+    }
+    return o;
+}
+
+struct TriOut {
+    uint2  id : SV_Target0;
+    float2 n  : SV_Target1;
+};
+
+[shader("fragment")]
+TriOut triangle_fs(TriangleV i) {
+    TriOut o;
+    o.id = i.idv;
+    o.n  = float2(0.0);
+    return o;
+}
+
+struct TriMaskOut {
+    float4 m : SV_Target0;
+};
+
+[shader("fragment")]
+TriMaskOut triangle_mask_fs(TriangleV i) {
+    TriMaskOut o;
+    o.m = float4(0.0, mark_value(i.state, 1u), 0.0, mark_value(i.state, 2u));
+    return o;
+}
+
 // ---------------------------------------------------------------------------
 // Resolve
 // ---------------------------------------------------------------------------
@@ -3757,6 +3878,50 @@ Hit eval_hit<let SPL : int>(ViewData v, Batch* batches, uint2 idv, float2 pix, f
         float  kk  = saturate((k - 0.5) / max(1.0 - sh, 1e-3) + 0.5);
         h.color    = lerp(attr_color(b, a0), attr_color(b, a1), kk);
         h.valid    = true;
+    } else if (SPL == 0 && b.kind == KIND_TRIANGLES) {
+        // The pixel's ray through the triangle's plane (Moller-Trumbore), its
+        // barycentric weights clamped to the triangle: a pixel the raster
+        // gave it lies in it but for rounding
+        uint3  p  = tri_points(b, h.element);
+        float3 l0 = load_pos(b, p.x), l1 = load_pos(b, p.y), l2 = load_pos(b, p.z);
+        float3 q0 = mulp(M(v, view), mulp(T, l0));
+        float3 q1 = mulp(M(v, view), mulp(T, l1));
+        float3 q2 = mulp(M(v, view), mulp(T, l2));
+        float3 e1 = q1 - q0, e2 = q2 - q0;
+        float3 pv = cross(r.d, e2);
+        float  det = dot(e1, pv);
+        float3 tv = r.o - q0;
+        float3 qv = cross(tv, e1);
+        float  id = det != 0.0 ? 1.0 / det : 0.0;
+        float  bu = dot(tv, pv) * id, bv = dot(r.d, qv) * id;
+        float  t  = det != 0.0 ? dot(e2, qv) * id : dot((q0 + q1 + q2) / 3.0 - r.o, r.d);   // edge on: its centre's depth
+        float3 w  = max(float3(1.0 - bu - bv, bu, bv), float3(0.0));
+        w /= max(w.x + w.y + w.z, 1e-30);
+        h.p_view = r.o + r.d * max(t, 0.0);
+        float3 n;
+        if ((b.flags & F_TRI_NORMAL) != 0u) {
+            n = load_normal(b, p.x) * w.x + load_normal(b, p.y) * w.y + load_normal(b, p.z) * w.z;
+            n = mulv(M(v, view), mulv(T, n));
+        } else {
+            n = cross(e1, e2);
+        }
+        n = dot(n, n) > 0.0 ? normalize(n) : -r.d;
+        h.n_view = dot(n, r.d) > 0.0 ? -n : n;          // both sides: the one facing the eye
+        float3 d0 = mulp(T, l0) - mulp(Tp, l0 - load_vel(b, p.x) * v.dt);
+        float3 d1 = mulp(T, l1) - mulp(Tp, l1 - load_vel(b, p.y) * v.dt);
+        float3 d2 = mulp(T, l2) - mulp(Tp, l2 - load_vel(b, p.z) * v.dt);
+        h.p_world      = mulp(M(v, inv_view), h.p_view);
+        h.p_world_prev = h.p_world - (d0 * w.x + d1 * w.y + d2 * w.z);
+        // its attribute: the corner of the largest weight; its colour the
+        // corners' by the weights, sharpened (each raised to 1 / (1 - sharpness))
+        uint  km = w.y > w.x ? (w.z > w.y ? 2u : 1u) : (w.z > w.x ? 2u : 0u);
+        uint3 ai = uint3(attr_of(b, p.x), attr_of(b, p.y), attr_of(b, p.z));
+        h.attr   = km == 0u ? ai.x : km == 1u ? ai.y : ai.z;
+        float  sh = saturate(b.sharpness);
+        float3 ws = sh >= 0.999 ? float3(km == 0u ? 1.0 : 0.0, km == 1u ? 1.0 : 0.0, km == 2u ? 1.0 : 0.0) : pow(w, float3(1.0 / (1.0 - sh)));
+        ws /= max(ws.x + ws.y + ws.z, 1e-30);
+        h.color  = attr_color(b, ai.x) * ws.x + attr_color(b, ai.y) * ws.y + attr_color(b, ai.z) * ws.z;
+        h.valid  = true;
     } else if ((SPL == 1 || SPL == 2) && b.kind == KIND_SPLINES) {
         if (SPL == 2) {
             h.p_view = unproject(M(v, inv_proj), pixel_ndc(v, pix), zd);
@@ -3949,7 +4114,7 @@ void mask_visible(uint3 tid : SV_DispatchThreadID) {
     uint slot1 = idv.y >> 20;
     if (slot1 != 0u) {
         Batch b = a.batches[slot1 - 1u];
-        if (b.kind == KIND_SPHERES || b.kind == KIND_CAPSULES || b.kind == KIND_POLYGONS || b.kind == KIND_SPLINES) {
+        if (b.kind == KIND_SPHERES || b.kind == KIND_CAPSULES || b.kind == KIND_POLYGONS || b.kind == KIND_SPLINES || b.kind == KIND_TRIANGLES) {
             uint64_t linear = (uint64_t(idv.y & 0xFFFFFu) << 32) | uint64_t(idv.x);
             uint cnt = max(b.count, 1u);
             uint e   = uint(linear % uint64_t(cnt));
@@ -3960,6 +4125,9 @@ void mask_visible(uint3 tid : SV_DispatchThreadID) {
                 st = attr_state(b, attr_of(b, b.index[e] & SPLINE_POINT));
             } else if (b.kind == KIND_POLYGONS) {
                 poly_visible(b, e, st);
+            } else if (b.kind == KIND_TRIANGLES) {
+                bool vis;
+                st = tri_state(b, tri_points(b, e), vis);
             } else {
                 st = st_meet(attr_state(b, attr_of(b, point_of(b, e, 0u, 2u))), attr_state(b, attr_of(b, point_of(b, e, 1u, 2u))));
             }

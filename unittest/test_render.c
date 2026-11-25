@@ -2293,6 +2293,391 @@ UTEST(render, capsules_shaped_match_their_cones) {
     f_close(&fx);
 }
 
+/* ---- Triangles ------------------------------------------------------------------ */
+
+/* An icosphere: the icosahedron's faces split in four `levels` times, the new
+   corners pushed out onto the unit sphere; counter-clockwise from outside */
+typedef struct { float* xyz; uint32_t nv, cap_v; uint32_t* tri; uint32_t nt; } ico_t;
+
+static uint32_t ico_mid(ico_t* m, uint32_t a, uint32_t b) {
+    float p[3];
+    for (int k = 0; k < 3; ++k) p[k] = 0.5f * (m->xyz[3 * a + k] + m->xyz[3 * b + k]);
+    float l = sqrtf(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
+    for (int k = 0; k < 3; ++k) p[k] /= l;
+    for (uint32_t i = 0; i < m->nv; ++i) {
+        if (fabsf(m->xyz[3 * i] - p[0]) < 1e-6f && fabsf(m->xyz[3 * i + 1] - p[1]) < 1e-6f && fabsf(m->xyz[3 * i + 2] - p[2]) < 1e-6f) return i;
+    }
+    for (int k = 0; k < 3; ++k) m->xyz[3 * m->nv + k] = p[k];
+    return m->nv++;
+}
+
+static ico_t ico_make(int levels) {
+    const float t = (1.0f + sqrtf(5.0f)) / 2.0f;
+    static const float base[12][3] = { {-1, 0, 0}, {1, 0, 0}, {-1, 0, 0}, {1, 0, 0}, {0, -1, 0}, {0, 1, 0}, {0, -1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}, {0, 0, -1}, {0, 0, 1} };
+    static const uint32_t faces[20][3] = { {0, 11, 5}, {0, 5, 1}, {0, 1, 7}, {0, 7, 10}, {0, 10, 11}, {1, 5, 9}, {5, 11, 4}, {11, 10, 2}, {10, 7, 6}, {7, 1, 8},
+                                           {3, 9, 4}, {3, 4, 2}, {3, 2, 6}, {3, 6, 8}, {3, 8, 9}, {4, 9, 5}, {2, 4, 11}, {6, 2, 10}, {8, 6, 7}, {9, 8, 1} };
+    (void)base;
+    ico_t m;
+    uint32_t nt = 20;
+    for (int l = 0; l < levels; ++l) nt *= 4;
+    m.cap_v = nt * 3;
+    m.xyz = malloc(m.cap_v * 3 * sizeof(float));
+    m.tri = malloc(nt * 3 * sizeof(uint32_t));
+    const float v12[12][3] = { {-1, t, 0}, {1, t, 0}, {-1, -t, 0}, {1, -t, 0}, {0, -1, t}, {0, 1, t}, {0, -1, -t}, {0, 1, -t}, {t, 0, -1}, {t, 0, 1}, {-t, 0, -1}, {-t, 0, 1} };
+    m.nv = 12;
+    for (int i = 0; i < 12; ++i) {
+        float l = sqrtf(v12[i][0] * v12[i][0] + v12[i][1] * v12[i][1] + v12[i][2] * v12[i][2]);
+        for (int k = 0; k < 3; ++k) m.xyz[3 * i + k] = v12[i][k] / l;
+    }
+    memcpy(m.tri, faces, sizeof(faces));
+    m.nt = 20;
+    for (int l = 0; l < levels; ++l) {
+        uint32_t* nt2 = malloc(m.nt * 4 * 3 * sizeof(uint32_t));
+        for (uint32_t f = 0; f < m.nt; ++f) {
+            uint32_t a = m.tri[3 * f], b = m.tri[3 * f + 1], c = m.tri[3 * f + 2];
+            uint32_t ab = ico_mid(&m, a, b), bc = ico_mid(&m, b, c), ca = ico_mid(&m, c, a);
+            uint32_t q[12] = { a, ab, ca, b, bc, ab, c, ca, bc, ab, bc, ca };
+            memcpy(nt2 + 12 * f, q, sizeof(q));
+        }
+        free(m.tri);
+        m.tri = nt2;
+        m.nt *= 4;
+    }
+    return m;
+}
+
+typedef struct {
+    double   q[3][3];                  /* view space (the camera is the identity) */
+    double   n[3][3];                  /* the corners' normals; flat: none */
+    bool     smooth;
+    uint32_t col[3];                   /* the corners' colours */
+    float    sharp;
+    uint32_t slot, linear, attr[3];
+} tri_ref_t;
+
+/* Moller-Trumbore, double: t > 0 and the weights (1 - u - v, u, v) */
+static bool tri_ref_hit(const tri_ref_t* k, ray_t r, double* t, double w[3]) {
+    double e1[3], e2[3], pv[3], tv[3], qv[3];
+    for (int i = 0; i < 3; ++i) { e1[i] = k->q[1][i] - k->q[0][i]; e2[i] = k->q[2][i] - k->q[0][i]; tv[i] = r.o[i] - k->q[0][i]; }
+    pv[0] = r.d[1] * e2[2] - r.d[2] * e2[1]; pv[1] = r.d[2] * e2[0] - r.d[0] * e2[2]; pv[2] = r.d[0] * e2[1] - r.d[1] * e2[0];
+    double det = dot3(e1, pv);
+    if (fabs(det) < 1e-14) return false;
+    double u = dot3(tv, pv) / det;
+    qv[0] = tv[1] * e1[2] - tv[2] * e1[1]; qv[1] = tv[2] * e1[0] - tv[0] * e1[2]; qv[2] = tv[0] * e1[1] - tv[1] * e1[0];
+    double v = dot3(r.d, qv) / det;
+    if (u < 0 || v < 0 || u + v > 1) return false;
+    *t = dot3(e2, qv) / det;
+    w[0] = 1 - u - v; w[1] = u; w[2] = v;
+    return *t > 0;
+}
+
+/* The nearest hit along a ray: its triangle (-1 none), t and weights */
+static int tri_ref_cast(const tri_ref_t* refs, int n, ray_t r, double* t, double w[3]) {
+    int best = -1;
+    double tb = 1e30, wb[3] = {0};
+    for (int k = 0; k < n; ++k) {
+        double tk, wk[3];
+        if (tri_ref_hit(&refs[k], r, &tk, wk) && tk < tb) { tb = tk; best = k; memcpy(wb, wk, sizeof(wb)); }
+    }
+    *t = tb;
+    memcpy(w, wb, sizeof(wb));
+    return best;
+}
+
+UTEST(render, triangles_match_their_mesh) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    const uint32_t W = 192, H = 144;
+    cam_t c = { .tan_half = 0.4f, .aspect = (float)W / H, .n = 0.1f };
+    md_render_camera_t cam = make_camera(&c);
+
+    /* Batch 0: an icosphere, its points and normals float4 (as md_gto_iso's
+       meshes), indexed, smooth, marked (state 0 on every corner); batch 1:
+       the back half of another, open toward the eye (its inside, back faces
+       with outward normals, turned to the eye); batch 2: a flat tetrahedron
+       of corners coloured red, green and blue, sharp (the nearest corner's),
+       twice (the second instance turned and moved); batch 3: the same
+       blended (sharpness 0); batch 4: a floor of two triangles reaching
+       behind the eye (clipped at the near plane) */
+    ico_t s = ico_make(2);
+    const float c0[3] = { -2.6f, 1.0f, -14.0f }, r0 = 2.0f;
+    const float c1[3] = {  2.8f, 1.2f, -13.0f }, r1 = 1.8f;
+    float* pos0 = malloc(s.nv * 16); float* nrm0 = malloc(s.nv * 16);
+    float* pos1 = malloc(s.nv * 12); float* nrm1 = malloc(s.nv * 12);
+    for (uint32_t i = 0; i < s.nv; ++i) {
+        for (int k = 0; k < 3; ++k) {
+            pos0[4 * i + k] = c0[k] + r0 * s.xyz[3 * i + k]; nrm0[4 * i + k] = s.xyz[3 * i + k];
+            pos1[3 * i + k] = c1[k] + r1 * s.xyz[3 * i + k]; nrm1[3 * i + k] = s.xyz[3 * i + k];
+        }
+        pos0[4 * i + 3] = 1.0f; nrm0[4 * i + 3] = 0.25f;     /* w unread */
+    }
+    uint32_t* back = malloc(s.nt * 12);
+    uint32_t nback = 0;
+    for (uint32_t f = 0; f < s.nt; ++f) {
+        bool behind = true;
+        for (int k = 0; k < 3; ++k) behind = behind && s.xyz[3 * s.tri[3 * f + k] + 2] <= 0.05f;
+        if (behind) { memcpy(back + 3 * nback, s.tri + 3 * f, 12); ++nback; }
+    }
+    const float tet[4][3] = { { -1.6f, -2.6f, -11.0f }, { 0.4f, -2.2f, -12.5f }, { -0.8f, -0.6f, -12.0f }, { -0.4f, -2.0f, -10.0f } };
+    const uint32_t tet_idx[12] = { 0, 1, 2,  0, 3, 1,  1, 3, 2,  2, 3, 0 };
+    const uint32_t tet_col[4] = { 0xFF2020E0u, 0xFF20E020u, 0xFFE02020u, 0xFF20E0E0u };
+    const float floor_[4][3] = { { -6.0f, -4.0f, 3.0f }, { 6.0f, -4.0f, 3.0f }, { 6.0f, -4.0f, -40.0f }, { -6.0f, -4.0f, -40.0f } };
+    const uint32_t floor_idx[6] = { 0, 1, 2,  0, 2, 3 };
+    float xf[32] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    {   /* turned 40 degrees about z through the tetrahedron, moved right and back */
+        const double a = 40 * 3.14159265358979 / 180, ctr[3] = { -0.6, -1.85, -11.4 }, mv[3] = { 3.2, -0.2, -1.5 };
+        float m[9] = { (float)cos(a), (float)sin(a), 0, (float)-sin(a), (float)cos(a), 0, 0, 0, 1 };
+        for (int i = 0; i < 9; ++i) xf[16 + 4 * (i / 3) + i % 3] = m[i];
+        for (int i = 0; i < 3; ++i) xf[28 + i] = (float)(ctr[i] + mv[i] - (m[i] * ctr[0] + m[3 + i] * ctr[1] + m[6 + i] * ctr[2]));
+    }
+    uint8_t* marks0 = malloc(s.nv);
+    memset(marks0, MD_RENDER_MARK_STATE0, s.nv);
+
+    enum { NB = 5 };
+    md_render_batch_t b[NB];
+    memset(b, 0, sizeof(b));
+    for (int k = 0; k < NB; ++k) { b[k].key = 80u + (uint32_t)k; b[k].kind = MD_RENDER_TRIANGLES; b[k].color.mode = MD_RENDER_COLOR_UNIFORM; }
+    b[0].count = s.nt; b[0].points.count = s.nv;
+    b[0].points.position = f_buf(&fx, pos0, s.nv * 16); b[0].points.stride = 16;
+    b[0].index = f_buf(&fx, s.tri, s.nt * 12);
+    b[0].style.triangles.normal = f_buf(&fx, nrm0, s.nv * 16); b[0].style.triangles.normal_stride = 16;
+    b[0].points.marks = f_buf(&fx, marks0, s.nv);
+    b[0].color.uniform = 0xFF3070D0u;
+    b[1].count = nback; b[1].points.count = s.nv;
+    b[1].points.position = f_buf(&fx, pos1, s.nv * 12);
+    b[1].index = f_buf(&fx, back, nback * 12);
+    b[1].style.triangles.normal = f_buf(&fx, nrm1, s.nv * 12);
+    b[1].color.uniform = 0xFF40C0F0u;
+    md_gpu_addr_t TP = f_buf(&fx, tet, sizeof(tet)), TI = f_buf(&fx, tet_idx, sizeof(tet_idx)), TC = f_buf(&fx, tet_col, sizeof(tet_col));
+    for (int k = 2; k < 4; ++k) {
+        b[k].count = 4; b[k].points.count = 4; b[k].points.position = TP; b[k].index = TI;
+        b[k].points.color = TC; b[k].color.mode = MD_RENDER_COLOR_POINTS;
+    }
+    b[2].color.sharpness = 1.0f; b[2].transform = xf; b[2].transform_count = 2;
+    b[3].color.sharpness = 0.0f;
+    {   /* the blended one beside the sharp one's first instance */
+        static float xf3[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,3.4f,0,1 };
+        b[3].transform = xf3; b[3].transform_count = 1;
+    }
+    b[4].count = 2; b[4].points.count = 4; b[4].points.position = f_buf(&fx, floor_, sizeof(floor_)); b[4].index = f_buf(&fx, floor_idx, sizeof(floor_idx));
+    b[4].color.uniform = 0xFF909090u;
+
+    /* The references, view space (the camera at the origin looking down -z) */
+    int nref = 0, cap = (int)(s.nt + nback + 4 * 3 + 2);
+    tri_ref_t* ref = calloc((size_t)cap, sizeof(tri_ref_t));
+    for (int k = 0; k < NB; ++k) {
+        const uint32_t ninst = b[k].transform_count ? b[k].transform_count : 1;
+        for (uint32_t in = 0; in < ninst; ++in) {
+            const float* m = b[k].transform ? b[k].transform + 16 * in : xf;
+            for (uint32_t e = 0; e < b[k].count; ++e) {
+                tri_ref_t* q = &ref[nref++];
+                q->slot = (uint32_t)k; q->linear = in * b[k].count + e;
+                q->smooth = k <= 1; q->sharp = b[k].color.sharpness;
+                for (int j = 0; j < 3; ++j) {
+                    uint32_t pi = k == 0 ? s.tri[3 * e + j] : k == 1 ? back[3 * e + j] : k <= 3 ? tet_idx[3 * e + j] : floor_idx[3 * e + j];
+                    const float* pp = k == 0 ? pos0 + 4 * pi : k == 1 ? pos1 + 3 * pi : k <= 3 ? tet[pi] : floor_[pi];
+                    for (int i = 0; i < 3; ++i) q->q[j][i] = (double)m[i] * pp[0] + (double)m[4 + i] * pp[1] + (double)m[8 + i] * pp[2] + m[12 + i];
+                    if (k <= 1) for (int i = 0; i < 3; ++i) q->n[j][i] = s.xyz[3 * pi + i];
+                    q->col[j]  = k == 0 ? b[0].color.uniform : k == 1 ? b[1].color.uniform : k <= 3 ? tet_col[pi] : b[4].color.uniform;
+                    q->attr[j] = pi;
+                }
+            }
+        }
+    }
+
+    md_render_frame_t f = frame_of(W, H, cam, b, NB);
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+    md_render_targets_t tg = md_render_view_targets(fx.view);
+    uint32_t* id = malloc(W * H * 8);
+    float*    dp = malloc(W * H * 4);
+    uint32_t* nb = malloc(W * H * 4);
+    uint32_t* cl = malloc(W * H * 4);
+    uint32_t* mk = malloc(W * H * 4);
+    ASSERT_TRUE(f_read(&fx, tg.id, id, W * H * 8) && f_read(&fx, tg.depth, dp, W * H * 4) && f_read(&fx, tg.normal, nb, W * H * 4) &&
+                f_read(&fx, tg.color, cl, W * H * 4) && f_read(&fx, tg.mask, mk, W * H * 4));
+
+    int bad = 0, sure = 0, per_slot[NB] = {0}, nerr = 0, backs = 0, marked = 0, sharp_ok = 0, blend_ok = 0;
+    double worst_depth = 0, worst_col = 0;
+    double* errs = malloc(W * H * sizeof(double));
+    const double pxd = 2.0 * c.tan_half / H;
+    for (uint32_t y = 0; y < H; ++y) {
+        for (uint32_t x = 0; x < W; ++x) {
+            const uint32_t i = y * W + x;
+            /* sure: the centre's triangle (or none) is that of four rays 0.05 px about it too */
+            double t, w[3];
+            ray_t r = pixel_ray(&c, W, H, x + 0.5, y + 0.5);
+            int k0 = tri_ref_cast(ref, nref, r, &t, w);
+            bool agree = true;
+            static const double off[4][2] = { { 0.05, 0 }, { -0.05, 0 }, { 0, 0.05 }, { 0, -0.05 } };
+            for (int o = 0; o < 4 && agree; ++o) {
+                double to, wo[3];
+                agree = tri_ref_cast(ref, nref, pixel_ray(&c, W, H, x + 0.5 + off[o][0], y + 0.5 + off[o][1]), &to, wo) == k0;
+            }
+            if (!agree) continue;
+            sure++;
+            const uint32_t iy = id[2 * i + 1];
+            if (k0 < 0) {
+                if (iy != 0) { bad++; if (bad < 8) printf("    pixel (%u, %u): covered, no triangle there\n", x, y); }
+                continue;
+            }
+            const tri_ref_t* q = &ref[k0];
+            if (iy == 0 || (iy >> 20) - 1u != q->slot || id[2 * i] != q->linear) {
+                bad++; if (bad < 8) printf("    pixel (%u, %u): batch %d element %u, expected %u, %u\n", x, y, iy ? (int)(iy >> 20) - 1 : -1, id[2 * i], q->slot, q->linear);
+                continue;
+            }
+            per_slot[q->slot]++;
+            /* depth: the raster's own, within a hundredth of a pixel's depth step at it */
+            const double zv = -c.n / dp[i], tp = zv / r.d[2];
+            const double dz = fabs(tp - t) * fabs(r.d[2]);
+            const double tol = 1e-5 * -zv;                             /* far more than a float depth's step there */
+            worst_depth = fmax(worst_depth, dz / tol);
+            if (dz > tol) { bad++; if (bad < 8) printf("    pixel (%u, %u): depth %.6f against %.6f\n", x, y, -zv, t * -r.d[2]); continue; }
+            /* the normal: by the weights (smooth) or the plane's, facing the eye */
+            double n[3] = {0, 0, 0};
+            if (q->smooth) {
+                for (int j = 0; j < 3; ++j) for (int a = 0; a < 3; ++a) n[a] += w[j] * q->n[j][a];
+            } else {
+                double e1[3], e2[3];
+                for (int a = 0; a < 3; ++a) { e1[a] = q->q[1][a] - q->q[0][a]; e2[a] = q->q[2][a] - q->q[0][a]; }
+                n[0] = e1[1] * e2[2] - e1[2] * e2[1]; n[1] = e1[2] * e2[0] - e1[0] * e2[2]; n[2] = e1[0] * e2[1] - e1[1] * e2[0];
+            }
+            double nl = sqrt(dot3(n, n));
+            for (int a = 0; a < 3; ++a) n[a] /= nl;
+            if (dot3(n, r.d) > 0) { for (int a = 0; a < 3; ++a) n[a] = -n[a]; backs += q->slot == 1; }
+            double ng[3];
+            oct_decode(nb[i], ng);
+            double cs = dot3(n, ng);
+            errs[nerr++] = acos(cs > 1 ? 1 : cs < -1 ? -1 : cs) * 180.0 / 3.14159265358979;
+            /* the colour: the nearest corner's (sharp, clear of a tie) or the blend */
+            double ws[3] = { w[0], w[1], w[2] };
+            int km = w[1] > w[0] ? (w[2] > w[1] ? 2 : 1) : (w[2] > w[0] ? 2 : 0);
+            double second = 0;
+            for (int j = 0; j < 3; ++j) if (j != km) second = fmax(second, w[j]);
+            if (q->sharp >= 1.0f) {
+                if (w[km] - second < 0.03) continue;
+                for (int j = 0; j < 3; ++j) ws[j] = j == km ? 1 : 0;
+            }
+            double ce = 0;
+            for (int ch = 0; ch < 3; ++ch) {
+                double e = 0;
+                for (int j = 0; j < 3; ++j) e += ws[j] * ((q->col[j] >> (8 * ch)) & 0xFF);
+                ce = fmax(ce, fabs(e - ((cl[i] >> (8 * ch)) & 0xFF)));
+            }
+            worst_col = fmax(worst_col, ce);
+            if (ce > 2.5) { bad++; if (bad < 8) printf("    pixel (%u, %u): colour %08x, expected another (%.1f off)\n", x, y, cl[i], ce); continue; }
+            sharp_ok += q->sharp >= 1.0f;
+            blend_ok += q->sharp < 1.0f && q->slot == 3;
+            /* the mask: batch 0's every corner in state 0, visible */
+            if (q->slot == 0) marked += (mk[i] & 0xFF) >= 128;
+        }
+    }
+    qsort(errs, (size_t)nerr, sizeof(double), cmp_double);
+    const double p50 = nerr ? errs[nerr / 2] : 0, p99 = nerr ? errs[(nerr * 99) / 100] : 0;
+    printf("    %d pixels sure (by batch %d %d %d %d %d), %d of the bowl's from behind; depth at most %.3f of its tolerance, colour %.2f off; normals median %.4f, 99th %.4f degrees; %d sharp, %d blended, %d marked\n",
+           sure, per_slot[0], per_slot[1], per_slot[2], per_slot[3], per_slot[4], backs, worst_depth, worst_col, p50, p99, sharp_ok, blend_ok, marked);
+    EXPECT_EQ(0, bad);
+    for (int k = 0; k < NB; ++k) EXPECT_GT(per_slot[k], 100);
+    EXPECT_GT(backs, 100);
+    EXPECT_GT(sharp_ok, 100);
+    EXPECT_GT(blend_ok, 100);
+    EXPECT_EQ(per_slot[0], marked);
+    EXPECT_LT(p50, 0.05);
+    EXPECT_LT(p99, 0.5);
+    free(errs);
+
+    /* A pick on the tetrahedron's second instance: its batch, instance, face
+       and the corner of the largest weight */
+    bool picked = false;
+    for (int k = 0; k < nref; ++k) {
+        if (ref[k].slot != 2 || ref[k].linear < 4) continue;
+        double ctr[3];
+        for (int a = 0; a < 3; ++a) ctr[a] = (0.6 * ref[k].q[0][a] + 0.2 * ref[k].q[1][a] + 0.2 * ref[k].q[2][a]);
+        const uint32_t px = (uint32_t)((ctr[0] / -ctr[2] / (c.tan_half * c.aspect) * 0.5 + 0.5) * W);
+        const uint32_t py = (uint32_t)((0.5 - ctr[1] / -ctr[2] / c.tan_half * 0.5) * H);
+        double t, w[3];
+        int kh = tri_ref_cast(ref, nref, pixel_ray(&c, W, H, px + 0.5, py + 0.5), &t, w);
+        if (kh != k) continue;      /* that face hidden there: the next */
+        md_render_pick_t pk;
+        ASSERT_TRUE(f_pick(&fx, px, py, &pk));
+        int km = w[1] > w[0] ? (w[2] > w[1] ? 2 : 1) : (w[2] > w[0] ? 2 : 0);
+        EXPECT_EQ(82u, (unsigned)pk.key);
+        EXPECT_EQ(1u, pk.instance);
+        EXPECT_EQ(ref[k].linear - 4u, pk.element);
+        EXPECT_EQ(ref[k].attr[km], pk.attr);
+        EXPECT_NEAR(t * -pixel_ray(&c, W, H, px + 0.5, py + 0.5).d[2], (double)-pk.position[2], 1e-3);
+        picked = true;
+        break;
+    }
+    EXPECT_TRUE(picked);
+
+    /* Motion: the blended tetrahedron's corners given velocities of a
+       turning about its centre and a drift, so the motion at a point is the
+       field's there, through its corners by the weights. A raster at time 1
+       after one at 0 (its positions as they were: the velocity alone says
+       where it was) */
+    {
+        const double om[3] = { 0.3, -0.2, 0.5 }, v0[3] = { 0.4, 0.1, -0.3 }, cc[3] = { -0.6, -1.85, -11.4 };
+        uint32_t pv[8];
+        for (int j = 0; j < 4; ++j) {
+            double d[3] = { tet[j][0] - cc[0], tet[j][1] - cc[1], tet[j][2] - cc[2] };
+            float vj[3] = { (float)(om[1] * d[2] - om[2] * d[1] + v0[0]), (float)(om[2] * d[0] - om[0] * d[2] + v0[1]), (float)(om[0] * d[1] - om[1] * d[0] + v0[2]) };
+            md_render_pack_velocity(vj, pv + 2 * j);
+        }
+        b[3].points.velocity = f_buf(&fx, pv, sizeof(pv));
+        f = frame_of(W, H, cam, b, NB);
+        f.time = 0.0;
+        ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+        f.time = 1.0;
+        f.content[MD_RENDER_CONTENT_GEOMETRY]++;
+        ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+        uint32_t* mo = malloc(W * H * 4);
+        ASSERT_TRUE(f_read(&fx, tg.motion, mo, W * H * 4) && f_read(&fx, tg.id, id, W * H * 8));
+        int moved = 0, still = 0, mbad = 0;
+        double mworst = 0;
+        for (uint32_t y = 0; y < H; ++y) {
+            for (uint32_t x = 0; x < W; ++x) {
+                const uint32_t i = y * W + x;
+                if (id[2 * i + 1] == 0) continue;
+                double t, w[3];
+                ray_t r = pixel_ray(&c, W, H, x + 0.5, y + 0.5);
+                int k = tri_ref_cast(ref, nref, r, &t, w);
+                if (k < 0 || (id[2 * i + 1] >> 20) - 1u != ref[k].slot || id[2 * i] != ref[k].linear) continue;
+                const double mx = half_bits_to_float(mo[i] & 0xFFFFu), my = half_bits_to_float(mo[i] >> 16);
+                if (ref[k].slot != 3) { still += mx == 0.0 && my == 0.0; continue; }
+                /* the hit point, the field there (the batch's transform: a move up by 3.4) */
+                double P[3] = { r.o[0] + r.d[0] * t, r.o[1] + r.d[1] * t, r.o[2] + r.d[2] * t };
+                double d[3] = { P[0] - cc[0], P[1] - 3.4 - cc[1], P[2] - cc[2] };
+                double v[3] = { om[1] * d[2] - om[2] * d[1] + v0[0], om[2] * d[0] - om[0] * d[2] + v0[1], om[0] * d[1] - om[1] * d[0] + v0[2] };
+                double Q[3] = { P[0] - v[0], P[1] - v[1], P[2] - v[2] };
+                double ex = ((P[0] / -P[2] - Q[0] / -Q[2]) / (c.tan_half * c.aspect)) * 0.5 * W;
+                double ey = -((P[1] / -P[2] - Q[1] / -Q[2]) / c.tan_half) * 0.5 * H;
+                double e = fmax(fabs(ex - mx), fabs(ey - my));
+                mworst = fmax(mworst, e);
+                if (e > 0.02 + 0.002 * fmax(fabs(ex), fabs(ey))) { mbad++; if (mbad < 6) printf("    pixel (%u, %u): motion (%.3f, %.3f), expected (%.3f, %.3f)\n", x, y, mx, my, ex, ey); }
+                moved++;
+            }
+        }
+        printf("    motion: %d pixels moving, at most %.4f px off; %d still\n", moved, mworst, still);
+        EXPECT_EQ(0, mbad);
+        EXPECT_GT(moved, 100);
+        EXPECT_GT(still, 1000);
+        free(mo);
+    }
+
+    /* Refused: a fade, a normal stride not of whole floats */
+    for (int k = 0; k < 2; ++k) {
+        md_render_batch_t x = b[0];
+        if (k == 0) { x.fade.mode = MD_RENDER_FADE_SHRINK; x.fade.out[0] = 10.0f; x.fade.out[1] = 5.0f; }
+        if (k == 1) x.style.triangles.normal_stride = 14;
+        md_render_frame_t fr = frame_of(W, H, cam, &x, 1);
+        EXPECT_FALSE(md_render_view_draw(fx.gfx, fx.view, &fr, NULL));
+    }
+    (void)pxd;
+    free(id); free(dp); free(nb); free(cl); free(mk); free(ref);
+    free(pos0); free(nrm0); free(pos1); free(nrm1); free(back); free(marks0); free(s.xyz); free(s.tri);
+    f_close(&fx);
+}
+
 static uint16_t float_to_half(float f);
 
 /* md_render.h's side of a displaced capsule, in double: pa, pb in view space,

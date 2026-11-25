@@ -130,6 +130,7 @@ enum {
     F_FADE_SHRINK  = 1u << 17,
     F_FADE_THIN    = 1u << 18,
     F_SPL_AXIS     = 1u << 19,
+    F_TRI_NORMAL   = 1u << 19,    /* TRIANGLES: the spline bit, of another kind */
     F_SPL_PROFILE  = 1u << 20,
     F_SPL_THROUGH  = 1u << 21,
     F_DASHED       = 1u << 22,
@@ -170,14 +171,16 @@ typedef struct gpu_batch_t {
     md_gpu_addr_t fade_key;                                       /* F_FADE_KEY: the point standing for each point */
     md_gpu_addr_t id_visible0, id_visible1;                       /* F_ID_VISIBLE0, 1: bitsets over the ids */
     float         cap_end, cap_px;                                /* CAPSULES shaped: the second radius, the radius in pixels */
+    md_gpu_addr_t tri_normal;                                     /* TRIANGLES: float3 per point (F_TRI_NORMAL), */
+    uint32_t      tri_nstride, _tpad;                             /* that many bytes apart */
 } gpu_batch_t;
-_Static_assert(sizeof(gpu_batch_t) == 368, "Batch mirror");
+_Static_assert(sizeof(gpu_batch_t) == 384, "Batch mirror");
 
 typedef struct gpu_args_t {
     md_gpu_addr_t        view;
     md_gpu_addr_t        batches;
     uint32_t             mode;      /* raster: 0 visibility, 1 mask. cull etc.: phase 1 or 2 */
-    uint32_t             list;      /* raster: 0 hw0, 1 hw1, 2 st0, 3 st1, 4 hw2, 5 st2, 6 hw3, 7 st3 */
+    uint32_t             list;      /* raster: 0 hw0, 1 hw1, 2 st0, 3 st1, 4 hw2, 5 st2, 6 hw3, 7 st3, 8 hw4, 9 st4 */
     md_gpu_sampled_tex_t id;
     md_gpu_storage_tex_t color, normal, motion, mask;
     uint32_t             width, height, px, py;
@@ -195,6 +198,7 @@ typedef struct gpu_lists_t {
     md_gpu_addr_t hw2b;             /* per hw2 entry, its spline part's record: box, part, pieces' cuts: 20 float4 (SPLINE_RECORD) */
     md_gpu_addr_t hw2g;             /* boxes of groups of the parts' pieces: record << 4 | group, 16 at most a part */
     md_gpu_addr_t tiles;            /* the resolve's 8 x 8 tiles with spline pixels, then those with polygons */
+    md_gpu_addr_t hw4, st4;         /* triangles: hardware raster, state */
     uint32_t      tiles_cap, _lpad; /* tiles of the target */
 } gpu_lists_t;
 
@@ -219,7 +223,10 @@ enum {
     C_ZRANGE = 316,                 /* phase 1's visible clusters' view depths, for the order: 316, 317 */
     C_BKT = 320, C_BKO = 576,       /* phase 1's spline boxes' depth buckets: counts and starts, 256 each */
     C_TILES = 832,                  /* the resolve's tiles with spline, with polygon pixels: 832, 833 */
-    C_COUNT = 836,
+    C_HWT1 = 836, C_HWT2 = 837, C_STT = 838,  /* triangles: hardware raster, phase 1 and 2; state */
+    C_CMDT = 840,                   /* md_gpu_draw_cmd_t: triangles, phase 1 and 2: 840..847 */
+    C_STCMDT = 848,                 /* the state list's triangles: 848..851 */
+    C_COUNT = 852,
 };
 #define IMPLICIT_CLUSTER 64u
 #define CTR(v, i) ((v)->counters + (md_gpu_addr_t)(i) * 4u)
@@ -250,7 +257,7 @@ void md_render_debug_pass_hook(void (*hook)(void* user, const char* pass), void*
 struct md_render {
     md_gpu_device_t   dev;
     md_allocator_i*   alloc;
-    md_gpu_pipeline_t sphere_vis, sphere_mask, capsule_vis, capsule_mask, spline_vis, spline_mask, polygon_vis, polygon_mask, merge;
+    md_gpu_pipeline_t sphere_vis, sphere_mask, capsule_vis, capsule_mask, spline_vis, spline_mask, polygon_vis, polygon_mask, triangle_vis, triangle_mask, merge;
     md_gpu_kernel_t   k_resolve, k_mask_visible, k_export, k_pick, k_cull, k_finalize, k_raster_small, k_hiz, k_refit, k_cull_clusters;
     /* the heavy twins (md_render.slang, kind_taken): run only for frames with splines or polygons */
     md_gpu_kernel_t   k_refit_heavy, k_cull_heavy, k_resolve_heavy, k_resolve_poly, k_spline_order;
@@ -311,6 +318,8 @@ md_render_ctx_t md_render_create(md_gpu_device_t device, const md_render_desc_t*
     r->spline_mask  = make_pipeline(device, md_shader_md_render_spline_vs_shader(),  md_shader_md_render_spline_mask_fs_shader(),  PIPE_MASK, "md_render.spline_mask");
     r->polygon_vis  = make_pipeline(device, md_shader_md_render_polygon_vs_shader(), md_shader_md_render_polygon_fs_shader(),      PIPE_VIS,  "md_render.polygon");
     r->polygon_mask = make_pipeline(device, md_shader_md_render_polygon_vs_shader(), md_shader_md_render_polygon_mask_fs_shader(), PIPE_MASK, "md_render.polygon_mask");
+    r->triangle_vis  = make_pipeline(device, md_shader_md_render_triangle_vs_shader(), md_shader_md_render_triangle_fs_shader(),      PIPE_VIS,  "md_render.triangle");
+    r->triangle_mask = make_pipeline(device, md_shader_md_render_triangle_vs_shader(), md_shader_md_render_triangle_mask_fs_shader(), PIPE_MASK, "md_render.triangle_mask");
     r->merge        = make_pipeline(device, md_shader_md_render_merge_vs_shader(),   md_shader_md_render_merge_fs_shader(),        PIPE_VIS,  "md_render.merge");
     r->atomic_int64 = info.atomic_int64_min_max;
     r->vendor_id    = info.vendor_id;
@@ -336,7 +345,7 @@ md_render_ctx_t md_render_create(md_gpu_device_t device, const md_render_desc_t*
     }
 
     if (!r->sphere_vis || !r->sphere_mask || !r->capsule_vis || !r->capsule_mask || !r->spline_vis || !r->spline_mask ||
-        !r->polygon_vis || !r->polygon_mask || !r->merge ||
+        !r->polygon_vis || !r->polygon_mask || !r->triangle_vis || !r->triangle_mask || !r->merge ||
         !r->k_resolve || !r->k_mask_visible || !r->k_export || !r->k_pick || !r->k_cull || !r->k_finalize || !r->k_hiz || !r->k_refit || !r->k_cull_clusters ||
         !r->k_refit_heavy || !r->k_cull_heavy || !r->k_resolve_heavy || !r->k_resolve_poly || !r->k_spline_order) {
         MD_LOG_ERROR("md_render: pipeline or kernel creation failed: %s", md_gpu_last_error());
@@ -356,6 +365,8 @@ void md_render_destroy(md_render_ctx_t r) {
     if (r->spline_mask)    md_gpu_pipeline_destroy(r->spline_mask);
     if (r->polygon_vis)    md_gpu_pipeline_destroy(r->polygon_vis);
     if (r->polygon_mask)   md_gpu_pipeline_destroy(r->polygon_mask);
+    if (r->triangle_vis)   md_gpu_pipeline_destroy(r->triangle_vis);
+    if (r->triangle_mask)  md_gpu_pipeline_destroy(r->triangle_mask);
     if (r->k_refit_heavy)    md_gpu_kernel_destroy(r->k_refit_heavy);
     if (r->k_cull_heavy)     md_gpu_kernel_destroy(r->k_cull_heavy);
     if (r->k_resolve_heavy)  md_gpu_kernel_destroy(r->k_resolve_heavy);
@@ -677,6 +688,9 @@ static void canonical_geometry(md_render_batch_t* out, const md_render_batch_t* 
         out->style.splines = b->style.splines;
     } else if (b->kind == MD_RENDER_POLYGONS) {
         out->style.polygons = b->style.polygons;
+    } else if (b->kind == MD_RENDER_TRIANGLES) {
+        out->style.triangles.normal        = b->style.triangles.normal;
+        out->style.triangles.normal_stride = b->style.triangles.normal ? b->style.triangles.normal_stride : 0;
     }
     /* not the instances: the view keeps them apart from its copy of the
        batch (remember), and compare checks their count and transforms */
@@ -697,13 +711,14 @@ static void canonical_color(md_render_color_t* out, const md_render_batch_t* b) 
 /* The kinds md_render culls and rasterises; and which hardware raster draws
    them: 0 spheres (quads), 1 capsules (boxes), 2 spline parts and 3
    polygons (boxes, their own stages, in the heavy twins: md_render.slang,
-   kind_taken) */
-#define HW_KINDS 4
+   kind_taken), 4 triangles (themselves; culled and resolved with spheres
+   and capsules) */
+#define HW_KINDS 5
 static bool culled_kind(md_render_kind_t k) {
-    return k == MD_RENDER_SPHERES || k == MD_RENDER_CAPSULES || k == MD_RENDER_POLYGONS || k == MD_RENDER_SPLINES;
+    return k == MD_RENDER_SPHERES || k == MD_RENDER_CAPSULES || k == MD_RENDER_POLYGONS || k == MD_RENDER_SPLINES || k == MD_RENDER_TRIANGLES;
 }
 static uint32_t hw_kind(md_render_kind_t k) {
-    return k == MD_RENDER_SPHERES ? 0u : k == MD_RENDER_SPLINES ? 2u : k == MD_RENDER_POLYGONS ? 3u : 1u;
+    return k == MD_RENDER_SPHERES ? 0u : k == MD_RENDER_SPLINES ? 2u : k == MD_RENDER_POLYGONS ? 3u : k == MD_RENDER_TRIANGLES ? 4u : 1u;
 }
 
 static bool validate(const md_render_frame_t* f) {
@@ -782,6 +797,16 @@ static bool validate(const md_render_frame_t* f) {
             }
             if (!(b->style.polygons.inset >= 0.0f) || !isfinite(b->style.polygons.inset) || b->style.polygons.dashes > 16) {
                 MD_LOG_ERROR("md_render: batch %u: a circle's inset is finite and not negative, its dashes 16 at most", i);
+                return false;
+            }
+            break;
+        case MD_RENDER_TRIANGLES:
+            if (b->fade.mode) {
+                MD_LOG_ERROR("md_render: batch %u: triangles do not fade", i);
+                return false;
+            }
+            if (b->style.triangles.normal && (b->style.triangles.normal_stride & 3u)) {
+                MD_LOG_ERROR("md_render: batch %u: a normal stride is a multiple of 4 (got %u)", i, b->style.triangles.normal_stride);
                 return false;
             }
             break;
@@ -993,7 +1018,7 @@ static bool gpu_realloc(md_gpu_stream_t s, md_gpu_addr_t* addr, size_t* cap, siz
 static void no_null(gpu_batch_t* g, md_gpu_addr_t zero) {
     md_gpu_addr_t* opt[] = { &g->position, &g->velocity, &g->radius, &g->attr_index, &g->color, &g->palette_index, &g->palette,
                              &g->visible0, &g->visible1, &g->marks, &g->index_map, &g->index, &g->id, &g->id_visible0, &g->id_visible1, &g->radius_scale,
-                             &g->radius_table, &g->cluster_offset, &g->spl_axis, &g->spl_profile, &g->cap_side, &g->fade_key };
+                             &g->radius_table, &g->cluster_offset, &g->spl_axis, &g->spl_profile, &g->cap_side, &g->fade_key, &g->tri_normal };
     for (size_t i = 0; i < sizeof(opt) / sizeof(opt[0]); ++i) if (!*opt[i]) *opt[i] = zero;
 }
 
@@ -1096,6 +1121,12 @@ static void fill_batch(gpu_batch_t* g, const md_render_batch_t* b, uint32_t n_in
             f |= F_CIRCLE;
             g->poly_inset  = b->style.polygons.inset;
             g->poly_dashes = b->style.polygons.dashes;
+        }
+    } else if (b->kind == MD_RENDER_TRIANGLES) {
+        if (b->style.triangles.normal) {
+            f |= F_TRI_NORMAL;
+            g->tri_normal  = b->style.triangles.normal;
+            g->tri_nstride = b->style.triangles.normal_stride ? b->style.triangles.normal_stride : 12u;
         }
     }
     if (b->fade.mode) {
@@ -1282,18 +1313,19 @@ static gpu_args_t base_args(const md_render_view_t v) {
    pieces, 4 bytes each), plus 24 per cluster. */
 static bool ensure_lists(md_gpu_stream_t s, md_render_view_t v, const uint64_t work[HW_KINDS], uint64_t cwork, bool compute) {
     const uint64_t tot = work[0] + work[1];
-    /* Cluster entries are 8 bytes, element entries 4 (a global work index) */
+    /* Cluster entries are 8 bytes, element entries 4 (a global work index).
+       Triangles are retested (occ) but never small */
     const uint64_t tiles = (uint64_t)((v->width + 7u) / 8u) * ((v->height + 7u) / 8u);
-    const uint64_t sizes[16] = { cwork, cwork, cwork, work[0], work[1], work[0], work[1], tot, tot, work[2], work[2], work[3], work[3], work[2], 16u * work[2],
-                                 (work[2] || work[3]) ? 2u * tiles : 0u };
-    const uint32_t esize[16] = { 8, 8, 8, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 320, 4, 4 };   /* SPLINE_RECORD float4; spline_pieces' 16 */
+    const uint64_t sizes[18] = { cwork, cwork, cwork, work[0], work[1], work[0], work[1], tot, tot + work[4], work[2], work[2], work[3], work[3], work[2], 16u * work[2],
+                                 (work[2] || work[3]) ? 2u * tiles : 0u, work[4], work[4] };
+    const uint32_t esize[18] = { 8, 8, 8, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 320, 4, 4, 4, 4 };   /* SPLINE_RECORD float4; spline_pieces' 16 */
     size_t need = 0;
-    for (int i = 0; i < 16; ++i) need += (size_t)align_addr((sizes[i] + 1) * esize[i]);
+    for (int i = 0; i < 18; ++i) need += (size_t)align_addr((sizes[i] + 1) * esize[i]);
     if (!gpu_realloc(s, &v->list_mem, &v->list_mem_cap, need)) return false;
     gpu_lists_t l;
     md_gpu_addr_t o = v->list_mem;
-    md_gpu_addr_t* dst[16] = { &l.cvis, &l.cocc, &l.cst, &l.hw0, &l.hw1, &l.st0, &l.st1, &l.small, &l.occ, &l.hw2, &l.st2, &l.hw3, &l.st3, &l.hw2b, &l.hw2g, &l.tiles };
-    for (int i = 0; i < 16; ++i) { *dst[i] = o; o += align_addr((sizes[i] + 1) * esize[i]); }
+    md_gpu_addr_t* dst[18] = { &l.cvis, &l.cocc, &l.cst, &l.hw0, &l.hw1, &l.st0, &l.st1, &l.small, &l.occ, &l.hw2, &l.st2, &l.hw3, &l.st3, &l.hw2b, &l.hw2g, &l.tiles, &l.hw4, &l.st4 };
+    for (int i = 0; i < 18; ++i) { *dst[i] = o; o += align_addr((sizes[i] + 1) * esize[i]); }
     l.tiles_cap = (uint32_t)sizes[15];
     l._lpad     = 0;
     if (!v->counters) v->counters = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, C_COUNT * 4u).gpu;
@@ -1429,11 +1461,12 @@ static bool run_raster(md_gpu_stream_t s, md_render_view_t v, uint32_t phase, bo
     }
     for (uint32_t k = 0; k < HW_KINDS; ++k) {
         if (!has_kind[k]) continue;
-        ds.cull = k == 0 ? MD_GPU_CULL_NONE : MD_GPU_CULL_BACK;
+        ds.cull = k == 0 || k == 4 ? MD_GPU_CULL_NONE : MD_GPU_CULL_BACK;
         md_gpu_set_draw_state(s, &ds);
         a.mode = 0;
-        a.list = k == 2 ? 4 : k == 3 ? 6 : k;
+        a.list = k == 2 ? 4 : k == 3 ? 6 : k == 4 ? 8 : k;
         if (k == 0)      md_gpu_draw_indirect(s, r->sphere_vis, CTR(v, C_CMD + (phase - 1) * 2 * 4), 1, &a, sizeof(a));
+        else if (k == 4) md_gpu_draw_indirect(s, r->triangle_vis, CTR(v, C_CMDT + (phase - 1) * 4), 1, &a, sizeof(a));
         else if (k == 1) md_gpu_draw_indexed_indirect(s, r->capsule_vis, v->box_idx, MD_GPU_INDEX_U16, CTR(v, C_ICMD + (phase - 1) * 5), 1, &a, sizeof(a));
         else if (k == 2) md_gpu_draw_indexed_indirect(s, r->spline_vis, v->box_idx, MD_GPU_INDEX_U16, CTR(v, C_ICMDS + (phase - 1) * 5), 1, &a, sizeof(a));
         else             md_gpu_draw_indexed_indirect(s, r->polygon_vis, v->box_idx, MD_GPU_INDEX_U16, CTR(v, C_ICMDP + (phase - 1) * 5), 1, &a, sizeof(a));
@@ -1481,14 +1514,15 @@ static bool run_masks(md_gpu_stream_t s, md_render_view_t v, const md_render_fra
     md_gpu_grid_t g = md_gpu_grid_for(v->r->k_mask_visible, v->width, v->height, 1);
     if (!md_gpu_launch(s, v->r->k_mask_visible, g, &a, sizeof(a))) return false;
 
-    bool has[HW_KINDS] = { false, false, false, false };
+    bool has[HW_KINDS] = { false, false, false, false, false };
+    bool any = false;
     for (uint32_t i = 0; i < f->batch_count; ++i) {
         const md_render_batch_t* b = &f->batches[i];
         if (b->count && b->points.marks) {
-            if (culled_kind(b->kind)) has[hw_kind(b->kind)] = true;
+            if (culled_kind(b->kind)) has[hw_kind(b->kind)] = any = true;
         }
     }
-    if (!has[0] && !has[1] && !has[2] && !has[3]) return true;
+    if (!any) return true;
     md_gpu_render_desc_t rd = {0};
     rd.color_count      = 1;
     rd.color[0].texture = v->t.mask;
@@ -1503,11 +1537,12 @@ static bool run_masks(md_gpu_stream_t s, md_render_view_t v, const md_render_fra
     ds.depth_compare = MD_GPU_COMPARE_ALWAYS;
     for (uint32_t k = 0; k < HW_KINDS; ++k) {
         if (!has[k]) continue;
-        ds.cull = k == 0 ? MD_GPU_CULL_NONE : MD_GPU_CULL_BACK;
+        ds.cull = k == 0 || k == 4 ? MD_GPU_CULL_NONE : MD_GPU_CULL_BACK;
         md_gpu_set_draw_state(s, &ds);
         a.mode = 1;
-        a.list = k == 2 ? 5 : k == 3 ? 7 : 2 + k;
+        a.list = k == 2 ? 5 : k == 3 ? 7 : k == 4 ? 9 : 2 + k;
         if (k == 0)      md_gpu_draw_indirect(s, v->r->sphere_mask, CTR(v, C_STCMD), 1, &a, sizeof(a));
+        else if (k == 4) md_gpu_draw_indirect(s, v->r->triangle_mask, CTR(v, C_STCMDT), 1, &a, sizeof(a));
         else if (k == 1) md_gpu_draw_indexed_indirect(s, v->r->capsule_mask, v->box_idx, MD_GPU_INDEX_U16, CTR(v, C_STICMD), 1, &a, sizeof(a));
         else if (k == 2) md_gpu_draw_indexed_indirect(s, v->r->spline_mask, v->box_idx, MD_GPU_INDEX_U16, CTR(v, C_STICMDS), 1, &a, sizeof(a));
         else             md_gpu_draw_indexed_indirect(s, v->r->polygon_mask, v->box_idx, MD_GPU_INDEX_U16, CTR(v, C_STICMDP), 1, &a, sizeof(a));
@@ -1575,7 +1610,7 @@ static bool occlusion_wanted(md_render_view_t v) {
     }
     if (best >= 0) {
         const uint32_t* c = (const uint32_t*)v->stats[best].host.cpu;
-        const uint64_t hw    = (uint64_t)c[C_HW1] + c[C_HW1 + 1] + c[C_HWS1] + c[C_HWP1] + c[C_HW2] + c[C_HW2 + 1] + c[C_HWS2] + c[C_HWP2];
+        const uint64_t hw    = (uint64_t)c[C_HW1] + c[C_HW1 + 1] + c[C_HWS1] + c[C_HWP1] + c[C_HWT1] + c[C_HW2] + c[C_HW2 + 1] + c[C_HWS2] + c[C_HWP2] + c[C_HWT2];
         const uint64_t small = (uint64_t)c[C_SMALL1] + c[C_SMALL2];
         const uint64_t drawn = hw + small;
         v->occl_seen = v->stats[best].raster;
@@ -1610,8 +1645,8 @@ bool md_render_view_stats(md_render_view_t v, md_render_stats_t* out) {
     out->outside     = c[C_OUTSIDE];
     out->faded       = c[C_LOD];
     out->occluded    = c[C_OCCLUDED];
-    out->hardware[0] = c[C_HW1] + c[C_HW1 + 1] + c[C_HWS1] + c[C_HWP1];
-    out->hardware[1] = c[C_HW2] + c[C_HW2 + 1] + c[C_HWS2] + c[C_HWP2];
+    out->hardware[0] = c[C_HW1] + c[C_HW1 + 1] + c[C_HWS1] + c[C_HWP1] + c[C_HWT1];
+    out->hardware[1] = c[C_HW2] + c[C_HW2 + 1] + c[C_HWS2] + c[C_HWP2] + c[C_HWT2];
     out->compute[0]  = c[C_SMALL1];
     out->compute[1]  = c[C_SMALL2];
     out->occlusion_retested = c[C_OCC];
@@ -1762,8 +1797,8 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
         gv.spl_order  = g_spline_order;
         md_gpu_upload(s, v->view_buf, &gv, sizeof(gv));
 
-        uint64_t work[HW_KINDS] = { 0, 0, 0, 0 };
-        bool has_kind[HW_KINDS] = { false, false, false, false };
+        uint64_t work[HW_KINDS] = { 0, 0, 0, 0, 0 };
+        bool has_kind[HW_KINDS] = { false, false, false, false, false };
         for (uint32_t i = 0; i < f->batch_count; ++i) {
             const md_render_batch_t* b = &f->batches[i];
             uint32_t k = hw_kind(b->kind);
@@ -1771,7 +1806,7 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
             if (batch_work(b)) has_kind[k] = true;
         }
         const bool spl = has_kind[2] || has_kind[3];   /* the heavy twins run */
-        const uint32_t total = (uint32_t)(work[0] + work[1] + work[2] + work[3]);
+        const uint32_t total = (uint32_t)(work[0] + work[1] + work[2] + work[3] + work[4]);
         const md_gpu_addr_t list_mem_before = v->list_mem;
         if (!ensure_lists(s, v, work, gv.total_cluster_work, compute)) return false;
         /* State lists: rebuilt only when the state bits or the geometry
@@ -1783,7 +1818,7 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
         } else {
             static const uint32_t keep[][2] = { { C_ST, C_ST + 2 }, { C_CST, C_CST + 1 }, { C_STCMD, C_STCMD + 8 }, { C_GRID_CST, C_GRID_CST + 3 },
                                                 { C_STICMD, C_STICMD + 5 }, { C_STS, C_STS + 1 }, { C_STICMDS, C_STICMDS + 5 },
-                                                { C_STP, C_STP + 1 }, { C_STICMDP, C_STICMDP + 5 } };
+                                                { C_STP, C_STP + 1 }, { C_STICMDP, C_STICMDP + 5 }, { C_STT, C_STT + 1 }, { C_STCMDT, C_STCMDT + 4 } };
             uint32_t w = 0;
             for (size_t i = 0; i < sizeof(keep) / sizeof(keep[0]); ++i) {
                 if (keep[i][0] > w) md_gpu_memset(s, CTR(v, w), 0, (keep[i][0] - w) * 4u);
@@ -1879,6 +1914,7 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
         md_gpu_memset(s, CTR(v, C_ST), 0, 8u);
         md_gpu_memset(s, CTR(v, C_STS), 0, 4u);
         md_gpu_memset(s, CTR(v, C_STP), 0, 4u);
+        md_gpu_memset(s, CTR(v, C_STT), 0, 4u);
         md_gpu_memset(s, CTR(v, C_CST), 0, 4u);
         if (!run_state_lists(s, v, cwork, frame_has_heavy(f))) return false;
         PASS_DONE("state lists");
@@ -2104,8 +2140,8 @@ bool md_render_debug_kernel_info(md_render_ctx_t r, uint32_t i, const char** nam
 bool md_render_debug_pipeline_info(md_render_ctx_t r, uint32_t i, const char** name, md_gpu_pipeline_info_t* info) {
     if (!r) return false;
     const struct { const char* n; md_gpu_pipeline_t p; } ps[] = {
-        { "sphere", r->sphere_vis }, { "capsule", r->capsule_vis }, { "spline", r->spline_vis }, { "polygon", r->polygon_vis },
-        { "sphere mask", r->sphere_mask }, { "capsule mask", r->capsule_mask }, { "spline mask", r->spline_mask }, { "polygon mask", r->polygon_mask },
+        { "sphere", r->sphere_vis }, { "capsule", r->capsule_vis }, { "spline", r->spline_vis }, { "polygon", r->polygon_vis }, { "triangle", r->triangle_vis },
+        { "sphere mask", r->sphere_mask }, { "capsule mask", r->capsule_mask }, { "spline mask", r->spline_mask }, { "polygon mask", r->polygon_mask }, { "triangle mask", r->triangle_mask },
     };
     if (i >= sizeof(ps) / sizeof(ps[0])) return false;
     if (name) *name = ps[i].n;
