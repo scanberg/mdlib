@@ -123,7 +123,7 @@ typedef struct md_compose_shading_t {
    ones dark on a light rim, the transient one (hover) light on a dark rim,
    opaque paint on the surface. Its normal is the normals volume's direction
    there when given (and not too short), else the field's gradient.
-   To come: the exact intersection (cell by cell), slices. */
+   To come: the exact intersection (cell by cell). */
 
 #define MD_COMPOSE_MAX_VOLUMES 4
 #define MD_COMPOSE_MAX_ISO     8
@@ -168,6 +168,33 @@ typedef struct md_compose_volume_t {
                                       (md_gto_gpu_gradient_pack)                     */
 } md_compose_volume_t;
 
+/* ---- Slices --------------------------------------------------------------------
+   A field shown on a rectangle in the world: where a pixel's ray meets it in
+   front of the opaque surface, the transfer function's colour of the field's
+   value there with the slice's opacity, composited in order along the ray
+   with the layers and the volumes (viamd's planes display, dvr.frag's slice
+   mode). Its edge: a line along the rectangle's border, edge_px pixels each
+   way, on a dark halo a pixel wider, as wide in pixels wherever it is (the
+   rectangle's size in pixels where the ray meets it, from the rays of the
+   next pixels), in front of the slice. The field's value from a 3D texture
+   through field_from_world, past the texture clamped to its edges: a
+   volume's field (its texture space), or the slice's own image evaluated on
+   the rectangle (W x H x 1, the rectangle's unit square as its x and y). */
+#define MD_COMPOSE_MAX_SLICES 8
+
+typedef struct md_compose_slice_t {
+    float            rect[16];         /* the unit square x, y in [0, 1] (z 0) to the
+                                          world (column-major)                       */
+    md_gpu_texture_t field;            /* 3D, R32_FLOAT or R16_FLOAT, SAMPLED        */
+    float            field_from_world[16];
+    md_gpu_texture_t transfer;         /* 2D, N x 1, RGBA8_UNORM: sRGB colour (its
+                                          alpha unused)                              */
+    float            transfer_range[2];
+    float            opacity;          /* 0: its edge alone                          */
+    float            edge[4];          /* sRGB colour, alpha: how much (0: none)     */
+    float            edge_px;          /* half the line's width, pixels              */
+} md_compose_slice_t;
+
 typedef enum md_compose_ao_mode_t {
     MD_COMPOSE_AO_QUALITY = 0,
     MD_COMPOSE_AO_PERFORMANCE,
@@ -183,6 +210,8 @@ typedef struct md_compose_desc_t {
     md_compose_ao_mode_t ao_mode;
     const md_compose_volume_t* volumes;    /* read at the call                      */
     uint32_t             volume_count;     /* at most MD_COMPOSE_MAX_VOLUMES        */
+    const md_compose_slice_t*  slices;     /* read at the call                      */
+    uint32_t             slice_count;      /* at most MD_COMPOSE_MAX_SLICES         */
     uint32_t             frame;            /* seeds the emission's jitter           */
     md_gpu_texture_t     target;   /* RGBA16_FLOAT, STORAGE, of the view's size:
                                       the scene's radiance premultiplied by its

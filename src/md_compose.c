@@ -28,10 +28,14 @@ typedef struct gpu_compose_args_t {
     md_gpu_sampled_tex_t vg[4];         /* colour fields */
     md_gpu_sampled_tex_t vm[4];         /* colour maps */
     md_gpu_sampled_tex_t vn[4];         /* normals */
+    md_gpu_addr_t        slices;
+    uint32_t             slice_count, _sp;
+    md_gpu_sampled_tex_t sf[8];         /* the slices' fields */
+    md_gpu_sampled_tex_t st[8];         /* and transfer functions */
 } gpu_compose_args_t;
-_Static_assert(sizeof(gpu_compose_args_t) == 496, "Args mirror");
+_Static_assert(sizeof(gpu_compose_args_t) == 640, "Args mirror");
 
-enum { AO_LEVELS = 6, VOL_STRIDE = 36 };   /* md_compose.slang's */
+enum { AO_LEVELS = 6, VOL_STRIDE = 36, SLICE_STRIDE = 10 };   /* md_compose.slang's */
 
 struct md_compose {
     md_gpu_device_t  dev;
@@ -90,6 +94,11 @@ static md_gpu_float4 f4(float x, float y, float z, float w) {
 static uint32_t level_dim(uint32_t n, uint32_t l) {
     const uint32_t d = n >> l;
     return d ? d : 1u;
+}
+
+static float srgb_decode_c(float x) {
+    x = x < 0.0f ? 0.0f : x > 1.0f ? 1.0f : x;
+    return x <= 0.04045f ? x / 12.92f : powf((x + 0.055f) / 1.055f, 2.4f);
 }
 
 /* An optional texture of a volume: 0, or SAMPLED of the type and one of the formats */
@@ -249,6 +258,47 @@ bool md_compose(md_gpu_stream_t s, md_compose_ctx_t c, md_render_view_t view, co
         if (!a.vm[v].handle) a.vm[v] = md_gpu_texture_sampled(c->none_transfer);
         if (!a.vn[v].handle) a.vn[v] = md_gpu_texture_sampled(c->none_color);
     }
+    /* The slices: their records, their textures */
+    const uint32_t ns = d->slice_count;
+    if (ns > MD_COMPOSE_MAX_SLICES || (ns && !d->slices)) {
+        MD_LOG_ERROR("md_compose: at most %d slices", MD_COMPOSE_MAX_SLICES);
+        return false;
+    }
+    md_gpu_float4 srec[MD_COMPOSE_MAX_SLICES * SLICE_STRIDE];
+    md_memset(srec, 0, sizeof(srec));
+    for (uint32_t i = 0; i < ns; ++i) {
+        const md_compose_slice_t* sl = &d->slices[i];
+        if (!sl->field || !vol_tex_ok(sl->field, MD_GPU_TEX_3D, MD_GPU_FORMAT_R32_FLOAT, MD_GPU_FORMAT_R16_FLOAT) ||
+            !sl->transfer || !vol_tex_ok(sl->transfer, MD_GPU_TEX_2D, MD_GPU_FORMAT_RGBA8_UNORM, MD_GPU_FORMAT_RGBA8_UNORM)) {
+            MD_LOG_ERROR("md_compose: slice %u: its field is to be a SAMPLED 3D texture of R32_FLOAT or R16_FLOAT, its transfer function a 2D one of RGBA8_UNORM", i);
+            return false;
+        }
+        md_float4x4_t V, R, F;
+        md_memcpy(&V, d->camera.view, sizeof(V));
+        md_memcpy(&R, sl->rect, sizeof(R));
+        md_memcpy(&F, sl->field_from_world, sizeof(F));
+        const md_float4x4_t IV = md_float4x4_inverse(V);
+        const md_float4x4_t VR = md_float4x4_inverse(md_float4x4_mul(V, R));     /* view to the rectangle's */
+        const md_float4x4_t VF = md_float4x4_mul(F, IV);                          /* view to the field's */
+        const float* vr = (const float*)&VR;
+        const float* vf = (const float*)&VF;
+        md_gpu_float4* r = srec + i * SLICE_STRIDE;
+        for (int c4 = 0; c4 < 4; ++c4) {
+            r[c4]     = f4(vr[4 * c4], vr[4 * c4 + 1], vr[4 * c4 + 2], vr[4 * c4 + 3]);
+            r[4 + c4] = f4(vf[4 * c4], vf[4 * c4 + 1], vf[4 * c4 + 2], vf[4 * c4 + 3]);
+        }
+        const float ext = sl->transfer_range[1] - sl->transfer_range[0];
+        r[8] = f4(sl->transfer_range[0], ext != 0.0f ? 1.0f / ext : 0.0f, sl->opacity, sl->edge_px);
+        r[9] = f4(srgb_decode_c(sl->edge[0]), srgb_decode_c(sl->edge[1]), srgb_decode_c(sl->edge[2]), sl->edge[3]);
+        a.sf[i] = md_gpu_texture_sampled(sl->field);
+        a.st[i] = md_gpu_texture_sampled(sl->transfer);
+    }
+    for (uint32_t i = ns; i < MD_COMPOSE_MAX_SLICES; ++i) {
+        a.sf[i] = md_gpu_texture_sampled(c->none_field);
+        a.st[i] = md_gpu_texture_sampled(c->none_transfer);
+    }
+    a.slice_count = ns;
+
     a.vol_count = nv;
     a.frame     = d->frame;
     a.trilinear = c->trilinear;
@@ -256,8 +306,9 @@ bool md_compose(md_gpu_stream_t s, md_compose_ctx_t c, md_render_view_t view, co
     const md_gpu_ordering_t prev = md_gpu_stream_set_ordering(s, MD_GPU_ORDER_IMPLICIT);
     md_gpu_temp_t scope = md_gpu_temp_begin(s);
     bool ok = true;
-    a.vols = md_gpu_temp_upload(scope, rec, (size_t)(nv ? nv : 1u) * VOL_STRIDE * sizeof(md_gpu_float4));
-    ok = a.vols != 0;
+    a.vols   = md_gpu_temp_upload(scope, rec, (size_t)(nv ? nv : 1u) * VOL_STRIDE * sizeof(md_gpu_float4));
+    a.slices = md_gpu_temp_upload(scope, srec, (size_t)(ns ? ns : 1u) * SLICE_STRIDE * sizeof(md_gpu_float4));
+    ok = a.vols != 0 && a.slices != 0;
     if (use_ao) {
         /* the linear depth's levels, and two planes at half resolution */
         size_t lin = 0;

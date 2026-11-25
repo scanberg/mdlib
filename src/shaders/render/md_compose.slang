@@ -47,6 +47,11 @@ struct Args {
     DescriptorHandle<Texture3D<float>>    vg0, vg1, vg2, vg3;   // colour fields
     DescriptorHandle<Texture2D<float4>>   vm0, vm1, vm2, vm3;   // their colour maps
     DescriptorHandle<Texture3D<float4>>   vn0, vn1, vn2, vn3;   // normals
+    float4* slices;             // the slices' records, SLICE_STRIDE float4 each (md_compose.c's)
+    uint   slice_count;
+    uint   _sp;
+    DescriptorHandle<Texture3D<float>>    sf0, sf1, sf2, sf3, sf4, sf5, sf6, sf7;   // the slices' fields
+    DescriptorHandle<Texture2D<float4>>   st0, st1, st2, st3, st4, st5, st6, st7;   // and transfer functions
 };
 MD_SHADER_ARGS(Args);
 
@@ -760,11 +765,85 @@ float4 surface_color(Args a, uint v, uint i, float3 pt, float3 P, float3 N, floa
     return apply_isolines(a, v, c, f, gp);
 }
 
+// ---- Slices -------------------------------------------------------------------
+// A slice's record: SLICE_STRIDE float4
+//   0..3   view space to its rectangle's (the unit square at z 0)
+//   4..7   view space to its field's texture space
+//   8      the transfer function's range begin, 1 / its extent, the opacity, the edge's half width (pixels)
+//   9      the edge's colour (linear), alpha
+
+static const uint SLICE_STRIDE = 10u;
+static const uint MAX_SLICES   = 8u;
+
+float4 srec(Args a, uint i, uint k) { return a.slices[i * SLICE_STRIDE + k]; }
+
+float slice_field(Args a, uint i, float3 p) {
+    switch (i) {
+    case 0u: return a.sf0.SampleLevel(a.trilinear, p, 0.0);
+    case 1u: return a.sf1.SampleLevel(a.trilinear, p, 0.0);
+    case 2u: return a.sf2.SampleLevel(a.trilinear, p, 0.0);
+    case 3u: return a.sf3.SampleLevel(a.trilinear, p, 0.0);
+    case 4u: return a.sf4.SampleLevel(a.trilinear, p, 0.0);
+    case 5u: return a.sf5.SampleLevel(a.trilinear, p, 0.0);
+    case 6u: return a.sf6.SampleLevel(a.trilinear, p, 0.0);
+    default: return a.sf7.SampleLevel(a.trilinear, p, 0.0);
+    }
+}
+
+float3 slice_transfer(Args a, uint i, float t) {
+    float2 uv = float2(t, 0.5);
+    switch (i) {
+    case 0u: return a.st0.SampleLevel(a.trilinear, uv, 0.0).rgb;
+    case 1u: return a.st1.SampleLevel(a.trilinear, uv, 0.0).rgb;
+    case 2u: return a.st2.SampleLevel(a.trilinear, uv, 0.0).rgb;
+    case 3u: return a.st3.SampleLevel(a.trilinear, uv, 0.0).rgb;
+    case 4u: return a.st4.SampleLevel(a.trilinear, uv, 0.0).rgb;
+    case 5u: return a.st5.SampleLevel(a.trilinear, uv, 0.0).rgb;
+    case 6u: return a.st6.SampleLevel(a.trilinear, uv, 0.0).rgb;
+    default: return a.st7.SampleLevel(a.trilinear, uv, 0.0).rgb;
+    }
+}
+
+float3 mulp4(float4 c0, float4 c1, float4 c2, float4 c3, float3 p) { return (c0 * p.x + c1 * p.y + c2 * p.z + c3).xyz; }
+float3 mulv4(float4 c0, float4 c1, float4 c2, float3 v) { return (c0 * v.x + c1 * v.y + c2 * v.z).xyz; }
+
+// Where the ray o + t d (view space) meets slice i's plane: t, and the point
+// on its rectangle in x, y; t < 0 when it does not
+float3 slice_hit(Args a, uint i, float3 o, float3 d) {
+    float3 ro = mulp4(srec(a, i, 0u), srec(a, i, 1u), srec(a, i, 2u), srec(a, i, 3u), o);
+    float3 rd = mulv4(srec(a, i, 0u), srec(a, i, 1u), srec(a, i, 2u), d);
+    if (abs(rd.z) < 1e-20) return float3(0.0, 0.0, -1.0);
+    float t = -ro.z / rd.z;
+    float2 q = (ro + rd * t).xy;
+    return float3(q, t);
+}
+
 // A film shaded onto the ray: what it reflects, and what it lets through
 void film(Args a, inout float3 C, inout float T, float3 color, float alpha, float3 V, float3 N) {
     Lit l = shade(a, color, V, N, 1.0);
     C += T * (alpha * l.diffuse + l.specular);
     T *= (1.0 - alpha) * (1.0 - l.Fe);
+}
+
+// Slice i onto the ray at t, d pixels in from its rectangle's border (out:
+// negative): its edge in front of it, the line over its halo, each feathered
+// over a pixel; the slice within its rectangle, its border feathered too
+void slice(Args a, inout float3 C, inout float T, uint i, float3 P, float d) {
+    float4 r = srec(a, i, 8u), e = srec(a, i, 9u);
+    float  w = r.w;
+    if (e.a > 0.0) {
+        float core = saturate(w + 0.5 - abs(d)) * e.a;
+        float halo = saturate(w + 1.5 - abs(d)) * e.a * 0.45;
+        C += T * core * e.rgb;
+        T *= 1.0 - (core + halo * (1.0 - core));
+    }
+    float al = r.z * saturate(d + 0.5);
+    if (al > 0.0) {
+        float3 pf = mulp4(srec(a, i, 4u), srec(a, i, 5u), srec(a, i, 6u), srec(a, i, 7u), P);
+        float  u  = saturate((slice_field(a, i, pf) - r.x) * r.y);
+        C += T * al * srgb_to_linear(slice_transfer(a, i, u));
+        T *= 1.0 - al;
+    }
 }
 
 // Layer k of the pixel p onto the ray
@@ -774,6 +853,12 @@ void layer(Args a, inout float3 C, inout float T, uint k, uint p, float3 V) {
     uint   nb = a.layers[a.count * a.stride + k * a.stride + p];
     float3 N  = oct_decode(float2(half_to_float(nb & 0xFFFFu), half_to_float(nb >> 16)));
     film(a, C, T, c.rgb, c.a, V, N);
+}
+
+// The surface kd (a layer, or 0x100 | a slice) onto the ray at P
+void surface(Args a, inout float3 C, inout float T, uint kd, float d, uint p, float3 P, float3 V) {
+    if ((kd & 0x100u) != 0u) slice(a, C, T, kd & 0xFFu, P, d);
+    else                     layer(a, C, T, kd, p, V);
 }
 
 // The events along the ray in a step, in order: (t, v | i << 8), i an
@@ -813,13 +898,43 @@ void compose(uint3 tid : SV_DispatchThreadID) {
     }
 
     // the layers, front to back, and where they are along the ray
+    // and the slices it meets in front of the opaque surface: the surfaces
+    // along the ray, in order: (t, k) for layer k, (t, 0x100 | i) slice i;
+    // a slice's distance in from its border (pixels) beside it
     uint  nl = 0u;
-    float tl[8];
+    float tl[16];
+    uint  kd[16];
+    float sd[16];
     for (uint k = 0u; k < a.count && k < 8u; ++k) {
         float d = asfloat(a.layers[2u * a.count * a.stride + k * a.stride + p]);
         if (d == 0.0) break;
         tl[k] = dot(unproject(a, ndc, d) - O, D);
+        kd[k] = k;
+        sd[k] = 0.0;
         nl = k + 1u;
+    }
+    uint ns = min(a.slice_count, MAX_SLICES);
+    if (ns > 0u) {
+        // the rays of the next pixels across and down
+        float2 nx = ndc + float2(2.0 / float(a.width), 0.0), ny = ndc - float2(0.0, 2.0 / float(a.height));
+        float3 ox = unproject(a, nx, 1.0), oy = unproject(a, ny, 1.0);
+        float3 dx = a.misc.w > 0.5 ? D : normalize(ox), dy = a.misc.w > 0.5 ? D : normalize(oy);
+        for (uint i = 0u; i < ns; ++i) {
+            float3 h = slice_hit(a, i, O, D);
+            if (h.z < 0.0 || h.z > top) continue;
+            float3 hx = slice_hit(a, i, ox, dx), hy = slice_hit(a, i, oy, dy);
+            float2 qx = hx.xy - h.xy, qy = hy.xy - h.xy;
+            // pixels per unit of each of the rectangle's coordinates, and how
+            // far in from each pair of its sides
+            float2 ppu = 1.0 / max(float2(length(float2(qx.x, qy.x)), length(float2(qx.y, qy.y))), float2(1e-12));
+            float2 in2 = min(h.xy, 1.0 - h.xy) * ppu;
+            float  d   = (in2.x >= 0.0 && in2.y >= 0.0) ? min(in2.x, in2.y) : -length(max(-in2, float2(0.0)));
+            float4 r = srec(a, i, 8u), e = srec(a, i, 9u);
+            if (!((r.z > 0.0 && d > -0.5) || (e.a > 0.0 && abs(d) < r.w + 1.5))) continue;
+            uint j = nl++;
+            while (j > 0u && tl[j - 1u] > h.z) { tl[j] = tl[j - 1u]; kd[j] = kd[j - 1u]; sd[j] = sd[j - 1u]; --j; }
+            tl[j] = h.z; kd[j] = 0x100u | i; sd[j] = d;
+        }
     }
 
     float3 C = float3(0.0);
@@ -889,7 +1004,7 @@ void compose(uint3 tid : SV_DispatchThreadID) {
                 if (tau > 0.0) T *= exp(-tau * max(t - t_abs, 0.0));
                 t_abs = max(t_abs, t);
                 if (t == tk) {
-                    layer(a, C, T, kl, p, V);
+                    surface(a, C, T, kd[kl], sd[kl], p, O + D * tk, V);
                     ++kl;
                 } else if (t == th) {
                     uint ev = he[ih] & 0xFFu, ei = he[ih] >> 8;
@@ -932,6 +1047,6 @@ void compose(uint3 tid : SV_DispatchThreadID) {
         if (tau > 0.0 && t_end > t_abs) T *= exp(-tau * (t_end - t_abs));
     }
     // the layers behind the volumes
-    for (; kl < nl; ++kl) layer(a, C, T, kl, p, V);
+    for (; kl < nl; ++kl) surface(a, C, T, kd[kl], sd[kl], p, O + D * tl[kl], V);
     a.target[q] = float4(C + T * cov * S, 1.0 - T * (1.0 - cov));
 }

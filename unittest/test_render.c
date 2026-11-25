@@ -3702,6 +3702,120 @@ UTEST(render, compose_volume_coloring) {
     f_close(&fx);
 }
 
+/* Slices: a rectangle x in [-1.5, 1.5], y in [-1, 1] at z -12 facing the
+   view (orthographic, a pixel 1/16 of a unit), showing the world's x through
+   a red-to-blue map at opacity 0.6: inside it, 0.6 of the map's colour and
+   coverage 0.6; over an opaque white sphere behind it, that over the sphere;
+   behind an opaque sphere in front of it, the sphere alone. Its edge: within
+   its width of the border, white over a dark halo; outside it, nothing. */
+UTEST(render, compose_slices) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    const uint32_t W = 128, H = 96, P = W * H, NC = 16;
+    cam_t c = { .ortho = true, .half_h = 3.0f, .aspect = (float)W / H, .n = 0.0f, .far_ = 100.0f };
+    md_render_camera_t cam = make_camera(&c);
+    const double ppu = H / (2.0 * c.half_h);       /* pixels per unit: 16 */
+    md_compose_ctx_t cx = md_compose_create(fx.dev);
+    ASSERT_TRUE(cx != NULL);
+    md_gpu_texture_t out = f_tex(&fx, MD_GPU_FORMAT_RGBA16_FLOAT, MD_GPU_TEX_STORAGE, W, H, "compose");
+    uint16_t* px = malloc(P * 8);
+    float* fx_ = malloc(NC * NC * NC * 4);
+    for (uint32_t z = 0; z < NC; ++z) for (uint32_t y = 0; y < NC; ++y) for (uint32_t x = 0; x < NC; ++x)
+        fx_[((size_t)z * NC + y) * NC + x] = (float)(4.0 * (x + 0.5) / NC - 2.0);          /* the world's x over the box */
+    md_gpu_texture_t vx = f_tex3d(&fx, NC, fx_);
+    uint32_t ramp[256];
+    for (int i = 0; i < 256; ++i) ramp[i] = (uint32_t)(255 - i) | ((uint32_t)i << 16) | (255u << 24);
+    md_gpu_texture_t cmap = f_tex(&fx, MD_GPU_FORMAT_RGBA8_UNORM, MD_GPU_TEX_SAMPLED, 256, 1, "colour map");
+    ASSERT_TRUE(vx && f_upload_tex(&fx, cmap, ramp, sizeof(ramp)));
+
+    /* an opaque white sphere behind the slice's left part, one in front of its right part */
+    const float sp[6] = { -0.8f, 0.0f, -16.0f,   0.9f, 0.3f, -9.0f };
+    const double sc[2][3] = { { -0.8, 0, -16 }, { 0.9, 0.3, -9 } }, srad[2] = { 0.5, 0.4 };
+    float rad[2] = { 0.5f, 0.4f };
+    md_render_batch_t b = {0};
+    b.key = 1; b.kind = MD_RENDER_SPHERES; b.count = 2; b.points.count = 2; b.points.position = f_buf(&fx, sp, sizeof(sp));
+    b.points.radius = f_buf(&fx, rad, sizeof(rad)); b.style.spheres.radius_scale = 1.0f;
+    b.color.mode = MD_RENDER_COLOR_UNIFORM; b.color.uniform = 0xFFFFFFFFu;
+    md_render_frame_t f = frame_of(W, H, cam, &b, 1);
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+
+    for (int with_edge = 0; with_edge < 2; ++with_edge) {
+        md_compose_slice_t sl = {0};
+        memset(sl.rect, 0, sizeof(sl.rect));
+        sl.rect[0] = 3.0f; sl.rect[5] = 2.0f; sl.rect[10] = 1.0f; sl.rect[12] = -1.5f; sl.rect[13] = -1.0f; sl.rect[14] = -12.0f; sl.rect[15] = 1.0f;
+        /* world to the box's texture space: (x + 2) / 4, (y + 2) / 4, (z + 14) / 4 */
+        float* F = sl.field_from_world;
+        memset(F, 0, 16 * sizeof(float));
+        F[0] = F[5] = F[10] = 0.25f; F[12] = 0.5f; F[13] = 0.5f; F[14] = 3.5f; F[15] = 1.0f;
+        sl.field = vx;
+        sl.transfer = cmap; sl.transfer_range[0] = -1.5f; sl.transfer_range[1] = 1.5f;
+        sl.opacity = 0.6f;
+        if (with_edge) { sl.edge[0] = sl.edge[1] = sl.edge[2] = 1.0f; sl.edge[3] = 1.0f; sl.edge_px = 1.0f; }
+        md_compose_desc_t d = {0};
+        d.camera = cam; d.target = out; d.slices = &sl; d.slice_count = 1;
+        unlit_shading(&d.shading);
+        ASSERT_TRUE(md_compose(fx.gfx, cx, fx.view, &d));
+        ASSERT_TRUE(f_read(&fx, out, px, P * 8));
+        int bad = 0, inside = 0, over = 0, under = 0, edge = 0;
+        double worst = 0;
+        for (uint32_t y = 0; y < H; ++y) for (uint32_t x = 0; x < W; ++x) {
+            const size_t p = (size_t)y * W + x;
+            ray_t r = pixel_ray(&c, W, H, x + 0.5, y + 0.5);
+            const double wx = r.o[0], wy = r.o[1];
+            /* pixels in from the rectangle's border (out: negative) */
+            const double in_x = fmin(wx + 1.5, 1.5 - wx) * ppu, in_y = fmin(wy + 1.0, 1.0 - wy) * ppu;
+            const double dd = (in_x >= 0 && in_y >= 0) ? fmin(in_x, in_y) : -sqrt(fmax(-in_x, 0) * fmax(-in_x, 0) + fmax(-in_y, 0) * fmax(-in_y, 0));
+            double t0, t1;
+            int hit = -1;
+            for (int k = 0; k < 2; ++k) {
+                double u0, u1;
+                if (ray_sphere(r, sc[k], srad[k] - 0.1, &u0, &u1) != ray_sphere(r, sc[k], srad[k] + 0.1, &u0, &u1)) hit = -2;
+                else if (hit == -1 && ray_sphere(r, sc[k], srad[k], &t0, &t1)) hit = k;
+            }
+            if (hit == -2) continue;
+            const double got[4] = { half_bits_to_float(px[4 * p]), half_bits_to_float(px[4 * p + 1]), half_bits_to_float(px[4 * p + 2]), half_bits_to_float(px[4 * p + 3]) };
+            if (with_edge) {
+                if (hit >= 0) continue;
+                if (dd < -3.0) { for (int k = 0; k < 4; ++k) bad += got[k] != 0.0; continue; }     /* past the edge and its halo */
+                if (fabs(dd) <= 0.51) {         /* on the line, half a pixel from the border: its core, white, all of it */
+                    edge++;
+                    for (int k = 0; k < 4; ++k) if (fabs(got[k] - 1.0) > 2e-3) { bad++; if (bad < 6) printf("    edge pixel (%u, %u) channel %d: %g\n", x, y, k, got[k]); }
+                }
+                continue;
+            }
+            if (fabs(dd) < 0.6) continue;
+            double e[4] = { 0, 0, 0, 0 };
+            const double al = dd > 0 ? 0.6 : 0.0;
+            if (al > 0 && hit != 1) {
+                const double t = (wx + 1.5) / 3.0, u = fmin(fmax(t * 256 - 0.5, 0.0), 255.0) / 255.0;
+                e[0] = al * c_s2l((float)(1 - u)); e[2] = al * c_s2l((float)u); e[3] = al;
+                inside++;
+            }
+            if (hit == 1) { for (int k = 0; k < 4; ++k) e[k] = 1.0; under++; }                  /* in front of it */
+            else if (hit == 0) { for (int k = 0; k < 3; ++k) e[k] += (1 - al); e[3] = 1.0; over += al > 0; }
+            for (int k = 0; k < 4; ++k) {
+                const double err = fabs(got[k] - e[k]);
+                worst = fmax(worst, err);
+                if (err > 6e-3) { bad++; if (bad < 6) printf("    slice pixel (%u, %u) channel %d: %g against %g\n", x, y, k, got[k], e[k]); }
+            }
+        }
+        if (with_edge) {
+            printf("    its edge: %d pixels on it white, nothing past it\n", edge);
+            EXPECT_GT(edge, 100);
+        } else {
+            printf("    a slice: %d pixels on it (%d over a sphere behind it), %d behind a sphere in front of it; %.4f off at most\n", inside, over, under, worst);
+            EXPECT_GT(inside, 1000);
+            EXPECT_GT(over, 50);
+            EXPECT_GT(under, 50);
+        }
+        EXPECT_EQ(0, bad);
+    }
+    md_gpu_texture_destroy(vx); md_gpu_texture_destroy(cmap); md_gpu_texture_destroy(out);
+    md_compose_destroy(cx);
+    free(px); free(fx_);
+    f_close(&fx);
+}
+
 /* ---- Post ----------------------------------------------------------------------------- */
 
 /* md_post.slang's display transform, in C: the reference */
