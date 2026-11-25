@@ -706,7 +706,6 @@ target_include_directories(mdlib
   src/qm/
   src/io/
   src/script/
-  ext/gl3w/
   ext/simde/
   ext/xxhash/
 
@@ -948,4 +947,9 @@ if (has_parent)
     set(MD_LINK_FLAGS_REL ${MD_LINK_FLAGS_REL} PARENT_SCOPE)
     set(MD_ENABLE_HDF5 ${MD_ENABLE_HDF5} PARENT_SCOPE)
     set(MD_ENABLE_GPU ${MD_ENABLE_GPU} PARENT_SCOPE)
+    # For compile_gpu_shaders in the project that embeds mdlib: shaders of its own, built as mdlib's are
+    set(MD_GPU_BACKEND ${MD_GPU_BACKEND} PARENT_SCOPE)
+    set(MD_GPU_SHADER_DEPS ${MD_GPU_SHADER_DEPS} PARENT_SCOPE)
+    set(Python3_EXECUTABLE ${Python3_EXECUTABLE} PARENT_SCOPE)
+    set(Python3_Interpreter_FOUND ${Python3_Interpreter_FOUND} PARENT_SCOPE)
 endif()
