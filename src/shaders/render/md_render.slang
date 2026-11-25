@@ -3286,6 +3286,16 @@ MergeOut merge_fs(FullV i) {
     return o;
 }
 
+// A depth-only frame's: the compute raster's depth alone
+[shader("fragment")]
+float merge_depth_fs(FullV i) : SV_Depth {
+    Args a = MD_ARGS;
+    uint2 px = uint2(i.pos.xy);
+    uint64_t val = a.lists->vis64[px.y * a.width + px.x];
+    if (val == 0ull) discard;
+    return asfloat(uint(val >> 32));
+}
+
 // ---------------------------------------------------------------------------
 // Depth pyramid
 // ---------------------------------------------------------------------------
@@ -3416,6 +3426,13 @@ struct MaskOut {
     float depth : SV_DepthLessEqual;
 };
 
+// A depth-only frame's (md_render_frame_t's depth_only: a shadow map's view):
+// the depth alone, into a pass with no colour attachment. Triangles' need no
+// fragment stage.
+struct DepthOut {
+    float depth : SV_DepthLessEqual;
+};
+
 [shader("fragment")]
 VisOut sphere_fs(SphereV i) {
     ViewData v = *MD_ARGS.view;
@@ -3425,6 +3442,17 @@ VisOut sphere_fs(SphereV i) {
     VisOut o;
     o.id    = i.idv;
     o.n     = float2(0.0);
+    o.depth = clip_depth(v, r.o + r.d * t);
+    return o;
+}
+
+[shader("fragment")]
+DepthOut sphere_depth_fs(SphereV i) {
+    ViewData v = *MD_ARGS.view;
+    Ray   r = pixel_ray(v, i.pos.xy);
+    float t = sphere_hit(r, i.sph.xyz, i.sph.w, false);
+    if (t < 0.0) discard;
+    DepthOut o;
     o.depth = clip_depth(v, r.o + r.d * t);
     return o;
 }
@@ -3534,6 +3562,17 @@ VisOut capsule_fs(CapsuleV i) {
 }
 
 [shader("fragment")]
+DepthOut capsule_depth_fs(CapsuleV i) {
+    ViewData v = *MD_ARGS.view;
+    Ray   r = pixel_ray(v, i.pos.xy);
+    float t = capsule_fragment_hit(r, i);
+    if (t < 0.0) discard;
+    DepthOut o;
+    o.depth = capsule_depth(clip_depth(v, r.o + r.d * t));
+    return o;
+}
+
+[shader("fragment")]
 MaskOut capsule_mask_fs(CapsuleV i) {
     ViewData v = *MD_ARGS.view;
     Ray   r = pixel_ray(v, i.pos.xy);
@@ -3625,6 +3664,18 @@ VisOut spline_fs(SplineV i) {
 }
 
 [shader("fragment")]
+DepthOut spline_depth_fs(SplineV i) {
+    ViewData v = *MD_ARGS.view;
+    DepthOut o;
+    if (v.dbg_probe == 1u) { o.depth = i.pos.z; return o; }     // the probe: the proxy as it is
+    Ray   r = pixel_ray(v, i.pos.xy);
+    float t = spline_fragment_hit(v, r, i).t;
+    if (t < 0.0) discard;
+    o.depth = capsule_depth(clip_depth(v, r.o + r.d * t));
+    return o;
+}
+
+[shader("fragment")]
 MaskOut spline_mask_fs(SplineV i) {
     ViewData v = *MD_ARGS.view;
     Ray   r = pixel_ray(v, i.pos.xy);
@@ -3679,6 +3730,18 @@ VisOut polygon_fs(SplineV i) {
     if (h.t < 0.0) discard;
     o.n     = oct_encode(h.n);
     o.depth = capsule_depth(clip_depth(v, r.o + r.d * h.t));
+    return o;
+}
+
+[shader("fragment")]
+DepthOut polygon_depth_fs(SplineV i) {
+    ViewData v = *MD_ARGS.view;
+    DepthOut o;
+    if (v.dbg_probe == 1u) { o.depth = i.pos.z; return o; }     // the probe: the proxy as it is
+    Ray   r = pixel_ray(v, i.pos.xy);
+    float t = poly_fragment_hit(v, r, i).t;
+    if (t < 0.0) discard;
+    o.depth = capsule_depth(clip_depth(v, r.o + r.d * t));
     return o;
 }
 

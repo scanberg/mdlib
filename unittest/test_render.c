@@ -3819,8 +3819,10 @@ UTEST(render, compose_slices) {
     f_close(&fx);
 }
 
-/* A depth-only frame (a shadow map's view): the raster alone, its depth and ids those of the full frame of the same
-   scene, nothing resolved; a transparent batch refused */
+/* A depth-only frame (a shadow map's view): the raster of the depth alone, of every kind (spheres, small ones in the
+   compute raster, capsules, triangles, polygons, a spline), the same depth as the full frame of the same scene, and
+   the view's targets that depth alone: no ids (not picked), nothing resolved. The same view drawn a full frame
+   remakes its targets, and a depth-only one again; a transparent batch is refused. */
 UTEST(render, depth_only) {
     fix_t fx;
     if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
@@ -3829,11 +3831,35 @@ UTEST(render, depth_only) {
     md_render_camera_t cam = make_camera(&c);
     const float sp[9] = { -1.5f, 0.0f, -10.0f,   1.0f, 0.5f, -12.0f,   0.2f, -1.0f, -8.0f };
     float rad[3] = { 1.0f, 1.4f, 0.6f };
-    md_render_batch_t b = {0};
-    b.key = 1; b.kind = MD_RENDER_SPHERES; b.count = 3; b.points.count = 3; b.points.position = f_buf(&fx, sp, sizeof(sp));
-    b.points.radius = f_buf(&fx, rad, sizeof(rad)); b.style.spheres.radius_scale = 1.0f;
-    b.color.mode = MD_RENDER_COLOR_UNIFORM; b.color.uniform = 0xFF00FF00u;
-    md_render_frame_t f = frame_of(W, H, cam, &b, 1);
+    float small[3 * 40];
+    for (int i = 0; i < 40; ++i) { small[3 * i] = -4.0f + 0.2f * (float)i; small[3 * i + 1] = 2.4f; small[3 * i + 2] = -9.0f; }
+    const float cap[6] = { -4.0f, -2.5f, -11.0f,   -2.0f, -1.5f, -9.0f };
+    const float tri[12] = { 2.0f, -2.8f, -10.0f,   4.0f, -2.8f, -10.0f,   4.0f, -1.5f, -12.0f,   2.0f, -1.5f, -12.0f };
+    const uint32_t tri_index[6] = { 0, 1, 2, 0, 2, 3 };
+    float hex[18];
+    for (int k = 0; k < 6; ++k) { hex[3 * k] = 3.2f + 0.6f * cosf((float)k * 1.0472f); hex[3 * k + 1] = 1.2f + 0.6f * sinf((float)k * 1.0472f); hex[3 * k + 2] = -9.5f; }
+    float tube[15];
+    uint32_t tube_index[5];
+    for (int k = 0; k < 5; ++k) {
+        tube[3 * k] = -4.2f + 0.5f * (float)k; tube[3 * k + 1] = 0.8f + 0.2f * (float)(k & 1); tube[3 * k + 2] = -10.5f;
+        tube_index[k] = (uint32_t)k | (k == 0 ? MD_RENDER_SPLINE_FIRST : 0u) | (k == 4 ? MD_RENDER_SPLINE_LAST : 0u);
+    }
+    md_render_batch_t b[6];
+    memset(b, 0, sizeof(b));
+    for (int k = 0; k < 6; ++k) { b[k].key = 1u + (uint32_t)k; b[k].color.mode = MD_RENDER_COLOR_UNIFORM; b[k].color.uniform = 0xFF00FF00u; }
+    b[0].kind = MD_RENDER_SPHERES; b[0].count = 3; b[0].points.count = 3; b[0].points.position = f_buf(&fx, sp, sizeof(sp));
+    b[0].points.radius = f_buf(&fx, rad, sizeof(rad)); b[0].style.spheres.radius_scale = 1.0f;
+    b[1].kind = MD_RENDER_SPHERES; b[1].count = 40; b[1].points.count = 40; b[1].points.position = f_buf(&fx, small, sizeof(small));
+    b[1].style.spheres.radius_add = 0.06f;
+    b[2].kind = MD_RENDER_CAPSULES; b[2].count = 1; b[2].points.count = 2; b[2].points.position = f_buf(&fx, cap, sizeof(cap));
+    b[2].style.capsules.radius = 0.3f;
+    b[3].kind = MD_RENDER_TRIANGLES; b[3].count = 2; b[3].points.count = 4; b[3].points.position = f_buf(&fx, tri, sizeof(tri));
+    b[3].index = f_buf(&fx, tri_index, sizeof(tri_index));
+    b[4].kind = MD_RENDER_POLYGONS; b[4].count = 1; b[4].points.count = 6; b[4].points.position = f_buf(&fx, hex, sizeof(hex));
+    b[4].style.polygons.corners = 6; b[4].style.polygons.radius = 0.15f;
+    b[5].kind = MD_RENDER_SPLINES; b[5].count = 5; b[5].points.count = 5; b[5].points.position = f_buf(&fx, tube, sizeof(tube));
+    b[5].index = f_buf(&fx, tube_index, sizeof(tube_index)); b[5].style.splines.radius = 0.25f;
+    md_render_frame_t f = frame_of(W, H, cam, b, 6);
     ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
 
     md_render_view_t dv = md_render_view_create(fx.r, "depth only");
@@ -3846,34 +3872,61 @@ UTEST(render, depth_only) {
     /* drawn again unchanged: nothing; another colour: still nothing (no resolve) */
     ASSERT_TRUE(md_render_view_draw(fx.gfx, dv, &fd, &st));
     EXPECT_EQ(0u, st.work);
-    md_render_batch_t b2 = b;
-    b2.color.uniform = 0xFFFF0000u;
+    md_render_batch_t b2[6];
+    memcpy(b2, b, sizeof(b));
+    b2[0].color.uniform = 0xFFFF0000u;
     md_render_frame_t fd2 = fd;
-    fd2.batches = &b2;
+    fd2.batches = b2;
     ASSERT_TRUE(md_render_view_draw(fx.gfx, dv, &fd2, &st));
     EXPECT_EQ(0u, st.work);
 
+    /* its targets: the depth alone, the full frame's */
     float* d0 = malloc(P * 4);
     float* d1 = malloc(P * 4);
-    uint32_t* i0 = malloc(P * 8);
-    uint32_t* i1 = malloc(P * 8);
     md_render_targets_t t0 = md_render_view_targets(fx.view), t1 = md_render_view_targets(dv);
+    EXPECT_TRUE(t1.depth != NULL);
+    EXPECT_TRUE(t1.id == NULL && t1.color == NULL && t1.normal == NULL && t1.motion == NULL && t1.mask == NULL);
     ASSERT_TRUE(f_read(&fx, t0.depth, d0, P * 4) && f_read(&fx, t1.depth, d1, P * 4));
-    ASSERT_TRUE(f_read(&fx, t0.id, i0, P * 8) && f_read(&fx, t1.id, i1, P * 8));
-    int covered = 0, differ = 0;
+    int covered = 0, differ = 0, kinds = 0;
     for (uint32_t i = 0; i < P; ++i) {
         covered += d0[i] > 0.0f;
-        differ += d0[i] != d1[i] || i0[2 * i] != i1[2 * i] || i0[2 * i + 1] != i1[2 * i + 1];
+        differ += d0[i] != d1[i];
     }
-    printf("    %d pixels covered, %d differ\n", covered, differ);
-    EXPECT_GT(covered, 500);
+    /* every kind drew some of it: the full frame's ids name each batch */
+    uint32_t* i0 = malloc(P * 8);
+    ASSERT_TRUE(f_read(&fx, t0.id, i0, P * 8));
+    for (uint32_t k = 1; k <= 6; ++k) {
+        bool seen = false;
+        for (uint32_t i = 0; i < P && !seen; ++i) seen = (i0[2 * i + 1] >> 20) == k;
+        kinds += seen;
+    }
+    printf("    %d pixels covered, %d of 6 batches seen, %d differ\n", covered, kinds, differ);
+    EXPECT_GT(covered, 800);
+    EXPECT_EQ(6, kinds);
     EXPECT_EQ(0, differ);
+    EXPECT_FALSE(md_render_view_pick(fx.gfx, dv, W / 2, H / 2));
+
+    /* a full frame in the same view: its targets made again, its ids the other view's; then depth-only again */
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, dv, &f, &st));
+    EXPECT_NE(0u, st.work & MD_RENDER_WORK_RESOLVE);
+    t1 = md_render_view_targets(dv);
+    ASSERT_TRUE(t1.id != NULL && t1.color != NULL);
+    uint32_t* i1 = malloc(P * 8);
+    ASSERT_TRUE(f_read(&fx, t1.id, i1, P * 8));
+    EXPECT_EQ(0, memcmp(i0, i1, P * 8));
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, dv, &fd, &st));
+    EXPECT_EQ((uint32_t)MD_RENDER_WORK_RASTER, st.work);
+    t1 = md_render_view_targets(dv);
+    EXPECT_TRUE(t1.id == NULL);
+    ASSERT_TRUE(f_read(&fx, t1.depth, d1, P * 4));
+    EXPECT_EQ(0, memcmp(d0, d1, P * 4));
 
     /* transparent: refused */
-    md_render_batch_t bt = b;
+    md_render_batch_t bt = b[0];
     bt.color.transparency = 0.5f;
     md_render_frame_t ft = fd;
     ft.batches = &bt;
+    ft.batch_count = 1;
     EXPECT_FALSE(md_render_view_draw(fx.gfx, dv, &ft, NULL));
 
     md_render_view_destroy(fx.gfx, dv);

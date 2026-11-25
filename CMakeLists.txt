@@ -891,7 +891,7 @@ if (MD_ENABLE_GPU)
     SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/render/md_render.slang
     ENTRIES   refit refit_heavy cull_clusters cull cull_heavy finalize raster_small hiz_reduce resolve resolve_heavy resolve_poly resolve_layers spline_order mask_visible export_targets pick
     VERTEX    sphere_vs capsule_vs spline_vs polygon_vs triangle_vs merge_vs
-    FRAGMENT  sphere_fs sphere_mask_fs sphere_kb_fs sphere_kb2_fs capsule_fs capsule_mask_fs capsule_kb_fs capsule_kb2_fs spline_fs spline_mask_fs polygon_fs polygon_mask_fs triangle_fs triangle_mask_fs triangle_kb_fs triangle_kb2_fs merge_fs
+    FRAGMENT  sphere_fs sphere_mask_fs sphere_kb_fs sphere_kb2_fs sphere_depth_fs capsule_fs capsule_mask_fs capsule_kb_fs capsule_kb2_fs capsule_depth_fs spline_fs spline_mask_fs spline_depth_fs polygon_fs polygon_mask_fs polygon_depth_fs triangle_fs triangle_mask_fs triangle_kb_fs triangle_kb2_fs merge_fs merge_depth_fs
   )
   # md_compose: the scene from md_render's targets, the opaque surface under its occlusion and the
   # transparent layers (and volumes, to come) over it (md_compose.h)

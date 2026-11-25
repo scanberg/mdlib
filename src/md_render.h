@@ -620,11 +620,13 @@ typedef struct md_render_frame_t {
     uint64_t                 content[MD_RENDER_CONTENT_COUNT];
     uint32_t                 layers;          /* K: transparent layers per pixel, at
                                                  most 8; 0: 4                         */
-    bool                     depth_only;      /* the raster alone, depth and id, no
+    bool                     depth_only;      /* the raster of the depth alone, no
                                                  resolve nor masks (a shadow map's
-                                                 view, drawn from the light); no
-                                                 transparent batches. A view keeps to
-                                                 one kind of frame                   */
+                                                 view, drawn from the light): the
+                                                 view's targets are its depth alone
+                                                 (no ids: not picked); no transparent
+                                                 batches. A view keeps to one kind of
+                                                 frame: another remakes its targets  */
 } md_render_frame_t;
 
 typedef uint32_t md_render_work_t;
@@ -686,6 +688,7 @@ typedef struct md_render_targets_t {
     uint32_t         layer_count, layer_stride;
 } md_render_targets_t;
 
+/* Of a view drawn with depth_only frames: the depth, the rest 0 */
 md_render_targets_t md_render_view_targets(md_render_view_t view);
 
 /* ---- Export -----------------------------------------------------------------

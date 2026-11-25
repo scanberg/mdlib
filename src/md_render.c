@@ -275,6 +275,8 @@ struct md_render {
     md_gpu_pipeline_t sphere_vis, sphere_mask, capsule_vis, capsule_mask, spline_vis, spline_mask, polygon_vis, polygon_mask, triangle_vis, triangle_mask, merge;
     md_gpu_pipeline_t sphere_kb, capsule_kb, triangle_kb;     /* transparent: into the K-buffer */
     md_gpu_pipeline_t sphere_kb2, capsule_kb2, triangle_kb2;  /* ... its two-pass fallback (32-bit atomics) */
+    /* depth-only frames': no colour attachment (triangles: no fragment stage) */
+    md_gpu_pipeline_t sphere_depth, capsule_depth, spline_depth, polygon_depth, triangle_depth, merge_depth;
     md_gpu_kernel_t   k_resolve, k_mask_visible, k_export, k_pick, k_cull, k_finalize, k_raster_small, k_hiz, k_refit, k_cull_clusters;
     md_gpu_kernel_t   k_resolve_layers;
     /* the heavy twins (md_render.slang, kind_taken): run only for frames with splines or polygons */
@@ -285,7 +287,7 @@ struct md_render {
     uint32_t          vendor_id;       /* the device's (spline_group_for) */
 };
 
-enum { PIPE_VIS, PIPE_MASK, PIPE_KB };
+enum { PIPE_VIS, PIPE_MASK, PIPE_KB, PIPE_DEPTH };
 static md_gpu_pipeline_t make_pipeline(md_gpu_device_t dev, md_gpu_shader_t vs, md_gpu_shader_t fs, int kind, const char* label) {
     const bool mask = kind == PIPE_MASK;
     md_gpu_pipeline_desc_t pd = {0};
@@ -295,7 +297,9 @@ static md_gpu_pipeline_t make_pipeline(md_gpu_device_t dev, md_gpu_shader_t vs, 
     pd.color_count  = 1;
     pd.depth_format = MD_GPU_FORMAT_D32_FLOAT;
     pd.label        = label;
-    if (kind == PIPE_KB) {
+    if (kind == PIPE_DEPTH) {
+        pd.color_count = 0;
+    } else if (kind == PIPE_KB) {
         /* The K-buffer's: no depth attachment (the fragments test the opaque
            depth themselves, before their atomics), and a colour attachment
            only because a pass needs one, never written */
@@ -348,6 +352,13 @@ md_render_ctx_t md_render_create(md_gpu_device_t device, const md_render_desc_t*
     r->triangle_vis  = make_pipeline(device, md_shader_md_render_triangle_vs_shader(), md_shader_md_render_triangle_fs_shader(),      PIPE_VIS,  "md_render.triangle");
     r->triangle_mask = make_pipeline(device, md_shader_md_render_triangle_vs_shader(), md_shader_md_render_triangle_mask_fs_shader(), PIPE_MASK, "md_render.triangle_mask");
     r->merge        = make_pipeline(device, md_shader_md_render_merge_vs_shader(),   md_shader_md_render_merge_fs_shader(),        PIPE_VIS,  "md_render.merge");
+    const md_gpu_shader_t no_fs = {0};
+    r->sphere_depth   = make_pipeline(device, md_shader_md_render_sphere_vs_shader(),   md_shader_md_render_sphere_depth_fs_shader(),  PIPE_DEPTH, "md_render.sphere_depth");
+    r->capsule_depth  = make_pipeline(device, md_shader_md_render_capsule_vs_shader(),  md_shader_md_render_capsule_depth_fs_shader(), PIPE_DEPTH, "md_render.capsule_depth");
+    r->spline_depth   = make_pipeline(device, md_shader_md_render_spline_vs_shader(),   md_shader_md_render_spline_depth_fs_shader(),  PIPE_DEPTH, "md_render.spline_depth");
+    r->polygon_depth  = make_pipeline(device, md_shader_md_render_polygon_vs_shader(),  md_shader_md_render_polygon_depth_fs_shader(), PIPE_DEPTH, "md_render.polygon_depth");
+    r->triangle_depth = make_pipeline(device, md_shader_md_render_triangle_vs_shader(), no_fs,                                         PIPE_DEPTH, "md_render.triangle_depth");
+    r->merge_depth    = make_pipeline(device, md_shader_md_render_merge_vs_shader(),    md_shader_md_render_merge_depth_fs_shader(),   PIPE_DEPTH, "md_render.merge_depth");
     r->atomic_int64 = info.atomic_int64_min_max;
     r->atomic_int64_fetch = info.atomic_int64 && info.fragment_stores;
     r->fragment_stores    = info.fragment_stores;
@@ -390,6 +401,7 @@ md_render_ctx_t md_render_create(md_gpu_device_t device, const md_render_desc_t*
 
     if (!r->sphere_vis || !r->sphere_mask || !r->capsule_vis || !r->capsule_mask || !r->spline_vis || !r->spline_mask ||
         !r->polygon_vis || !r->polygon_mask || !r->triangle_vis || !r->triangle_mask || !r->merge ||
+        !r->sphere_depth || !r->capsule_depth || !r->spline_depth || !r->polygon_depth || !r->triangle_depth || !r->merge_depth ||
         !r->k_resolve_layers ||
         !r->k_resolve || !r->k_mask_visible || !r->k_export || !r->k_pick || !r->k_cull || !r->k_finalize || !r->k_hiz || !r->k_refit || !r->k_cull_clusters ||
         !r->k_refit_heavy || !r->k_cull_heavy || !r->k_resolve_heavy || !r->k_resolve_poly || !r->k_spline_order) {
@@ -418,6 +430,12 @@ void md_render_destroy(md_render_ctx_t r) {
     if (r->sphere_kb2)     md_gpu_pipeline_destroy(r->sphere_kb2);
     if (r->capsule_kb2)    md_gpu_pipeline_destroy(r->capsule_kb2);
     if (r->triangle_kb2)   md_gpu_pipeline_destroy(r->triangle_kb2);
+    if (r->sphere_depth)   md_gpu_pipeline_destroy(r->sphere_depth);
+    if (r->capsule_depth)  md_gpu_pipeline_destroy(r->capsule_depth);
+    if (r->spline_depth)   md_gpu_pipeline_destroy(r->spline_depth);
+    if (r->polygon_depth)  md_gpu_pipeline_destroy(r->polygon_depth);
+    if (r->triangle_depth) md_gpu_pipeline_destroy(r->triangle_depth);
+    if (r->merge_depth)    md_gpu_pipeline_destroy(r->merge_depth);
     if (r->k_resolve_layers) md_gpu_kernel_destroy(r->k_resolve_layers);
     if (r->k_refit_heavy)    md_gpu_kernel_destroy(r->k_refit_heavy);
     if (r->k_cull_heavy)     md_gpu_kernel_destroy(r->k_cull_heavy);
@@ -527,6 +545,7 @@ struct md_render_view {
 
     uint32_t            width, height;
     md_render_targets_t t;
+    bool                depth_only;     /* the targets are a depth-only frame's: the depth alone */
 
     /* md_render_debug_view's: MD_RENDER_DEBUG_*, the compute raster's extent;
        a change rasterises at the next draw */
@@ -675,23 +694,28 @@ static md_gpu_texture_t make_target(md_gpu_stream_t s, md_gpu_format_t fmt, md_g
     return md_gpu_texture_create(s, &td);
 }
 
-static bool ensure_targets(md_gpu_stream_t s, md_render_view_t v, uint32_t w, uint32_t h) {
-    if (v->t.depth && v->width == w && v->height == h) return true;
+/* The targets of a frame of the size, of its kind: a depth-only frame's the
+   depth alone (it rasterises into no colour attachment, and nothing resolves) */
+static bool ensure_targets(md_gpu_stream_t s, md_render_view_t v, uint32_t w, uint32_t h, bool depth_only) {
+    if (v->t.depth && v->width == w && v->height == h && v->depth_only == depth_only) return true;
     destroy_targets(v);
     const md_gpu_tex_usage_t RT = MD_GPU_TEX_RENDER_TARGET, SA = MD_GPU_TEX_SAMPLED, ST = MD_GPU_TEX_STORAGE;
-    v->t.depth  = make_target(s, MD_GPU_FORMAT_D32_FLOAT,   RT | SA,      w, h, "md_render.depth");
-    v->t.id     = make_target(s, MD_GPU_FORMAT_RG32_UINT,   RT | SA | ST, w, h, "md_render.id");
-    v->t.color  = make_target(s, MD_GPU_FORMAT_RGBA8_UNORM, SA | ST,      w, h, "md_render.color");
-    v->t.normal = make_target(s, MD_GPU_FORMAT_RG16_FLOAT,  RT | SA | ST, w, h, "md_render.normal");
-    v->t.motion = make_target(s, MD_GPU_FORMAT_RG16_FLOAT,  SA | ST,      w, h, "md_render.motion");
-    v->t.mask   = make_target(s, MD_GPU_FORMAT_RGBA8_UNORM, RT | SA | ST, w, h, "md_render.mask");
-    if (!v->t.depth || !v->t.id || !v->t.color || !v->t.normal || !v->t.motion || !v->t.mask) {
+    v->t.depth = make_target(s, MD_GPU_FORMAT_D32_FLOAT, RT | SA, w, h, "md_render.depth");
+    if (!depth_only) {
+        v->t.id     = make_target(s, MD_GPU_FORMAT_RG32_UINT,   RT | SA | ST, w, h, "md_render.id");
+        v->t.color  = make_target(s, MD_GPU_FORMAT_RGBA8_UNORM, SA | ST,      w, h, "md_render.color");
+        v->t.normal = make_target(s, MD_GPU_FORMAT_RG16_FLOAT,  RT | SA | ST, w, h, "md_render.normal");
+        v->t.motion = make_target(s, MD_GPU_FORMAT_RG16_FLOAT,  SA | ST,      w, h, "md_render.motion");
+        v->t.mask   = make_target(s, MD_GPU_FORMAT_RGBA8_UNORM, RT | SA | ST, w, h, "md_render.mask");
+    }
+    if (!v->t.depth || (!depth_only && (!v->t.id || !v->t.color || !v->t.normal || !v->t.motion || !v->t.mask))) {
         MD_LOG_ERROR("md_render: target creation failed: %s", md_gpu_last_error());
         destroy_targets(v);
         return false;
     }
     v->width  = w;
     v->height = h;
+    v->depth_only = depth_only;
     return true;
 }
 
@@ -1577,8 +1601,9 @@ static bool run_raster_small(md_gpu_stream_t s, md_render_view_t v, uint32_t pha
    cull wrote. The CPU's cost is independent of the number of batches. */
 static bool run_raster(md_gpu_stream_t s, md_render_view_t v, uint32_t phase, bool compute, const bool has_kind[HW_KINDS]) {
     md_render_ctx_t r = v->r;
+    const bool d = v->depth_only;       /* the depth alone: no colour attachment */
     md_gpu_render_desc_t rd = {0};
-    rd.color_count       = 2;
+    rd.color_count       = d ? 0 : 2;
     rd.color[0].texture  = v->t.id;
     rd.color[0].load     = phase == 1 ? MD_GPU_LOAD_CLEAR : MD_GPU_LOAD;
     rd.color[0].store    = MD_GPU_STORE;
@@ -1597,7 +1622,7 @@ static bool run_raster(md_gpu_stream_t s, md_render_view_t v, uint32_t phase, bo
     ds.depth_write   = true;
     if (compute) {
         md_gpu_set_draw_state(s, &ds);
-        md_gpu_draw(s, r->merge, 3, 1, &a, sizeof(a));
+        md_gpu_draw(s, d ? r->merge_depth : r->merge, 3, 1, &a, sizeof(a));
     }
     for (uint32_t k = 0; k < HW_KINDS; ++k) {
         if (!has_kind[k]) continue;
@@ -1605,11 +1630,11 @@ static bool run_raster(md_gpu_stream_t s, md_render_view_t v, uint32_t phase, bo
         md_gpu_set_draw_state(s, &ds);
         a.mode = 0;
         a.list = k == 2 ? 4 : k == 3 ? 6 : k == 4 ? 8 : k;
-        if (k == 0)      md_gpu_draw_indirect(s, r->sphere_vis, CTR(v, C_CMD + (phase - 1) * 2 * 4), 1, &a, sizeof(a));
-        else if (k == 4) md_gpu_draw_indirect(s, r->triangle_vis, CTR(v, C_CMDT + (phase - 1) * 4), 1, &a, sizeof(a));
-        else if (k == 1) md_gpu_draw_indexed_indirect(s, r->capsule_vis, v->box_idx, MD_GPU_INDEX_U16, CTR(v, C_ICMD + (phase - 1) * 5), 1, &a, sizeof(a));
-        else if (k == 2) md_gpu_draw_indexed_indirect(s, r->spline_vis, v->box_idx, MD_GPU_INDEX_U16, CTR(v, C_ICMDS + (phase - 1) * 5), 1, &a, sizeof(a));
-        else             md_gpu_draw_indexed_indirect(s, r->polygon_vis, v->box_idx, MD_GPU_INDEX_U16, CTR(v, C_ICMDP + (phase - 1) * 5), 1, &a, sizeof(a));
+        if (k == 0)      md_gpu_draw_indirect(s, d ? r->sphere_depth : r->sphere_vis, CTR(v, C_CMD + (phase - 1) * 2 * 4), 1, &a, sizeof(a));
+        else if (k == 4) md_gpu_draw_indirect(s, d ? r->triangle_depth : r->triangle_vis, CTR(v, C_CMDT + (phase - 1) * 4), 1, &a, sizeof(a));
+        else if (k == 1) md_gpu_draw_indexed_indirect(s, d ? r->capsule_depth : r->capsule_vis, v->box_idx, MD_GPU_INDEX_U16, CTR(v, C_ICMD + (phase - 1) * 5), 1, &a, sizeof(a));
+        else if (k == 2) md_gpu_draw_indexed_indirect(s, d ? r->spline_depth : r->spline_vis, v->box_idx, MD_GPU_INDEX_U16, CTR(v, C_ICMDS + (phase - 1) * 5), 1, &a, sizeof(a));
+        else             md_gpu_draw_indexed_indirect(s, d ? r->polygon_depth : r->polygon_vis, v->box_idx, MD_GPU_INDEX_U16, CTR(v, C_ICMDP + (phase - 1) * 5), 1, &a, sizeof(a));
     }
     return md_gpu_render_end(s);
 }
@@ -1887,8 +1912,8 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
     }
 
     if (!ensure_batch_cap(v, f->batch_count)) return false;
-    bool resized = !(v->t.depth && v->width == f->width && v->height == f->height);
-    if (!ensure_targets(s, v, f->width, f->height)) return false;
+    bool resized = !(v->t.depth && v->width == f->width && v->height == f->height && v->depth_only == f->depth_only);
+    if (!ensure_targets(s, v, f->width, f->height, f->depth_only)) return false;
 
     change_t c = resized ? CHANGE_RASTER : compare(v, f);
     const bool geometry_same = geometry_unchanged(v, f);
@@ -2207,6 +2232,10 @@ bool md_render_view_export(md_gpu_stream_t s, md_render_view_t v, const md_rende
         MD_LOG_ERROR("md_render_view_export: the view has not been drawn");
         return false;
     }
+    if (v->depth_only && (dst->color || dst->surface)) {
+        MD_LOG_ERROR("md_render_view_export: a depth-only view has no colour or surface");
+        return false;
+    }
     if (!export_dst_ok(v, dst->depth,   MD_GPU_FORMAT_R32_FLOAT,    "depth")  ||
         !export_dst_ok(v, dst->color,   MD_GPU_FORMAT_RGBA8_UNORM,  "color")  ||
         !export_dst_ok(v, dst->surface, MD_GPU_FORMAT_RGBA16_FLOAT, "surface")) return false;
@@ -2230,6 +2259,10 @@ void md_render_encode_id(uint32_t batch_index, uint64_t linear, uint32_t out_id[
 
 bool md_render_view_pick(md_gpu_stream_t s, md_render_view_t v, uint32_t x, uint32_t y) {
     if (!s || !v || !v->has_raster) return false;
+    if (v->depth_only) {
+        MD_LOG_ERROR("md_render_view_pick: a depth-only view has no ids");
+        return false;
+    }
     /* A free slot, else the oldest */
     pick_slot_t* p = NULL;
     for (uint32_t i = 0; i < PICK_SLOTS; ++i) {
