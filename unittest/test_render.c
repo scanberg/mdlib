@@ -3009,7 +3009,7 @@ static cf3 cmix3(cf3 a, cf3 b, float t) { return cf(cmix(a.x, b.x, t), cmix(a.y,
 static float c_s2l(float c) { c = csat(c); return c < 0.04045f ? c / 12.92f : powf((c + 0.055f) / 1.055f, 2.4f); }
 static cf3 c_srgb(cf3 c) { return cf(c_s2l(c.x), c_s2l(c.y), c_s2l(c.z)); }
 
-static cf3 c_shade(const md_compose_shading_t* sh, cf3 color, cf3 V, cf3 N) {
+static cf3 c_shade(const md_compose_shading_t* sh, cf3 color, cf3 V, cf3 N, float ao) {
     cf3 L = cnorm(cf(sh->light_dir[0], sh->light_dir[1], sh->light_dir[2]));
     cf3 H = cnorm(cadd(L, V));
     if (sh->mode == MD_COMPOSE_SHADING_BASIC) {
@@ -3019,7 +3019,7 @@ static cf3 c_shade(const md_compose_shading_t* sh, cf3 color, cf3 V, cf3 N) {
         c = cmul(c, 1.0f / m);
         float sp = light * sh->specular * powf(fmaxf(cdot(N, H), 0.0f), 48.0f);
         c = cmix3(c, cf(1, 1, 1), csat(sp));
-        return sh->linear_colors ? c : c_srgb(c);
+        return cmul(sh->linear_colors ? c : c_srgb(c), ao);
     }
     const float PI = 3.1415926535f;
     float HdotV = csat(cdot(H, V)), NdotH = csat(cdot(N, H)), NdotL = csat(cdot(N, L)), NdotV = csat(cdot(N, V));
@@ -3043,13 +3043,15 @@ static cf3 c_shade(const md_compose_shading_t* sh, cf3 color, cf3 V, cf3 N) {
     float Fe = F0 * abx + aby;
     cf3 R = cadd(cmul(V, -1), cmul(N, 2 * cdot(V, N)));         /* reflect(-V, N) */
     float wv = 0.1f + rough, tt = csat((R.y + wv) / (2 * wv)), smooth = tt * tt * (3 - 2 * tt);
-    Lo = cadd(Lo, cadd(cmul(cmulv(albedo, cmix3(gnd, sky, 0.5f + 0.5f * N.y)), 1 - Fe), cmul(cmix3(gnd, sky, smooth), Fe)));
+    const float so = csat(powf(NdotV + ao, exp2f(-16.0f * rough * rough - 1.0f)) - 1.0f + ao);    /* specular occlusion */
+    Lo = cadd(Lo, cadd(cmul(cmulv(albedo, cmix3(gnd, sky, 0.5f + 0.5f * N.y)), (1 - Fe) * ao), cmul(cmix3(gnd, sky, smooth), Fe * so)));
     return Lo;
 }
 
-/* The layers of a view composited and shaded, both models, against the
-   reference over the same layers (read back) */
-UTEST(render, compose_shades_the_layers) {
+/* The scene of a view, both models, without occlusion: the opaque surface
+   and the layers over it against the reference over the same targets and
+   layers (read back) */
+UTEST(render, compose_shades_the_scene) {
     fix_t fx;
     if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
     md_gpu_device_info_t info;
@@ -3067,7 +3069,7 @@ UTEST(render, compose_shades_the_layers) {
     memset(b, 0, sizeof(b));
     for (int k = 0; k < 4; ++k) { b[k].key = 200u + (uint32_t)k; b[k].color.mode = MD_RENDER_COLOR_UNIFORM; }
     b[0].kind = MD_RENDER_SPHERES; b[0].count = 1; b[0].points.count = 1; b[0].points.position = f_buf(&fx, opq, 12);
-    b[0].style.spheres.radius_add = 5.0f; b[0].color.uniform = 0xFF808080u;
+    b[0].style.spheres.radius_add = 5.0f; b[0].color.uniform = 0xFF8060A0u;
     md_gpu_addr_t GA = f_buf(&fx, ga, sizeof(ga));
     b[1].kind = MD_RENDER_SPHERES; b[1].count = 2; b[1].points.count = 2; b[1].points.position = GA;
     b[1].style.spheres.radius_add = 0.9f; b[1].color.uniform = 0xFF2040E0u;
@@ -3081,8 +3083,10 @@ UTEST(render, compose_shades_the_layers) {
     ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
     md_render_targets_t tg = md_render_view_targets(fx.view);
     const size_t P = (size_t)W * H;
-    uint32_t* L = malloc(P * K * 12);
-    ASSERT_TRUE(f_read_buf(&fx, tg.layers, L, P * K * 12));
+    uint32_t* L  = malloc(P * K * 12);
+    uint32_t* oc = malloc(P * 4);
+    uint32_t* on = malloc(P * 4);
+    ASSERT_TRUE(f_read_buf(&fx, tg.layers, L, P * K * 12) && f_read(&fx, tg.color, oc, P * 4) && f_read(&fx, tg.normal, on, P * 4));
 
     md_compose_ctx_t cx = md_compose_create(fx.dev);
     ASSERT_TRUE(cx != NULL);
@@ -3104,7 +3108,7 @@ UTEST(render, compose_shades_the_layers) {
         sh->roughness = 0.4f; sh->f0 = 0.04f; sh->ambient = 0.3f; sh->specular = 0.25f;
         ASSERT_TRUE(md_compose(fx.gfx, cx, fx.view, &d));
         ASSERT_TRUE(f_read(&fx, out, px, P * 8));
-        int bad = 0, covered = 0, multi = 0;
+        int bad = 0, covered = 0, multi = 0, opaque = 0, both = 0;
         double worst = 0;
         for (uint32_t y = 0; y < H; ++y) {
             for (uint32_t x = 0; x < W; ++x) {
@@ -3122,14 +3126,25 @@ UTEST(render, compose_shades_the_layers) {
                     double nd[3];
                     oct_decode(L[K * P + k * P + p], nd);
                     cf3 N = cnorm(cf((float)nd[0], (float)nd[1], (float)nd[2]));
-                    C = cadd(C, cmul(c_shade(sh, col, V, N), T * a));
+                    C = cadd(C, cmul(c_shade(sh, col, V, N, 1.0f), T * a));
                     T *= 1.0f - a;
                     ++n;
                 }
+                /* the opaque surface behind them */
+                const float cov = (oc[p] >> 24) ? 1.0f : 0.0f;
+                if (cov > 0) {
+                    cf3 col = cf((oc[p] & 0xFF) / 255.0f, ((oc[p] >> 8) & 0xFF) / 255.0f, ((oc[p] >> 16) & 0xFF) / 255.0f);
+                    double nd[3];
+                    oct_decode(on[p], nd);
+                    cf3 N = cnorm(cf((float)nd[0], (float)nd[1], (float)nd[2]));
+                    C = cadd(C, cmul(c_shade(sh, col, V, N, 1.0f), T));
+                }
                 covered += n > 0;
                 multi   += n > 1;
+                opaque  += cov > 0;
+                both    += n > 0 && cov > 0;
                 const float got[4] = { half_bits_to_float(px[4 * p]), half_bits_to_float(px[4 * p + 1]), half_bits_to_float(px[4 * p + 2]), half_bits_to_float(px[4 * p + 3]) };
-                const float exp[4] = { C.x, C.y, C.z, 1.0f - T };
+                const float exp[4] = { C.x, C.y, C.z, 1.0f - T * (1.0f - cov) };
                 for (int ch = 0; ch < 4; ++ch) {
                     const double e = fabs(got[ch] - exp[ch]) / (2e-3 * fmax(1.0, fabs(exp[ch])) + 2e-3);
                     worst = fmax(worst, e);
@@ -3137,14 +3152,129 @@ UTEST(render, compose_shades_the_layers) {
                 }
             }
         }
-        printf("    %s: %d pixels with layers, %d with more than one; at most %.2f of the tolerance\n", mode ? "basic" : "pbr", covered, multi, worst);
+        printf("    %s: %d pixels opaque, %d with layers (%d over the opaque surface), %d with more than one; at most %.2f of the tolerance\n",
+               mode ? "basic" : "pbr", opaque, covered, both, multi, worst);
         EXPECT_EQ(0, bad);
         EXPECT_GT(covered, 300);
         EXPECT_GT(multi, 100);
+        EXPECT_GT(opaque, 500);
+        EXPECT_GT(both, 100);
     }
     md_gpu_texture_destroy(out);
     md_compose_destroy(cx);
-    free(px); free(L); free(mpos); free(s.xyz); free(s.tri);
+    free(px); free(L); free(oc); free(on); free(mpos); free(s.xyz); free(s.tri);
+    f_close(&fx);
+}
+
+/* The occlusion, by what it must do rather than how (the estimator's own
+   numbers are viamd's): white surfaces under BASIC shading with no light and
+   an ambient of 1 show the visibility itself. A sphere resting on a plane,
+   smaller on the screen than the occlusion's reach (a tenth of the height):
+   the plane is open far from it and occluded around the contact; the
+   sphere's face toward the eye is open. Scale free: the scene and the camera
+   scaled by 40 give the same visibility. Perspective and orthographic. An
+   intensity of 0 estimates nothing (1 everywhere). */
+static bool occ_draw(fix_t* fx, md_render_camera_t cam, uint32_t W, uint32_t H, float k, md_compose_ctx_t cx, md_gpu_texture_t out, float ao, uint16_t* px) {
+    const float z0 = -20.0f;
+    float quad[12] = { -30, -30, z0,  30, -30, z0,  30, 30, z0,  -30, 30, z0 };
+    const uint32_t tri[6] = { 0, 1, 2, 0, 2, 3 };
+    float ball[3] = { 0.0f, 0.0f, z0 + 0.5f };
+    for (int i = 0; i < 12; ++i) quad[i] *= k;
+    for (int i = 0; i < 3; ++i) ball[i] *= k;
+    md_render_batch_t b[2];
+    memset(b, 0, sizeof(b));
+    b[0].key = 1; b[0].kind = MD_RENDER_TRIANGLES; b[0].count = 2; b[0].points.count = 4;
+    b[0].points.position = f_buf(fx, quad, sizeof(quad)); b[0].index = f_buf(fx, tri, sizeof(tri));
+    b[1].key = 2; b[1].kind = MD_RENDER_SPHERES; b[1].count = 1; b[1].points.count = 1;
+    b[1].points.position = f_buf(fx, ball, sizeof(ball)); b[1].style.spheres.radius_add = 0.5f * k;
+    for (int i = 0; i < 2; ++i) { b[i].color.mode = MD_RENDER_COLOR_UNIFORM; b[i].color.uniform = 0xFFFFFFFFu; }
+    md_render_frame_t f = frame_of(W, H, cam, b, 2);
+    f.jitter = MD_RENDER_JITTER_NONE;
+    if (!md_render_view_draw(fx->gfx, fx->view, &f, NULL)) return false;
+    md_compose_desc_t d = {0};
+    d.camera = cam;
+    d.target = out;
+    d.ao = ao;
+    d.shading.mode = MD_COMPOSE_SHADING_BASIC;
+    d.shading.linear_colors = true;
+    d.shading.light_dir[2] = 1.0f;
+    d.shading.ambient = 1.0f;
+    return md_compose(fx->gfx, cx, fx->view, &d) && f_read(fx, out, px, (size_t)W * H * 8);
+}
+
+UTEST(render, compose_occlusion) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    const uint32_t W = 256, H = 192;
+    const size_t P = (size_t)W * H;
+    md_compose_ctx_t cx = md_compose_create(fx.dev);
+    ASSERT_TRUE(cx != NULL);
+    md_gpu_texture_desc_t td = {0};
+    td.type = MD_GPU_TEX_2D; td.usage = MD_GPU_TEX_STORAGE; td.width = W; td.height = H;
+    td.format = MD_GPU_FORMAT_RGBA16_FLOAT; td.label = "compose";
+    md_gpu_texture_t out = md_gpu_texture_create(fx.gfx, &td);
+    uint16_t* v1 = malloc(P * 8);
+    uint16_t* v2 = malloc(P * 8);
+    for (int ortho = 0; ortho < 2; ++ortho) {
+        const float k = 40.0f;
+        cam_t c1 = ortho ? (cam_t){ .ortho = true, .half_h = 6.0f, .aspect = (float)W / H, .n = 0.0f, .far_ = 100.0f }
+                         : (cam_t){ .tan_half = 0.3f, .aspect = (float)W / H, .n = 0.1f };
+        cam_t c2 = c1;
+        if (ortho) { c2.half_h *= k; c2.far_ *= k; } else { c2.n *= k; }
+        ASSERT_TRUE(occ_draw(&fx, make_camera(&c1), W, H, 1.0f, cx, out, 5.0f, v1));
+        ASSERT_TRUE(occ_draw(&fx, make_camera(&c2), W, H, k, cx, out, 5.0f, v2));
+        /* the sphere's silhouette: its radius on the screen, about its centre */
+        const double rs = ortho ? 0.5 / c1.half_h * 0.5 * H : 0.5 / (19.5 * c1.tan_half) * 0.5 * H;
+        const double cx0 = 0.5 * W, cy0 = 0.5 * H;
+        double far_min = 1, ring_min = 1, ring_sum = 0, top_min = 1, worst = 0;
+        int ring_n = 0, far_n = 0, bad = 0;
+        for (uint32_t y = 0; y < H; ++y) {
+            for (uint32_t x = 0; x < W; ++x) {
+                const size_t p = (size_t)y * W + x;
+                const double v = half_bits_to_float(v1[4 * p]), w = half_bits_to_float(v2[4 * p]);
+                if (!(v >= 0.0 && v <= 1.0)) { bad++; continue; }
+                worst = fmax(worst, fabs(v - w));
+                const double r = sqrt((x + 0.5 - cx0) * (x + 0.5 - cx0) + (y + 0.5 - cy0) * (y + 0.5 - cy0));
+                if (r > rs + 0.1 * H + 16.0) { far_min = fmin(far_min, v); far_n++; }   /* beyond its reach and the blur's */
+                else if (r > rs + 1.5 && r < rs + 4.0) { ring_min = fmin(ring_min, v); ring_sum += v; ring_n++; }
+                else if (r < 0.3 * rs) top_min = fmin(top_min, v);
+            }
+        }
+        printf("    %s: far from the sphere %.3f at least (%d px), around its contact %.3f mean, %.3f least (%d px); its face %.3f at least; scaled by %g: %.4f off at most\n",
+               ortho ? "orthographic" : "perspective", far_min, far_n, ring_sum / fmax(ring_n, 1), ring_min, ring_n, top_min, k, worst);
+        EXPECT_EQ(0, bad);
+        EXPECT_GT(far_min, 0.97);
+        EXPECT_GT(top_min, 0.97);
+        EXPECT_LT(ring_sum / fmax(ring_n, 1), 0.92);
+        EXPECT_LT(worst, 0.02);
+        /* the intensity scales the obscurance: twice of it, twice as dark */
+        ASSERT_TRUE(occ_draw(&fx, make_camera(&c1), W, H, 1.0f, cx, out, 10.0f, v2));
+        double lin = 0;
+        for (size_t p = 0; p < P; ++p) {
+            const double v = half_bits_to_float(v1[4 * p]), w = half_bits_to_float(v2[4 * p]);
+            lin = fmax(lin, fabs(w - (1.0 - 2.0 * (1.0 - v))));
+        }
+        printf("    intensity doubled: %.4f off the obscurance doubled at most\n", lin);
+        EXPECT_LT(lin, 4e-3);
+        EXPECT_GT(far_n, 1000);
+        EXPECT_GT(ring_n, 50);
+    }
+    /* no occlusion asked: none */
+    {
+        cam_t c1 = { .tan_half = 0.3f, .aspect = (float)W / H, .n = 0.1f };
+        ASSERT_TRUE(occ_draw(&fx, make_camera(&c1), W, H, 1.0f, cx, out, 0.0f, v1));
+        int open = 0, covered = 0;
+        for (size_t p = 0; p < P; ++p) {
+            if (half_bits_to_float(v1[4 * p + 3]) == 0.0f) continue;
+            covered++;
+            open += half_bits_to_float(v1[4 * p]) == 1.0f;
+        }
+        EXPECT_EQ(covered, open);
+        EXPECT_GT(covered, (int)(P / 2));
+    }
+    md_gpu_texture_destroy(out);
+    md_compose_destroy(cx);
+    free(v1); free(v2);
     f_close(&fx);
 }
 

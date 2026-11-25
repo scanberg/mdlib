@@ -56,8 +56,8 @@ extern "C" {
 
 typedef struct md_compose* md_compose_ctx_t;
 
-/* Kernels for one device, and the scratch of the occlusion (the largest view
-   composed so far: one stream at a time) */
+/* Kernels for one device. The occlusion's scratch is temp memory of the
+   stream, for the call. */
 md_compose_ctx_t md_compose_create(md_gpu_device_t device);
 void             md_compose_destroy(md_compose_ctx_t compose);
 

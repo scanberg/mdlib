@@ -893,13 +893,14 @@ if (MD_ENABLE_GPU)
     VERTEX    sphere_vs capsule_vs spline_vs polygon_vs triangle_vs merge_vs
     FRAGMENT  sphere_fs sphere_mask_fs sphere_kb_fs sphere_kb2_fs capsule_fs capsule_mask_fs capsule_kb_fs capsule_kb2_fs spline_fs spline_mask_fs polygon_fs polygon_mask_fs triangle_fs triangle_mask_fs triangle_kb_fs triangle_kb2_fs merge_fs
   )
-  # md_compose: the transparent layers (and volumes, to come) shaded and composited (md_compose.h)
+  # md_compose: the scene from md_render's targets, the opaque surface under its occlusion and the
+  # transparent layers (and volumes, to come) over it (md_compose.h)
   target_sources(mdlib PRIVATE src/md_compose.c src/md_compose.h)
   compile_gpu_shaders(md_compose_shaders.inl
     TARGET    mdlib
     NAMESPACE md_shader
     SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/render/md_compose.slang
-    ENTRIES   compose_layers
+    ENTRIES   ao_linear ao_estimate ao_blur compose
   )
   compile_gpu_shaders(md_render_mol_shaders.inl
     TARGET    mdlib
