@@ -137,6 +137,7 @@ enum {
     F_DISPLACED    = 1u << 23,
     F_SIDE         = 1u << 24,
     F_CIRCLE       = 1u << 25,
+    F_PERIODIC     = 1u << 25,    /* CAPSULES: the circle bit, of another kind */
     F_FADE_KEY     = 1u << 26,
     F_ID_VISIBLE0  = 1u << 27,
     F_ID_VISIBLE1  = 1u << 28,
@@ -177,9 +178,11 @@ typedef struct gpu_batch_t {
     float         opacity;                                        /* 1: opaque; below, transparent (0: not drawn) */
     float         desat_unmarked;                                 /* of the elements without state 0 (F_MARKS) */
     uint32_t      unlit;                                          /* 1: its colour's alpha 1/255 (color.unlit) */
-    uint32_t      _opad;
+    uint32_t      cap_half;                                       /* CAPSULES periodic (F_PERIODIC): the half drawn, */
+    md_gpu_addr_t cap_cell;                                       /* of the cell (9 floats) */
+    uint32_t      _opad0, _opad1;
 } gpu_batch_t;
-_Static_assert(sizeof(gpu_batch_t) == 400, "Batch mirror");
+_Static_assert(sizeof(gpu_batch_t) == 416, "Batch mirror");
 
 typedef struct gpu_args_t {
     md_gpu_addr_t        view;
@@ -768,6 +771,8 @@ static void canonical_geometry(md_render_batch_t* out, const md_render_batch_t* 
         out->style.capsules.tapered      = c->tapered;
         out->style.capsules.end_radius   = c->tapered ? c->end_radius : 0.0f;
         out->style.capsules.radius_px    = c->radius_px;
+        out->style.capsules.cell         = c->cell;
+        out->style.capsules.half         = c->cell ? c->half : 0;
     } else if (b->kind == MD_RENDER_SPLINES) {
         out->style.splines = b->style.splines;
     } else if (b->kind == MD_RENDER_POLYGONS) {
@@ -883,8 +888,15 @@ static bool validate(const md_render_frame_t* f) {
         }
         switch (b->kind) {
         case MD_RENDER_SPHERES:
-        case MD_RENDER_CAPSULES:
             break;
+        case MD_RENDER_CAPSULES: {
+            const md_render_capsule_style_t* cs = &b->style.capsules;
+            if (cs->cell && (cs->half > 1 || cs->flat || cs->tapered || cs->radius_px > 0.0f)) {
+                MD_LOG_ERROR("md_render: batch %u: periodic capsules are not shaped, and their half is 0 or 1 (got %u)", i, cs->half);
+                return false;
+            }
+            break;
+        }
         case MD_RENDER_SPLINES:
             if (b->count && !b->index) {
                 MD_LOG_ERROR("md_render: batch %u: splines need an index (control points and their flags)", i);
@@ -1146,7 +1158,8 @@ static bool gpu_realloc_exact(md_gpu_stream_t s, md_gpu_addr_t* addr, size_t* ca
 static void no_null(gpu_batch_t* g, md_gpu_addr_t zero) {
     md_gpu_addr_t* opt[] = { &g->position, &g->velocity, &g->radius, &g->attr_index, &g->color, &g->palette_index, &g->palette,
                              &g->visible0, &g->visible1, &g->marks, &g->index_map, &g->index, &g->id, &g->id_visible0, &g->id_visible1, &g->radius_scale,
-                             &g->radius_table, &g->cluster_offset, &g->spl_axis, &g->spl_profile, &g->cap_side, &g->fade_key, &g->tri_normal };
+                             &g->radius_table, &g->cluster_offset, &g->spl_axis, &g->spl_profile, &g->cap_side, &g->fade_key, &g->tri_normal,
+                             &g->cap_cell };
     for (size_t i = 0; i < sizeof(opt) / sizeof(opt[0]); ++i) if (!*opt[i]) *opt[i] = zero;
 }
 
@@ -1231,6 +1244,11 @@ static void fill_batch(gpu_batch_t* g, const md_render_batch_t* b, uint32_t n_in
                 f |= F_RADIUS_PX;
                 g->cap_px = cs->radius_px;
             }
+        }
+        if (cs->cell) {
+            f |= F_PERIODIC;
+            g->cap_cell = cs->cell;
+            g->cap_half = cs->half;
         }
     } else if (b->kind == MD_RENDER_SPLINES) {
         g->s0        = b->style.splines.radius;

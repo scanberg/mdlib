@@ -2580,6 +2580,11 @@ static bool update_impl(md_render_mol_ctx_t r, md_gpu_stream_t s, const md_rende
         a.atom_point = dynamic + D.atom_point;
         ok = ok && launch(s, r->k_atom_point, groups_for(topo->point_count, 64), &a, hook, user, "atom points");
     }
+    if (ok && fr && topo->point_count) {
+        /* the positions' cell, the reference frame's: what the capsules take
+           their nearest images in (md_render_mol_emit) */
+        ok = md_gpu_copy(s, dynamic + D.cell, frame_params(fr, atoms->frame_slot[atoms->frame_count == 4 ? 1 : 0]), 32u * 4u);
+    }
     if (ok && (topo->derived_count || topo->residue_point_count)) {
         /* the derived points and the residues' from the copy just gathered:
            the members at their images nearest the first's in the reference
@@ -2988,6 +2993,10 @@ static bool frame_upload_impl(md_render_mol_ctx_t r, md_gpu_stream_t s, const md
         return false;
     }
     bool ok = md_gpu_upload(s, frame_params(fr, slot), par, sizeof(par));
+    bool periodic = false;
+    for (int k = 0; k < 9; ++k) periodic |= f->cell[k] != 0.0f;
+    if (periodic) fr->periodic |= 1u << slot;
+    else          fr->periodic &= ~(1u << slot);
     if (!ok || !n) {
         if (ok) fr->valid |= 1u << slot;
         return ok;
@@ -3304,8 +3313,8 @@ static void put_orders(md_render_batch_t* out, uint32_t cap, uint32_t* n, const 
     }
 }
 
-uint32_t md_render_mol_emit(const md_render_mol_topo_t* topo, md_gpu_addr_t dynamic, const md_render_mol_atoms_t* atoms,
-                            const md_render_mol_rep_t* rep, md_render_batch_t* out, uint32_t cap) {
+static uint32_t emit_batches(const md_render_mol_topo_t* topo, md_gpu_addr_t dynamic, const md_render_mol_atoms_t* atoms,
+                             const md_render_mol_rep_t* rep, md_render_batch_t* out, uint32_t cap) {
     if (!topo || !atoms || !rep || (cap && !out)) return 0;
     if (!dynamic) {
         MD_LOG_ERROR("md_render_mol: no per-frame block (the copy md_render_mol_update writes)");
@@ -3645,6 +3654,58 @@ uint32_t md_render_mol_emit(const md_render_mol_topo_t* topo, md_gpu_addr_t dyna
     return n;
 }
 
+/* Whether the positions have a periodic cell, as the update writes it (the
+   positions' own, in the form frame_param_words takes; or the reference
+   frame's of resident frames) */
+static bool positions_periodic(const md_render_mol_atoms_t* atoms) {
+    if (atoms->frames) {
+        const uint32_t ref = atoms->frame_slot[atoms->frame_count == 4 ? 1 : 0];
+        return ref < MD_RENDER_MOL_FRAME_SLOTS && ((atoms->frames->periodic >> ref) & 1u);
+    }
+    const float* A = atoms->cell;
+    bool any = false;
+    for (int k = 0; k < 9; ++k) any |= A[k] != 0.0f;
+    return any && A[1] == 0.0f && A[2] == 0.0f && A[5] == 0.0f;
+}
+
+/* In a periodic cell every capsule batch but the gaps' (between residues
+   apart) takes its capsules between their points' nearest images, in the
+   update's copy of the cell: itself the first halves of those across the
+   boundary (and those not across it whole), a twin after all the batches
+   the second halves (md_render_capsule_style_t.cell) */
+uint32_t md_render_mol_emit(const md_render_mol_topo_t* topo, md_gpu_addr_t dynamic, const md_render_mol_atoms_t* atoms,
+                            const md_render_mol_rep_t* rep, md_render_batch_t* out, uint32_t cap) {
+    const uint32_t n = emit_batches(topo, dynamic, atoms, rep, out, cap);
+    if (!n || !positions_periodic(atoms)) return n;
+    /* every batch, to count the twins of those past cap too */
+    md_temp_scope_t temp = md_temp_begin();
+    md_render_batch_t* all = out;
+    if (n > cap) {
+        all = md_temp_alloc(temp, (size_t)n * sizeof(md_render_batch_t));
+        if (!all || emit_batches(topo, dynamic, atoms, rep, all, n) != n) {
+            md_temp_end(temp);
+            return 0;
+        }
+    }
+    const md_gpu_addr_t cell = dynamic + dyn_of(topo).cell + 6u * 4u;   /* ax .. cz, the reciprocals: frame_param_words' */
+    uint32_t m = n;
+    for (uint32_t i = 0; i < n; ++i) {
+        if (all[i].kind != MD_RENDER_CAPSULES || (all[i].key & 0xFFu) == MD_RENDER_MOL_PART_GAPS) continue;
+        if (i < cap) {
+            out[i].style.capsules.cell = cell;
+            out[i].style.capsules.half = 0;
+            if (m < cap) {
+                out[m] = out[i];
+                out[m].key |= MD_RENDER_MOL_PART_HALF;
+                out[m].style.capsules.half = 1;
+            }
+        }
+        m++;
+    }
+    md_temp_end(temp);
+    return m;
+}
+
 bool md_render_mol_decode_pick(const md_render_pick_t* pick, md_render_mol_hit_t* hit) {
     if (!pick || !hit) return false;
     memset(hit, 0, sizeof(*hit));
@@ -3654,6 +3715,7 @@ bool md_render_mol_decode_pick(const md_render_pick_t* pick, md_render_mol_hit_t
     hit->ring = UINT32_MAX;
     if (pick->key == 0) return false;
     uint32_t part = (uint32_t)(pick->key & 0xFFu);
+    if (pick->kind == MD_RENDER_CAPSULES) part &= ~(uint32_t)MD_RENDER_MOL_PART_HALF;   /* a second half: its part's */
     hit->rep_key  = pick->key >> 8;
     hit->instance = pick->instance;
     memcpy(hit->position, pick->position, sizeof(hit->position));

@@ -754,6 +754,7 @@ typedef struct md_render_mol_frames_t {
     uint32_t      slots;
     uint32_t      point_count;
     uint32_t      valid;           /* bit k: slot k holds a frame                    */
+    uint32_t      periodic;        /* bit k: slot k's frame has a cell               */
     uint32_t      buffer[MD_RENDER_MOL_FRAME_SLOTS];   /* internal: each slot's buffer */
 } md_render_mol_frames_t;
 
@@ -926,11 +927,21 @@ enum {
                                            the orders of the frame's own bonds (md_render_mol_bonds_t) */
     MD_RENDER_MOL_PART_FRAME_SINGLE = MD_RENDER_MOL_PART_FRAME_ORDERS + MD_RENDER_MOL_PART_PARTNER + 1 - MD_RENDER_MOL_PART_DOUBLE,
                                         /* without bond_orders, its doubles and triples as one stick */
+    /* | a capsule part: its second halves across the periodic boundary (in a
+       periodic cell every capsule part but the gaps is between the points'
+       nearest images, drawn whole or in halves by two batches: the part
+       itself, half 0, and part | MD_RENDER_MOL_PART_HALF, half 1; see
+       md_render_capsule_style_t.cell). Picked as the part itself. */
+    MD_RENDER_MOL_PART_HALF = 0x80,
 };
 
 /* Appends the batches that draw `rep` to out[0 .. cap). Returns how many it
    needs, which may exceed cap (then nothing past cap is written). Host only,
-   no GPU work. 0 for an invalid representation (logged). */
+   no GPU work. 0 for an invalid representation (logged). With a periodic
+   cell (atoms->cell, or the resident frames'), its capsules but the chains'
+   gaps between the points' nearest images in the update's copy of the cell:
+   each of their batches followed, after all of them, by its twin of the
+   second halves (MD_RENDER_MOL_PART_HALF). */
 uint32_t md_render_mol_emit(const md_render_mol_topo_t* topo, md_gpu_addr_t dynamic, const md_render_mol_atoms_t* atoms,
                             const md_render_mol_rep_t* rep, md_render_batch_t* out, uint32_t cap);
 

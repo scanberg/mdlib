@@ -32,8 +32,9 @@ The model, in full
     Every primitive is exact: raycast, or rasterised as the triangle it
     is; nothing is tessellated. Where a sphere and a capsule are the same
     surface (licorice joints), the sphere wins, whatever the order of the
-    batches. Not yet: capsules across a periodic boundary, transparency
-    (below).
+    batches. Capsules in a periodic cell are drawn between their points'
+    nearest images, as halves where those are not the points themselves
+    (md_render_capsule_style_t.cell). Not yet: transparency (below).
 
   * Points carry positions and, optionally, a VELOCITY. Through an optional
     index they also carry ATTRIBUTES (usually per atom): a colour or a palette
@@ -294,6 +295,24 @@ typedef struct md_render_capsule_style_t {
     bool            tapered;
     float           end_radius;
     float           radius_px;
+
+    /* Periodic (cell != 0): the periodic cell of the points, nine floats in
+       GPU memory, in the points' space: ax, bx, by, cx, cy, cz (its columns
+       a, b, c, a along x and b in the xy plane, as md_unitcell_t has them)
+       and 1/ax, 1/by, 1/cz (0: not periodic along that axis); md_render_mol
+       writes them with its update. Each capsule is taken between its
+       points' nearest images (c, then b, then a taken off its difference as
+       often as they fit). Where those are not the points themselves (a bond
+       across the boundary, between atoms wrapped to opposite faces) it is
+       drawn as a half: `half` 0 from its first point, 1 from its second, to
+       the middle of the capsule to the other's nearest image, its round end
+       there. A half is coloured, displaced, trimmed and faded as that whole
+       capsule; dashed, it has dashes of its own. Half 0 draws a capsule
+       whose points are each other's nearest images whole, half 1 draws it
+       not at all: two batches over the same capsules, half 0 and half 1,
+       draw each whole or as its two halves. Not shaped. */
+    md_gpu_addr_t   cell;
+    uint32_t        half;
 } md_render_capsule_style_t;
 
 /* SPLINES: a profile swept along a uniform cubic B-spline through control

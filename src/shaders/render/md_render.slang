@@ -93,6 +93,7 @@ static const uint F_DASHED       = 1u << 22;  // CAPSULES: dashed (dash_hit)
 static const uint F_DISPLACED    = 1u << 23;  // CAPSULES: moved off their points (capsule_side)
 static const uint F_SIDE         = 1u << 24;  // ... along cap_side
 static const uint F_CIRCLE       = 1u << 25;  // POLYGONS: the circle inside each (poly_inset, poly_dashes)
+static const uint F_PERIODIC     = 1u << 25;  // CAPSULES: in a periodic cell (cap_cell), half cap_half drawn (the circle bit, of another kind)
 static const uint F_FADE_KEY     = 1u << 26;  // SPHERES, CAPSULES: each point's fade by the point fade_key gives
 static const uint F_ID_VISIBLE0  = 1u << 27;  // SPHERES, CAPSULES, POLYGONS: visible by their ids (id_visible0, 1)
 static const uint F_ID_VISIBLE1  = 1u << 28;
@@ -198,6 +199,9 @@ struct Batch {
     float   opacity;            // 1: opaque; below, transparent (the K-buffer); 0: not drawn
     float   desat_unmarked;     // F_MARKS: more desaturation of the elements without state 0
     uint    unlit;              // 1: the colour's alpha 1/255 (md_render_color_t's unlit)
+    uint    cap_half;           // CAPSULES periodic (F_PERIODIC): the half drawn (capsule_images)
+    float*  cap_cell;           // ... the cell: ax, bx, by, cx, cy, cz, 1/ax, 1/by, 1/cz
+    uint    _opad0;
     uint    _opad1;
 };
 
@@ -714,6 +718,56 @@ float capsule_param(float3 p, float3 pa, float3 pb) {
 float clip_depth(ViewData v, float3 p) {
     float4 c = mul4(M(v, proj), float4(p, 1.0));
     return c.z / c.w;
+}
+
+// Periodic capsules (F_PERIODIC, md_render.h): the lattice translation that
+// takes the second point to its image nearest the first, as md_render_mol's
+// minimum image (c, then b, then a taken off the difference as often as they
+// fit; a reciprocal of 0 takes nothing along its axis). split: it moves.
+float3 capsule_shift(Batch b, float3 l0, float3 l1, out bool split) {
+    float* c = b.cap_cell;
+    float3 ca = float3(c[0], 0.0, 0.0), cb = float3(c[1], c[2], 0.0), cc = float3(c[3], c[4], c[5]);
+    float3 d  = l1 - l0;
+    float  n2 = round(d.z * c[8]);
+    d -= n2 * cc;
+    float  n1 = round(d.y * c[7]);
+    d -= n1 * cb;
+    float  n0 = round(d.x * c[6]);
+    split = n0 != 0.0 || n1 != 0.0 || n2 != 0.0;
+    return -(n0 * ca + n1 * cb + n2 * cc);
+}
+
+// A capsule's points as its batch draws it, in the points' space: periodic,
+// the other point of a split capsule at its image nearest the half's own
+// (half 0: the second moved, half 1: the first), else as they are. False:
+// nothing of it is drawn (whole, by half 0 alone).
+bool capsule_images(Batch b, inout float3 l0, inout float3 l1, out bool split) {
+    split = false;
+    if ((b.flags & F_PERIODIC) == 0u) return true;
+    float3 sh = capsule_shift(b, l0, l1, split);
+    if (!split) return b.cap_half == 0u;
+    if (b.cap_half == 0u) l1 += sh;
+    else                  l0 -= sh;
+    return true;
+}
+
+// A split capsule's half of the segment pa-pb (as drawn: trimmed, displaced,
+// the whole between the nearest images): to where it crosses the plane
+// across it through m, the middle of the whole before those. False: nothing
+// of it is left on its half's side.
+bool capsule_cut(Batch b, float3 m, inout float3 pa, inout float3 pb) {
+    float3 ab = pb - pa;
+    float  ll = dot(ab, ab);
+    if (!(ll > 0.0)) return false;
+    float  t = dot(m - pa, ab) / ll;
+    if (b.cap_half == 0u) {
+        if (t <= 0.0) return false;
+        if (t < 1.0) pb = pa + ab * t;
+    } else {
+        if (t >= 1.0) return false;
+        if (t > 0.0) pa = pa + ab * t;
+    }
+    return true;
 }
 
 // Where a sphere and a capsule are the same surface (the joints of licorice,
@@ -1571,8 +1625,12 @@ Geo element_geo(ViewData v, Batch b, uint inst, uint e, bool fade) {
         g.st = st_meet(attr_state(b, a0), attr_state(b, a1));
         bool shaped = (b.flags & F_SHAPED) != 0u;
         g.r  = shaped ? capsule_scale(b, e) * s : capsule_radius(b, e) * s;   // shaped: the factor, the radii from it below
-        g.a  = mulp(M(v, view), mulp(T, load_pos(b, p0)));
-        g.b  = mulp(M(v, view), mulp(T, load_pos(b, p1)));
+        float3 l0 = load_pos(b, p0), l1 = load_pos(b, p1);
+        bool   split;
+        if (!capsule_images(b, l0, l1, split)) { g.st = 0u; return g; }
+        g.a  = mulp(M(v, view), mulp(T, l0));
+        g.b  = mulp(M(v, view), mulp(T, l1));
+        float3 mid  = 0.5 * (g.a + g.b);
         float3 side = (b.flags & F_DISPLACED) != 0u ? capsule_side(v, T, s, b, e, g.a, g.b) : float3(0.0);
         if ((b.flags & F_DASHED) != 0u && !dash_trim(b, p0, p1, s, g.r, g.a, g.b)) return g;   // the spheres meet
         if (fade && (b.flags & F_FADE) != 0u && g.r > 0.0) {
@@ -1589,6 +1647,7 @@ Geo element_geo(ViewData v, Batch b, uint inst, uint e, bool fade) {
             }
         }
         if ((b.flags & F_DISPLACED) != 0u) capsule_displace(b, e, side, g.r, g.a, g.b);   // by its radius as drawn
+        if (split && !capsule_cut(b, mid, g.a, g.b)) return g;
         g.rr = float2(g.r);
         if (shaped && g.r > 0.0 && !g.faded) {
             if (!capsule_shape(v, b, g.r, g.a, g.b, g.rr)) return g;
@@ -2550,7 +2609,17 @@ LocalElem element_local(Batch b, uint e, bool geo) {
         l.st = st_meet(attr_state(b, a0), attr_state(b, a1));
         l.factor = ((b.flags & F_RADIUS_SCALE) != 0u) ? b.radius_scale[gated(b, F_RADIUS_SCALE, e)] : 1.0;
         if ((b.flags & F_DISPLACED) != 0u) l.factor *= 1.0 + abs(b.cap_offset);    // off its points in any direction
-        if (geo) { l.a = load_pos(b, p0); l.b = load_pos(b, p1); }
+        if (geo) {
+            // periodic: the half drawn, from its point to the middle
+            l.a = load_pos(b, p0);
+            l.b = load_pos(b, p1);
+            bool split;
+            if (!capsule_images(b, l.a, l.b, split)) return l;
+            if (split) {
+                float3 m = 0.5 * (l.a + l.b);
+                if (b.cap_half == 0u) l.b = m; else l.a = m;
+            }
+        }
         l.ok = l.factor * capsule_reach(b) > 0.0;
     } else if (b.kind == KIND_TRIANGLES) {
         // the box of its corners (factor 0: no pad)
@@ -4093,12 +4162,15 @@ Hit eval_hit<let SPL : int>(ViewData v, Batch* batches, uint2 idv, float2 pix, f
         uint   p1  = point_of(b, h.element, 1u, 2u);
         float3 l0  = load_pos(b, p0);
         float3 l1  = load_pos(b, p1);
+        bool   split;
+        capsule_images(b, l0, l1, split);       // drawn: as element_geo
         float3 w0  = mulp(T, l0);
         float3 w1  = mulp(T, l1);
         float3 w0p = mulp(Tp, l0 - load_vel(b, p0) * v.dt);
         float3 w1p = mulp(Tp, l1 - load_vel(b, p1) * v.dt);
         float3 pa  = mulp(M(v, view), w0);
         float3 pb  = mulp(M(v, view), w1);
+        float3 mid = 0.5 * (pa + pb);
         bool   shaped = (b.flags & F_SHAPED) != 0u;
         float  rad = shaped ? capsule_scale(b, h.element) * s : capsule_radius(b, h.element) * s;   // as element_geo
         float3 side = (b.flags & F_DISPLACED) != 0u ? capsule_side(v, T, s, b, h.element, pa, pb) : float3(0.0);
@@ -4113,6 +4185,12 @@ Hit eval_hit<let SPL : int>(ViewData v, Batch* batches, uint2 idv, float2 pix, f
         if ((b.flags & F_DISPLACED) != 0u) {        // as element_geo
             capsule_displace(b, h.element, side, rad, qa, qb);
             if (dashed) { float3 dsp = side * (b.cap_offset * rad); pa += dsp; pb += dsp; } else { pa = qa; pb = qb; }
+        }
+        // The whole, which colours the half and moves it; the half, which is hit
+        float3 fa  = pa, fb = pb;
+        if (split) {
+            capsule_cut(b, mid, pa, pb);
+            if (dashed) capsule_cut(b, mid, qa, qb);
         }
         float3 dn  = float3(0.0);
         float  t;
@@ -4141,8 +4219,8 @@ Hit eval_hit<let SPL : int>(ViewData v, Batch* batches, uint2 idv, float2 pix, f
             t = max((dot(oa, ba) * bd - dot(oa, r.d) * dot(ba, ba)) / den, 0.0);
         }
         h.p_view   = r.o + r.d * t;
-        float k    = capsule_param(h.p_view, pa, pb);
-        h.n_view   = dashed || shaped_hit_ok ? dn : normalize(h.p_view - lerp(pa, pb, k));
+        float k    = capsule_param(h.p_view, fa, fb);
+        h.n_view   = dashed || shaped_hit_ok ? dn : normalize(h.p_view - lerp(pa, pb, capsule_param(h.p_view, pa, pb)));
         h.p_world  = mulp(M(v, inv_view), h.p_view);
         h.p_world_prev = h.p_world - lerp(w0 - w0p, w1 - w1p, k);
         uint   a0  = attr_of(b, p0);

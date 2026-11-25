@@ -448,6 +448,103 @@ UTEST(render, capsule_coverage_depth_pick) {
     f_close(&fx);
 }
 
+/* Capsules in a periodic cell (style.capsules.cell): a batch of half 0 and its twin of half 1 over the same two
+   capsules in a 10 A cube, one whole within it, one between points wrapped to opposite x faces (9.4 A apart, 0.73 A
+   at their nearest images). The whole one is half 0's alone; the split one two halves, each from its point to the
+   middle of the capsule to the other's nearest image, nothing between the faces. Coverage, which half each pixel
+   shows, depth; then picks of each half near its middle: its own point's attribute and colour (sharp). */
+UTEST(render, capsules_periodic_halves) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    const uint32_t W = 160, H = 120;
+    cam_t c = { .tan_half = 0.45f, .aspect = (float)W / H, .n = 0.1f };
+    md_render_camera_t cam = make_camera(&c);
+    const double P[4][3] = { { -1.5, -1.5, -12 }, { 0.5, -1.2, -12.5 }, { -4.6, 1.0, -12 }, { 4.8, 1.3, -12.4 } };
+    const double R = 0.25, L = 10.0;
+    float pos[12];
+    for (int i = 0; i < 4; ++i) for (int k = 0; k < 3; ++k) pos[3 * i + k] = (float)P[i][k];
+    const float cell[9] = { (float)L, 0, (float)L, 0, 0, (float)L, (float)(1 / L), (float)(1 / L), (float)(1 / L) };   /* ax, bx, by, cx, cy, cz, reciprocals */
+    uint32_t colors[4] = { 0xFF0000FFu, 0xFFFF0000u, 0xFF00FF00u, 0xFF00FFFFu };
+    md_render_batch_t b[2];
+    memset(b, 0, sizeof(b));
+    b[0].key = 3; b[0].kind = MD_RENDER_CAPSULES; b[0].count = 2; b[0].points.count = 4;
+    b[0].points.position = f_buf(&fx, pos, sizeof(pos));
+    b[0].points.color    = f_buf(&fx, colors, sizeof(colors));
+    b[0].style.capsules.radius = (float)R;
+    b[0].style.capsules.cell   = f_buf(&fx, cell, sizeof(cell));
+    b[0].color.sharpness = 1.0f;
+    b[1] = b[0];
+    b[1].key = 4;
+    b[1].style.capsules.half = 1;
+    md_render_frame_t f = frame_of(W, H, cam, b, 2);
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+
+    /* What should be drawn: capsule 0 whole (batch 0), capsule 1's halves (batch 0 and 1) */
+    double d[3] = { P[3][0] - P[2][0] - L, P[3][1] - P[2][1], P[3][2] - P[2][2] };     /* at the nearest images */
+    double m0[3], m1[3];
+    for (int k = 0; k < 3; ++k) { m0[k] = P[2][k] + 0.5 * d[k]; m1[k] = P[3][k] - 0.5 * d[k]; }
+    const double* seg[3][2] = { { P[0], P[1] }, { P[2], m0 }, { m1, P[3] } };
+    const uint32_t slot[3] = { 0, 0, 1 }, elem[3] = { 0, 1, 1 };
+
+    md_render_targets_t t = md_render_view_targets(fx.view);
+    uint32_t* id = malloc(W * H * 8);
+    float*    dp = malloc(W * H * 4);
+    ASSERT_TRUE(f_read(&fx, t.id, id, W * H * 8));
+    ASSERT_TRUE(f_read(&fx, t.depth, dp, W * H * 4));
+    int bad = 0, judged = 0, covered[3] = {0};
+    for (uint32_t y = 0; y < H; ++y) for (uint32_t x = 0; x < W; ++x) {
+        ray_t r = pixel_ray(&c, W, H, x + 0.5, y + 0.5);
+        double best = 1e30; int who = -1; bool unsure = false;
+        for (int e = 0; e < 3; ++e) {
+            double dist, tt = capsule_t(r, seg[e][0], seg[e][1], R, &dist);
+            if (fabs(dist - R) < 3e-3 * R) unsure = true;
+            if (tt >= 0 && tt < best) { best = tt; who = e; }
+        }
+        if (unsure) continue;
+        judged++;
+        uint32_t ix = id[2 * (y * W + x)], iy = id[2 * (y * W + x) + 1];
+        if (who < 0) {
+            if (iy) { bad++; if (bad < 6) printf("    pixel (%u, %u): drawn, nothing there\n", x, y); }
+            continue;
+        }
+        covered[who]++;
+        if (!iy || ix != elem[who] || (iy >> 20) != slot[who] + 1) {
+            bad++;
+            if (bad < 6) printf("    pixel (%u, %u): %u of batch %d, expected part %d\n", x, y, ix, (int)(iy >> 20) - 1, who);
+            continue;
+        }
+        double p[3] = { r.d[0] * best, r.d[1] * best, r.d[2] * best };
+        float ed = proj_depth(&cam, p);
+        if (fabsf(ed - dp[y * W + x]) > 2e-4f * ed) bad++;
+    }
+    free(id); free(dp);
+    EXPECT_EQ(0, bad);
+    EXPECT_GT(covered[0], 100);
+    EXPECT_GT(covered[1], 15);
+    EXPECT_GT(covered[2], 15);
+    EXPECT_GT(judged, (int)(W * H * 9 / 10));
+
+    /* Each half near the middle of the whole: its own point, its own colour */
+    uint32_t* col = malloc(W * H * 4);
+    ASSERT_TRUE(f_read(&fx, t.color, col, W * H * 4));
+    for (int h = 0; h < 2; ++h) {
+        const double* a = seg[1 + h][0];
+        const double* e = seg[1 + h][1];
+        double q[3];
+        for (int k = 0; k < 3; ++k) q[k] = h ? e[k] + (a[k] - e[k]) * 0.75 : a[k] + (e[k] - a[k]) * 0.75;
+        uint32_t px = (uint32_t)((q[0] / -q[2] / (c.tan_half * c.aspect) * 0.5 + 0.5) * W);
+        uint32_t py = (uint32_t)((0.5 - q[1] / -q[2] / c.tan_half * 0.5) * H);
+        md_render_pick_t pk;
+        ASSERT_TRUE(f_pick(&fx, px, py, &pk));
+        EXPECT_EQ(3u + (uint32_t)h, (unsigned)pk.key);
+        EXPECT_EQ(1u, pk.element);
+        EXPECT_EQ(2u + (uint32_t)h, pk.attr);
+        EXPECT_TRUE(near_rgba(colors[2 + h], col[py * W + px]));
+    }
+    free(col);
+    f_close(&fx);
+}
+
 /* ---- Splines ------------------------------------------------------------------- */
 
 static int compare_views(fix_t* fx, md_render_view_t a, md_render_view_t b, uint32_t W, uint32_t H, int* covered);
@@ -8029,6 +8126,138 @@ UTEST(render, mol_velocity_derived) {
     f_close(&fx);
 }
 
+/* A bond across the periodic boundary: one water's hydrogen wrapped to the far face of the cell (moved by a), its
+   bond to the oxygen then nearly as long as the cell, but 1 A at their nearest images. Drawn as two halves, each from
+   its atom toward the other's nearest image: nothing along the span between the faces, a half at each atom, picked
+   as the bond and its own atom. Only that water shown. From the positions with their cell, then from a resident
+   frame of them, whose cell the update copies. */
+UTEST(render, mol_bonds_across_the_cell) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(load_system(&sys, &state, MD_UNITTEST_DATA_DIR "/tryptophan-md.gro"));
+    const uint32_t n = (uint32_t)sys.atom.count;
+    float cell[9];
+    md_render_mol_frame_cell(cell, &state.unitcell);
+    ASSERT_GT(cell[0], 10.0f);
+
+    /* a water (a molecule of three atoms) and its oxygen's bond to a hydrogen */
+    int32_t o = -1, h = -1, bond = -1;
+    for (size_t m = 0; m < sys.molecule.count && bond < 0; ++m) {
+        if (sys.molecule.offset[m + 1] - sys.molecule.offset[m] != 3) continue;
+        for (size_t i = 0; i < sys.bond.count; ++i) {
+            const uint32_t a = sys.bond.pairs[i].idx[0], b = sys.bond.pairs[i].idx[1];
+            bool in_a = false, in_b = false;
+            for (uint32_t s = sys.molecule.offset[m]; s < sys.molecule.offset[m + 1]; ++s) {
+                in_a |= sys.molecule.atom_idx[s] == a;
+                in_b |= sys.molecule.atom_idx[s] == b;
+            }
+            if (in_a && in_b) { o = (int32_t)a; h = (int32_t)b; bond = (int32_t)i; break; }
+        }
+    }
+    ASSERT_GE(bond, 0);
+    float* x = malloc((size_t)n * 12);
+    memcpy(x, state.xyz, (size_t)n * 12);
+    double po[3], ph[3], d[3];
+    const float sgn = x[3 * h] < 0.5f * cell[0] ? 1.0f : -1.0f;    /* to the other half of the cell */
+    for (int k = 0; k < 3; ++k) {
+        d[k]  = x[3 * h + k] - x[3 * o + k];             /* as it was: the nearest images */
+        x[3 * h + k] += sgn * cell[k];                   /* wrapped across an a face */
+        po[k] = x[3 * o + k];
+        ph[k] = x[3 * h + k];
+    }
+    uint32_t* vis = calloc((n + 31) / 32, 4);
+    for (size_t m = 0; m < sys.molecule.count; ++m) {
+        bool ours = false;
+        for (uint32_t s = sys.molecule.offset[m]; s < sys.molecule.offset[m + 1]; ++s) ours |= sys.molecule.atom_idx[s] == (uint32_t)o;
+        if (!ours) continue;
+        for (uint32_t s = sys.molecule.offset[m]; s < sys.molecule.offset[m + 1]; ++s) vis[sys.molecule.atom_idx[s] >> 5] |= 1u << (sys.molecule.atom_idx[s] & 31);
+    }
+
+    md_temp_scope_t temp = md_temp_begin();
+    md_render_mol_plan_t plan;
+    ASSERT_TRUE(md_render_mol_plan(&plan, &sys, NULL, temp));
+    md_render_mol_topo_t topo;
+    ASSERT_TRUE(md_render_mol_write(fx.gfx, &topo, &plan, md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, plan.size).gpu, NULL));
+    md_temp_end(temp);
+    md_render_mol_ctx_t kernels = md_render_mol_create(fx.dev, NULL);
+    ASSERT_TRUE(kernels != NULL);
+    md_gpu_addr_t dyn = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, topo.dynamic_size).gpu;
+    md_gpu_addr_t P = f_buf(&fx, x, (size_t)n * 12);
+
+    md_render_mol_rep_t rep = {0};
+    rep.key = 9; rep.type = MD_RENDER_MOL_REP_BONDS; rep.params.bonds.radius = 0.2f; rep.bond_kinds = MD_RENDER_MOL_BONDS(MD_BOND_KIND_COVALENT);
+
+    /* looking down z at the two atoms and the span between them, some 30 pixels an Angstrom */
+    const uint32_t W = 1024, H = 1024;
+    const float half = 0.5f * (float)fabs(ph[0] - po[0]) + 3.0f;
+    cam_t c = { .ortho = true, .half_h = half, .aspect = 1.0f, .n = 0.0f, .far_ = 1000.0f };
+    md_render_camera_t cam = make_camera(&c);
+    cam.view[12] = -0.5f * (float)(po[0] + ph[0]); cam.view[13] = -0.5f * (float)(po[1] + ph[1]); cam.view[14] = -(cell[8] + 40.0f);
+    #define PX(p) (uint32_t)((((p)[0] + cam.view[12]) / half * 0.5 + 0.5) * W)
+    #define PY(p) (uint32_t)((0.5 - ((p)[1] + cam.view[13]) / half * 0.5) * H)
+
+    md_render_mol_frames_t fr;
+    md_gpu_addr_t frb = md_gpu_malloc(fx.gfx, MD_GPU_MEM_DEVICE, md_render_mol_frames_size(&topo, 1)).gpu;
+    ASSERT_TRUE(md_render_mol_frames_init(&fr, &topo, frb, 1));
+    uint16_t* q = malloc((size_t)n * 6);
+
+    for (int path = 0; path < 2; ++path) {
+        md_render_mol_atoms_t atoms = {0};
+        atoms.visible = f_buf(&fx, vis, (n + 31) / 32 * 4);
+        if (path == 0) {
+            atoms.position = P;
+            memcpy(atoms.cell, cell, sizeof(cell));
+        } else {
+            md_render_mol_frame_t f;
+            md_render_mol_frame_quantize(&f, q, x, 0, n, cell, NULL);
+            ASSERT_TRUE(md_render_mol_frame_upload(kernels, fx.gfx, &topo, dyn, &fr, 0, &f, 0));
+            EXPECT_EQ(1u, fr.periodic);
+            atoms.frames = &fr;
+            atoms.frame_count = 1;
+        }
+        ASSERT_TRUE(md_render_mol_update(kernels, fx.gfx, &topo, dyn, &atoms, 0, NULL));
+        md_render_batch_t b[8];
+        const uint32_t nb = md_render_mol_emit(&topo, dyn, &atoms, &rep, b, 8);
+        ASSERT_EQ(2u, nb);
+        EXPECT_EQ(b[0].key | MD_RENDER_MOL_PART_HALF, b[1].key);
+        md_render_frame_t f = frame_of(W, H, cam, b, nb);
+        ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+
+        /* the span between the faces: nothing; a half at each atom, 0.4 of the way to the other's nearest image (clear
+           of the other bond, 0.2 A thick) */
+        double mid[3], so[3], sh[3];
+        for (int k = 0; k < 3; ++k) { mid[k] = 0.5 * (po[k] + ph[k]); so[k] = po[k] + 0.4 * d[k]; sh[k] = ph[k] - 0.4 * d[k]; }
+        md_render_pick_t pk;
+        ASSERT_TRUE(f_pick(&fx, PX(mid), PY(mid), &pk));
+        EXPECT_EQ(0u, (unsigned)pk.key);
+        const double* at[2] = { so, sh };
+        const int32_t atom[2] = { o, h };
+        for (int e = 0; e < 2; ++e) {
+            ASSERT_TRUE(f_pick(&fx, PX(at[e]), PY(at[e]), &pk));
+            md_render_mol_hit_t hit;
+            ASSERT_TRUE(md_render_mol_decode_pick(&pk, &hit));
+            EXPECT_EQ(MD_RENDER_MOL_HIT_BOND, hit.kind);
+            EXPECT_EQ((uint32_t)bond, hit.bond);
+            EXPECT_EQ((uint32_t)atom[e], hit.atom);
+            printf("    %s, the half at atom %d: %s, bond %u, atom %u\n", path ? "frames" : "positions", atom[e],
+                   hit.kind == MD_RENDER_MOL_HIT_BOND ? "a bond" : "no bond", hit.bond, hit.atom);
+        }
+    }
+    #undef PX
+    #undef PY
+    free(q); free(vis); free(x);
+    md_gpu_free(fx.gfx, frb);
+    md_gpu_free(fx.gfx, P);
+    md_gpu_free(fx.gfx, dyn);
+    md_gpu_free(fx.gfx, topo.base);
+    md_render_mol_destroy(kernels);
+    md_vm_arena_destroy(alloc);
+    f_close(&fx);
+}
+
 /* The caller's pairs (PAIRS) draw what the topology's bonds draw (BONDS)
    when they are those bonds: through the per-frame block's points (the
    index map from atoms), so through a regroup that moves molecules a jump
@@ -8108,11 +8337,15 @@ UTEST(render, mol_pairs_draw_what_bonds_draw) {
         md_render_batch_t bp[8], bb[8];
         const uint32_t np_b = md_render_mol_emit(&topo, dyn, &atoms, &rp, bp, 8);
         const uint32_t nb_b = md_render_mol_emit(&topo, dyn, &atoms, &rb, bb, 8);
-        ASSERT_EQ(1u, np_b);
-        ASSERT_EQ(1u, nb_b);
+        ASSERT_EQ(2u, np_b);            /* in the cell: the sticks, and their second halves across it */
+        ASSERT_EQ(2u, nb_b);
         EXPECT_EQ((uint64_t)(7 << 8 | (MD_RENDER_MOL_PART_PAIRS + kv)), bp[0].key);
+        EXPECT_EQ(bp[0].key | MD_RENDER_MOL_PART_HALF, bp[1].key);
+        EXPECT_EQ(0u, bp[0].style.capsules.half);
+        EXPECT_EQ(1u, bp[1].style.capsules.half);
+        EXPECT_TRUE(bp[0].style.capsules.cell != 0 && bp[0].style.capsules.cell == bp[1].style.capsules.cell);
         EXPECT_TRUE(bp[0].points.velocity != 0);
-        md_render_frame_t fp = frame_of(W, H, cam, bp, 1), fb = frame_of(W, H, cam, bb, 1);
+        md_render_frame_t fp = frame_of(W, H, cam, bp, 2), fb = frame_of(W, H, cam, bb, 2);
         memcpy(fp.content, content, sizeof(content)); memcpy(fb.content, content, sizeof(content));
         fp.time = fb.time = (double)step;
         ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &fp, NULL));
