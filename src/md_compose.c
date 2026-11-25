@@ -24,10 +24,14 @@ typedef struct gpu_compose_args_t {
     md_gpu_sampled_tex_t vf[4];         /* vf0..vf3 */
     md_gpu_sampled_tex_t vt[4];         /* vt0..vt3 */
     md_gpu_sampler_t     trilinear;
+    md_gpu_sampled_tex_t vc[4];         /* colour volumes */
+    md_gpu_sampled_tex_t vg[4];         /* colour fields */
+    md_gpu_sampled_tex_t vm[4];         /* colour maps */
+    md_gpu_sampled_tex_t vn[4];         /* normals */
 } gpu_compose_args_t;
-_Static_assert(sizeof(gpu_compose_args_t) == 368, "Args mirror");
+_Static_assert(sizeof(gpu_compose_args_t) == 496, "Args mirror");
 
-enum { AO_LEVELS = 6, VOL_STRIDE = 28 };   /* md_compose.slang's */
+enum { AO_LEVELS = 6, VOL_STRIDE = 36 };   /* md_compose.slang's */
 
 struct md_compose {
     md_gpu_device_t  dev;
@@ -36,7 +40,7 @@ struct md_compose {
     /* What the compose's volume arguments hold without volumes, never read: a
        null pointer or handle there let lavapipe crash (a load hoisted out of
        a loop that does not run) */
-    md_gpu_texture_t none_field, none_transfer;
+    md_gpu_texture_t none_field, none_transfer, none_color;
 };
 
 md_compose_ctx_t md_compose_create(md_gpu_device_t device) {
@@ -74,6 +78,7 @@ void md_compose_destroy(md_compose_ctx_t c) {
     if (c->k_compose)  md_gpu_kernel_destroy(c->k_compose);
     if (c->none_field)    md_gpu_texture_destroy(c->none_field);
     if (c->none_transfer) md_gpu_texture_destroy(c->none_transfer);
+    if (c->none_color)    md_gpu_texture_destroy(c->none_color);
     md_free(md_get_heap_allocator(), c, sizeof(*c));
 }
 
@@ -85,6 +90,13 @@ static md_gpu_float4 f4(float x, float y, float z, float w) {
 static uint32_t level_dim(uint32_t n, uint32_t l) {
     const uint32_t d = n >> l;
     return d ? d : 1u;
+}
+
+/* An optional texture of a volume: 0, or SAMPLED of the type and one of the formats */
+static bool vol_tex_ok(md_gpu_texture_t t, md_gpu_tex_type_t type, md_gpu_format_t f0, md_gpu_format_t f1) {
+    if (!t) return true;
+    const md_gpu_texture_desc_t* d = md_gpu_texture_desc(t);
+    return d && d->type == type && (d->usage & MD_GPU_TEX_SAMPLED) && (d->format == f0 || d->format == f1);
 }
 
 static bool launch(md_gpu_stream_t s, md_gpu_kernel_t k, uint32_t w, uint32_t h, const gpu_compose_args_t* a) {
@@ -161,13 +173,17 @@ bool md_compose(md_gpu_stream_t s, md_compose_ctx_t c, md_render_view_t view, co
             MD_LOG_ERROR("md_compose: volume %u's field is to be a SAMPLED 3D texture of R32_FLOAT or R16_FLOAT", v);
             return false;
         }
-        const md_gpu_texture_desc_t* xd = vol->transfer ? md_gpu_texture_desc(vol->transfer) : NULL;
-        if (vol->transfer && (!xd || xd->type != MD_GPU_TEX_2D || xd->format != MD_GPU_FORMAT_RGBA8_UNORM || !(xd->usage & MD_GPU_TEX_SAMPLED))) {
-            MD_LOG_ERROR("md_compose: volume %u's transfer function is to be a SAMPLED 2D texture of RGBA8_UNORM", v);
+        if (!vol_tex_ok(vol->transfer, MD_GPU_TEX_2D, MD_GPU_FORMAT_RGBA8_UNORM, MD_GPU_FORMAT_RGBA8_UNORM) ||
+            !vol_tex_ok(vol->color_map, MD_GPU_TEX_2D, MD_GPU_FORMAT_RGBA8_UNORM, MD_GPU_FORMAT_RGBA8_UNORM) ||
+            !vol_tex_ok(vol->color_volume, MD_GPU_TEX_3D, MD_GPU_FORMAT_RGBA8_UNORM, MD_GPU_FORMAT_RGBA8_UNORM) ||
+            !vol_tex_ok(vol->color_field, MD_GPU_TEX_3D, MD_GPU_FORMAT_R32_FLOAT, MD_GPU_FORMAT_R16_FLOAT) ||
+            !vol_tex_ok(vol->normals, MD_GPU_TEX_3D, MD_GPU_FORMAT_RGB10A2_UNORM, MD_GPU_FORMAT_RGBA8_UNORM) ||
+            (vol->color_field && !vol->color_map)) {
+            MD_LOG_ERROR("md_compose: volume %u: a texture of the wrong type or format, or a colour field without its map (md_compose.h)", v);
             return false;
         }
-        if (vol->iso_count > MD_COMPOSE_MAX_ISO || vol->plane_count > MD_COMPOSE_MAX_PLANES) {
-            MD_LOG_ERROR("md_compose: volume %u: at most %d isosurfaces and %d planes", v, MD_COMPOSE_MAX_ISO, MD_COMPOSE_MAX_PLANES);
+        if (vol->iso_count > MD_COMPOSE_MAX_ISO || vol->plane_count > MD_COMPOSE_MAX_PLANES || vol->isoline_count > MD_COMPOSE_MAX_ISOLINES) {
+            MD_LOG_ERROR("md_compose: volume %u: at most %d isosurfaces, %d planes and %d isolines", v, MD_COMPOSE_MAX_ISO, MD_COMPOSE_MAX_PLANES, MD_COMPOSE_MAX_ISOLINES);
             return false;
         }
         /* view space to its texture space */
@@ -190,24 +206,48 @@ bool md_compose(md_gpu_stream_t s, md_compose_ctx_t c, md_render_view_t view, co
             for (int k = 0; k < 4; ++k) f[8 + 4 * i + k] = vol->iso_colors[i][k];   /* 10..17 */
         }
         for (uint32_t i = 0; i < vol->plane_count; ++i) r[20 + i] = f4(vol->planes[i][0], vol->planes[i][1], vol->planes[i][2], vol->planes[i][3]);
+        /* the colour, the isolines, the normals */
+        const bool  cvol = vol->color_volume != 0, cfld = !cvol && vol->color_field != 0, nrm = vol->normals != 0;
+        const float cext = vol->color_range[1] - vol->color_range[0];
+        const uint32_t nl = cfld ? vol->isoline_count : 0u;
+        r[28] = f4(vol->color_range[0], cext != 0.0f ? 1.0f / cext : 0.0f, (float)((cvol ? 1u : 0u) | (cfld ? 2u : 0u) | (nrm ? 4u : 0u)),
+                   vol->isoline_width > 0.0f ? vol->isoline_width : 1.5f);
+        r[29] = f4((float)nl, cfld && vol->isoline_hover ? 1.0f : 0.0f, vol->isoline_hover_value, 0.0f);
+        float* il = (float*)(r + 30);
+        for (uint32_t i = 0; i < nl; ++i) il[i] = vol->isoline_values[i];
+        for (int k = 0; k < 3; ++k) r[32 + k] = f4(d->camera.view[4 * k], d->camera.view[4 * k + 1], d->camera.view[4 * k + 2], 0.0f);
+        if (cfld) {
+            const md_gpu_texture_desc_t* gd = md_gpu_texture_desc(vol->color_field);
+            r[35] = f4((float)gd->width, (float)gd->height, (float)gd->depth_or_layers, 0.0f);
+        }
         a.vf[v] = md_gpu_texture_sampled(vol->field);
-        if (vol->transfer) a.vt[v] = md_gpu_texture_sampled(vol->transfer);
+        if (vol->transfer)     a.vt[v] = md_gpu_texture_sampled(vol->transfer);
+        if (cvol)              a.vc[v] = md_gpu_texture_sampled(vol->color_volume);
+        if (cfld)              a.vg[v] = md_gpu_texture_sampled(vol->color_field);
+        if (cfld)              a.vm[v] = md_gpu_texture_sampled(vol->color_map);
+        if (nrm)               a.vn[v] = md_gpu_texture_sampled(vol->normals);
     }
     if (!c->none_field) {
         md_gpu_texture_desc_t nd = {0};
         nd.type = MD_GPU_TEX_3D; nd.format = MD_GPU_FORMAT_R32_FLOAT; nd.usage = MD_GPU_TEX_SAMPLED;
         nd.width = nd.height = nd.depth_or_layers = 1; nd.label = "md_compose.none_field";
         c->none_field = md_gpu_texture_create(s, &nd);
+        nd.type = MD_GPU_TEX_3D; nd.format = MD_GPU_FORMAT_RGBA8_UNORM; nd.label = "md_compose.none_color";
+        c->none_color = md_gpu_texture_create(s, &nd);
         nd.type = MD_GPU_TEX_2D; nd.format = MD_GPU_FORMAT_RGBA8_UNORM; nd.depth_or_layers = 1; nd.label = "md_compose.none_transfer";
         c->none_transfer = md_gpu_texture_create(s, &nd);
-        if (!c->none_field || !c->none_transfer) {
+        if (!c->none_field || !c->none_transfer || !c->none_color) {
             MD_LOG_ERROR("md_compose: %s", md_gpu_last_error());
             return false;
         }
     }
     for (uint32_t v = 0; v < 4; ++v) {
-        if (v >= nv) a.vf[v] = md_gpu_texture_sampled(c->none_field);
-        if (v >= nv || !d->volumes[v].transfer) a.vt[v] = md_gpu_texture_sampled(c->none_transfer);
+        if (!a.vf[v].handle) a.vf[v] = md_gpu_texture_sampled(c->none_field);
+        if (!a.vt[v].handle) a.vt[v] = md_gpu_texture_sampled(c->none_transfer);
+        if (!a.vc[v].handle) a.vc[v] = md_gpu_texture_sampled(c->none_color);
+        if (!a.vg[v].handle) a.vg[v] = md_gpu_texture_sampled(c->none_field);
+        if (!a.vm[v].handle) a.vm[v] = md_gpu_texture_sampled(c->none_transfer);
+        if (!a.vn[v].handle) a.vn[v] = md_gpu_texture_sampled(c->none_color);
     }
     a.vol_count = nv;
     a.frame     = d->frame;

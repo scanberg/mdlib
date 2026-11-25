@@ -3579,6 +3579,129 @@ UTEST(render, compose_volumes) {
     f_close(&fx);
 }
 
+/* An isosurface's colour and normal from the volumes beside its field: the
+   distance field's sphere (radius 1.3) under BASIC shading without light, so
+   a colour shows as it is: times a constant colour volume; through a colour
+   map of a colour field (the world's x), with an isoline where it is 0; and,
+   lit, with a normals volume of one direction (the view's +z) for every
+   point */
+UTEST(render, compose_volume_coloring) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    const uint32_t W = 96, H = 72, P = W * H, N = 48, NC = 16;
+    const double ctr[3] = { 0, 0, -12 }, R = 1.3;
+    cam_t c = { .tan_half = 0.25f, .aspect = (float)W / H, .n = 0.1f };
+    md_render_camera_t cam = make_camera(&c);
+    md_compose_ctx_t cx = md_compose_create(fx.dev);
+    ASSERT_TRUE(cx != NULL);
+    md_gpu_texture_t out = f_tex(&fx, MD_GPU_FORMAT_RGBA16_FLOAT, MD_GPU_TEX_STORAGE, W, H, "compose");
+    uint16_t* px = malloc(P * 8);
+    float* fd = malloc(N * N * N * 4);
+    float* fx_ = malloc(NC * NC * NC * 4);
+    uint32_t* cv = malloc(NC * NC * NC * 4);
+    uint32_t* nv = malloc(NC * NC * NC * 4);
+    for (uint32_t z = 0; z < N; ++z) for (uint32_t y = 0; y < N; ++y) for (uint32_t x = 0; x < N; ++x) {
+        const double u[3] = { (x + 0.5) / N - 0.5, (y + 0.5) / N - 0.5, (z + 0.5) / N - 0.5 };
+        fd[((size_t)z * N + y) * N + x] = (float)(4.0 * sqrt(dot3(u, u)));
+    }
+    for (uint32_t z = 0; z < NC; ++z) for (uint32_t y = 0; y < NC; ++y) for (uint32_t x = 0; x < NC; ++x) {
+        const size_t i = ((size_t)z * NC + y) * NC + x;
+        fx_[i] = (float)(4.0 * (x + 0.5) / NC - 2.0);          /* the world's x */
+        cv[i]  = 128u | (255u << 8) | (64u << 16) | (255u << 24);
+        nv[i]  = 128u | (128u << 8) | (255u << 16) | (255u << 24);   /* +z */
+    }
+    md_gpu_texture_t vdist = f_tex3d(&fx, N, fd), vx = f_tex3d(&fx, NC, fx_);
+    md_gpu_texture_desc_t td = {0};
+    td.type = MD_GPU_TEX_3D; td.usage = MD_GPU_TEX_SAMPLED; td.width = td.height = td.depth_or_layers = NC;
+    td.format = MD_GPU_FORMAT_RGBA8_UNORM; td.label = "colours";
+    md_gpu_texture_t vcol = md_gpu_texture_create(fx.gfx, &td);
+    td.label = "normals";
+    md_gpu_texture_t vnrm = md_gpu_texture_create(fx.gfx, &td);
+    md_gpu_tex_region_t rg = {0};
+    ASSERT_TRUE(vdist && vx && vcol && vnrm);
+    ASSERT_TRUE(md_gpu_upload_texture(fx.gfx, vcol, &rg, cv, NC * NC * NC * 4) && md_gpu_upload_texture(fx.gfx, vnrm, &rg, nv, NC * NC * NC * 4));
+    uint32_t ramp[256];
+    for (int i = 0; i < 256; ++i) ramp[i] = (uint32_t)(255 - i) | ((uint32_t)i << 16) | (255u << 24);   /* red to blue */
+    md_gpu_texture_t cmap = f_tex(&fx, MD_GPU_FORMAT_RGBA8_UNORM, MD_GPU_TEX_SAMPLED, 256, 1, "colour map");
+    ASSERT_TRUE(f_upload_tex(&fx, cmap, ramp, sizeof(ramp)));
+    md_render_frame_t f = frame_of(W, H, cam, NULL, 0);
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+
+    for (int run = 0; run < 3; ++run) {
+        md_compose_volume_t v = {0};
+        v.field = vdist;
+        vol_model(v.model);
+        v.clip_max[0] = v.clip_max[1] = v.clip_max[2] = 1.0f;
+        v.iso_count = 1; v.iso_values[0] = (float)R;
+        for (int k = 0; k < 4; ++k) v.iso_colors[0][k] = 1.0f;
+        md_compose_desc_t d = {0};
+        d.camera = cam; d.target = out; d.volumes = &v; d.volume_count = 1;
+        unlit_shading(&d.shading);
+        if (run == 0) v.color_volume = vcol;
+        if (run == 1) {
+            v.color_field = vx; v.color_map = cmap; v.color_range[0] = (float)-R; v.color_range[1] = (float)R;
+            v.isoline_count = 1; v.isoline_values[0] = 0.0f; v.isoline_width = 1.5f;
+        }
+        md_compose_shading_t* sh = &d.shading;
+        if (run == 2) {
+            v.normals = vnrm;
+            sh->mode = MD_COMPOSE_SHADING_PBR;
+            sh->light_dir[0] = 0.4f; sh->light_dir[1] = 0.6f; sh->light_dir[2] = 0.7f; sh->light_strength = 1.0f;
+            for (int i = 0; i < 3; ++i) { sh->dir_radiance[i] = 2.7f; sh->sky_radiance[i] = 0.59f; sh->ground_radiance[i] = 0.49f; }
+            sh->roughness = 0.4f; sh->f0 = 0.04f;
+        }
+        ASSERT_TRUE(md_compose(fx.gfx, cx, fx.view, &d));
+        ASSERT_TRUE(f_read(&fx, out, px, P * 8));
+        int bad = 0, judged = 0, line = 0;
+        double worst = 0;
+        for (uint32_t y = 0; y < H; ++y) for (uint32_t x = 0; x < W; ++x) {
+            const size_t p = (size_t)y * W + x;
+            ray_t r = pixel_ray(&c, W, H, x + 0.5, y + 0.5);
+            double t0, t1, u0, u1;
+            if (!ray_sphere(r, ctr, R - 0.12, &t0, &t1) || !ray_sphere(r, ctr, R, &t0, &t1) || !ray_sphere(r, ctr, R + 0.12, &u0, &u1)) continue;
+            const double hx = r.o[0] + r.d[0] * t0;
+            const double pxw = 2.0 * c.tan_half * -(r.o[2] + r.d[2] * t0) / H;     /* a pixel's size there */
+            double e[3];
+            if (run == 0) { e[0] = 128 / 255.0; e[1] = 1.0; e[2] = 64 / 255.0; }
+            double tol = 0.012;
+            if (run == 1) {
+                const double t = (hx + R) / (2 * R);
+                /* the map's texels at (i + 0.5) / 256, clamped at its ends */
+                const double u = fmin(fmax(t * 256 - 0.5, 0.0), 255.0) / 255.0;
+                e[0] = 1 - u; e[1] = 0; e[2] = u;
+                /* the line: |x| / (a pixel's x there) pixels from it, near the middle of the view where the
+                   surface faces it; dark core over a light rim */
+                const double dpx = fabs(hx) / pxw;
+                if (dpx < 4.0) {
+                    const double w = 1.5, core = fmin(fmax(0.5 * w + 0.5 - dpx, 0.0), 1.0), rim = fmin(fmax(0.5 * (w + 2.0) + 0.5 - dpx, 0.0), 1.0);
+                    for (int k = 0; k < 3; ++k) { e[k] += (0.95 - e[k]) * rim; e[k] += (0.02 - e[k]) * core; }
+                    tol = 0.06;
+                    line += core > 0.5;
+                }
+            } else if (run == 2) {
+                c_lit_t l = c_shade(sh, cf(1, 1, 1), cf((float)-r.d[0], (float)-r.d[1], (float)-r.d[2]), cf(0, 0.0039f, 1), 1.0f);
+                e[0] = l.d.x + l.s.x; e[1] = l.d.y + l.s.y; e[2] = l.d.z + l.s.z;
+            }
+            judged++;
+            for (int k = 0; k < 3; ++k) {
+                const double err = fabs(half_bits_to_float(px[4 * p + k]) - e[k]);
+                worst = fmax(worst, err);
+                if (err > tol) { bad++; if (bad < 6) printf("    %s pixel (%u, %u) channel %d: %g against %g\n", run == 0 ? "colour volume" : run == 1 ? "colour field" : "normals", x, y, k, half_bits_to_float(px[4 * p + k]), e[k]); }
+            }
+        }
+        printf("    %s: %d pixels; %.4f off at most%s\n", run == 0 ? "a colour volume" : run == 1 ? "a colour field through a map" : "a normals volume", judged, worst,
+               run == 1 ? (line ? ", with the isoline" : ", NO isoline") : "");
+        EXPECT_EQ(0, bad);
+        EXPECT_GT(judged, 300);
+        if (run == 1) EXPECT_GT(line, 10);
+    }
+    md_gpu_texture_destroy(vdist); md_gpu_texture_destroy(vx); md_gpu_texture_destroy(vcol); md_gpu_texture_destroy(vnrm);
+    md_gpu_texture_destroy(cmap); md_gpu_texture_destroy(out);
+    md_compose_destroy(cx);
+    free(px); free(fd); free(fx_); free(cv); free(nv);
+    f_close(&fx);
+}
+
 /* ---- Post ----------------------------------------------------------------------------- */
 
 /* md_post.slang's display transform, in C: the reference */

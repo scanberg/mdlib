@@ -43,6 +43,10 @@ struct Args {
     DescriptorHandle<Texture3D<float>>    vf0, vf1, vf2, vf3;   // the volumes' fields
     DescriptorHandle<Texture2D<float4>>   vt0, vt1, vt2, vt3;   // and transfer functions
     DescriptorHandle<SamplerState>        trilinear;            // clamp to edge
+    DescriptorHandle<Texture3D<float4>>   vc0, vc1, vc2, vc3;   // colour volumes
+    DescriptorHandle<Texture3D<float>>    vg0, vg1, vg2, vg3;   // colour fields
+    DescriptorHandle<Texture2D<float4>>   vm0, vm1, vm2, vm3;   // their colour maps
+    DescriptorHandle<Texture3D<float4>>   vn0, vn1, vn2, vn3;   // normals
 };
 MD_SHADER_ARGS(Args);
 
@@ -525,8 +529,14 @@ Lit shade(Args a, float3 color, float3 V, float3 N, float ao) {
 //   7      x: isovalues, y: planes
 //   8, 9   isovalues; 10..17 their colours; 18, 19 their optical densities
 //   20..27 planes (texture space, n . x + d >= 0 kept)
+//   28     the colour field's range: begin, 1 / extent; z: flags (1 colour
+//          volume, 2 colour field, 4 normals); w: the isolines' width (pixels)
+//   29     x: isolines, y: 1 with the transient one, z: its value
+//   30, 31 the isolines' values
+//   32..34 world to view (columns), for the normals
+//   35     the colour field's voxels per axis
 
-static const uint  VOL_STRIDE       = 28u;
+static const uint  VOL_STRIDE       = 36u;
 static const uint  MAX_VOL          = 4u;
 static const uint  MAX_ISO          = 8u;
 static const uint  MAX_STEPS        = 4096u;
@@ -553,6 +563,43 @@ float4 vol_transfer(Args a, uint v, float t) {
     case 1u: return a.vt1.SampleLevel(a.trilinear, uv, 0.0);
     case 2u: return a.vt2.SampleLevel(a.trilinear, uv, 0.0);
     default: return a.vt3.SampleLevel(a.trilinear, uv, 0.0);
+    }
+}
+
+float4 vol_color(Args a, uint v, float3 p) {
+    switch (v) {
+    case 0u: return a.vc0.SampleLevel(a.trilinear, p, 0.0);
+    case 1u: return a.vc1.SampleLevel(a.trilinear, p, 0.0);
+    case 2u: return a.vc2.SampleLevel(a.trilinear, p, 0.0);
+    default: return a.vc3.SampleLevel(a.trilinear, p, 0.0);
+    }
+}
+
+float vol_cfield(Args a, uint v, float3 p) {
+    switch (v) {
+    case 0u: return a.vg0.SampleLevel(a.trilinear, p, 0.0);
+    case 1u: return a.vg1.SampleLevel(a.trilinear, p, 0.0);
+    case 2u: return a.vg2.SampleLevel(a.trilinear, p, 0.0);
+    default: return a.vg3.SampleLevel(a.trilinear, p, 0.0);
+    }
+}
+
+float4 vol_cmap(Args a, uint v, float t) {
+    float2 uv = float2(t, 0.5);
+    switch (v) {
+    case 0u: return a.vm0.SampleLevel(a.trilinear, uv, 0.0);
+    case 1u: return a.vm1.SampleLevel(a.trilinear, uv, 0.0);
+    case 2u: return a.vm2.SampleLevel(a.trilinear, uv, 0.0);
+    default: return a.vm3.SampleLevel(a.trilinear, uv, 0.0);
+    }
+}
+
+float4 vol_normals(Args a, uint v, float3 p) {
+    switch (v) {
+    case 0u: return a.vn0.SampleLevel(a.trilinear, p, 0.0);
+    case 1u: return a.vn1.SampleLevel(a.trilinear, p, 0.0);
+    case 2u: return a.vn2.SampleLevel(a.trilinear, p, 0.0);
+    default: return a.vn3.SampleLevel(a.trilinear, p, 0.0);
     }
 }
 
@@ -587,15 +634,69 @@ float refine(Args a, uint v, float3 o, float3 d, float ta, float tb, float fa, f
     return ga != gb ? ta + (tb - ta) * ga / (ga - gb) : 0.5 * (ta + tb);
 }
 
-// The field's gradient at p (texture space) as a view-space direction
+// A texture-space gradient as a view-space vector: the transpose of view to
+// texture's linear part
+float3 grad_to_view(Args a, uint v, float3 g) {
+    return float3(dot(vrec(a, v, 0u).xyz, g), dot(vrec(a, v, 1u).xyz, g), dot(vrec(a, v, 2u).xyz, g));
+}
+
+// The field's gradient at p (texture space) as a view-space direction: the
+// normals volume's where it has one not too short, else central differences
+// a voxel apart
 float3 vol_normal(Args a, uint v, float3 p) {
+    if ((uint(vrec(a, v, 28u).z) & 4u) != 0u) {
+        float3 n = vol_normals(a, v, p).xyz * 2.0 - 1.0;
+        if (dot(n, n) > 0.25) return vrec(a, v, 32u).xyz * n.x + vrec(a, v, 33u).xyz * n.y + vrec(a, v, 34u).xyz * n.z;
+    }
     float3 dim = vrec(a, v, 6u).xyz;
     float3 h   = 1.0 / dim;
     float3 g   = float3(vol_field(a, v, p + float3(h.x, 0, 0)) - vol_field(a, v, p - float3(h.x, 0, 0)),
                         vol_field(a, v, p + float3(0, h.y, 0)) - vol_field(a, v, p - float3(0, h.y, 0)),
                         vol_field(a, v, p + float3(0, 0, h.z)) - vol_field(a, v, p - float3(0, 0, h.z))) * dim;
-    // the gradient in view space: the transpose of view to texture's linear part
-    return float3(dot(vrec(a, v, 0u).xyz, g), dot(vrec(a, v, 1u).xyz, g), dot(vrec(a, v, 2u).xyz, g));
+    return grad_to_view(a, v, g);
+}
+
+// ---- Isolines (viamd's isolines.h, isosurface.frag) ------------------------------
+// A line of value u is |f - u| / g pixels away, g the field's change per
+// pixel along the surface: its gradient along where the rays of the next
+// pixels across and down meet the surface's tangent plane (ray differentials)
+
+float isoline_coverage(float d, float w) { return saturate(0.5 * w + 0.5 - d); }
+
+float4 apply_isolines(Args a, uint v, float4 c, float f, float g) {
+    const float3 DARK  = float3(0.02);
+    const float3 LIGHT = float3(0.95);
+    const float  RIM   = 2.0;           // pixels, both sides together
+    float4 r  = vrec(a, v, 28u), h = vrec(a, v, 29u);
+    float  w  = r.w, ig = 1.0 / max(g, 1.0e-30);
+    float  core = 0.0, rim = 0.0;
+    uint   n = uint(h.x);
+    for (uint i = 0u; i < n; ++i) {
+        float4 q = vrec(a, v, 30u + i / 4u);
+        float  d = abs(f - q[i % 4u]) * ig;
+        core = max(core, isoline_coverage(d, w));
+        rim  = max(rim,  isoline_coverage(d, w + RIM));
+    }
+    c.rgb = lerp(c.rgb, LIGHT, rim);
+    c.rgb = lerp(c.rgb, DARK, core);
+    float cover = rim;
+    if (h.y > 0.5) {
+        float d  = abs(f - h.z) * ig;
+        float hc = isoline_coverage(d, w), hr = isoline_coverage(d, w + RIM);
+        c.rgb = lerp(c.rgb, DARK, hr);
+        c.rgb = lerp(c.rgb, LIGHT, hc);
+        cover = max(cover, hr);
+    }
+    c.a = lerp(c.a, 1.0, cover);
+    return c;
+}
+
+// Where the ray o + s d meets the plane through P of normal N (at a grazing
+// angle far off: the field changes a lot from pixel to pixel there)
+float3 plane_hit(float3 o, float3 d, float3 P, float3 N) {
+    float dn = dot(N, d);
+    dn = dn < 0.0 ? min(dn, -1.0e-6) : max(dn, 1.0e-6);
+    return o + d * (dot(N, P - o) / dn);
 }
 
 // The range of t (o + t d, texture space) inside the volume's clip box and
@@ -628,6 +729,35 @@ uint hash_u(uint x) {
 float3 unproject(Args a, float2 ndc, float d) {
     float4 h = a.ip0 * ndc.x + a.ip1 * ndc.y + a.ip2 * d + a.ip3;
     return h.xyz / h.w;
+}
+
+// Isosurface i of volume v's colour at pt (texture space), P (view space),
+// of view-space normal N, seen through the pixel at ndc
+float4 surface_color(Args a, uint v, uint i, float3 pt, float3 P, float3 N, float2 ndc) {
+    float4 c = vrec(a, v, 10u + i);
+    float4 r = vrec(a, v, 28u);
+    uint   fl = uint(r.z);
+    if ((fl & 1u) != 0u) return c * vol_color(a, v, pt);
+    if ((fl & 2u) == 0u) return c;
+    float f = vol_cfield(a, v, pt);
+    c.rgb *= vol_cmap(a, v, saturate((f - r.x) * r.y)).rgb;
+    float4 h = vrec(a, v, 29u);
+    if (h.x < 0.5 && h.y < 0.5) return c;
+    // its change per pixel: the gradient (central differences a voxel of the
+    // colour field apart) along where the next pixels' rays meet the tangent plane
+    float3 dim = vrec(a, v, 35u).xyz;
+    float3 e   = 1.0 / dim;
+    float3 g   = float3(vol_cfield(a, v, pt + float3(e.x, 0, 0)) - vol_cfield(a, v, pt - float3(e.x, 0, 0)),
+                        vol_cfield(a, v, pt + float3(0, e.y, 0)) - vol_cfield(a, v, pt - float3(0, e.y, 0)),
+                        vol_cfield(a, v, pt + float3(0, 0, e.z)) - vol_cfield(a, v, pt - float3(0, 0, e.z))) * dim * 0.5;
+    float3 G   = grad_to_view(a, v, g);
+    float2 nx  = ndc + float2(2.0 / float(a.width), 0.0);
+    float2 ny  = ndc - float2(0.0, 2.0 / float(a.height));
+    float3 ox  = unproject(a, nx, 1.0), oy = unproject(a, ny, 1.0);
+    float3 dx  = a.misc.w > 0.5 ? float3(0.0, 0.0, -1.0) : normalize(ox);
+    float3 dy  = a.misc.w > 0.5 ? float3(0.0, 0.0, -1.0) : normalize(oy);
+    float  gp  = length(float2(dot(G, plane_hit(ox, dx, P, N) - P), dot(G, plane_hit(oy, dy, P, N) - P)));
+    return apply_isolines(a, v, c, f, gp);
 }
 
 // A film shaded onto the ray: what it reflects, and what it lets through
@@ -776,7 +906,7 @@ void compose(uint3 tid : SV_DispatchThreadID) {
                         float  ln = length(N);
                         N = ln > 1e-20 ? N / ln : V;
                         if (dot(N, V) < 0.0) N = -N;
-                        float4 c = vrec(a, ev, 10u + ei);
+                        float4 c = surface_color(a, ev, ei, pt, O + D * t, N, ndc);
                         film(a, C, T, c.rgb, saturate(c.a), V, N);
                         tau -= tau_of(a, ev, inside[ev]);
                         inside[ev] ^= 1u << ei;

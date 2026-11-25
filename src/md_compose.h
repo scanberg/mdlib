@@ -115,13 +115,20 @@ typedef struct md_compose_shading_t {
    averages them); a crossing found between two samples and refined on the
    trilinear field, so where it is does not depend on the sampling, but one
    the ray enters and leaves within a step is missed (as viamd's fast mode).
-   To come: the colour of the isosurfaces from a colour volume or a field
-   through a colour map (with isolines), the analytic normals, the exact
-   intersection (cell by cell), slices. */
+   An isosurface's colour is its iso_colors' times, when given, the colour
+   volume's there, or the colour map's at the colour field's value there,
+   with isolines of that field: lines where it takes given values, as wide in
+   pixels however the surface is turned (|f - v| / |its change per pixel|, the
+   change from the field's gradient and ray differentials), the persistent
+   ones dark on a light rim, the transient one (hover) light on a dark rim,
+   opaque paint on the surface. Its normal is the normals volume's direction
+   there when given (and not too short), else the field's gradient.
+   To come: the exact intersection (cell by cell), slices. */
 
 #define MD_COMPOSE_MAX_VOLUMES 4
 #define MD_COMPOSE_MAX_ISO     8
 #define MD_COMPOSE_MAX_PLANES  8
+#define MD_COMPOSE_MAX_ISOLINES 8
 
 typedef struct md_compose_volume_t {
     md_gpu_texture_t field;        /* 3D, R32_FLOAT or R16_FLOAT, SAMPLED: values at
@@ -144,6 +151,21 @@ typedef struct md_compose_volume_t {
     float    iso_colors[MD_COMPOSE_MAX_ISO][4];   /* a: coverage                    */
     float    iso_densities[MD_COMPOSE_MAX_ISO];   /* optical density inside it:
                                                      extinction per world unit      */
+    /* Optional, over the same box (each at its own resolution) */
+    md_gpu_texture_t color_volume; /* 3D RGBA8_UNORM: times the isosurfaces' colours */
+    md_gpu_texture_t color_field;  /* 3D R32_FLOAT or R16_FLOAT: through color_map
+                                      (2D, N x 1, RGBA8_UNORM) over color_range; not
+                                      with a colour volume                          */
+    md_gpu_texture_t color_map;
+    float    color_range[2];
+    uint32_t isoline_count;        /* of the colour field                           */
+    float    isoline_values[MD_COMPOSE_MAX_ISOLINES];
+    bool     isoline_hover;        /* the transient line, at isoline_hover_value    */
+    float    isoline_hover_value;
+    float    isoline_width;        /* pixels                                        */
+    md_gpu_texture_t normals;      /* 3D RGB10A2_UNORM or RGBA8_UNORM: the field's
+                                      gradient's direction in world axes, (n + 1) / 2
+                                      (md_gto_gpu_gradient_pack)                     */
 } md_compose_volume_t;
 
 typedef enum md_compose_ao_mode_t {
