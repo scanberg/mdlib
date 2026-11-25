@@ -4655,6 +4655,92 @@ UTEST(render, post_overlay) {
     f_close(&fx);
 }
 
+/* A UI's draw lists (md_post_ui): over a cleared target, at a framebuffer scale of 2 with an origin; a red quad
+   without a texture cut by its clip rectangle; a quad of a 2 x 2 texture sampled nearest, through a vertex offset;
+   a half transparent white quad over the red; then the same into a BGRA8 target (a surface's) with 16-bit indices,
+   over what is there, its bytes in that order. */
+UTEST(render, post_ui) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    const uint32_t W = 64, H = 48, P = W * H;
+    md_post_ctx_t pc = md_post_create(fx.dev);
+    ASSERT_TRUE(pc != NULL);
+    md_gpu_texture_t target = f_tex(&fx, MD_GPU_FORMAT_RGBA8_UNORM, MD_GPU_TEX_RENDER_TARGET, W, H, "ui");
+    md_gpu_texture_t checker = f_tex(&fx, MD_GPU_FORMAT_RGBA8_UNORM, MD_GPU_TEX_SAMPLED, 2, 2, "checker");
+    const uint32_t RED = 0xFF0000FFu, GREEN = 0xFF00FF00u, BLUE = 0xFFFF0000u, GREY = 0xFF404040u;
+    const uint32_t tex[4] = { GREEN, BLUE, BLUE, GREEN };
+    ASSERT_TRUE(target && checker && f_upload_tex(&fx, checker, tex, sizeof(tex)));
+    md_gpu_sampler_desc_t sd = {0};
+    sd.min_filter = sd.mag_filter = MD_GPU_FILTER_NEAREST;
+    md_gpu_sampler_t nearest = md_gpu_sampler(fx.dev, &sd);
+
+    /* Positions in points: the origin (10, 5) at the target's corner, 2 pixels per point. Quads: red from (12, 7)
+       to (22, 17), pixels 4 .. 24 by 4 .. 24, clipped at x = 20 (pixel 20); the checker from (24, 7) to (34, 17),
+       pixels 28 .. 48 by 4 .. 24; white at half alpha over the red's lower half, (12, 12) to (22, 17). */
+    #define QUAD(v, x0, y0, x1, y1, c) \
+        (v)[0] = (md_post_ui_vertex_t){ { x0, y0 }, { 0, 0 }, c }; (v)[1] = (md_post_ui_vertex_t){ { x1, y0 }, { 1, 0 }, c }; \
+        (v)[2] = (md_post_ui_vertex_t){ { x1, y1 }, { 1, 1 }, c }; (v)[3] = (md_post_ui_vertex_t){ { x0, y1 }, { 0, 1 }, c }
+    md_post_ui_vertex_t v[12];
+    QUAD(v + 0, 12, 7, 22, 17, RED);
+    QUAD(v + 4, 24, 7, 34, 17, 0xFFFFFFFFu);
+    QUAD(v + 8, 12, 12, 22, 17, 0x80FFFFFFu);
+    const uint32_t idx[6] = { 0, 1, 2, 0, 2, 3 };
+    md_post_ui_cmd_t cmd[3] = {0};
+    for (int k = 0; k < 3; ++k) {
+        cmd[k].clip[0] = 10; cmd[k].clip[1] = 5; cmd[k].clip[2] = 10 + W / 2; cmd[k].clip[3] = 5 + H / 2;
+        cmd[k].index_count = 6; cmd[k].vertex_offset = 4u * k;
+    }
+    cmd[0].clip[2] = 20;
+    cmd[1].texture = md_gpu_texture_sampled(checker);
+    cmd[1].sampler = nearest;
+    md_post_ui_list_t list = { .vertices = v, .vertex_count = 12, .indices = idx, .index_count = 6, .cmds = cmd, .cmd_count = 3 };
+    md_post_ui_t ui = { .target = target, .clear = true, .clear_color = { 0.25098f, 0.25098f, 0.25098f, 1.0f },
+                        .origin = { 10, 5 }, .scale = { 2, 2 }, .index_type = MD_GPU_INDEX_U32, .lists = &list, .list_count = 1 };
+    ASSERT_TRUE(md_post_ui(fx.gfx, pc, &ui));
+    uint32_t* out = malloc(P * 4);
+    ASSERT_TRUE(f_read(&fx, target, out, P * 4));
+    const uint32_t half = 0xFF8080FFu;    /* white at 0.502 over red: (255, 128, 128) */
+    const struct { uint32_t x, y, want; const char* what; } at[] = {
+        { 2, 2, GREY, "the clear" }, { 6, 6, RED, "the red quad" }, { 19, 6, RED, "the red quad, at its clip" },
+        { 21, 6, GREY, "the red quad, clipped" }, { 30, 6, GREEN, "the checker's first texel" },
+        { 45, 6, BLUE, "the checker's second texel" }, { 30, 21, BLUE, "the checker's third texel" },
+        { 45, 21, GREEN, "the checker's fourth" }, { 6, 20, half, "white at half over red" }, { 50, 30, GREY, "past them" },
+    };
+    int bad = 0;
+    for (size_t i = 0; i < sizeof(at) / sizeof(at[0]); ++i) {
+        const uint32_t g = out[at[i].y * W + at[i].x];
+        int worst = 0;
+        for (int k = 0; k < 4; ++k) {
+            const int d = abs((int)((g >> (8 * k)) & 0xFF) - (int)((at[i].want >> (8 * k)) & 0xFF));
+            worst = d > worst ? d : worst;
+        }
+        if (worst > 2) { bad++; printf("    %s (%u, %u): %08x against %08x\n", at[i].what, at[i].x, at[i].y, g, at[i].want); }
+    }
+    EXPECT_EQ(0, bad);
+
+    /* BGRA8, 16-bit indices, over what is there (a red clear by a first call without lists) */
+    md_gpu_texture_t bgra = f_tex(&fx, MD_GPU_FORMAT_BGRA8_UNORM, MD_GPU_TEX_RENDER_TARGET, W, H, "ui.bgra");
+    ASSERT_TRUE(bgra != NULL);
+    md_post_ui_t clr = { .target = bgra, .clear = true, .clear_color = { 1, 0, 0, 1 } };
+    ASSERT_TRUE(md_post_ui(fx.gfx, pc, &clr));
+    const uint16_t idx16[6] = { 0, 1, 2, 0, 2, 3 };
+    md_post_ui_vertex_t g[4];
+    QUAD(g, 0, 0, 8, 8, GREEN);
+    md_post_ui_cmd_t gc = { .clip = { 0, 0, (float)W, (float)H }, .index_count = 6 };
+    md_post_ui_list_t gl = { .vertices = g, .vertex_count = 4, .indices = idx16, .index_count = 6, .cmds = &gc, .cmd_count = 1 };
+    md_post_ui_t ui2 = { .target = bgra, .index_type = MD_GPU_INDEX_U16, .lists = &gl, .list_count = 1 };
+    ASSERT_TRUE(md_post_ui(fx.gfx, pc, &ui2));
+    ASSERT_TRUE(f_read(&fx, bgra, out, P * 4));
+    EXPECT_EQ(0xFF00FF00u, out[4 * W + 4]);              /* green: B 0, G 255, R 0 */
+    EXPECT_EQ(0xFFFF0000u, out[20 * W + 20]);            /* the red clear, its R in the third byte */
+    #undef QUAD
+
+    md_post_destroy(pc);
+    md_gpu_texture_destroy(target); md_gpu_texture_destroy(checker); md_gpu_texture_destroy(bgra);
+    free(out);
+    f_close(&fx);
+}
+
 /* md_render.h's side of a displaced capsule, in double: pa, pb in view space,
    side (already in view space, divided by the scale) or NULL */
 static void ref_capsule_side(const double pa[3], const double pb[3], const double* sv, bool ortho, double out[3]) {

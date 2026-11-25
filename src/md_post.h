@@ -13,7 +13,8 @@ the caller passes back (the history).
          |                     md_render's motion; at the output's size
          |  md_post_present    the marks over it, dithered: the image shown
          |  md_post_overlay    discs, segments, triangles over that
-    the caller's present (an OpenGL blit, a swapchain)
+         |  md_post_ui         a UI's draw lists over that, or over a swapchain
+    the caller's present (a swapchain, or an OpenGL blit)
 
 Ported from viamd's post-processing (tonemap/display.frag, temporal.frag,
 its marks pass), without the motion blur. The resolve runs on display
@@ -170,6 +171,57 @@ typedef struct md_post_overlay_t {
 } md_post_overlay_t;
 
 bool md_post_overlay(md_gpu_stream_t stream, md_post_ctx_t post, const md_post_overlay_t* desc);
+
+/* ---- UI -----------------------------------------------------------------------
+   The draw lists of an immediate-mode UI (Dear ImGui's ImDrawData) over a
+   target: triangles in pixels, x right and y down, each vertex with a texture
+   coordinate and a colour, drawn in order, list by list and command by
+   command, each command with its texture, sampler and clip rectangle. The
+   colour (RGBA8, r in the low byte) times the texture's sample, straight
+   alpha, blended over the target in its encoded values, as UIs are: colour
+   src_alpha, 1 - src_alpha; alpha 1, 1 - src_alpha. Vertices are 20 bytes,
+   ImDrawVert's layout. A position p is drawn at (p - origin) * scale. */
+typedef struct md_post_ui_vertex_t {
+    float    pos[2];
+    float    uv[2];
+    uint32_t color;
+} md_post_ui_vertex_t;
+
+typedef struct md_post_ui_cmd_t {
+    md_gpu_sampled_tex_t texture;      /* a 2D texture sampled as float4; null: white
+                                          (the colour alone)                        */
+    md_gpu_sampler_t     sampler;      /* null: bilinear, clamped to the edge        */
+    float                clip[4];      /* x0, y0, x1, y1, positions as the vertices'
+                                          (before origin and scale); drawn within
+                                          their pixels, and the target's            */
+    uint32_t             first_index;  /* in the list's indices                      */
+    uint32_t             index_count;
+    uint32_t             vertex_offset;/* added to each of its indices               */
+    uint32_t             _pad;
+} md_post_ui_cmd_t;
+
+typedef struct md_post_ui_list_t {
+    const md_post_ui_vertex_t* vertices;   /* copied at the call                     */
+    uint32_t                   vertex_count;
+    const void*                indices;    /* uint16 or uint32 (index_type); copied  */
+    uint32_t                   index_count;
+    const md_post_ui_cmd_t*    cmds;
+    uint32_t                   cmd_count;
+} md_post_ui_list_t;
+
+typedef struct md_post_ui_t {
+    md_gpu_texture_t          target;      /* RENDER_TARGET 2D: RGBA8_UNORM, or a
+                                              surface's BGRA8_UNORM                  */
+    bool                      clear;       /* clear to clear_color first, else over  */
+    float                     clear_color[4];
+    float                     origin[2];   /* ImDrawData's DisplayPos                */
+    float                     scale[2];    /* its FramebufferScale; 0: 1             */
+    md_gpu_index_type_t       index_type;
+    const md_post_ui_list_t*  lists;
+    uint32_t                  list_count;
+} md_post_ui_t;
+
+bool md_post_ui(md_gpu_stream_t stream, md_post_ctx_t post, const md_post_ui_t* desc);
 
 #ifdef __cplusplus
 }

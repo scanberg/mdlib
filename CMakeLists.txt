@@ -889,6 +889,13 @@ if (MD_ENABLE_GPU)
     VERTEX    overlay_vs
     FRAGMENT  overlay_fs
   )
+  compile_gpu_shaders(md_post_ui_shaders.inl
+    TARGET    mdlib
+    NAMESPACE md_shader
+    SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/render/md_post_ui.slang
+    VERTEX    ui_vs
+    FRAGMENT  ui_fs
+  )
   compile_gpu_shaders(md_render_mol_shaders.inl
     TARGET    mdlib
     NAMESPACE md_shader
