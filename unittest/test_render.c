@@ -3,6 +3,7 @@
 #include <md_render.h>
 #include <md_render_mol.h>
 #include <md_render_debug.h>
+#include <md_compose.h>
 
 #include <md_system.h>
 #include <md_system_state.h>
@@ -2790,9 +2791,9 @@ UTEST(render, transparency_layers) {
     /* Opaque: a large sphere behind everything. Group 77, transparency 0.4:
        a ghost of two spheres and the capsule between them, two batches of
        different colours. An icosphere of smooth normals, transparency 0.5,
-       a group of its own (its back faces behind its front ones). Six single
-       spheres, groups of their own, transparency 0.3, along one line of
-       sight: more surfaces there than K. */
+       without a group (its front and its back both layers). Six single
+       spheres without a group, transparency 0.3, along one line of sight:
+       more surfaces there than K. */
     ico_t s = ico_make(2);
     const float mc[3] = { 0.6f, -0.6f, -14.0f }, mr = 1.6f;
     float* mpos = malloc(s.nv * 12); float* mnrm = malloc(s.nv * 12);
@@ -2832,7 +2833,7 @@ UTEST(render, transparency_layers) {
     { tp_ref_t* x = &q[nq++]; x->kind = 1; for (int i = 0; i < 3; ++i) { x->a[i] = ga[i]; x->b[i] = ga[3 + i]; } x->r = 0.35; x->group = 77; x->color = b[2].color.uniform; x->opacity = 0.6; }
     for (uint32_t e = 0; e < s.nt; ++e) {
         tp_ref_t* x = &q[nq++];
-        x->kind = 2; x->group = 1003; x->color = b[3].color.uniform; x->opacity = 0.5;
+        x->kind = 2; x->group = 100000u + e; x->color = b[3].color.uniform; x->opacity = 0.5;     /* no group: every fragment */
         for (int j = 0; j < 3; ++j) for (int i = 0; i < 3; ++i) { x->tri.q[j][i] = mpos[3 * s.tri[3 * e + j] + i]; x->tri.n[j][i] = mnrm[3 * s.tri[3 * e + j] + i]; }
     }
     for (int j = 0; j < 6; ++j) { tp_ref_t* x = &q[nq++]; x->kind = 0; for (int i = 0; i < 3; ++i) x->a[i] = st[3 * j + i]; x->r = 0.5; x->group = 1004 + (uint32_t)j; x->color = stc[j]; x->opacity = 0.7; }
@@ -2989,6 +2990,161 @@ UTEST(render, transparency_layers) {
         EXPECT_FALSE(md_render_view_draw(fx.gfx, fx.view, &fr, NULL));
     }
     free(errs); free(L); free(id); free(q); free(mpos); free(mnrm); free(s.xyz); free(s.tri);
+    f_close(&fx);
+}
+
+/* ---- Compose ------------------------------------------------------------------------ */
+
+/* md_compose.slang's shading, in C: the reference */
+typedef struct { float x, y, z; } cf3;
+static cf3 cf(float x, float y, float z) { cf3 r = { x, y, z }; return r; }
+static cf3 cadd(cf3 a, cf3 b) { return cf(a.x + b.x, a.y + b.y, a.z + b.z); }
+static cf3 cmul(cf3 a, float s) { return cf(a.x * s, a.y * s, a.z * s); }
+static cf3 cmulv(cf3 a, cf3 b) { return cf(a.x * b.x, a.y * b.y, a.z * b.z); }
+static float cdot(cf3 a, cf3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+static cf3 cnorm(cf3 a) { return cmul(a, 1.0f / sqrtf(cdot(a, a))); }
+static float csat(float x) { return x < 0 ? 0 : x > 1 ? 1 : x; }
+static float cmix(float a, float b, float t) { return a + (b - a) * t; }
+static cf3 cmix3(cf3 a, cf3 b, float t) { return cf(cmix(a.x, b.x, t), cmix(a.y, b.y, t), cmix(a.z, b.z, t)); }
+static float c_s2l(float c) { c = csat(c); return c < 0.04045f ? c / 12.92f : powf((c + 0.055f) / 1.055f, 2.4f); }
+static cf3 c_srgb(cf3 c) { return cf(c_s2l(c.x), c_s2l(c.y), c_s2l(c.z)); }
+
+static cf3 c_shade(const md_compose_shading_t* sh, cf3 color, cf3 V, cf3 N) {
+    cf3 L = cnorm(cf(sh->light_dir[0], sh->light_dir[1], sh->light_dir[2]));
+    cf3 H = cnorm(cadd(L, V));
+    if (sh->mode == MD_COMPOSE_SHADING_BASIC) {
+        float w = 0.5f + 0.5f * cdot(N, L), amb = sh->ambient, light = sh->light_strength;
+        cf3 c = cmul(cf(csat(color.x), csat(color.y), csat(color.z)), amb + light * (1.0f - amb) * w * w);
+        float m = fmaxf(1.0f, fmaxf(c.x, fmaxf(c.y, c.z)));
+        c = cmul(c, 1.0f / m);
+        float sp = light * sh->specular * powf(fmaxf(cdot(N, H), 0.0f), 48.0f);
+        c = cmix3(c, cf(1, 1, 1), csat(sp));
+        return sh->linear_colors ? c : c_srgb(c);
+    }
+    const float PI = 3.1415926535f;
+    float HdotV = csat(cdot(H, V)), NdotH = csat(cdot(N, H)), NdotL = csat(cdot(N, L)), NdotV = csat(cdot(N, V));
+    float F0 = csat(sh->f0), rough = sh->roughness < 0.04f ? 0.04f : sh->roughness > 1 ? 1 : sh->roughness;
+    cf3 albedo = sh->linear_colors ? cf(csat(color.x), csat(color.y), csat(color.z)) : c_srgb(color);
+    cf3 Lo = cf(0, 0, 0);
+    cf3 sky = cf(sh->sky_radiance[0], sh->sky_radiance[1], sh->sky_radiance[2]);
+    cf3 gnd = cf(sh->ground_radiance[0], sh->ground_radiance[1], sh->ground_radiance[2]);
+    if (NdotL > 0) {
+        float a = rough * rough, a2 = a * a, den = NdotH * NdotH * (a2 - 1) + 1, NDF = a2 / (PI * den * den);
+        float r = rough + 1, k = r * r / 8;
+        float G = (NdotL / (NdotL * (1 - k) + k)) * (NdotV / (NdotV * (1 - k) + k));
+        float F = F0 + (1 - F0) * powf(csat(1 - HdotV), 5.0f);
+        float spec = NDF * G * F / (4 * NdotV * NdotL + 0.0001f);
+        cf3 E = cmul(cf(sh->dir_radiance[0], sh->dir_radiance[1], sh->dir_radiance[2]), sh->light_strength * NdotL);
+        Lo = cadd(Lo, cmulv(cadd(cmul(albedo, (1 - F) / PI), cf(spec, spec, spec)), E));
+    }
+    float rx = rough * -1.0f + 1.0f, ry = rough * -0.0275f + 0.0425f, rz = rough * -0.572f + 1.04f, rw = rough * 0.022f - 0.04f;
+    float a004 = fminf(rx * rx, exp2f(-9.28f * NdotV)) * rx + ry;
+    float abx = -1.04f * a004 + rz, aby = 1.04f * a004 + rw;
+    float Fe = F0 * abx + aby;
+    cf3 R = cadd(cmul(V, -1), cmul(N, 2 * cdot(V, N)));         /* reflect(-V, N) */
+    float wv = 0.1f + rough, tt = csat((R.y + wv) / (2 * wv)), smooth = tt * tt * (3 - 2 * tt);
+    Lo = cadd(Lo, cadd(cmul(cmulv(albedo, cmix3(gnd, sky, 0.5f + 0.5f * N.y)), 1 - Fe), cmul(cmix3(gnd, sky, smooth), Fe)));
+    return Lo;
+}
+
+/* The layers of a view composited and shaded, both models, against the
+   reference over the same layers (read back) */
+UTEST(render, compose_shades_the_layers) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    md_gpu_device_info_t info;
+    md_gpu_device_info(fx.dev, &info);
+    if (!info.fragment_stores) UTEST_SKIP("fragment stages cannot write memory (the K-buffer's)");
+    const uint32_t W = 96, H = 72, K = 4;
+    cam_t c = { .tan_half = 0.4f, .aspect = (float)W / H, .n = 0.1f };
+    md_render_camera_t cam = make_camera(&c);
+    ico_t s = ico_make(2);
+    float* mpos = malloc(s.nv * 12);
+    for (uint32_t i = 0; i < s.nv; ++i) for (int k = 0; k < 3; ++k) mpos[3 * i + k] = (k == 2 ? -13.0f : k == 0 ? 0.6f : -0.3f) + 1.7f * s.xyz[3 * i + k];
+    float opq[3] = { 0.0f, 0.0f, -22.0f };
+    float ga[6] = { -2.0f, 0.5f, -12.0f,   0.0f, 1.5f, -12.5f };
+    md_render_batch_t b[4];
+    memset(b, 0, sizeof(b));
+    for (int k = 0; k < 4; ++k) { b[k].key = 200u + (uint32_t)k; b[k].color.mode = MD_RENDER_COLOR_UNIFORM; }
+    b[0].kind = MD_RENDER_SPHERES; b[0].count = 1; b[0].points.count = 1; b[0].points.position = f_buf(&fx, opq, 12);
+    b[0].style.spheres.radius_add = 5.0f; b[0].color.uniform = 0xFF808080u;
+    md_gpu_addr_t GA = f_buf(&fx, ga, sizeof(ga));
+    b[1].kind = MD_RENDER_SPHERES; b[1].count = 2; b[1].points.count = 2; b[1].points.position = GA;
+    b[1].style.spheres.radius_add = 0.9f; b[1].color.uniform = 0xFF2040E0u;
+    b[2].kind = MD_RENDER_CAPSULES; b[2].count = 1; b[2].points.count = 2; b[2].points.position = GA;
+    b[2].style.capsules.radius = 0.35f; b[2].color.uniform = 0xFF20E040u;
+    for (int k = 1; k <= 2; ++k) { b[k].color.transparency = 0.4f; b[k].color.group = 77; }
+    b[3].kind = MD_RENDER_TRIANGLES; b[3].count = s.nt; b[3].points.count = s.nv;
+    b[3].points.position = f_buf(&fx, mpos, s.nv * 12); b[3].index = f_buf(&fx, s.tri, s.nt * 12);
+    b[3].color.uniform = 0xFF20A0E0u; b[3].color.transparency = 0.5f;
+    md_render_frame_t f = frame_of(W, H, cam, b, 4);
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+    md_render_targets_t tg = md_render_view_targets(fx.view);
+    const size_t P = (size_t)W * H;
+    uint32_t* L = malloc(P * K * 12);
+    ASSERT_TRUE(f_read_buf(&fx, tg.layers, L, P * K * 12));
+
+    md_compose_ctx_t cx = md_compose_create(fx.dev);
+    ASSERT_TRUE(cx != NULL);
+    md_gpu_texture_desc_t td = {0};
+    td.type = MD_GPU_TEX_2D; td.usage = MD_GPU_TEX_STORAGE; td.width = W; td.height = H;
+    td.format = MD_GPU_FORMAT_RGBA16_FLOAT; td.label = "compose";
+    md_gpu_texture_t out = md_gpu_texture_create(fx.gfx, &td);
+    uint16_t* px = malloc(P * 8);
+    for (int mode = 0; mode < 2; ++mode) {
+        md_compose_desc_t d = {0};
+        d.camera = cam;
+        d.target = out;
+        md_compose_shading_t* sh = &d.shading;
+        sh->mode = mode ? MD_COMPOSE_SHADING_BASIC : MD_COMPOSE_SHADING_PBR;
+        sh->linear_colors = mode == 1;
+        sh->light_dir[0] = 0.3f; sh->light_dir[1] = 0.8f; sh->light_dir[2] = 0.5f;
+        sh->light_strength = 1.2f;
+        for (int i = 0; i < 3; ++i) { sh->dir_radiance[i] = 2.5f; sh->sky_radiance[i] = 0.4f + 0.1f * i; sh->ground_radiance[i] = 0.15f; }
+        sh->roughness = 0.4f; sh->f0 = 0.04f; sh->ambient = 0.3f; sh->specular = 0.25f;
+        ASSERT_TRUE(md_compose(fx.gfx, cx, fx.view, &d));
+        ASSERT_TRUE(f_read(&fx, out, px, P * 8));
+        int bad = 0, covered = 0, multi = 0;
+        double worst = 0;
+        for (uint32_t y = 0; y < H; ++y) {
+            for (uint32_t x = 0; x < W; ++x) {
+                const size_t p = (size_t)y * W + x;
+                ray_t r = pixel_ray(&c, W, H, x + 0.5, y + 0.5);
+                cf3 V = cf((float)-r.d[0], (float)-r.d[1], (float)-r.d[2]);
+                cf3 C = cf(0, 0, 0);
+                float T = 1.0f;
+                int n = 0;
+                for (uint32_t k = 0; k < K; ++k) {
+                    if (*(const float*)&L[2 * K * P + k * P + p] == 0.0f) break;
+                    const uint32_t c8 = L[k * P + p];
+                    cf3 col = cf((c8 & 0xFF) / 255.0f, ((c8 >> 8) & 0xFF) / 255.0f, ((c8 >> 16) & 0xFF) / 255.0f);
+                    const float a = (c8 >> 24) / 255.0f;
+                    double nd[3];
+                    oct_decode(L[K * P + k * P + p], nd);
+                    cf3 N = cnorm(cf((float)nd[0], (float)nd[1], (float)nd[2]));
+                    C = cadd(C, cmul(c_shade(sh, col, V, N), T * a));
+                    T *= 1.0f - a;
+                    ++n;
+                }
+                covered += n > 0;
+                multi   += n > 1;
+                const float got[4] = { half_bits_to_float(px[4 * p]), half_bits_to_float(px[4 * p + 1]), half_bits_to_float(px[4 * p + 2]), half_bits_to_float(px[4 * p + 3]) };
+                const float exp[4] = { C.x, C.y, C.z, 1.0f - T };
+                for (int ch = 0; ch < 4; ++ch) {
+                    const double e = fabs(got[ch] - exp[ch]) / (2e-3 * fmax(1.0, fabs(exp[ch])) + 2e-3);
+                    worst = fmax(worst, e);
+                    if (e > 1.0) { bad++; if (bad < 6) printf("    %s pixel (%u, %u) channel %d: %g against %g\n", mode ? "basic" : "pbr", x, y, ch, got[ch], exp[ch]); }
+                }
+            }
+        }
+        printf("    %s: %d pixels with layers, %d with more than one; at most %.2f of the tolerance\n", mode ? "basic" : "pbr", covered, multi, worst);
+        EXPECT_EQ(0, bad);
+        EXPECT_GT(covered, 300);
+        EXPECT_GT(multi, 100);
+    }
+    md_gpu_texture_destroy(out);
+    md_compose_destroy(cx);
+    free(px); free(L); free(mpos); free(s.xyz); free(s.tri);
     f_close(&fx);
 }
 

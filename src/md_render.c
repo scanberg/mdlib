@@ -1352,8 +1352,9 @@ static bool upload_tables(md_gpu_stream_t s, md_render_view_t v, const md_render
         fade_bands(&v->table[i], b, f);
         gpu_batch_t* g = &v->table[i];
         g->work_offset         = work;
-        g->group               = i;                 /* its own, or the first batch of its group */
+        g->group               = 0xFFFFFFFFu;       /* none: every fragment a layer; else the first batch of its group */
         if (b->color.group && g->opacity < 1.0f) {
+            g->group = i;
             for (uint32_t j = 0; j < i; ++j) {
                 if (f->batches[j].color.group == b->color.group && v->table[j].opacity < 1.0f) { g->group = v->table[j].group; break; }
             }

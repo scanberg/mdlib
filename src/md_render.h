@@ -93,7 +93,8 @@ The model, in full
     for the same layers). A
     GROUP (color.group: a representation's batches) is one surface: of a
     group only its nearest fragment at a pixel makes a layer, so a ghost of
-    spheres and capsules has no inner layers where they meet. Transparent
+    spheres and capsules has no inner layers where they meet. Without a
+    group every fragment is a layer. Transparent
     surfaces are not picked, marked or in the ids and depth.
 
   * Ordering and memory follow md_gpu: every call that records GPU work takes
@@ -426,8 +427,10 @@ typedef struct md_render_color_t {
        transparency; 1 or more: not drawn. Spheres, capsules and triangles.
        Between 0 and not, a raster; otherwise appearance. */
     float         transparency;
-    /* Transparent batches of the same group are one surface; 0: the batch
-       is a group of its own */
+    /* Transparent batches of the same group are one surface (a ghost of a
+       representation): of a group only the nearest fragment at a pixel is a
+       layer. 0: none, every fragment is a layer (a closed isosurface's front
+       and back, what is inside it between them) */
     uint64_t      group;
 } md_render_color_t;
 

@@ -194,7 +194,7 @@ struct Batch {
     float   cap_px;             // ... F_RADIUS_PX: the radius in pixels at either
     uint*   tri_normal;         // TRIANGLES (F_TRI_NORMAL): float3 per point,
     uint    tri_nstride;        // that many bytes apart
-    uint    group;              // transparent: the first batch of its group (resolve_layers)
+    uint    group;              // transparent: the first batch of its group (resolve_layers); ~0: none
     float   opacity;            // 1: opaque; below, transparent (the K-buffer); 0: not drawn
     uint    _opad0, _opad1, _opad2;
 };
@@ -4260,8 +4260,8 @@ void resolve_poly(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID) { resol
 // The K-buffer into the transparent layers (md_render_targets_t.layers):
 // its slots front to back, each the hit of its element again as the main
 // resolve takes them, but of a group already laid down (a nearer fragment of
-// the same surface: a sphere inside the capsule it joins). The layers after
-// the last get depth 0.
+// the same surface: a sphere inside the capsule it joins; a batch without a
+// group has none). The layers after the last get depth 0.
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void resolve_layers(uint3 tid : SV_DispatchThreadID) {
@@ -4285,7 +4285,7 @@ void resolve_layers(uint3 tid : SV_DispatchThreadID) {
         Elem  el = decode_work(a.batches, v.batch_count, uint(en & 0xFFFFFFFFu));
         Batch b  = a.batches[el.slot];
         bool seen = false;
-        for (uint j = 0u; j < n; ++j) seen = seen || groups[j] == b.group;
+        if (b.group != 0xFFFFFFFFu) for (uint j = 0u; j < n; ++j) seen = seen || groups[j] == b.group;
         if (seen) continue;
         Hit h = eval_hit<0>(v, a.batches, elem_id(a.batches, el), float2(tid.xy) + 0.5, 0.0);
         if (!h.valid) continue;
