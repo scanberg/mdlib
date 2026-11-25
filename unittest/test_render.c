@@ -4486,6 +4486,111 @@ UTEST(render, post_present_marks) {
     f_close(&fx);
 }
 
+/* The overlay, in a view whose world units are its pixels (orthographic, half its height): a disc in pixels with an
+   outline, a disc of world size over it (later is on top), three segments of which one behind a ball of the scene
+   hidden by the depth, one beside it drawn over it (no depth) and one in front of it, a triangle half transparent;
+   then a disc of world size under a perspective camera, its radius in pixels by its depth. */
+UTEST(render, post_overlay) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    const uint32_t W = 96, H = 64, P = W * H;
+    cam_t c = { .ortho = true, .half_h = 0.5f * H, .aspect = (float)W / H, .n = 0.0f, .far_ = 100.0f };
+    md_render_camera_t cam = make_camera(&c);
+    float ball[3] = { 30.0f, 20.0f, -20.0f };
+    md_render_batch_t b = {0};
+    b.key = 1; b.kind = MD_RENDER_SPHERES; b.count = 1; b.points.count = 1;
+    b.points.position = f_buf(&fx, ball, sizeof(ball)); b.style.spheres.radius_add = 6.0f;
+    b.color.mode = MD_RENDER_COLOR_UNIFORM; b.color.uniform = 0xFFFFFFFFu;
+    md_render_frame_t f = frame_of(W, H, cam, &b, 1);
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+
+    md_gpu_texture_t target = f_tex(&fx, MD_GPU_FORMAT_RGBA8_UNORM, MD_GPU_TEX_RENDER_TARGET | MD_GPU_TEX_STORAGE, W, H, "shown");
+    uint32_t* img = malloc(P * 4);
+    for (uint32_t i = 0; i < P; ++i) img[i] = 0xFF404040u;
+    ASSERT_TRUE(target && f_upload_tex(&fx, target, img, P * 4));
+    md_post_ctx_t pc = md_post_create(fx.dev);
+    ASSERT_TRUE(pc != NULL);
+
+    const uint32_t RED = 0xFF0000FFu, WHITE = 0xFFFFFFFFu, GREEN = 0xFF00FF00u, BLUE = 0xFFFF0000u;
+    md_post_overlay_item_t it[7];
+    memset(it, 0, sizeof(it));
+    #define SET3(v, x, y, z) ((v)[0] = (x), (v)[1] = (y), (v)[2] = (z))
+    it[0].kind = MD_POST_OVERLAY_DISC; it[0].flags = MD_POST_OVERLAY_PIXELS; SET3(it[0].p0, -24, 0, -10);
+    it[0].size = 10; it[0].width = 3; it[0].color = RED; it[0].color2 = WHITE;
+    it[1].kind = MD_POST_OVERLAY_DISC; SET3(it[1].p0, -14, 0, -10); it[1].size = 5; it[1].color = GREEN;
+    for (int k = 0; k < 3; ++k) {
+        md_post_overlay_item_t* s = &it[2 + k];
+        s->kind = MD_POST_OVERLAY_SEGMENT; s->flags = MD_POST_OVERLAY_PIXELS | (k != 1 ? MD_POST_OVERLAY_DEPTH : 0u);
+        const float y = 16.0f + 4.0f * (float)k, z = k == 2 ? -10.0f : -30.0f;
+        SET3(s->p0, 0, y, z); SET3(s->p1, 40, y, z); s->size = 1.0f; s->color = BLUE;
+    }
+    it[5].kind = MD_POST_OVERLAY_TRIANGLE; SET3(it[5].p0, 10, -10, -10); SET3(it[5].p1, 40, -10, -10); SET3(it[5].p2, 10, -25, -10);
+    it[5].color = 0x80FFFFFFu;
+    md_post_overlay_t ov = { .target = target, .camera = cam, .items = it, .count = 6, .depth = md_render_view_targets(fx.view).depth };
+    ASSERT_TRUE(md_post_overlay(fx.gfx, pc, &ov));
+    uint32_t* out = malloc(P * 4);
+    ASSERT_TRUE(f_read(&fx, target, out, P * 4));
+    /* the pixel of world (x, y): (x + W/2, H/2 - y) */
+    #define OPX(x, y) out[(uint32_t)(0.5f * H - (y)) * W + (uint32_t)((x) + 0.5f * W)]
+    const struct { float x, y; uint32_t want; const char* what; } at[] = {
+        { -24.5f,  -0.5f, RED,         "the disc's fill" },
+        { -32.5f,  -0.5f, WHITE,       "its outline" },
+        { -36.5f,  -0.5f, 0xFF404040u, "past it" },
+        { -16.5f,  -0.5f, GREEN,       "the later disc over its outline" },
+        { -10.5f,  -0.5f, GREEN,       "the later disc, of world size" },
+        { -7.5f,   -0.5f, 0xFF404040u, "past it" },
+        { 10.5f,   16.5f, BLUE,        "the segment behind, beside the ball" },
+        { 30.5f,   16.5f, 0xFF404040u, "the segment behind, behind the ball: hidden" },
+        { 30.5f,   20.5f, BLUE,        "the segment without depth, over the ball" },
+        { 30.5f,   24.5f, BLUE,        "the segment in front of the ball" },
+        { 43.5f,   20.5f, 0xFF404040u, "past a segment's round end" },
+        { 10.5f,   18.5f, 0xFF404040u, "between the segments" },
+    };
+    int bad = 0;
+    for (size_t i = 0; i < sizeof(at) / sizeof(at[0]); ++i) {
+        const uint32_t v = OPX(at[i].x, at[i].y);
+        for (int k = 0; k < 3; ++k) {
+            const int d = (int)((v >> (8 * k)) & 0xFF) - (int)((at[i].want >> (8 * k)) & 0xFF);
+            if (d < -2 || d > 2) { bad++; printf("    %s: %08x against %08x\n", at[i].what, v, at[i].want); break; }
+        }
+    }
+    /* the triangle, half of white over the grey */
+    const uint32_t tv = OPX(14.5f, -14.5f);
+    for (int k = 0; k < 3; ++k) {
+        const int ch = (int)((tv >> (8 * k)) & 0xFF), want = (int)(0.502f * 255.0f + 0.498f * 64.0f + 0.5f);
+        if (ch < want - 2 || ch > want + 2) { bad++; printf("    the triangle: %08x\n", tv); break; }
+    }
+    /* a disc's edge is smooth: the pixels across the green disc's right edge (radius 5 about x = -14) fall from it */
+    int ramp = 0;
+    for (float x = -10.5f; x <= -7.5f; x += 1.0f) {
+        const uint32_t g = (OPX(x, -0.5f) >> 8) & 0xFF;
+        if (g > 0x40 + 2 && g < 0xFF - 2) ramp++;
+    }
+    EXPECT_GE(ramp, 1);
+    EXPECT_EQ(0, bad);
+
+    /* perspective: a disc of radius 2 at depth 16, tan(fovy / 2) 0.5: 2 * (H / 2) / (0.5 * 16) = 8 pixels */
+    for (uint32_t i = 0; i < P; ++i) img[i] = 0xFF404040u;
+    ASSERT_TRUE(f_upload_tex(&fx, target, img, P * 4));
+    cam_t cp = { .tan_half = 0.5f, .aspect = (float)W / H, .n = 0.1f };
+    md_post_overlay_item_t d = {0};
+    d.kind = MD_POST_OVERLAY_DISC; SET3(d.p0, 0, 0, -16); d.size = 2.0f; d.color = RED;
+    md_post_overlay_t ovp = { .target = target, .camera = make_camera(&cp), .items = &d, .count = 1 };
+    ASSERT_TRUE(md_post_overlay(fx.gfx, pc, &ovp));
+    ASSERT_TRUE(f_read(&fx, target, out, P * 4));
+    const uint32_t in  = out[(H / 2) * W + W / 2 + 6];   /* 6.5 pixels from the centre */
+    const uint32_t off = out[(H / 2) * W + W / 2 + 9];   /* 9.5 */
+    EXPECT_EQ(RED, in | 0xFF000000u);
+    EXPECT_EQ(0xFF404040u, off | 0xFF000000u);
+    #undef OPX
+    #undef SET3
+
+    md_post_destroy(pc);
+    md_gpu_texture_destroy(target);
+    free(img); free(out);
+    f_close(&fx);
+}
+
 /* md_render.h's side of a displaced capsule, in double: pa, pb in view space,
    side (already in view space, divided by the scale) or NULL */
 static void ref_capsule_side(const double pa[3], const double pb[3], const double* sv, bool ortho, double out[3]) {

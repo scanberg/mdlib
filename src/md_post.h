@@ -3,15 +3,16 @@ md_post.h
 What a frame's scene (md_compose.h) is made into to be shown, on md_gpu: the
 display transform over the background, the temporal resolve (antialiasing,
 and upscaling to the output's size) and the marks of the selection and the
-highlight over the finished image. Each a call over textures of the
-caller's; nothing is kept between calls but what the caller passes back (the
-history).
+highlight over the finished image, and the caller's overlay over that. Each
+a call over textures of the caller's; nothing is kept between calls but what
+the caller passes back (the history).
 
     md_compose.h        the scene: linear radiance, premultiplied, coverage
          |  md_post_display    exposure, curve, over the background, encoded
          |  md_post_resolve    TAA: this frame into the history, reprojected by
          |                     md_render's motion; at the output's size
          |  md_post_present    the marks over it, dithered: the image shown
+         |  md_post_overlay    discs, segments, triangles over that
     the caller's present (an OpenGL blit, a swapchain)
 
 Ported from viamd's post-processing (tonemap/display.frag, temporal.frag,
@@ -114,6 +115,61 @@ typedef struct md_post_present_t {
 } md_post_present_t;
 
 bool md_post_present(md_gpu_stream_t stream, md_post_ctx_t post, const md_post_present_t* desc);
+
+/* ---- Overlay ----------------------------------------------------------------
+   The caller's marks over the image shown, after md_post_present, into its
+   target: annotations that the scene neither hides nor is hidden by, but where
+   they are drawn (measurements, critical points, outlines). Drawn in order,
+   each over what came before (the painter's), alpha-blended in the target's
+   sRGB-encoded values, with the hardware raster at the target's size, of the
+   camera unjittered.
+     DISC      a flat disc at p0 facing the camera (in the view's x, y), of
+               radius `size`, filled with `color` inside an outline `width`
+               wide of `color2`. Rings (a highlight's) are larger discs before it.
+     SEGMENT   from p0 to p1, `size` its half width, round ends, of `color`.
+     TRIANGLE  p0, p1, p2, of `color`.
+   Sizes in world units, or in pixels with MD_POST_OVERLAY_PIXELS (as wide
+   wherever it is). Discs and segments are implicit: a quad each, whose
+   fragments take their coverage from their distance to the disc's centre or
+   the segment, in pixels, so their edges are smooth at any size; triangles
+   are as rasterised. With MD_POST_OVERLAY_DEPTH an item is hidden where the
+   scene is in front of it (`depth`: md_render's, of the same camera, at its
+   own size; a disc at its centre's depth); otherwise it is over everything.
+   Colours RGBA8, sRGB-encoded as md_render's, alpha how much. */
+typedef enum md_post_overlay_kind_t {
+    MD_POST_OVERLAY_DISC = 0,
+    MD_POST_OVERLAY_SEGMENT,
+    MD_POST_OVERLAY_TRIANGLE,
+} md_post_overlay_kind_t;
+
+enum {
+    MD_POST_OVERLAY_PIXELS = 1u << 0,  /* size and width in pixels                   */
+    MD_POST_OVERLAY_DEPTH  = 1u << 1,  /* hidden behind the scene                    */
+};
+
+typedef struct md_post_overlay_item_t {
+    float    p0[3];
+    uint32_t kind;                     /* md_post_overlay_kind_t                     */
+    float    p1[3];
+    uint32_t flags;
+    float    p2[3];
+    float    size;                     /* a disc's radius, a segment's half width   */
+    uint32_t color;
+    uint32_t color2;                   /* a disc's outline                           */
+    float    width;                    /* the outline's, inside the radius; 0: none  */
+    uint32_t _pad;
+} md_post_overlay_item_t;
+
+typedef struct md_post_overlay_t {
+    md_gpu_texture_t   target;         /* RGBA8_UNORM, RENDER_TARGET: present's      */
+    md_render_camera_t camera;         /* world to view and view to clip, unjittered */
+    const md_post_overlay_item_t* items;   /* copied at the call                     */
+    uint32_t           count;
+    md_gpu_texture_t   depth;          /* the scene's (D32, reverse Z, SAMPLED) for
+                                          MD_POST_OVERLAY_DEPTH; 0: none, drawn over */
+} md_post_overlay_t;
+
+bool md_post_overlay(md_gpu_stream_t stream, md_post_ctx_t post, const md_post_overlay_t* desc);
 
 #ifdef __cplusplus
 }

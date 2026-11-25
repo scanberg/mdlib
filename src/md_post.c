@@ -7,6 +7,7 @@
 #include <math.h>
 
 #include "md_post_shaders.inl"
+#include "md_post_overlay_shaders.inl"
 
 /* md_post.slang's Args */
 typedef struct gpu_post_args_t {
@@ -22,10 +23,22 @@ typedef struct gpu_post_args_t {
 } gpu_post_args_t;
 _Static_assert(sizeof(gpu_post_args_t) == 416, "Args mirror");
 
+/* md_post_overlay.slang's Args and Item */
+typedef struct gpu_overlay_args_t {
+    md_gpu_float4        v0, v1, v2, v3, q0, q1, q2, q3, sz, nf;
+    md_gpu_addr_t        items;
+    uint32_t             count, has_depth;
+    md_gpu_sampled_tex_t depth;
+    uint32_t             _p0, _p1;
+} gpu_overlay_args_t;
+_Static_assert(sizeof(gpu_overlay_args_t) == 192, "Overlay args mirror");
+_Static_assert(sizeof(md_post_overlay_item_t) == 64, "Overlay item mirror");
+
 struct md_post {
-    md_gpu_device_t  dev;
-    md_gpu_kernel_t  k_display, k_resolve, k_present;
-    md_gpu_sampler_t bilinear;
+    md_gpu_device_t   dev;
+    md_gpu_kernel_t   k_display, k_resolve, k_present;
+    md_gpu_pipeline_t overlay;
+    md_gpu_sampler_t  bilinear;
 };
 
 md_post_ctx_t md_post_create(md_gpu_device_t device) {
@@ -44,7 +57,21 @@ md_post_ctx_t md_post_create(md_gpu_device_t device) {
     md_gpu_sampler_desc_t sd = {0};
     sd.min_filter = sd.mag_filter = MD_GPU_FILTER_LINEAR;
     p->bilinear = md_gpu_sampler(device, &sd);
-    if (!p->k_display || !p->k_resolve || !p->k_present || !p->bilinear.handle) {
+    /* The overlay's: premultiplied over the target */
+    md_gpu_pipeline_desc_t pd = {0};
+    pd.vertex   = md_shader_md_post_overlay_overlay_vs_shader();
+    pd.fragment = md_shader_md_post_overlay_overlay_fs_shader();
+    pd.topology = MD_GPU_TOPOLOGY_TRIANGLES;
+    pd.color_count = 1;
+    pd.color[0].format          = MD_GPU_FORMAT_RGBA8_UNORM;
+    pd.color[0].blend.enable    = true;
+    pd.color[0].blend.src_color = MD_GPU_BLEND_ONE;
+    pd.color[0].blend.dst_color = MD_GPU_BLEND_ONE_MINUS_SRC_ALPHA;
+    pd.color[0].blend.src_alpha = MD_GPU_BLEND_ONE;
+    pd.color[0].blend.dst_alpha = MD_GPU_BLEND_ONE_MINUS_SRC_ALPHA;
+    pd.label = "md_post.overlay";
+    p->overlay = md_gpu_pipeline_create(device, &pd);
+    if (!p->k_display || !p->k_resolve || !p->k_present || !p->overlay || !p->bilinear.handle) {
         MD_LOG_ERROR("md_post: kernel creation failed: %s", md_gpu_last_error());
         md_post_destroy(p);
         return NULL;
@@ -57,6 +84,7 @@ void md_post_destroy(md_post_ctx_t p) {
     if (p->k_display) md_gpu_kernel_destroy(p->k_display);
     if (p->k_resolve) md_gpu_kernel_destroy(p->k_resolve);
     if (p->k_present) md_gpu_kernel_destroy(p->k_present);
+    if (p->overlay)   md_gpu_pipeline_destroy(p->overlay);
     md_free(md_get_heap_allocator(), p, sizeof(*p));
 }
 
@@ -207,4 +235,57 @@ bool md_post_present(md_gpu_stream_t s, md_post_ctx_t p, const md_post_present_t
         a.mk = f4(h, (float)(m->outline_px ? m->outline_px : 1u), a.mk.z, 1.0f);
     }
     return launch(s, p->k_present, a.out_w, a.out_h, &a);
+}
+
+bool md_post_overlay(md_gpu_stream_t s, md_post_ctx_t p, const md_post_overlay_t* d) {
+    if (!s || !p || !d) return false;
+    const md_gpu_texture_desc_t* td = tex_ok(d->target, MD_GPU_FORMAT_RGBA8_UNORM, MD_GPU_TEX_RENDER_TARGET, 0, 0);
+    if (!td) {
+        MD_LOG_ERROR("md_post_overlay: the target is to be a RENDER_TARGET 2D texture of RGBA8_UNORM");
+        return false;
+    }
+    const md_gpu_texture_desc_t* dd = d->depth ? tex_ok(d->depth, MD_GPU_FORMAT_D32_FLOAT, MD_GPU_TEX_SAMPLED, 0, 0) : NULL;
+    if (d->depth && !dd) {
+        MD_LOG_ERROR("md_post_overlay: the depth is to be a SAMPLED 2D texture of D32_FLOAT");
+        return false;
+    }
+    if (d->count == 0) return true;
+    if (!d->items) {
+        MD_LOG_ERROR("md_post_overlay: %u items and none given", d->count);
+        return false;
+    }
+    gpu_overlay_args_t a;
+    md_memset(&a, 0, sizeof(a));
+    const float* V = d->camera.view;
+    const float* P = d->camera.proj;
+    a.v0 = f4v(V + 0);  a.v1 = f4v(V + 4);  a.v2 = f4v(V + 8);  a.v3 = f4v(V + 12);
+    a.q0 = f4v(P + 0);  a.q1 = f4v(P + 4);  a.q2 = f4v(P + 8);  a.q3 = f4v(P + 12);
+    a.sz = f4((float)td->width, (float)td->height, dd ? (float)dd->width : 1.0f, dd ? (float)dd->height : 1.0f);
+    /* The near plane, where the depth is 1: d (P23 z + P33) = P22 z + P32 */
+    const bool ortho = P[11] == 0.0f && P[15] == 1.0f;
+    const float den = P[11] - P[10];
+    a.nf = f4(!ortho && den != 0.0f ? -(P[14] - P[15]) / den : 0.0f, ortho ? 1.0f : 0.0f, 0.0f, 0.0f);
+    a.count = d->count;
+    a.has_depth = dd ? 1u : 0u;
+    if (dd) a.depth = md_gpu_texture_sampled(d->depth);    /* else none: never read */
+
+    md_gpu_temp_t scope = md_gpu_temp_begin(s);
+    a.items = md_gpu_temp_upload(scope, d->items, (size_t)d->count * sizeof(md_post_overlay_item_t));
+    bool ok = a.items != 0;
+    if (ok) {
+        md_gpu_render_desc_t rd = {0};
+        rd.color_count = 1;
+        rd.color[0].texture = d->target;
+        rd.color[0].load  = MD_GPU_LOAD;
+        rd.color[0].store = MD_GPU_STORE;
+        rd.label = "md_post.overlay";
+        ok = md_gpu_render_begin(s, &rd);
+        if (ok) {
+            ok = md_gpu_draw(s, p->overlay, 6u * d->count, 1, &a, sizeof(a));
+            ok = md_gpu_render_end(s) && ok;
+        }
+    }
+    md_gpu_temp_end(scope);
+    if (!ok) MD_LOG_ERROR("md_post_overlay: %s", md_gpu_last_error());
+    return ok;
 }

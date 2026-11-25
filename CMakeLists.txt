@@ -910,6 +910,13 @@ if (MD_ENABLE_GPU)
     SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/render/md_post.slang
     ENTRIES   display resolve present
   )
+  compile_gpu_shaders(md_post_overlay_shaders.inl
+    TARGET    mdlib
+    NAMESPACE md_shader
+    SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/render/md_post_overlay.slang
+    VERTEX    overlay_vs
+    FRAGMENT  overlay_fs
+  )
   compile_gpu_shaders(md_render_mol_shaders.inl
     TARGET    mdlib
     NAMESPACE md_shader
