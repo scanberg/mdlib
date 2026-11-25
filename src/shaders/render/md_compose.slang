@@ -52,6 +52,12 @@ struct Args {
     uint   _sp;
     DescriptorHandle<Texture3D<float>>    sf0, sf1, sf2, sf3, sf4, sf5, sf6, sf7;   // the slices' fields
     DescriptorHandle<Texture2D<float4>>   st0, st1, st2, st3, st4, st5, st6, st7;   // and transfer functions
+    float4 lt0, lt1, lt2, lt3;  // view space to the light's clip space (columns)
+    float4 sp;                  // the shadow map's texels across, down, a texel's world size along x, y
+    float4 sq;                  // x: world per unit of its depth (1 / P22), y: tan of the light's angular
+                                // radius, z: 1 shadows, w: the contact ray's reach, the map's texels
+    DescriptorHandle<Texture2D<float>>    shadow;   // the light view's depth: reverse Z, orthographic
+    uint   _sh0, _sh1;
 };
 MD_SHADER_ARGS(Args);
 
@@ -469,8 +475,8 @@ float specular_occlusion(float NdotV, float ao, float roughness) {
 // opacity = 1 - (1 - a)(1 - Fe).
 struct Lit { float3 diffuse; float3 specular; float Fe; };
 
-// compose_deferred.frag's shade, without shadows
-Lit shade_pbr(Args a, float3 color, float3 V, float3 N, float ao) {
+// compose_deferred.frag's shade; sh: the key light's visibility (shadows)
+Lit shade_pbr(Args a, float3 color, float3 V, float3 N, float ao, float sh) {
     float3 L = a.light.xyz;
     float3 H = normalize(L + V);
     float HdotV = saturate(dot(H, V));
@@ -487,7 +493,7 @@ Lit shade_pbr(Args a, float3 color, float3 V, float3 N, float ao) {
         float  NDF = DistributionGGX(NdotH, roughness);
         float  G   = GeometrySmith(NdotV, NdotL, roughness);
         float  F   = FresnelSchlick(HdotV, F0);
-        float3 E   = a.dir_radiance.xyz * a.light.w * NdotL;
+        float3 E   = a.dir_radiance.xyz * (a.light.w * sh * NdotL);
         r.specular += float3(NDF * G * F / (4.0 * NdotV * NdotL + 0.0001)) * E;
         r.diffuse  += (1.0 - F) * albedo * ONE_OVER_PI * E;
     }
@@ -500,13 +506,13 @@ Lit shade_pbr(Args a, float3 color, float3 V, float3 N, float ao) {
 
 static const float BASIC_SHININESS = 48.0;
 
-// compose_deferred.frag's shade_basic, without shadows; the occlusion
-// darkens all of it. All diffuse: a transparent surface is its colour over
-// its coverage.
-Lit shade_basic(Args a, float3 color, float3 V, float3 N, float ao) {
+// compose_deferred.frag's shade_basic; the occlusion darkens all of it, the
+// shadow takes away what the light adds and its highlight. All diffuse: a
+// transparent surface is its colour over its coverage.
+Lit shade_basic(Args a, float3 color, float3 V, float3 N, float ao, float sh) {
     float3 L = a.light.xyz;
     float  w = 0.5 + 0.5 * dot(N, L);
-    float  light = a.light.w;
+    float  light = a.light.w * sh;
     float  amb = a.ground.w;
     float3 c = saturate(color) * (amb + light * (1.0 - amb) * w * w);
     c /= max(1.0, max(c.r, max(c.g, c.b)));
@@ -520,8 +526,8 @@ Lit shade_basic(Args a, float3 color, float3 V, float3 N, float ao) {
     return r;
 }
 
-Lit shade(Args a, float3 color, float3 V, float3 N, float ao) {
-    return a.misc.y > 0.5 ? shade_basic(a, color, V, N, ao) : shade_pbr(a, color, V, N, ao);
+Lit shade(Args a, float3 color, float3 V, float3 N, float ao, float sh) {
+    return a.misc.y > 0.5 ? shade_basic(a, color, V, N, ao, sh) : shade_pbr(a, color, V, N, ao, sh);
 }
 
 
@@ -736,6 +742,128 @@ float3 unproject(Args a, float2 ndc, float d) {
     return h.xyz / h.w;
 }
 
+// ---- Shadows ------------------------------------------------------------------
+// The key light's visibility at the opaque surface's point P (view space), of
+// normal N: from the shadow map, percentage-closer soft shadows (Fernando,
+// 2005): the blockers' mean depth in a search around P, the penumbra the
+// light's angular radius makes below them, filtered with a disc of samples
+// turned by the pixel and the frame. Every sample is compared with P's
+// tangent plane there (the receiver plane), at its texel's centre, so a
+// filter wider than a texel does not shadow a plane by itself. Then a short
+// ray toward the light in the frame's own depth: the contacts finer than
+// the map's texels.
+
+static const uint  SHADOW_TAPS    = 16u;
+static const float SHADOW_REACH   = 48.0;    // the search's and the filter's radius at most, texels
+static const float SHADOW_BIAS    = 1.0;     // texels, along the normal and in depth
+static const float SHADOW_SLOPE   = 0.2;     // the receiver plane's slope at most: 1 / this
+static const uint  CONTACT_STEPS  = 8u;
+
+// the map's depth at the texel of uv (its centre's uv out); outside: 0
+float shadow_texel(Args a, float2 uv, out float2 c) {
+    int2 t = int2(floor(uv * a.sp.xy));
+    c = (float2(t) + 0.5) / a.sp.xy;
+    if (any(t < int2(0)) || any(t >= int2(a.sp.xy))) return 0.0;
+    return a.shadow.Load(int3(t, 0));
+}
+
+// the receiver plane's depth at uv: dr at uv0, g its slope (world along the
+// light's view z per world along its x, y)
+float plane_depth(Args a, float dr, float2 g, float2 uv0, float2 uv) {
+    float2 o = (uv - uv0) * float2(a.sp.x * a.sp.z, -a.sp.y * a.sp.w);   // world, the light view's x, y
+    return dr + dot(g, o) / a.sq.x;
+}
+
+float shadow_map(Args a, float3 P, float3 N, float rot) {
+    float  texel = max(a.sp.z, a.sp.w);
+    float3 Po = P + N * (SHADOW_BIAS * texel);
+    float4 c  = a.lt0 * Po.x + a.lt1 * Po.y + a.lt2 * Po.z + a.lt3;
+    float2 uv = float2(c.x * 0.5 + 0.5, 0.5 - c.y * 0.5);
+    float  dr = c.z;
+    if (dr >= 1.0) return 1.0;          // nearer the light than the map: lit
+    // N in the light's view: the clip's linear part over its scales
+    float3 m  = a.lt0.xyz * N.x + a.lt1.xyz * N.y + a.lt2.xyz * N.z;
+    float3 Nl = m * float3(0.5 * a.sp.x * a.sp.z, 0.5 * a.sp.y * a.sp.w, a.sq.x);
+    float2 g  = -Nl.xy / max(Nl.z, SHADOW_SLOPE);
+    float  bias = SHADOW_BIAS * texel / a.sq.x;
+    float2 to_uv = float2(1.0 / (a.sp.x * a.sp.z), -1.0 / (a.sp.y * a.sp.w));   // world to uv
+    float  cr = cos(rot), sr = sin(rot);
+    float  reach = SHADOW_REACH * texel;
+
+    // the blockers: within the light's cone above P, up to the map's near plane
+    float  rs = min((1.0 - dr) * a.sq.x * a.sq.y, reach);
+    float  db = 0.0, nb = 0.0;
+    if (rs > 0.5 * texel) {
+        for (uint i = 0u; i < SHADOW_TAPS; ++i) {
+            float  r  = sqrt((float(i) + 0.5) / float(SHADOW_TAPS)) * rs;
+            float  ph = float(i) * GOLDEN_ANGLE;
+            float2 o  = r * float2(cos(ph), sin(ph));
+            o = float2(o.x * cr - o.y * sr, o.x * sr + o.y * cr);
+            float2 tc;
+            float  d  = shadow_texel(a, uv + o * to_uv, tc);
+            if (d > plane_depth(a, dr, g, uv, tc) + bias) { db += d; nb += 1.0; }
+        }
+        if (nb == 0.0) return 1.0;
+        db /= nb;
+    }
+
+    // the penumbra below them; a texel at least (hard light: its edge antialiased)
+    float rp = clamp((db - dr) * a.sq.x * a.sq.y, texel, reach);
+    float lit = 0.0;
+    for (uint i = 0u; i < SHADOW_TAPS; ++i) {
+        float  r  = sqrt((float(i) + 0.5) / float(SHADOW_TAPS)) * rp;
+        float  ph = float(i) * GOLDEN_ANGLE;
+        float2 o  = r * float2(cos(ph), sin(ph));
+        o = float2(o.x * cr - o.y * sr, o.x * sr + o.y * cr);
+        float2 tc;
+        float  d  = shadow_texel(a, uv + o * to_uv, tc);
+        lit += d > plane_depth(a, dr, g, uv, tc) + bias ? 0.0 : 1.0;
+    }
+    return lit / float(SHADOW_TAPS);
+}
+
+// The frame's pixel of the view-space point X
+float2 px_of(Args a, float3 X) {
+    float  w = a.pc.x * X.z + a.pc.y;
+    float2 n = float2(a.pa.x * X.x + a.pa.z * X.z + a.pb.x, a.pa.y * X.y + a.pa.w * X.z + a.pb.y) / w;
+    return float2((n.x * 0.5 + 0.5) * float(a.width), (0.5 - n.y * 0.5) * float(a.height));
+}
+
+// The ray toward the light from P, sq.w of the map's texels long, in the
+// frame's depth: a surface in front of a step, by no more than the ray's
+// length, blocks it; the nearer, the darker
+float shadow_contact(Args a, float3 P, float3 N, float jit) {
+    float pw  = px_world(a, -P.z);
+    float len = a.sq.w * max(a.sp.z, a.sp.w);
+    float3 O  = P + N * pw;
+    for (uint i = 0u; i < CONTACT_STEPS; ++i) {
+        float  t = (float(i) + jit) / float(CONTACT_STEPS) * len;
+        float3 X = O + a.light.xyz * t;
+        if (a.misc.w < 0.5 && X.z >= 0.0) break;
+        float2 x = px_of(a, X);
+        if (any(x < float2(0.0)) || x.x >= float(a.width) || x.y >= float(a.height)) break;
+        float  d = a.depth.Load(int3(int2(x), 0));
+        if (d == 0.0) continue;
+        float  zs = linear_depth(a, d), zx = -X.z;
+        if (zs < zx - 0.5 * px_world(a, zx) && zx - zs < len) return t / len;
+    }
+    return 1.0;
+}
+
+float shadow_at(Args a, float3 P, float3 N, uint p) {
+    if (a.sq.z < 0.5) return 1.0;
+    float NdotL = dot(N, a.light.xyz);
+    if (NdotL <= 0.0) return 0.0;       // facing away: in its own shadow
+    uint  h   = hash_u(p * 0x9E3779B9u ^ hash_u(a.frame * 0x85EBCA6Bu + 0x5bd1e995u));
+    float rot = float(h >> 8) / 16777216.0 * 2.0 * PI;
+    float jit = float(hash_u(h) >> 8) / 16777216.0;
+    float s   = shadow_map(a, P, N, rot);
+    if (s > 0.0 && a.sq.w > 0.0) s = min(s, shadow_contact(a, P, N, jit));
+    // basic shading lights past the terminator: fade the shadow's edge there
+    if (a.misc.y > 0.5) s *= saturate(4.0 * NdotL);
+    return s;
+}
+
 // Isosurface i of volume v's colour at pt (texture space), P (view space),
 // of view-space normal N, seen through the pixel at ndc
 float4 surface_color(Args a, uint v, uint i, float3 pt, float3 P, float3 N, float2 ndc) {
@@ -830,7 +958,7 @@ float slice_px(Args a, uint i, float2 b, float2 ndc) {
 
 // A film shaded onto the ray: what it reflects, and what it lets through
 void film(Args a, inout float3 C, inout float T, float3 color, float alpha, float3 V, float3 N) {
-    Lit l = shade(a, color, V, N, 1.0);
+    Lit l = shade(a, color, V, N, 1.0, 1.0);
     C += T * (alpha * l.diffuse + l.specular);
     T *= (1.0 - alpha) * (1.0 - l.Fe);
 }
@@ -902,9 +1030,10 @@ void compose(uint3 tid : SV_DispatchThreadID) {
     if (cov > 0.0) {
         float3 N  = normal_at(a, q);
         float  ao = a.use_ao != 0u ? ao_at(a, q, a.lin[tid.y * a.width + tid.x]) : 1.0;
-        Lit l = shade(a, col.rgb, V, N, ao);
+        float3 P  = unproject(a, ndc, dop);
+        Lit l = shade(a, col.rgb, V, N, ao, shadow_at(a, P, N, p));
         S   = l.diffuse + l.specular;
-        top = dot(unproject(a, ndc, dop) - O, D);
+        top = dot(P - O, D);
     }
 
     // the layers, front to back, and where they are along the ray

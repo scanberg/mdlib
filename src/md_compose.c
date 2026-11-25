@@ -32,8 +32,13 @@ typedef struct gpu_compose_args_t {
     uint32_t             slice_count, _sp;
     md_gpu_sampled_tex_t sf[8];         /* the slices' fields */
     md_gpu_sampled_tex_t st[8];         /* and transfer functions */
+    md_gpu_float4        lt0, lt1, lt2, lt3;   /* view space to the light's clip space */
+    md_gpu_float4        sp;            /* the shadow map's texels across and down, a texel's world size along x, y */
+    md_gpu_float4        sq;            /* world per unit of its depth, tan of the light's angular radius, 1: shadows, the contact ray's texels */
+    md_gpu_sampled_tex_t shadow;
+    uint32_t             _sh0, _sh1;
 } gpu_compose_args_t;
-_Static_assert(sizeof(gpu_compose_args_t) == 640, "Args mirror");
+_Static_assert(sizeof(gpu_compose_args_t) == 752, "Args mirror");
 
 enum { AO_LEVELS = 6, VOL_STRIDE = 36, SLICE_STRIDE = 14 };   /* md_compose.slang's */
 
@@ -44,7 +49,7 @@ struct md_compose {
     /* What the compose's volume arguments hold without volumes, never read: a
        null pointer or handle there let lavapipe crash (a load hoisted out of
        a loop that does not run) */
-    md_gpu_texture_t none_field, none_transfer, none_color;
+    md_gpu_texture_t none_field, none_transfer, none_color, none_depth;
 };
 
 md_compose_ctx_t md_compose_create(md_gpu_device_t device) {
@@ -83,6 +88,7 @@ void md_compose_destroy(md_compose_ctx_t c) {
     if (c->none_field)    md_gpu_texture_destroy(c->none_field);
     if (c->none_transfer) md_gpu_texture_destroy(c->none_transfer);
     if (c->none_color)    md_gpu_texture_destroy(c->none_color);
+    if (c->none_depth)    md_gpu_texture_destroy(c->none_depth);
     md_free(md_get_heap_allocator(), c, sizeof(*c));
 }
 
@@ -245,7 +251,9 @@ bool md_compose(md_gpu_stream_t s, md_compose_ctx_t c, md_render_view_t view, co
         c->none_color = md_gpu_texture_create(s, &nd);
         nd.type = MD_GPU_TEX_2D; nd.format = MD_GPU_FORMAT_RGBA8_UNORM; nd.depth_or_layers = 1; nd.label = "md_compose.none_transfer";
         c->none_transfer = md_gpu_texture_create(s, &nd);
-        if (!c->none_field || !c->none_transfer || !c->none_color) {
+        nd.format = MD_GPU_FORMAT_R32_FLOAT; nd.label = "md_compose.none_depth";
+        c->none_depth = md_gpu_texture_create(s, &nd);
+        if (!c->none_field || !c->none_transfer || !c->none_color || !c->none_depth) {
             MD_LOG_ERROR("md_compose: %s", md_gpu_last_error());
             return false;
         }
@@ -307,6 +315,33 @@ bool md_compose(md_gpu_stream_t s, md_compose_ctx_t c, md_render_view_t view, co
     a.vol_count = nv;
     a.frame     = d->frame;
     a.trilinear = c->trilinear;
+
+    /* The shadows: the frame's view space to the light's clip space, the map */
+    a.shadow = md_gpu_texture_sampled(c->none_depth);
+    if (d->shadow) {
+        const md_compose_shadow_t* sd = d->shadow;
+        const md_gpu_texture_desc_t* md = sd->depth ? md_gpu_texture_desc(sd->depth) : NULL;
+        const float* LP = sd->light.proj;
+        if (!md || md->type != MD_GPU_TEX_2D || md->format != MD_GPU_FORMAT_D32_FLOAT || !(md->usage & MD_GPU_TEX_SAMPLED) ||
+            !(LP[3] == 0.0f && LP[7] == 0.0f && LP[11] == 0.0f && LP[15] == 1.0f) || !(LP[0] > 0.0f && LP[5] > 0.0f && LP[10] > 0.0f)) {
+            MD_LOG_ERROR("md_compose: the shadow map is to be a SAMPLED 2D texture of D32_FLOAT, of an orthographic camera (reverse Z)");
+            return false;
+        }
+        md_float4x4_t V, LV, LPM;
+        md_memcpy(&V, d->camera.view, sizeof(V));
+        md_memcpy(&LV, sd->light.view, sizeof(LV));
+        md_memcpy(&LPM, LP, sizeof(LPM));
+        const md_float4x4_t VL = md_float4x4_mul(LPM, md_float4x4_mul(LV, md_float4x4_inverse(V)));
+        const float* vl = (const float*)&VL;
+        a.lt0 = f4(vl[0],  vl[1],  vl[2],  vl[3]);
+        a.lt1 = f4(vl[4],  vl[5],  vl[6],  vl[7]);
+        a.lt2 = f4(vl[8],  vl[9],  vl[10], vl[11]);
+        a.lt3 = f4(vl[12], vl[13], vl[14], vl[15]);
+        const float sw = (float)md->width, sh2 = (float)md->height;
+        a.sp = f4(sw, sh2, 2.0f / (LP[0] * sw), 2.0f / (LP[5] * sh2));
+        a.sq = f4(1.0f / LP[10], tanf(sd->angular_radius > 0.0f ? sd->angular_radius : 0.0f), 1.0f, sd->contact > 0.0f ? sd->contact : 0.0f);
+        a.shadow = md_gpu_texture_sampled(sd->depth);
+    }
 
     const md_gpu_ordering_t prev = md_gpu_stream_set_ordering(s, MD_GPU_ORDER_IMPLICIT);
     md_gpu_temp_t scope = md_gpu_temp_begin(s);

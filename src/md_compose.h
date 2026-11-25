@@ -196,6 +196,25 @@ typedef struct md_compose_slice_t {
     float            edge_px;          /* half the line's width, pixels              */
 } md_compose_slice_t;
 
+/* ---- Shadows -------------------------------------------------------------------
+   The key light's, on the opaque surface: from a shadow map, the depth of a view
+   of the scene from the light (a depth-only md_render view, md_render_frame_t's
+   depth_only, with an orthographic camera, reverse Z, whose +z is toward the
+   light: the shading's light_dir, in this frame's view space), softened by the
+   light's size (percentage-closer soft shadows: the blockers' mean distance
+   from a search around the point, and the penumbra the light's angular radius
+   makes over it, filtered with a disc of samples turned by each pixel and
+   frame, which a temporal resolve averages), and refined in the frame's own
+   depth by a short ray toward the light, `contact` of the map's texels long:
+   what the map is too coarse for, where surfaces touch (within its biases,
+   about two texels). The layers and the volumes are not shadowed. */
+typedef struct md_compose_shadow_t {
+    md_gpu_texture_t   depth;          /* that view's depth (md_render_targets_t)   */
+    md_render_camera_t light;          /* its camera: orthographic                  */
+    float              angular_radius; /* of the light, radians; 0: hard            */
+    float              contact;        /* the ray's reach, texels; 0: none          */
+} md_compose_shadow_t;
+
 typedef enum md_compose_ao_mode_t {
     MD_COMPOSE_AO_QUALITY = 0,
     MD_COMPOSE_AO_PERFORMANCE,
@@ -213,7 +232,9 @@ typedef struct md_compose_desc_t {
     uint32_t             volume_count;     /* at most MD_COMPOSE_MAX_VOLUMES        */
     const md_compose_slice_t*  slices;     /* read at the call                      */
     uint32_t             slice_count;      /* at most MD_COMPOSE_MAX_SLICES         */
-    uint32_t             frame;            /* seeds the emission's jitter           */
+    uint32_t             frame;            /* seeds the emission's jitter, and the
+                                              shadows' samples                      */
+    const md_compose_shadow_t* shadow;     /* null: none (read at the call)         */
     md_gpu_texture_t     target;   /* RGBA16_FLOAT, STORAGE, of the view's size:
                                       the scene's radiance premultiplied by its
                                       coverage (alpha), 0 where nothing was drawn   */
