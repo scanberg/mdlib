@@ -37,8 +37,6 @@ option(MD_VIAL_FUZZ "Build fuzz_vial, the libFuzzer target of the VIAL front end
 # The readers of the HDF5 based formats come as one: they share the one dependency, and a build that
 # has HDF5 has no reason to leave any of them out. Compiled in, they define MD_HDF5.
 option(MD_ENABLE_HDF5 "Enable the HDF5 based readers: VeloxChem, TREXIO and H5MD (requires HDF5)" OFF)
-set(MD_GL_BACKBONE_SEGMENT_COUNT "12" CACHE STRING "Segments per residue along the spline of the backbone representations (cartoon, ribbons, even)")
-set(MD_GL_BACKBONE_PROFILE_COUNT "16" CACHE STRING "Vertices around the cross section of the cartoon representation (even)")
 
 set(MD_FLAGS)
 set(MD_FLAGS_EXT)
@@ -52,7 +50,7 @@ set(MD_LINK_FLAGS_DEB)
 set(MD_LIBS)
 set(MD_PROPERTIES)
 
-set(MD_DEFINES MD_GL_BACKBONE_SEGMENT_COUNT=${MD_GL_BACKBONE_SEGMENT_COUNT} MD_GL_BACKBONE_PROFILE_COUNT=${MD_GL_BACKBONE_PROFILE_COUNT})
+set(MD_DEFINES)
 
 file(GLOB_RECURSE EXT_FILES ext/*)
 file(GLOB_RECURSE PROJ_FILES cmake/*)
@@ -64,10 +62,11 @@ file(GLOB_RECURSE PROJ_FILES cmake/*)
 #   analysis  contacts, hydrogen bonds, ring puckers, common substructures
 #   qm        orbitals, densities and the topology of fields
 #   io        the formats and their table (md_io.h)
-#   gfx       drawing a system (GL)
 #   script    the script language, and VIAL (src/vial)
 #
-# analysis, qm and gfx depend on system, io on system and qm, script on analysis and io. Nothing checks it: a header of
+# Drawing a system, on md_gpu, is at the top of src/ (md_render, md_render_mol, md_compose, md_post: with MD_ENABLE_GPU).
+#
+# analysis and qm depend on system, io on system and qm, script on analysis and io. Nothing checks it: a header of
 # a layer above is not to be included below it. The headers of core are included with the folder, <core/md_str.h>,
 # the others without, <md_pdb.h>: every folder is on the include path.
 
@@ -281,13 +280,6 @@ set(MD_IO_FILES
   src/io/md_xyz.h
 )
 
-set(MD_GFX_FILES
-  src/gfx/md_gl.c
-  src/gfx/md_gl.h
-  src/gfx/md_gl_util.c
-  src/gfx/md_gl_util.h
-)
-
 set(MD_SCRIPT_FILES
   src/script/md_filter.h
   src/script/md_script.c
@@ -336,24 +328,6 @@ set(MD_SCRIPT_FILES
   src/vial/vial_internal.h
   src/vial/volume.c
   src/vial/volume.h
-)
-
-set(GL_SHADER_FILES 
-  src/shaders/compute_spline_extract.vert
-  src/shaders/compute_spline_orient.vert
-  src/shaders/compute_spline_subdivide.vert
-  src/shaders/compute_velocity.vert
-  src/shaders/compute_derived.vert
-  src/shaders/backbone.vert
-  src/shaders/backbone.frag
-  src/shaders/bond.vert
-  src/shaders/bond.frag
-  src/shaders/ring.vert
-  src/shaders/ring.frag
-  src/shaders/slab.vert
-  src/shaders/slab.frag
-  src/shaders/spacefill.vert
-  src/shaders/spacefill.frag
 )
 
 set(TOPO_SLANG_FILES
@@ -486,7 +460,6 @@ if (MD_ENABLE_HDF5)
   list(APPEND MD_DEFINES MD_HDF5 MD_VLX_BASIS_FOLDER="${MD_VLX_BASIS_FOLDER}")
 endif()
 
-create_resources("${GL_SHADER_FILES}"   "gen/gl_shaders.inl")
 create_resources("${CMAKE_CURRENT_SOURCE_DIR}/src/vial/prelude.vial" "gen/vial_prelude.inl")
 
 # Detect AppleClang vs other Clang
@@ -705,7 +678,7 @@ if (MD_ENABLE_HDF5 AND NOT MD_HAS_PARENT AND (TARGET md_unittest OR TARGET md_be
   endforeach()
 endif()
 
-set(SHADER_FILES ${GL_SHADER_FILES} ${TOPO_SLANG_FILES} ${TOPO_GTO_SLANG_FILE} ${GTO_SLANG_FILES} ${GTO_LOC_CORE_SLANG_FILES}
+set(SHADER_FILES ${TOPO_SLANG_FILES} ${TOPO_GTO_SLANG_FILE} ${GTO_SLANG_FILES} ${GTO_LOC_CORE_SLANG_FILES}
     src/shaders/gto/gto_gemm_core.slang src/shaders/gto/eval_gto_density_core.slang src/shaders/gto/eval_gto_localization_core.slang
     src/shaders/gto/gto_common.slang src/shaders/gto/gto_gemm_args.slang
     src/shaders/gto/gto_dmat_common.slang src/shaders/gto/gto_dmat.slang
@@ -720,7 +693,7 @@ source_group("gen"      FILES ${GEN_FILES})
 source_group("shaders"  FILES ${SHADER_FILES})
 source_group("proj"     FILES ${PROJ_FILES})
 
-set(SRC_FILES ${MD_CORE_FILES} ${MD_SYSTEM_FILES} ${MD_ANALYSIS_FILES} ${MD_QM_FILES} ${MD_IO_FILES} ${MD_GFX_FILES} ${MD_SCRIPT_FILES})
+set(SRC_FILES ${MD_CORE_FILES} ${MD_SYSTEM_FILES} ${MD_ANALYSIS_FILES} ${MD_QM_FILES} ${MD_IO_FILES} ${MD_SCRIPT_FILES})
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR}/src PREFIX src FILES ${SRC_FILES})
 
 add_library(mdlib ${SRC_FILES} ${EXT_FILES} ${GEN_FILES} ${SHADER_FILES} ${PROJ_FILES})
@@ -732,7 +705,6 @@ target_include_directories(mdlib
   src/analysis/
   src/qm/
   src/io/
-  src/gfx/
   src/script/
   ext/gl3w/
   ext/simde/
