@@ -191,7 +191,8 @@ function(compile_gpu_shaders OUT_HEADER)
     set(BIN2C_SCRIPT ${TOOLS_DIR}/bin2c.py)
     # The build script imports the others, so editing any of them rebuilds.
     set(SCRIPT_DEPS ${BUILD_SCRIPT} ${BIN2C_SCRIPT}
-                    ${TOOLS_DIR}/check_gpu_arg_layout.py ${TOOLS_DIR}/spirv_deforward.py)
+                    ${TOOLS_DIR}/check_gpu_arg_layout.py ${TOOLS_DIR}/spirv_deforward.py
+                    ${TOOLS_DIR}/spirv_alias.py)
 
     # With Apple's offline compiler the embedded binary is a metallib, built
     # from the MSL by a second command. Otherwise the build script embeds the

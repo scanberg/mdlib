@@ -3937,6 +3937,15 @@ float3 linear_to_srgb(float3 c) {
     return select(c <= 0.0031308, c * 12.92, 1.055 * pow(c, 1.0 / 2.4) - 0.055);
 }
 
+// A float's half bits, rounded to the nearest (ties away from zero), for finite values within the half's range
+// (f32tof16 declares Int16, which not every device has): its bits rebiased by 2^-112 and shifted down. Below the
+// half's normals the product is a float denormal and the shift gives the half's (where denormals are not flushed).
+uint float_to_half(float f) {
+    uint s = (asuint(f) >> 16) & 0x8000u;
+    uint h = (asuint(abs(f) * 1.925929944387236e-34) + 0x1000u) >> 13;     // 2^-112
+    return s | min(h, 0x7BFFu);
+}
+
 float2 oct_encode(float3 n) {
     n /= (abs(n.x) + abs(n.y) + abs(n.z));
     float2 p = n.xy;
@@ -4313,7 +4322,7 @@ void resolve_layers(uint3 tid : SV_DispatchThreadID) {
         float2 on = oct_encode(h.n_view);
         groups[n] = b.group;
         lc[n * P + p] = c8.x | (c8.y << 8) | (c8.z << 16) | (c8.w << 24);
-        ln[n * P + p] = f32tof16(on.x) | (f32tof16(on.y) << 16);
+        ln[n * P + p] = float_to_half(on.x) | (float_to_half(on.y) << 16);
         ld[n * P + p] = uint(en >> 32);
         n += 1u;
     }

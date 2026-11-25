@@ -14,7 +14,9 @@ point, and the one run does everything the entry point needs:
      Every descriptor the SPIR-V declares must sit in the bindless set, where
      md_gpu's heap is (check_descriptor_sets).
   3. On Vulkan, spirv_deforward reorders the SPIR-V type section for drivers
-     that reject forward-declared buffer pointers (see that script).
+     that reject forward-declared buffer pointers, and spirv_alias decorates
+     the variables that hold buffer pointers as SPIR-V requires and Slang does
+     not (see those scripts).
   4. The kernel or shader descriptor -- group size and argument-struct size --
      is written to --desc.
   5. With --embed, the backend's binary is written as a C array: SPIR-V on
@@ -48,6 +50,7 @@ from pathlib import Path
 sys.dont_write_bytecode = True
 import bin2c                                    # noqa: E402
 import check_gpu_arg_layout as layout           # noqa: E402
+import spirv_alias                              # noqa: E402
 import spirv_deforward                          # noqa: E402
 
 
@@ -149,6 +152,7 @@ def main():
         try:
             words = struct.unpack("<%dI" % (len(spv) // 4), spv)
             out, _, _ = spirv_deforward.deforward(words)
+            out, _ = spirv_alias.decorate(out)
         except ValueError as e:
             sys.stderr.write(f"{src.name}:{entry}: {e}\n")
             return 1
