@@ -1866,6 +1866,14 @@ static void store_raster_meta(md_render_view_t v, const md_render_frame_t* f) {
 bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_frame_t* f, md_render_status_t* out) {
     if (out) memset(out, 0, sizeof(*out));
     if (!s || !v || !f || !validate(f)) return false;
+    if (f->depth_only) {
+        for (uint32_t i = 0; i < f->batch_count; ++i) {
+            if (transparent(&f->batches[i])) {
+                MD_LOG_ERROR("md_render: batch %u is transparent; a depth-only frame takes none", i);
+                return false;
+            }
+        }
+    }
     if (!v->r->fragment_stores) {
         for (uint32_t i = 0; i < f->batch_count; ++i) {
             if (transparent(&f->batches[i])) {
@@ -1906,6 +1914,9 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
         }
         break;
     }
+
+    /* a depth-only frame: what changed is of the raster or of nothing */
+    if (f->depth_only) resolve = mask = false;
 
     const bool occlusion = !(v->dbg_options & MD_RENDER_DEBUG_NO_OCCLUSION) && (!raster || occlusion_wanted(v));
     const bool compute   = !(v->dbg_options & MD_RENDER_DEBUG_NO_COMPUTE_RASTER) && v->r->atomic_int64;

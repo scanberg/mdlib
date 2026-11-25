@@ -3819,6 +3819,68 @@ UTEST(render, compose_slices) {
     f_close(&fx);
 }
 
+/* A depth-only frame (a shadow map's view): the raster alone, its depth and ids those of the full frame of the same
+   scene, nothing resolved; a transparent batch refused */
+UTEST(render, depth_only) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    const uint32_t W = 96, H = 64, P = W * H;
+    cam_t c = { .ortho = true, .half_h = 3.0f, .aspect = (float)W / H, .n = 0.0f, .far_ = 40.0f };
+    md_render_camera_t cam = make_camera(&c);
+    const float sp[9] = { -1.5f, 0.0f, -10.0f,   1.0f, 0.5f, -12.0f,   0.2f, -1.0f, -8.0f };
+    float rad[3] = { 1.0f, 1.4f, 0.6f };
+    md_render_batch_t b = {0};
+    b.key = 1; b.kind = MD_RENDER_SPHERES; b.count = 3; b.points.count = 3; b.points.position = f_buf(&fx, sp, sizeof(sp));
+    b.points.radius = f_buf(&fx, rad, sizeof(rad)); b.style.spheres.radius_scale = 1.0f;
+    b.color.mode = MD_RENDER_COLOR_UNIFORM; b.color.uniform = 0xFF00FF00u;
+    md_render_frame_t f = frame_of(W, H, cam, &b, 1);
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+
+    md_render_view_t dv = md_render_view_create(fx.r, "depth only");
+    ASSERT_TRUE(dv != NULL);
+    md_render_frame_t fd = f;
+    fd.depth_only = true;
+    md_render_status_t st;
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, dv, &fd, &st));
+    EXPECT_EQ((uint32_t)MD_RENDER_WORK_RASTER, st.work);
+    /* drawn again unchanged: nothing; another colour: still nothing (no resolve) */
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, dv, &fd, &st));
+    EXPECT_EQ(0u, st.work);
+    md_render_batch_t b2 = b;
+    b2.color.uniform = 0xFFFF0000u;
+    md_render_frame_t fd2 = fd;
+    fd2.batches = &b2;
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, dv, &fd2, &st));
+    EXPECT_EQ(0u, st.work);
+
+    float* d0 = malloc(P * 4);
+    float* d1 = malloc(P * 4);
+    uint32_t* i0 = malloc(P * 8);
+    uint32_t* i1 = malloc(P * 8);
+    md_render_targets_t t0 = md_render_view_targets(fx.view), t1 = md_render_view_targets(dv);
+    ASSERT_TRUE(f_read(&fx, t0.depth, d0, P * 4) && f_read(&fx, t1.depth, d1, P * 4));
+    ASSERT_TRUE(f_read(&fx, t0.id, i0, P * 8) && f_read(&fx, t1.id, i1, P * 8));
+    int covered = 0, differ = 0;
+    for (uint32_t i = 0; i < P; ++i) {
+        covered += d0[i] > 0.0f;
+        differ += d0[i] != d1[i] || i0[2 * i] != i1[2 * i] || i0[2 * i + 1] != i1[2 * i + 1];
+    }
+    printf("    %d pixels covered, %d differ\n", covered, differ);
+    EXPECT_GT(covered, 500);
+    EXPECT_EQ(0, differ);
+
+    /* transparent: refused */
+    md_render_batch_t bt = b;
+    bt.color.transparency = 0.5f;
+    md_render_frame_t ft = fd;
+    ft.batches = &bt;
+    EXPECT_FALSE(md_render_view_draw(fx.gfx, dv, &ft, NULL));
+
+    md_render_view_destroy(fx.gfx, dv);
+    free(d0); free(d1); free(i0); free(i1);
+    f_close(&fx);
+}
+
 /* A slice seen edge on, in perspective: a rectangle on the floor before the camera, its plane running off to its
    horizon in the middle of the view. Its edge is where its border is, and nothing along the horizon, where the plane
    is so far that a pixel covers more than the rectangle (where an estimate of its border from the rays of the next

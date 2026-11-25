@@ -614,6 +614,11 @@ typedef struct md_render_frame_t {
     uint64_t                 content[MD_RENDER_CONTENT_COUNT];
     uint32_t                 layers;          /* K: transparent layers per pixel, at
                                                  most 8; 0: 4                         */
+    bool                     depth_only;      /* the raster alone, depth and id, no
+                                                 resolve nor masks (a shadow map's
+                                                 view, drawn from the light); no
+                                                 transparent batches. A view keeps to
+                                                 one kind of frame                   */
 } md_render_frame_t;
 
 typedef uint32_t md_render_work_t;
