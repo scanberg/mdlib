@@ -3556,7 +3556,9 @@ bool md_gpu_device_info(md_gpu_device_t dev, md_gpu_device_info_t* info) {
     info->float16              = true;
     info->float64              = false;                      /* no double on Metal GPUs */
     info->int64                = true;
-    info->atomic_int64         = [d supportsFamily:MTLGPUFamilyApple9];   /* Apple8: 64-bit min/max only */
+    /* MSL has no 64-bit atomic that returns the old value (atomic_fetch_max_explicit on
+       atomic_ulong does not compile, Xcode 16.4): only atomic_min/max_explicit, from Apple8 */
+    info->atomic_int64         = false;
     info->atomic_int64_min_max = [d supportsFamily:MTLGPUFamilyApple8];   /* no fetch form, see md_gpu.h */
     info->atomic_float_add     = apple7;
     info->atomic_float_min_max = false;                      /* add and exchange only */

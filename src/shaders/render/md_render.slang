@@ -3853,6 +3853,20 @@ uint64_t kb_entry(Args a, uint2 px, uint k) {
     return (uint64_t(d) << 32) | uint64_t(e - 1u);
 }
 
+// The 64-bit maximum that returns what was there, which the cascade below
+// takes. Metal has no such form (only atomic_max_explicit on atomic_ulong,
+// which returns nothing: atomic_max_u64): there md_gpu reports no
+// atomic_int64, md_render makes no *_kb_fs pipeline and takes the two-pass
+// fallback (kb2_insert), and this compiles to nothing that runs.
+uint64_t atomic_fetch_max_u64(uint64_t* p, uint64_t v) {
+    __target_switch {
+    case metal:
+        return 0u;
+    default:
+        return ((Atomic<uint64_t>*)p)->max(v);
+    }
+}
+
 // A fragment of the element of `idv` at depth `d` (reverse Z), pixel px
 void kb_insert(Args a, uint2 px, uint2 idv, float d) {
     if (!(d > a.src.Load(int3(int2(px), 0)))) return;      // behind or on the opaque surface
@@ -3862,7 +3876,7 @@ void kb_insert(Args a, uint2 px, uint2 idv, float d) {
     uint64_t  val = (uint64_t(asuint(d)) << 32) | uint64_t(ent);
     if (sl[K - 1u] >= val) return;
     for (uint k = 0u; k < K; ++k) {
-        uint64_t old = ((Atomic<uint64_t>*)(sl + k))->max(val);
+        uint64_t old = atomic_fetch_max_u64(sl + k, val);
         if (old == 0u) return;
         val = min(old, val);
     }
