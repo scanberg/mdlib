@@ -3010,7 +3010,11 @@ static cf3 cmix3(cf3 a, cf3 b, float t) { return cf(cmix(a.x, b.x, t), cmix(a.y,
 static float c_s2l(float c) { c = csat(c); return c < 0.04045f ? c / 12.92f : powf((c + 0.055f) / 1.055f, 2.4f); }
 static cf3 c_srgb(cf3 c) { return cf(c_s2l(c.x), c_s2l(c.y), c_s2l(c.z)); }
 
-static cf3 c_shade(const md_compose_shading_t* sh, cf3 color, cf3 V, cf3 N, float ao) {
+/* What a surface reflects diffusely and specularly, and Fe (md_compose.slang's Lit) */
+typedef struct { cf3 d, s; float Fe; } c_lit_t;
+
+static c_lit_t c_shade(const md_compose_shading_t* sh, cf3 color, cf3 V, cf3 N, float ao) {
+    c_lit_t r = { cf(0, 0, 0), cf(0, 0, 0), 0.0f };
     cf3 L = cnorm(cf(sh->light_dir[0], sh->light_dir[1], sh->light_dir[2]));
     cf3 H = cnorm(cadd(L, V));
     if (sh->mode == MD_COMPOSE_SHADING_BASIC) {
@@ -3020,33 +3024,35 @@ static cf3 c_shade(const md_compose_shading_t* sh, cf3 color, cf3 V, cf3 N, floa
         c = cmul(c, 1.0f / m);
         float sp = light * sh->specular * powf(fmaxf(cdot(N, H), 0.0f), 48.0f);
         c = cmix3(c, cf(1, 1, 1), csat(sp));
-        return cmul(sh->linear_colors ? c : c_srgb(c), ao);
+        r.d = cmul(sh->linear_colors ? c : c_srgb(c), ao);
+        return r;
     }
     const float PI = 3.1415926535f;
     float HdotV = csat(cdot(H, V)), NdotH = csat(cdot(N, H)), NdotL = csat(cdot(N, L)), NdotV = csat(cdot(N, V));
     float F0 = csat(sh->f0), rough = sh->roughness < 0.04f ? 0.04f : sh->roughness > 1 ? 1 : sh->roughness;
     cf3 albedo = sh->linear_colors ? cf(csat(color.x), csat(color.y), csat(color.z)) : c_srgb(color);
-    cf3 Lo = cf(0, 0, 0);
     cf3 sky = cf(sh->sky_radiance[0], sh->sky_radiance[1], sh->sky_radiance[2]);
     cf3 gnd = cf(sh->ground_radiance[0], sh->ground_radiance[1], sh->ground_radiance[2]);
     if (NdotL > 0) {
         float a = rough * rough, a2 = a * a, den = NdotH * NdotH * (a2 - 1) + 1, NDF = a2 / (PI * den * den);
-        float r = rough + 1, k = r * r / 8;
+        float rr = rough + 1, k = rr * rr / 8;
         float G = (NdotL / (NdotL * (1 - k) + k)) * (NdotV / (NdotV * (1 - k) + k));
         float F = F0 + (1 - F0) * powf(csat(1 - HdotV), 5.0f);
         float spec = NDF * G * F / (4 * NdotV * NdotL + 0.0001f);
         cf3 E = cmul(cf(sh->dir_radiance[0], sh->dir_radiance[1], sh->dir_radiance[2]), sh->light_strength * NdotL);
-        Lo = cadd(Lo, cmulv(cadd(cmul(albedo, (1 - F) / PI), cf(spec, spec, spec)), E));
+        r.s = cadd(r.s, cmul(E, spec));
+        r.d = cadd(r.d, cmulv(cmul(albedo, (1 - F) / PI), E));
     }
     float rx = rough * -1.0f + 1.0f, ry = rough * -0.0275f + 0.0425f, rz = rough * -0.572f + 1.04f, rw = rough * 0.022f - 0.04f;
     float a004 = fminf(rx * rx, exp2f(-9.28f * NdotV)) * rx + ry;
     float abx = -1.04f * a004 + rz, aby = 1.04f * a004 + rw;
-    float Fe = F0 * abx + aby;
+    r.Fe = F0 * abx + aby;
     cf3 R = cadd(cmul(V, -1), cmul(N, 2 * cdot(V, N)));         /* reflect(-V, N) */
     float wv = 0.1f + rough, tt = csat((R.y + wv) / (2 * wv)), smooth = tt * tt * (3 - 2 * tt);
     const float so = csat(powf(NdotV + ao, exp2f(-16.0f * rough * rough - 1.0f)) - 1.0f + ao);    /* specular occlusion */
-    Lo = cadd(Lo, cadd(cmul(cmulv(albedo, cmix3(gnd, sky, 0.5f + 0.5f * N.y)), (1 - Fe) * ao), cmul(cmix3(gnd, sky, smooth), Fe * so)));
-    return Lo;
+    r.d = cadd(r.d, cmul(cmulv(albedo, cmix3(gnd, sky, 0.5f + 0.5f * N.y)), (1 - r.Fe) * ao));
+    r.s = cadd(r.s, cmul(cmix3(gnd, sky, smooth), r.Fe * so));
+    return r;
 }
 
 /* The scene of a view, both models, without occlusion: the opaque surface
@@ -3127,8 +3133,9 @@ UTEST(render, compose_shades_the_scene) {
                     double nd[3];
                     oct_decode(L[K * P + k * P + p], nd);
                     cf3 N = cnorm(cf((float)nd[0], (float)nd[1], (float)nd[2]));
-                    C = cadd(C, cmul(c_shade(sh, col, V, N, 1.0f), T * a));
-                    T *= 1.0f - a;
+                    c_lit_t l = c_shade(sh, col, V, N, 1.0f);
+                    C = cadd(C, cmul(cadd(cmul(l.d, a), l.s), T));        /* a film: a x diffuse + specular */
+                    T *= (1.0f - a) * (1.0f - l.Fe);
                     ++n;
                 }
                 /* the opaque surface behind them */
@@ -3138,7 +3145,8 @@ UTEST(render, compose_shades_the_scene) {
                     double nd[3];
                     oct_decode(on[p], nd);
                     cf3 N = cnorm(cf((float)nd[0], (float)nd[1], (float)nd[2]));
-                    C = cadd(C, cmul(c_shade(sh, col, V, N, 1.0f), T));
+                    c_lit_t l = c_shade(sh, col, V, N, 1.0f);
+                    C = cadd(C, cmul(cadd(l.d, l.s), T));
                 }
                 covered += n > 0;
                 multi   += n > 1;

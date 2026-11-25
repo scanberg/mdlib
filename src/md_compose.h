@@ -37,10 +37,15 @@ grid); a separable bilateral blur over two periods of its 4 x 4 pattern; a
 joint bilateral upsample. The pattern is fixed: no history (a temporal
 resolve after it accumulates what it would).
 
-A layer of opacity a and shaded radiance L over what is behind it:
-    C += T a L;  T *= 1 - a        (T: what is left of the view, from 1)
-and over the opaque surface of radiance S and coverage c (1, or 0 where
-nothing was drawn) the result is (C + T c S, 1 - T (1 - c)).
+A transparent surface is a dielectric film of coverage a (its layer's
+opacity), as viamd's isosurfaces were (isosurface.frag, isomesh.frag): of
+what it is lit by it reflects a x diffuse + specular, so a clear surface
+still shows its reflections, and lets through (1 - a)(1 - Fe), Fe the part
+of the environment its specular lobe reflects (BASIC: a x its colour, and
+1 - a). Front to back over what is behind them:
+    C += T (a D + S);  T *= (1 - a)(1 - Fe)    (T: what is left, from 1)
+and over the opaque surface of radiance R and coverage c (1, or 0 where
+nothing was drawn) the result is (C + T c R, 1 - T (1 - c)).
 */
 #ifndef MD_COMPOSE_H
 #define MD_COMPOSE_H

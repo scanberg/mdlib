@@ -312,8 +312,16 @@ float specular_occlusion(float NdotV, float ao, float roughness) {
     return saturate(pow(NdotV + ao, exp2(-16.0 * roughness - 1.0)) - 1.0 + ao);
 }
 
+// A surface lit: what it reflects diffusely and specularly, and the part of
+// the environment its specular lobe reflects (Fe). An opaque surface is their
+// sum; a transparent one of coverage a (isosurface.frag's, isomesh.frag's
+// shade_surface) reflects a x diffuse + specular, so a clear surface still
+// shows its reflections, and lets 1 - opacity through,
+// opacity = 1 - (1 - a)(1 - Fe).
+struct Lit { float3 diffuse; float3 specular; float Fe; };
+
 // compose_deferred.frag's shade, without shadows
-float3 shade_pbr(Args a, float3 color, float3 V, float3 N, float ao) {
+Lit shade_pbr(Args a, float3 color, float3 V, float3 N, float ao) {
     float3 L = a.light.xyz;
     float3 H = normalize(L + V);
     float HdotV = saturate(dot(H, V));
@@ -323,27 +331,30 @@ float3 shade_pbr(Args a, float3 color, float3 V, float3 N, float ao) {
     float F0 = saturate(a.dir_radiance.w);
     float roughness = clamp(a.sky.w, 0.04, 1.0);
     float3 albedo = a.misc.z > 0.5 ? saturate(color) : srgb_to_linear(color);
-    float3 Lo = float3(0.0);
+    Lit r;
+    r.diffuse = float3(0.0);
+    r.specular = float3(0.0);
     if (NdotL > 0.0) {
-        float NDF = DistributionGGX(NdotH, roughness);
-        float G   = GeometrySmith(NdotV, NdotL, roughness);
-        float F   = FresnelSchlick(HdotV, F0);
-        float3 specular = float3(NDF * G * F / (4.0 * NdotV * NdotL + 0.0001));
-        Lo += ((1.0 - F) * albedo * ONE_OVER_PI + specular) * (a.dir_radiance.xyz * a.light.w) * NdotL;
+        float  NDF = DistributionGGX(NdotH, roughness);
+        float  G   = GeometrySmith(NdotV, NdotL, roughness);
+        float  F   = FresnelSchlick(HdotV, F0);
+        float3 E   = a.dir_radiance.xyz * a.light.w * NdotL;
+        r.specular += float3(NDF * G * F / (4.0 * NdotV * NdotL + 0.0001)) * E;
+        r.diffuse  += (1.0 - F) * albedo * ONE_OVER_PI * E;
     }
     float2 ab = EnvBRDFApprox(NdotV, roughness);
-    float  Fe = F0 * ab.x + ab.y;
-    float3 R  = reflect(-V, N);
-    Lo += (1.0 - Fe) * albedo * environment_irradiance(a, N) * ao +
-          Fe * environment_radiance(a, R, roughness) * specular_occlusion(NdotV, ao, roughness * roughness);
-    return Lo;
+    r.Fe = F0 * ab.x + ab.y;
+    r.diffuse  += (1.0 - r.Fe) * albedo * environment_irradiance(a, N) * ao;
+    r.specular += r.Fe * environment_radiance(a, reflect(-V, N), roughness) * specular_occlusion(NdotV, ao, roughness * roughness);
+    return r;
 }
 
 static const float BASIC_SHININESS = 48.0;
 
 // compose_deferred.frag's shade_basic, without shadows; the occlusion
-// darkens all of it
-float3 shade_basic(Args a, float3 color, float3 V, float3 N, float ao) {
+// darkens all of it. All diffuse: a transparent surface is its colour over
+// its coverage.
+Lit shade_basic(Args a, float3 color, float3 V, float3 N, float ao) {
     float3 L = a.light.xyz;
     float  w = 0.5 + 0.5 * dot(N, L);
     float  light = a.light.w;
@@ -353,10 +364,14 @@ float3 shade_basic(Args a, float3 color, float3 V, float3 N, float ao) {
     float3 H = normalize(L + V);
     float  s = light * a.misc.x * pow(max(dot(N, H), 0.0), BASIC_SHININESS);
     c = lerp(c, float3(1.0), saturate(s));
-    return (a.misc.z > 0.5 ? c : srgb_to_linear(c)) * ao;
+    Lit r;
+    r.diffuse  = (a.misc.z > 0.5 ? c : srgb_to_linear(c)) * ao;
+    r.specular = float3(0.0);
+    r.Fe       = 0.0;
+    return r;
 }
 
-float3 shade(Args a, float3 color, float3 V, float3 N, float ao) {
+Lit shade(Args a, float3 color, float3 V, float3 N, float ao) {
     return a.misc.y > 0.5 ? shade_basic(a, color, V, N, ao) : shade_pbr(a, color, V, N, ao);
 }
 
@@ -386,7 +401,8 @@ void compose(uint3 tid : SV_DispatchThreadID) {
         float  d  = a.depth.Load(int3(q, 0));
         float3 N  = normal_at(a, q);
         float  ao = a.use_ao != 0u ? ao_at(a, q, a.lin[tid.y * a.width + tid.x]) : 1.0;
-        S = shade(a, col.rgb, toward_eye(a, ndc, d), N, ao);
+        Lit l = shade(a, col.rgb, toward_eye(a, ndc, d), N, ao);
+        S = l.diffuse + l.specular;
     }
 
     // the layers over it, front to back
@@ -399,9 +415,9 @@ void compose(uint3 tid : SV_DispatchThreadID) {
         float4 c  = float4(float(c8 & 0xFFu), float((c8 >> 8) & 0xFFu), float((c8 >> 16) & 0xFFu), float(c8 >> 24)) / 255.0;
         uint   nb = a.layers[a.count * a.stride + k * a.stride + p];
         float3 N  = oct_decode(float2(half_to_float(nb & 0xFFFFu), half_to_float(nb >> 16)));
-        float3 L  = shade(a, c.rgb, toward_eye(a, ndc, d), N, 1.0);
-        C += T * c.a * L;
-        T *= 1.0 - c.a;
+        Lit    l  = shade(a, c.rgb, toward_eye(a, ndc, d), N, 1.0);
+        C += T * (c.a * l.diffuse + l.specular);
+        T *= (1.0 - c.a) * (1.0 - l.Fe);
     }
     a.target[q] = float4(C + T * cov * S, 1.0 - T * (1.0 - cov));
 }
