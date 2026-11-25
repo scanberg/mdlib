@@ -88,6 +88,12 @@ typedef enum md_attribute_flags_t {
     // one per group: verified on create and replace (a numeric attribute, and no other of its group flagged). Not
     // inherited by an alias, which is in another group, or a second name in the same one.
     MD_ATTRIBUTE_FLAG_PRINCIPAL = 4,
+
+    // EXTENSIVE: each value is a TOTAL of what its index stands for, adding up over them - a tessera's wall energy or
+    // charge, an atom's mass - rather than a density or an intensive property of it (an energy per area, a decay
+    // length). A statement about the data: what spreads values over a space (a surface coloured by its tesserae) takes
+    // only the intensive, as the pattern of a total is that of the sizes it is of. Numeric; not checked otherwise.
+    MD_ATTRIBUTE_FLAG_EXTENSIVE = 8,
 } md_attribute_flags_t;
 
 // LAYOUT. Two independent things:

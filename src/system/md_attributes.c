@@ -911,6 +911,11 @@ static bool attr_build(md_attributes_t* attributes, const md_attribute_desc_t* d
         }
     }
 
+    if ((desc->flags & MD_ATTRIBUTE_FLAG_EXTENSIVE) && !md_attribute_type_is_numeric(format.type)) {
+        MD_LOG_ERROR("Attribute '" MD_STR_FMT "' is extensive but not numeric", MD_STR_ARG(path));
+        return false;
+    }
+
     // TEMPORAL is a claim about the outermost axis, so it is checked rather than believed. This is
     // the whole reason for tagging instead of inferring: a shape that merely looks frame sized is a
     // coincidence, while a tag that disagrees with its axis is a bug, and catching it here beats

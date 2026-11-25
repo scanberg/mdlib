@@ -69,8 +69,10 @@ md_attribute_id_t md_qm_publish_virtual(struct md_system_t* sys, md_str_t path, 
 
 md_attribute_id_t md_qm_publish_scalar     (struct md_system_t* sys, md_str_t path, md_str_t label, md_unit_t unit, double value);                                  // rank 0
 md_attribute_id_t md_qm_publish_series     (struct md_system_t* sys, md_str_t path, md_str_t label, md_unit_t unit, const double* values, size_t count);            // rank 1 {N}
-// The principal quantity of its group (MD_ATTRIBUTE_FLAG_PRINCIPAL): what the group is chiefly about
-md_attribute_id_t md_qm_publish_principal_series(struct md_system_t* sys, md_str_t path, md_str_t label, md_unit_t unit, const double* values, size_t count);  // rank 1 {N}
+// A series with what is said about it besides: flags (MD_ATTRIBUTE_FLAG_PRINCIPAL: what its group is chiefly about;
+// MD_ATTRIBUTE_FLAG_EXTENSIVE: a total per index) and a description (what it is, for a reader: may be empty)
+md_attribute_id_t md_qm_publish_series_ex  (struct md_system_t* sys, md_str_t path, md_str_t label, md_unit_t unit, const double* values, size_t count,
+                                            md_attribute_flags_t flags, md_str_t description);                                                           // rank 1 {N}
 md_attribute_id_t md_qm_publish_vec3_series(struct md_system_t* sys, md_str_t path, md_str_t label, md_unit_t unit, const md_double3_t* values, size_t count);           // rank 1 {N} x 3
 md_attribute_id_t md_qm_publish_matrix     (struct md_system_t* sys, md_str_t path, md_str_t label, md_unit_t unit, const double* values, size_t rows, size_t cols); // rank 2 {R,C}
 md_attribute_id_t md_qm_publish_str        (struct md_system_t* sys, md_str_t path, md_str_t label, md_str_t value);                                                   // rank 1 {1} string
