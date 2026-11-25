@@ -3739,7 +3739,9 @@ UTEST(render, compose_slices) {
     md_render_frame_t f = frame_of(W, H, cam, &b, 1);
     ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
 
-    for (int with_edge = 0; with_edge < 2; ++with_edge) {
+    /* 0: the slice; 1: with its edge; 2: its edge alone, of nothing (no field nor transfer function: opacity 0) */
+    for (int pass = 0; pass < 3; ++pass) {
+        const int with_edge = pass > 0, edge_only = pass == 2;
         md_compose_slice_t sl = {0};
         memset(sl.rect, 0, sizeof(sl.rect));
         sl.rect[0] = 3.0f; sl.rect[5] = 2.0f; sl.rect[10] = 1.0f; sl.rect[12] = -1.5f; sl.rect[13] = -1.0f; sl.rect[14] = -12.0f; sl.rect[15] = 1.0f;
@@ -3747,9 +3749,9 @@ UTEST(render, compose_slices) {
         float* F = sl.field_from_world;
         memset(F, 0, 16 * sizeof(float));
         F[0] = F[5] = F[10] = 0.25f; F[12] = 0.5f; F[13] = 0.5f; F[14] = 3.5f; F[15] = 1.0f;
-        sl.field = vx;
-        sl.transfer = cmap; sl.transfer_range[0] = -1.5f; sl.transfer_range[1] = 1.5f;
-        sl.opacity = 0.6f;
+        sl.field = edge_only ? NULL : vx;
+        sl.transfer = edge_only ? NULL : cmap; sl.transfer_range[0] = -1.5f; sl.transfer_range[1] = 1.5f;
+        sl.opacity = edge_only ? 0.0f : 0.6f;
         if (with_edge) { sl.edge[0] = sl.edge[1] = sl.edge[2] = 1.0f; sl.edge[3] = 1.0f; sl.edge_px = 1.0f; }
         md_compose_desc_t d = {0};
         d.camera = cam; d.target = out; d.slices = &sl; d.slice_count = 1;
@@ -3777,6 +3779,7 @@ UTEST(render, compose_slices) {
             if (with_edge) {
                 if (hit >= 0) continue;
                 if (dd < -3.0) { for (int k = 0; k < 4; ++k) bad += got[k] != 0.0; continue; }     /* past the edge and its halo */
+                if (edge_only && dd > 3.0) { for (int k = 0; k < 4; ++k) bad += got[k] != 0.0; continue; }   /* within: nothing */
                 if (fabs(dd) <= 0.51) {         /* on the line, half a pixel from the border: its core, white, all of it */
                     edge++;
                     for (int k = 0; k < 4; ++k) if (fabs(got[k] - 1.0) > 2e-3) { bad++; if (bad < 6) printf("    edge pixel (%u, %u) channel %d: %g\n", x, y, k, got[k]); }
@@ -3800,7 +3803,7 @@ UTEST(render, compose_slices) {
             }
         }
         if (with_edge) {
-            printf("    its edge: %d pixels on it white, nothing past it\n", edge);
+            printf("    its edge%s: %d pixels on it white, nothing past it\n", edge_only ? " alone" : "", edge);
             EXPECT_GT(edge, 100);
         } else {
             printf("    a slice: %d pixels on it (%d over a sphere behind it), %d behind a sphere in front of it; %.4f off at most\n", inside, over, under, worst);

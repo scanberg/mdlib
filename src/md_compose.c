@@ -268,8 +268,10 @@ bool md_compose(md_gpu_stream_t s, md_compose_ctx_t c, md_render_view_t view, co
     md_memset(srec, 0, sizeof(srec));
     for (uint32_t i = 0; i < ns; ++i) {
         const md_compose_slice_t* sl = &d->slices[i];
-        if (!sl->field || !vol_tex_ok(sl->field, MD_GPU_TEX_3D, MD_GPU_FORMAT_R32_FLOAT, MD_GPU_FORMAT_R16_FLOAT) ||
-            !sl->transfer || !vol_tex_ok(sl->transfer, MD_GPU_TEX_2D, MD_GPU_FORMAT_RGBA8_UNORM, MD_GPU_FORMAT_RGBA8_UNORM)) {
+        /* its edge alone (opacity 0) reads neither */
+        const bool shown = sl->opacity > 0.0f;
+        if ((shown && (!sl->field || !sl->transfer)) || !vol_tex_ok(sl->field, MD_GPU_TEX_3D, MD_GPU_FORMAT_R32_FLOAT, MD_GPU_FORMAT_R16_FLOAT) ||
+            !vol_tex_ok(sl->transfer, MD_GPU_TEX_2D, MD_GPU_FORMAT_RGBA8_UNORM, MD_GPU_FORMAT_RGBA8_UNORM)) {
             MD_LOG_ERROR("md_compose: slice %u: its field is to be a SAMPLED 3D texture of R32_FLOAT or R16_FLOAT, its transfer function a 2D one of RGBA8_UNORM", i);
             return false;
         }
@@ -290,8 +292,8 @@ bool md_compose(md_gpu_stream_t s, md_compose_ctx_t c, md_render_view_t view, co
         const float ext = sl->transfer_range[1] - sl->transfer_range[0];
         r[8] = f4(sl->transfer_range[0], ext != 0.0f ? 1.0f / ext : 0.0f, sl->opacity, sl->edge_px);
         r[9] = f4(srgb_decode_c(sl->edge[0]), srgb_decode_c(sl->edge[1]), srgb_decode_c(sl->edge[2]), sl->edge[3]);
-        a.sf[i] = md_gpu_texture_sampled(sl->field);
-        a.st[i] = md_gpu_texture_sampled(sl->transfer);
+        a.sf[i] = md_gpu_texture_sampled(sl->field ? sl->field : c->none_field);
+        a.st[i] = md_gpu_texture_sampled(sl->transfer ? sl->transfer : c->none_transfer);
     }
     for (uint32_t i = ns; i < MD_COMPOSE_MAX_SLICES; ++i) {
         a.sf[i] = md_gpu_texture_sampled(c->none_field);

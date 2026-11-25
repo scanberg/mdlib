@@ -185,7 +185,8 @@ typedef struct md_compose_volume_t {
 typedef struct md_compose_slice_t {
     float            rect[16];         /* the unit square x, y in [0, 1] (z 0) to the
                                           world (column-major)                       */
-    md_gpu_texture_t field;            /* 3D, R32_FLOAT or R16_FLOAT, SAMPLED        */
+    md_gpu_texture_t field;            /* 3D, R32_FLOAT or R16_FLOAT, SAMPLED (null
+                                          with opacity 0, as the transfer function) */
     float            field_from_world[16];
     md_gpu_texture_t transfer;         /* 2D, N x 1, RGBA8_UNORM: sRGB colour (its
                                           alpha unused)                              */
