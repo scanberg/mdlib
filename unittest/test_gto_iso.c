@@ -5162,9 +5162,9 @@ UTEST(gto_iso_gpu_lib, evaluate_matches_cpu) {
 // 1. Points shuffled, then in Morton order (md_gto_iso_gpu_morton_order): the same values point by point, to the
 // evaluation cutoff.
 // A density's tiles given with its field (md_gto_iso_field_set_gpu_dmat), as viamd gives the host's tiles uploaded
-// (md_gto_gpu_dmat_upload): a set takes them as they are (its pool their copy, their cutoff its tiles'), builds another
-// density into their pattern, and evaluates both as from tiles of its own; tiles made for a looser cutoff than the
-// set's are not taken
+// (md_gto_gpu_dmat_upload): a set of that density alone reads them where they are; beside another density a set copies
+// them (its pool their copy, their cutoff its tiles') and builds the other into their pattern; either evaluates as from
+// tiles of its own. Tiles made for a looser cutoff than the set's are not taken
 UTEST(gto_iso_gpu_lib, given_tiles_are_taken) {
     iso_gpu_t g;
     if (!iso_gpu_init(&g)) { iso_gpu_free(&g); UTEST_SKIP(iso_gpu_no_device()); }
@@ -5205,12 +5205,53 @@ UTEST(gto_iso_gpu_lib, given_tiles_are_taken) {
     const int saved_dform = isog_dform;
     isog_dform = 1;     // the values from the tiles, not the functions
 
+    // alone (twice, as at two iso values): read where they are, no copy
+    for (int k = 0; k < NC; ++k) {
+        md_gto_iso_field_set_gpu_dmat(scf, up[k]);
+        const md_gto_iso_field_t* fl[2] = {scf, scf};
+        md_gto_iso_gpu_set_t* set = md_gto_iso_gpu_set_create(g.s, &s.basis, s.xyz, 0, fl, 2, md_get_heap_allocator());
+        ASSERT_TRUE(set != NULL);
+        md_gto_gpu_dmat_view_t v;
+        md_gto_gpu_dmat_view(&v, up[k]);
+        const bool taken = cut_exp[k] >= 6;
+        EXPECT_EQ(taken, set->dm_borrowed);
+        EXPECT_EQ(taken, set->dmat.gpu == v.tiles);
+        EXPECT_EQ(taken ? cut_exp[k] : 6, set->dm_eps_exp);
+        ASSERT_TRUE(md_gto_iso_gpu_evaluate(g.s, set, (const uint32_t[]){0}, 1, pts, 0, N, val, grad));
+        const iso_ev_err_t e = iso_ev_compare(scf, pts, 0, N, val, grad, 3);
+        printf("  amide, the SCF density alone, its tiles %s (1e-%d): |df| %.1e rel, |dgrad| %.1e rel\n", taken ? "read as given" : "not taken",
+               cut_exp[k], e.val / e.fmax, e.grad / e.gmax);
+        EXPECT_LT(e.val, 1.0e-5 * e.fmax + 1.0e-5);
+        EXPECT_LT(e.grad, 1.0e-5 * e.gmax + 1.0e-5);
+        // and its meshes at two iso values: those of a set that builds its own tiles, but for float rounding
+        md_gto_iso_field_set_gpu_dmat(scf, NULL);
+        md_gto_iso_gpu_set_t* own = md_gto_iso_gpu_set_create(g.s, &s.basis, s.xyz, 0, fl, 2, md_get_heap_allocator());
+        md_gto_iso_field_set_gpu_dmat(scf, up[k]);
+        ASSERT_TRUE(own != NULL);
+        md_gto_iso_gpu_desc_t gd = {.cell_size = 0.25, .project_iterations = 4};
+        gd.iso[0] = 0.02;
+        gd.iso[1] = 0.2;
+        md_gto_iso_gpu_mesh_t m0, m1;
+        ASSERT_TRUE(md_gto_iso_gpu_extract(g.s, set, &gd, &m0));
+        ASSERT_TRUE(md_gto_iso_gpu_extract(g.s, own, &gd, &m1));
+        for (int f = 0; f < 2; ++f) {
+            const double a0 = m0.vertex_count_of[f][0], a1 = m1.vertex_count_of[f][0];
+            EXPECT_GT(a0, 100.0);
+            EXPECT_LT(fabs(a0 - a1), 0.01 * a1 + 2.0);
+        }
+        md_gto_iso_gpu_mesh_free(g.s, &m0);
+        md_gto_iso_gpu_mesh_free(g.s, &m1);
+        md_gto_iso_gpu_set_destroy(g.s, own);
+        md_gto_iso_gpu_set_destroy(g.s, set);
+    }
+    // beside another density: copied, the other built into their pattern
     for (int k = 0; k < NC; ++k) {
         md_gto_iso_field_set_gpu_dmat(scf, up[k]);
         const md_gto_iso_field_t* fl[2] = {scf, diff};
         md_gto_iso_gpu_set_t* set = md_gto_iso_gpu_set_create(g.s, &s.basis, s.xyz, 0, fl, 2, md_get_heap_allocator());
         ASSERT_TRUE(set != NULL);
         ASSERT_EQ(2u, set->num_dmat);
+        EXPECT_FALSE(set->dm_borrowed);
         md_gto_gpu_dmat_info_t hi;
         md_gto_gpu_dmat_info(&hi, up[k]);
         const size_t pool = 256 * (size_t)hi.num_tiles;

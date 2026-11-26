@@ -254,20 +254,22 @@ typedef struct md_gto_iso_gpu_set_t md_gto_iso_gpu_set_t;
 // failure (too many fields, more than 1024 functions in all, and not all densities).
 // A set of densities keeps each as its matrix too (phi^T D phi: the octree's bound, and with more than 1024
 // functions in all the corners and vertices), in tiles of the AO pairs that meet (md_gto_gpu_dmat, which needs
-// md_gto_gpu_initialize called on the device), copied from those given with the field (md_gto_iso_field_set_gpu_dmat)
-// or built on the device from the densities' functions; the call waits for that. Where the tiles cannot be made, a set of up to 1024 functions is bounded by its functions
+// md_gto_gpu_initialize called on the device), those given with the field (md_gto_iso_field_set_gpu_dmat) or built on
+// the device from the densities' functions; the call waits for that. Where the tiles cannot be made, a set of up to 1024 functions is bounded by its functions
 // alone, and one of more is NULL.
 // A COMPOSITE field (md_gto_iso_field_create_lol, _elf) is a set's only field; it brings its own bases (its
 // parts', which the set evaluates as fields of their own, field 0 from theirs), so basis and atom_xyz may be NULL.
 // Its set extracts one mesh (num_fields 1, the positive sheet) and is not for md_gto_iso_gpu_evaluate. NULL with
 // more than 1024 functions in its parts: the CPU takes it.
 // A hint, as md_gto_iso_field_set_maxima_at_atoms: the density field's tiles on the device, made of the same density (for
-// one in tiles on the host, md_gto_gpu_dmat_upload of them), which a set of densities then copies rather than building
+// one in tiles on the host, md_gto_gpu_dmat_upload of them), which a set of densities then takes rather than building
 // them from the field's functions, and builds its other densities into the same pattern (md_gto_gpu_dmat_create_like).
+// As the set's only matrix (the field alone, or at several iso values) they are read where they are, so that a density
+// is in device memory once however many sets show it; beside other densities they are copied into the set's own.
 // Taken where the tiles are of the set's basis, their pattern holds at the set's atom positions, and they were made for
-// the set's cutoff or a tighter one; else the set builds its own, as without. The dmat stays the caller's: it is read
-// only by md_gto_iso_gpu_set_create, on its stream, and must be complete there (made on it, or the stream it was made on
-// waited for or destroyed). NULL takes the hint back.
+// the set's cutoff or a tighter one; else the set builds its own, as without. The dmat stays the caller's, and must
+// outlive every set made with it, its values unchanged (the set's bounds are made of them); complete on the set's stream
+// when the set is made (made on it, or the stream it was made on waited for or destroyed). NULL takes the hint back.
 void md_gto_iso_field_set_gpu_dmat(md_gto_iso_field_t* field, md_gto_gpu_dmat_t dmat);
 
 md_gto_iso_gpu_set_t* md_gto_iso_gpu_set_create(md_gpu_stream_t stream, const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,

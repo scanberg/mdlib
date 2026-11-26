@@ -16,7 +16,7 @@
 #include <gto_iso_gpu_shaders.inl>
 
 // BENCHMARK (temporary, branch gto-iso-gpu-opt): which round of changes this is, in every profile report
-#define ISOG_REVISION "r48 (a density's tiles given with its field, copied rather than built; r47: the D form in tiles only)"
+#define ISOG_REVISION "r49 (a density's tiles given with its field: read where they are as the set's only matrix, else copied; r47: the D form in tiles only)"
 
 typedef struct isog_shell_t {        // mirrors IsoShell
     md_gpu_float4 c;
@@ -285,6 +285,7 @@ struct md_gto_iso_gpu_set_t {
     md_gpu_mem_t shells, prims, crit, ao_nrm, ao_ijk, C, terms, fn_tail, wts, dmat, fdmat, drs, dprop;
     md_gpu_mem_t dm_tao, dm_map, dm_rows;   // the pattern the matrices' tiles are in (md_gto_gpu_dmat_view)
     uint32_t     dm_nt, dm_pool;            // dm_pool: floats per matrix
+    bool         dm_borrowed;               // dmat, dm_tao and dm_map are a given dmat's (its only matrix), not the set's
     uint32_t     num_shells, num_ao, num_fn, fn_stride, num_fields;
     bool         orbitals_only;     // every field one function, one linear term: iso_eval_orbital
     bool         canon;             // every term w a, w a^2 or w a b (a even, b = a + 1): wts holds them per column
@@ -451,9 +452,10 @@ static bool isog_hint_usable(md_gto_gpu_dmat_t hint, size_t nao, const float* at
 
 // The D form's matrices in tiles of the AO pairs that meet (md_gto_gpu_dmat), one pattern for all: set->dmat holds
 // num_dmat pools of set->dm_pool floats, set->dm_tao and set->dm_map the pattern. The pattern is that of the first
-// density given its tiles (md_gto_iso_field_set_gpu_dmat, isog_hint_usable), whose matrix is copied from them, and
-// any other density's is built on the device from its functions into it; with none given, a pattern of the set's own
-// for the cutoff the extraction's AO lists are for. Per field its matrix into fdm, the matrices' properties (d_psd,
+// density given its tiles (md_gto_iso_field_set_gpu_dmat, isog_hint_usable), and any other density's is built on the
+// device from its functions into it; with none given, a pattern of the set's own for the cutoff the extraction's AO
+// lists are for. The given tiles are read where they are when they are the set's only matrix (dm_borrowed: no copy of
+// a density in device memory), and copied into the set's pools beside others. Per field its matrix into fdm, the matrices' properties (d_psd,
 // d_slack; d_sraw with the row sums, isog_dmat_rows), and the cutoff the tiles are for (dm_eps_exp). False, with
 // nothing kept, where md_gto cannot (md_gto_gpu_initialize not called, out of memory): the set then has no D form.
 static bool isog_dmat_tiles(md_gto_iso_gpu_set_t* set, md_gpu_stream_t stream, const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
@@ -484,6 +486,23 @@ static bool isog_dmat_tiles(md_gto_iso_gpu_set_t* set, md_gpu_stream_t stream, c
     md_gto_gpu_dmat_view(&vh, hint);
     const size_t nao = v.num_ao;
     const size_t pool = 256 * (size_t)MD_MAX(1, v.num_tiles);
+    if (hint && num_dmat == 1 && !dm) {
+        // the given tiles are the set's only matrix: read where they are
+        for (uint32_t k = 0; k < num_fields; ++k) fdm[k] = 0;
+        const uint32_t k0 = (uint32_t)first_of[0];
+        set->dmat.gpu = vh.tiles;
+        set->dm_tao.gpu = vh.tao;
+        set->dm_map.gpu = vh.map;
+        set->dm_borrowed = true;
+        set->d_psd[0] = isog_density_psd(fields[k0]->f.dens);
+        set->d_slack[0] = isog_f32_up(fields[k0]->f.dens->slack);
+        set->dm_nt = vh.nt;
+        set->dm_pool = (uint32_t)pool;
+        set->dm_eps_exp = eps_exp;
+        MD_LOG_DEBUG("md_gto_iso_gpu_set_create: its density's tiles as given, %llu of %llu tile pairs (%.1f MB), read where they are",
+                     (unsigned long long)vh.num_tiles, (unsigned long long)vh.nt * (vh.nt + 1) / 2, sizeof(float) * pool / 1.0e6);
+        return true;
+    }
     bool ok = pool * num_dmat < (size_t)UINT32_MAX;
     if (ok) {
         set->dmat   = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, sizeof(float) * pool * num_dmat);
@@ -1065,9 +1084,11 @@ void md_gto_iso_gpu_set_destroy(md_gpu_stream_t stream, md_gto_iso_gpu_set_t* se
     md_gpu_free(stream, set->shells.gpu); md_gpu_free(stream, set->prims.gpu); md_gpu_free(stream, set->crit.gpu);
     md_gpu_free(stream, set->ao_nrm.gpu); md_gpu_free(stream, set->ao_ijk.gpu); md_gpu_free(stream, set->C.gpu);
     md_gpu_free(stream, set->terms.gpu); md_gpu_free(stream, set->fn_tail.gpu); md_gpu_free(stream, set->wts.gpu);
-    md_gpu_free(stream, set->dmat.gpu); md_gpu_free(stream, set->fdmat.gpu);
-    md_gpu_free(stream, set->drs.gpu); md_gpu_free(stream, set->dprop.gpu);
-    md_gpu_free(stream, set->dm_tao.gpu); md_gpu_free(stream, set->dm_map.gpu); md_gpu_free(stream, set->dm_rows.gpu);
+    if (!set->dm_borrowed) {
+        md_gpu_free(stream, set->dmat.gpu); md_gpu_free(stream, set->dm_tao.gpu); md_gpu_free(stream, set->dm_map.gpu);
+    }
+    md_gpu_free(stream, set->fdmat.gpu);
+    md_gpu_free(stream, set->drs.gpu); md_gpu_free(stream, set->dprop.gpu); md_gpu_free(stream, set->dm_rows.gpu);
     free(set->prof_shells);
     free(set->sh_nmax); free(set->sh_amin); free(set->colsum); free(set->host_prims); free(set->sh_cmax);
     md_free(set->alloc, set, sizeof(*set));
