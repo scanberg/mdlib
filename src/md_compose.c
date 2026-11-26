@@ -37,14 +37,16 @@ typedef struct gpu_compose_args_t {
     md_gpu_float4        sq;            /* world per unit of its depth, tan of the light's angular radius, 1: shadows, the contact ray's texels */
     md_gpu_sampled_tex_t shadow;
     float                jit[2];        /* the raster's subpixel offset: the rays through it */
+    md_gpu_addr_t        blocks;        /* the volumes' blocks, 1 where one may hold a crossing or emit */
+    uint32_t             block_vol, _bp;
 } gpu_compose_args_t;
-_Static_assert(sizeof(gpu_compose_args_t) == 752, "Args mirror");
+_Static_assert(sizeof(gpu_compose_args_t) == 768, "Args mirror");
 
-enum { AO_LEVELS = 6, VOL_STRIDE = 36, SLICE_STRIDE = 14 };   /* md_compose.slang's */
+enum { AO_LEVELS = 6, VOL_STRIDE = 37, SLICE_STRIDE = 14, BLOCK = 8 };   /* md_compose.slang's */
 
 struct md_compose {
     md_gpu_device_t  dev;
-    md_gpu_kernel_t  k_linear, k_estimate, k_quality, k_blur, k_compose;
+    md_gpu_kernel_t  k_linear, k_estimate, k_quality, k_blur, k_compose, k_blocks;
     md_gpu_sampler_t trilinear;
     /* What the compose's volume arguments hold without volumes, never read: a
        null pointer or handle there let lavapipe crash (a load hoisted out of
@@ -67,10 +69,11 @@ md_compose_ctx_t md_compose_create(md_gpu_device_t device) {
     kd = md_shader_md_compose_ao_estimate_quality_kernel(); c->k_quality = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_compose_ao_blur_kernel();     c->k_blur     = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_compose_compose_kernel();     c->k_compose  = md_gpu_kernel_create(device, &kd);
+    kd = md_shader_md_compose_vol_blocks_kernel();  c->k_blocks   = md_gpu_kernel_create(device, &kd);
     md_gpu_sampler_desc_t sd = {0};
     sd.min_filter = sd.mag_filter = MD_GPU_FILTER_LINEAR;
     c->trilinear = md_gpu_sampler(device, &sd);
-    if (!c->k_linear || !c->k_estimate || !c->k_quality || !c->k_blur || !c->k_compose || !c->trilinear.handle) {
+    if (!c->k_linear || !c->k_estimate || !c->k_quality || !c->k_blur || !c->k_compose || !c->k_blocks || !c->trilinear.handle) {
         MD_LOG_ERROR("md_compose: kernel creation failed: %s", md_gpu_last_error());
         md_compose_destroy(c);
         return NULL;
@@ -83,7 +86,7 @@ md_compose_ctx_t md_compose_create(md_gpu_device_t device) {
 bool md_compose_debug_kernel_info(md_compose_ctx_t c, uint32_t i, const char** name, md_gpu_kernel_info_t* info) {
     if (!c) return false;
     const struct { const char* n; md_gpu_kernel_t k; } ks[] = {
-        { "compose", c->k_compose }, { "ao_linear", c->k_linear }, { "ao_estimate", c->k_estimate },
+        { "compose", c->k_compose }, { "vol_blocks", c->k_blocks }, { "ao_linear", c->k_linear }, { "ao_estimate", c->k_estimate },
         { "ao_quality", c->k_quality }, { "ao_blur", c->k_blur },
     };
     if (i >= sizeof(ks) / sizeof(ks[0])) return false;
@@ -98,6 +101,7 @@ void md_compose_destroy(md_compose_ctx_t c) {
     if (c->k_quality)  md_gpu_kernel_destroy(c->k_quality);
     if (c->k_blur)     md_gpu_kernel_destroy(c->k_blur);
     if (c->k_compose)  md_gpu_kernel_destroy(c->k_compose);
+    if (c->k_blocks)   md_gpu_kernel_destroy(c->k_blocks);
     if (c->none_field)    md_gpu_texture_destroy(c->none_field);
     if (c->none_transfer) md_gpu_texture_destroy(c->none_transfer);
     if (c->none_color)    md_gpu_texture_destroy(c->none_color);
@@ -193,6 +197,7 @@ bool md_compose(md_gpu_stream_t s, md_compose_ctx_t c, md_render_view_t view, co
     }
     md_gpu_float4 rec[MD_COMPOSE_MAX_VOLUMES * VOL_STRIDE];
     md_memset(rec, 0, sizeof(rec));
+    uint32_t blocks[MD_COMPOSE_MAX_VOLUMES], block_total = 0;
     for (uint32_t v = 0; v < nv; ++v) {
         const md_compose_volume_t* vol = &d->volumes[v];
         const md_gpu_texture_desc_t* fd = vol->field ? md_gpu_texture_desc(vol->field) : NULL;
@@ -226,7 +231,13 @@ bool md_compose(md_gpu_stream_t s, md_compose_ctx_t c, md_render_view_t view, co
         r[4] = f4(vol->clip_min[0], vol->clip_min[1], vol->clip_min[2], vol->transfer_range[0]);
         r[5] = f4(vol->clip_max[0], vol->clip_max[1], vol->clip_max[2], ext != 0.0f ? 1.0f / ext : 0.0f);
         r[6] = f4((float)fd->width, (float)fd->height, (float)fd->depth_or_layers, vol->transfer ? 1.0f : 0.0f);
-        r[7] = f4((float)vol->iso_count, (float)vol->plane_count, 0.0f, 0.0f);
+        const md_gpu_texture_desc_t* td = vol->transfer ? md_gpu_texture_desc(vol->transfer) : NULL;
+        r[7] = f4((float)vol->iso_count, (float)vol->plane_count, td ? (float)td->width : 0.0f, 0.0f);
+        /* its blocks for the empty space (vol_blocks) */
+        const uint32_t gx = (fd->width + BLOCK - 1) / BLOCK, gy = (fd->height + BLOCK - 1) / BLOCK, gz = (fd->depth_or_layers + BLOCK - 1) / BLOCK;
+        blocks[v] = gx * gy * gz;
+        r[36] = f4((float)gx, (float)gy, (float)gz, (float)block_total);
+        block_total += blocks[v];
         float* f = (float*)(r + 8);
         for (uint32_t i = 0; i < vol->iso_count; ++i) {
             f[i]           = vol->iso_values[i];                          /* 8, 9   */
@@ -381,6 +392,15 @@ bool md_compose(md_gpu_stream_t s, md_compose_ctx_t c, md_render_view_t view, co
         ok = ok && launch(s, c->k_blur, hw, hh, &a);
         a.dir = 1; a.src = 1;
         ok = ok && launch(s, c->k_blur, hw, hh, &a);   /* back into plane 0 */
+    }
+    if (ok && nv) {
+        /* the blocks a ray may skip */
+        a.blocks = md_gpu_temp_alloc(scope, MD_GPU_MEM_DEVICE, (size_t)block_total * sizeof(uint32_t)).gpu;
+        ok = a.blocks != 0;
+        for (uint32_t v = 0; ok && v < nv; ++v) {
+            a.block_vol = v;
+            ok = launch(s, c->k_blocks, blocks[v], 1, &a);
+        }
     }
     ok = ok && launch(s, c->k_compose, W, H, &a);
     md_gpu_temp_end(scope);

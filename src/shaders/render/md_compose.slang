@@ -58,6 +58,9 @@ struct Args {
                                 // radius, z: 1 shadows, w: the contact ray's reach, the map's texels
     DescriptorHandle<Texture2D<float>>    shadow;   // the light view's depth: reverse Z, orthographic
     float2 jit;                 // the raster's subpixel offset, pixels: the rays through it
+    uint*  blocks;              // the volumes' blocks: 1 where one may hold a crossing or emit (vol_blocks)
+    uint   block_vol;           // vol_blocks': the volume
+    uint   _bp;
 };
 MD_SHADER_ARGS(Args);
 
@@ -546,8 +549,11 @@ Lit shade(Args a, float3 color, float3 V, float3 N, float ao, float sh) {
 //   30, 31 the isolines' values
 //   32..34 world to view (columns), for the normals
 //   35     the colour field's voxels per axis
+//   36     its blocks (vol_blocks) per axis, w: the first one's index in blocks
+//   7.z    the transfer function's texels
 
-static const uint  VOL_STRIDE       = 36u;
+static const uint  VOL_STRIDE       = 37u;
+static const uint  BLOCK            = 8u;      // voxels per block side (vol_blocks)
 static const uint  MAX_VOL          = 4u;
 static const uint  MAX_ISO          = 8u;
 static const uint  MAX_STEPS        = 4096u;
@@ -610,6 +616,24 @@ float4 vol_normals(Args a, uint v, float3 p) {
     case 1u: return a.vn1.SampleLevel(a.trilinear, p, 0.0);
     case 2u: return a.vn2.SampleLevel(a.trilinear, p, 0.0);
     default: return a.vn3.SampleLevel(a.trilinear, p, 0.0);
+    }
+}
+
+float vol_load(Args a, uint v, int3 q) {
+    switch (v) {
+    case 0u: return a.vf0.Load(int4(q, 0));
+    case 1u: return a.vf1.Load(int4(q, 0));
+    case 2u: return a.vf2.Load(int4(q, 0));
+    default: return a.vf3.Load(int4(q, 0));
+    }
+}
+
+float transfer_alpha(Args a, uint v, int k) {
+    switch (v) {
+    case 0u: return a.vt0.Load(int3(k, 0, 0)).a;
+    case 1u: return a.vt1.Load(int3(k, 0, 0)).a;
+    case 2u: return a.vt2.Load(int3(k, 0, 0)).a;
+    default: return a.vt3.Load(int3(k, 0, 0)).a;
     }
 }
 
@@ -727,6 +751,67 @@ float2 vol_range(Args a, uint v, float3 o, float3 d, float lo, float hi) {
         if (pb > 0.0) lo = max(lo, t); else hi = min(hi, t);
     }
     return float2(lo, hi);
+}
+
+// ---- Empty space ------------------------------------------------------------------
+// A volume in blocks of BLOCK^3 voxels, each marked when the trilinear field over it (a convex combination of its
+// voxels and the next one out on each side) may take an isovalue, or a value the transfer function gives opacity
+// (as filtered: its texels over the block's range and one either side). Through the others a ray crosses nothing
+// and nothing emits: the march skips them.
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void vol_blocks(uint3 tid : SV_DispatchThreadID) {
+    Args   a = MD_ARGS;
+    uint   v = a.block_vol;
+    float4 g = vrec(a, v, 36u);
+    uint3  G = uint3(g.xyz);
+    uint   i = tid.x;
+    if (i >= G.x * G.y * G.z) return;
+    uint3 b    = uint3(i % G.x, (i / G.x) % G.y, i / (G.x * G.y));
+    int3  dims = int3(vrec(a, v, 6u).xyz);
+    int3  lo   = max(int3(b * BLOCK) - 1, int3(0)), hi = min(int3((b + 1u) * BLOCK), dims - 1);
+    float mn = 3.0e38, mx = -3.0e38;
+    for (int z = lo.z; z <= hi.z; ++z)
+        for (int y = lo.y; y <= hi.y; ++y)
+            for (int x = lo.x; x <= hi.x; ++x) {
+                float f = vol_load(a, v, int3(x, y, z));
+                mn = min(mn, f);
+                mx = max(mx, f);
+            }
+    uint flag = 0u;
+    uint ni   = uint(vrec(a, v, 7u).x);
+    for (uint k = 0u; k < ni; ++k) {
+        float iv = iso_value(a, v, k);
+        if (iv >= mn && iv <= mx) flag = 1u;
+    }
+    if (flag == 0u && vrec(a, v, 6u).w >= 0.5) {
+        float beg = vrec(a, v, 4u).w, inv = vrec(a, v, 5u).w;
+        int   W   = int(vrec(a, v, 7u).z);
+        float u0  = saturate((mn - beg) * inv), u1 = saturate((mx - beg) * inv);
+        int   k0  = max(int(floor(min(u0, u1) * float(W) - 0.5)), 0);
+        int   k1  = min(int(floor(max(u0, u1) * float(W) - 0.5)) + 1, W - 1);
+        for (int k = k0; k <= k1 && flag == 0u; ++k) if (transfer_alpha(a, v, k) > 0.0) flag = 1u;
+    }
+    a.blocks[uint(g.w) + i] = flag;
+}
+
+// Along o + t d (texture space) from t: on to where the ray leaves the block it is in there when that block is
+// empty, else t itself. On a block's face, the block ahead.
+float empty_until(Args a, uint v, float3 o, float3 d, float t) {
+    float4 g  = vrec(a, v, 36u);
+    float3 sc = vrec(a, v, 6u).xyz / float(BLOCK);          // blocks per unit of texture space
+    float3 c  = (o + d * t) * sc;
+    float3 fc = floor(c);
+    int3   bi = int3(fc) - int3(select((c == fc) && (d < 0.0), int3(1), int3(0)));
+    if (any(bi < 0) || any(bi >= int3(g.xyz))) return t;
+    uint3  G  = uint3(g.xyz);
+    uint   ix = uint(g.w) + (uint(bi.z) * G.y + uint(bi.y)) * G.x + uint(bi.x);
+    if (a.blocks[ix] != 0u) return t;
+    float3 inv = 1.0 / select(abs(d) < float3(1e-20), float3(1e-20), d);
+    float3 ta = (float3(bi) / sc - o) * inv, tb = (float3(bi + 1) / sc - o) * inv;
+    float3 tf = max(ta, tb);
+    return max(t, min(tf.x, min(tf.y, tf.z)));
 }
 
 uint hash_u(uint x) {
@@ -1111,10 +1196,34 @@ void compose(uint3 tid : SV_DispatchThreadID) {
         float  fprev[MAX_VOL];
         uint   inside[MAX_VOL];
         uint   state = 0u;          // bit v: volume v entered; bit 8 + v: left
+        uint   stale = 0u;          // bit v: fprev[v] is from before empty space skipped
         float  tau = 0.0, t_abs = t_beg;
         [ForceUnroll] for (uint v = 0u; v < MAX_VOL; ++v) { fprev[v] = 0.0; inside[v] = 0u; }
         for (uint s = 0u; s <= n && T >= T_MIN; ++s) {
             float tb = t_beg + dt * (float(s) + jit), ta = tb - dt;
+            // Empty space: where each volume the ray is in there is, from the step's start on, in an empty block,
+            // on to the first of those blocks' ends (and no further than where a volume begins or ends): the steps
+            // up to there skipped, their samples and all. Each volume's value from before stands for its isovalues'
+            // sides there (in an empty block none changes); it is fetched anew after it.
+            {
+                float t_skip = T_FAR;
+                uint  act    = 0u;
+                for (uint v = 0u; v < nv; ++v) {
+                    if (vr[v].x >= vr[v].y || (state & (0x100u << v)) != 0u) continue;
+                    if (vr[v].x > ta) { t_skip = min(t_skip, vr[v].x); continue; }
+                    act |= 1u << v;
+                    t_skip = min(t_skip, min(empty_until(a, v, vo[v], vd[v], max(ta, vr[v].x)), vr[v].y));
+                }
+                if (act != 0u && t_skip > tb) {
+                    // the first step whose sample is at or past t_skip (or one before it)
+                    uint s2 = uint(max(ceil((t_skip - t_beg) / dt - jit - 1.0e-4), 0.0));
+                    if (s2 > s) {
+                        stale |= act;
+                        s = s2 - 1u;
+                        continue;
+                    }
+                }
+            }
             // the crossings and the volumes' ends in (ta, tb], in order along the ray
             float ht[MAX_HITS];
             uint  he[MAX_HITS];
@@ -1127,7 +1236,10 @@ void compose(uint3 tid : SV_DispatchThreadID) {
                     inside[v] = membership(a, v, fprev[v]);
                     state    |= 1u << v;
                     { float et = ua; uint ee = v | (EV_BEGIN << 8); if (nh < MAX_HITS) { uint j = nh++; while (j > 0u && ht[j - 1u] > et) { ht[j] = ht[j - 1u]; he[j] = he[j - 1u]; --j; } ht[j] = et; he[j] = ee; } }
+                } else if ((stale & (1u << v)) != 0u) {
+                    fprev[v] = vol_field(a, v, vo[v] + vd[v] * ua);
                 }
+                stale &= ~(1u << v);
                 float fb = vol_field(a, v, vo[v] + vd[v] * ub);
                 uint  ni = uint(vrec(a, v, 7u).x);
                 for (uint i = 0u; i < ni; ++i) {

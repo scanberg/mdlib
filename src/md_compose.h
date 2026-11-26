@@ -120,6 +120,10 @@ typedef struct md_compose_shading_t {
    fetch a step. A crossing found between two samples is refined on the
    trilinear field, so where it is does not depend on the sampling, but one
    the ray enters and leaves within a step is missed (as viamd's fast mode).
+   Empty space is skipped: each call marks the blocks of 8^3 voxels where
+   the field may take an isovalue or a value the transfer function gives
+   opacity (a read of the field), and a ray steps over the others where it
+   is in no volume that is not empty there.
    An isosurface's colour is its iso_colors' times, when given, the colour
    volume's there, or the colour map's at the colour field's value there,
    with isolines of that field: lines where it takes given values, as wide in
