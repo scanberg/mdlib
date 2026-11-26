@@ -129,10 +129,9 @@ struct IsoArgs {
     uint*     bstate;         // flood: per brick, the round it was evaluated in (1, 2, ...), FLOOD_NONE not (yet)
     uint      group_base;     // a launch in chunks: the first group of this one (node_index adds it)
     uint      grid_max;       // iso_grid: at most this many groups from group_base on (0: no chunks)
-    // dform: the matrices in tiles (md_gto_gpu_dmat) rather than dense: dmat holds num_dmat pools of dm_pool
-    // floats, one pattern for all (dm_tao, dm_map, tiles of 16 per edge, dm_nt per edge), without the AO
-    // normalizations (dform_at applies them)
-    uint      dsparse;
+    // dform: the matrices in tiles (md_gto_gpu_dmat): dmat holds num_dmat pools of dm_pool floats, one pattern for
+    // all (dm_tao, dm_map, tiles of 16 per edge, dm_nt per edge), without the AO normalizations (dform_at applies them)
+    uint      _pad1;
     uint      dm_nt;
     uint      dm_pool;
     uint      _pad2;
@@ -159,10 +158,8 @@ struct IsoArgs {
 };
 MD_SHADER_ARGS(IsoArgs);
 
-// Element (i, j) of a D-form matrix, with the AO normalizations: D the matrix's own (dense: [n][n]; in tiles:
-// its pool), as IsoArgs describes it
-float dform_at(float* D, uint sparse, uint* tao, uint* map, uint nt, float* nrm, uint n, uint i, uint j) {
-    if (sparse == 0u) return D[i * n + j];
+// Element (i, j) of a D-form matrix, with the AO normalizations: D the matrix's pool of tiles, as IsoArgs describes it
+float dform_at(float* D, uint* tao, uint* map, uint nt, float* nrm, uint i, uint j) {
     uint ti = tao[i], tj = tao[j];
     uint lo = min(ti, tj), hi = max(ti, tj);
     uint e = map[(lo >> 4) * nt + (hi >> 4)];
@@ -2392,8 +2389,8 @@ void dq_phi<Mem : IGcMem>(uint buf, uint ns, uint j0, uint js, uint nvalid, floa
 struct IsoDformStager<let VERT : int, Mem : IGcMem> : IGemmStager {
     static const int kFull = 0;
     float* D;
-    uint   n, A, nq;
-    uint   dsparse, dm_nt;                                 // dform_at's arguments, the kernel's (not read from MD_ARGS
+    uint   A, nq;
+    uint   dm_nt;                                          // dform_at's arguments, the kernel's (not read from MD_ARGS
     uint*  dm_tao;                                         // again per chunk)
     uint*  dm_map;
     float* ao_nrm;
@@ -2421,7 +2418,7 @@ struct IsoDformStager<let VERT : int, Mem : IGcMem> : IGemmStager {
         [ForceUnroll] for (int i = 0; i < 8; ++i) {
             uint ra = dq_rao[buf * uint(D_CH) + tid / TC + 2u * uint(i)];
             bool ok = fac != 0.0 && ra != INVALID && ca != INVALID;
-            float v = ok ? dform_at(D, dsparse, dm_tao, dm_map, dm_nt, ao_nrm, n, ra, ca) : 0.0;
+            float v = ok ? dform_at(D, dm_tao, dm_map, dm_nt, ao_nrm, ra, ca) : 0.0;
             dv[i] = ok ? fac * v : 0.0;
         }
         if (q + 1u < qe) {
@@ -2582,12 +2579,12 @@ void gemm_dform<let VERT : int>(uint3 gid, uint tid) {
             if (need) d_any = 1u;
             GroupMemoryBarrierWithGroupSync();
             if (d_any == 0u) continue;
-            float* D = a.dmat + u * (a.dsparse != 0u ? a.dm_pool : n * n);
+            float* D = a.dmat + u * a.dm_pool;
             float part[4] = {0.0, 0.0, 0.0, 0.0};          // rows 4 pg + v: Phi . T over this wave's column chunks
 
             IsoDformStager<VERT, IsoGd> st;
-            st.D = D; st.n = n; st.A = A; st.nq = nq; st.p = p; st.pg = pg; st.cg = cg; st.ce = ce; st.col = tid % TC;
-            st.dsparse = a.dsparse; st.dm_nt = a.dm_nt; st.dm_tao = a.dm_tao; st.dm_map = a.dm_map; st.ao_nrm = a.ao_nrm;
+            st.D = D; st.A = A; st.nq = nq; st.p = p; st.pg = pg; st.cg = cg; st.ce = ce; st.col = tid % TC;
+            st.dm_nt = a.dm_nt; st.dm_tao = a.dm_tao; st.dm_map = a.dm_map; st.ao_nrm = a.ao_nrm;
             st.J = 0u; st.q = 0u; st.qe = 0u; st.jb = 0u; st.ca = INVALID;
             IsoDformEpilogue<VERT, IsoGd> epi;
             epi.pg = pg;
@@ -2669,7 +2666,7 @@ void iso_octree_dform(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
         if (!any) continue;                                // uniform
         float sm[7] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}; // rho_c, sum |pc| ga, sum |g| dev, sum dev ga, sum dev h, m^T |D| m, sum m rs
         if (!ovf) {
-            float* D = a.dmat + u * (a.dsparse != 0u ? a.dm_pool : n * n);
+            float* D = a.dmat + u * a.dm_pool;
             for (uint pb = 0u; pb < nb; ++pb) {
                 uint la0 = pb * uint(OD_BLK) + tid, la1 = la0 + uint(G_GROUP);
                 float4 m0 = la0 < A ? od_ao(la0, lo, hi, cen) : float4(0.0);
@@ -2698,8 +2695,8 @@ void iso_octree_dform(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
                         [ForceUnroll] for (int j = 0; j < 4; ++j) {
                             q[j] = od_q[v + uint(j)];
                             uint qa = asuint(q[j].w);
-                            d0[j] = dform_at(D, a.dsparse, a.dm_tao, a.dm_map, a.dm_nt, a.ao_nrm, n, qa, a0);
-                            d1[j] = dform_at(D, a.dsparse, a.dm_tao, a.dm_map, a.dm_nt, a.ao_nrm, n, qa, a1);
+                            d0[j] = dform_at(D, a.dm_tao, a.dm_map, a.dm_nt, a.ao_nrm, qa, a0);
+                            d1[j] = dform_at(D, a.dm_tao, a.dm_map, a.dm_nt, a.ao_nrm, qa, a1);
                         }
                         [ForceUnroll] for (int j = 0; j < 4; ++j) {
                             float apc = abs(q[j].x), e0 = abs(d0[j]), e1 = abs(d1[j]);
@@ -2711,9 +2708,9 @@ void iso_octree_dform(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
                         float4 q = od_q[v];
                         uint qa = asuint(q.w);
                         float apc = abs(q.x);
-                        float d = dform_at(D, a.dsparse, a.dm_tao, a.dm_map, a.dm_nt, a.ao_nrm, n, qa, a0), e = abs(d);
+                        float d = dform_at(D, a.dm_tao, a.dm_map, a.dm_nt, a.ao_nrm, qa, a0), e = abs(d);
                         g0 += d * q.x; ga0 += e * apc; h0 += e * q.y; k0 += e * q.z;
-                        d = dform_at(D, a.dsparse, a.dm_tao, a.dm_map, a.dm_nt, a.ao_nrm, n, qa, a1); e = abs(d);
+                        d = dform_at(D, a.dm_tao, a.dm_map, a.dm_nt, a.ao_nrm, qa, a1); e = abs(d);
                         g1 += d * q.x; ga1 += e * apc; h1 += e * q.y; k1 += e * q.z;
                     }
                 }

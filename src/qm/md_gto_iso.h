@@ -253,9 +253,10 @@ typedef struct md_gto_iso_gpu_set_t md_gto_iso_gpu_set_t;
 // set (each extraction derives the root box from their tails). Uploads on 'stream'. Returns NULL on
 // failure (too many fields, more than 1024 functions in all, and not all densities).
 // A set of densities keeps each as its matrix too (phi^T D phi: the octree's bound, and with more than 1024
-// functions in all the corners and vertices). With md_gto_gpu_initialize called on the device, the matrices
-// are in tiles of the AO pairs that meet (md_gto_gpu_dmat), built on the device from the densities'
-// functions, and the call waits for that; otherwise dense, num_ao^2 floats each, made on the host.
+// functions in all the corners and vertices), in tiles of the AO pairs that meet (md_gto_gpu_dmat, which needs
+// md_gto_gpu_initialize called on the device), built on the device from the densities' functions; the call
+// waits for that. Where the tiles cannot be made, a set of up to 1024 functions is bounded by its functions
+// alone, and one of more is NULL.
 // A COMPOSITE field (md_gto_iso_field_create_lol, _elf) is a set's only field; it brings its own bases (its
 // parts', which the set evaluates as fields of their own, field 0 from theirs), so basis and atom_xyz may be NULL.
 // Its set extracts one mesh (num_fields 1, the positive sheet) and is not for md_gto_iso_gpu_evaluate. NULL with

@@ -16,7 +16,7 @@
 #include <gto_iso_gpu_shaders.inl>
 
 // BENCHMARK (temporary, branch gto-iso-gpu-opt): which round of changes this is, in every profile report
-#define ISOG_REVISION "r46 (composite fields: LOL, ELF from their parts; r45: lattices to 1024 bricks a side)"
+#define ISOG_REVISION "r47 (the D form in tiles only: the dense matrices gone, host and shader; r46: composite fields, LOL and ELF from their parts)"
 
 typedef struct isog_shell_t {        // mirrors IsoShell
     md_gpu_float4 c;
@@ -57,7 +57,7 @@ typedef struct isog_args_t {         // mirrors IsoArgs
     md_gpu_addr_t scan;
     md_gpu_addr_t bstate;
     uint32_t group_base, grid_max;
-    uint32_t dsparse, dm_nt, dm_pool, _pad2;
+    uint32_t _pad1, dm_nt, dm_pool, _pad2;
     md_gpu_addr_t dm_tao, dm_map, dm_rows;
     md_gpu_addr_t pts, pval;
     uint32_t pts_stride, pts_field, _pad3, _pad4;
@@ -134,10 +134,6 @@ static int isog_flood_atoms = 1;
 //   GTO_ISO_CHUNKS=n          TEST: the corner and vertex launches in n chunks, each followed by a progress marker
 //                             (default 0: as many as the octree's time suggests, 1 when it was quick)
 static int isog_chunks = 0;
-//   GTO_ISO_DSPARSE=0         TEST: the D form's matrices dense, made on the host (num_ao^2 floats each: 371 MB for a
-//                             protein of 9636 AOs, and its product C W C^T seconds of the CPU), rather than in tiles
-//                             of the AO pairs that meet (md_gto_gpu_dmat), built on the device (default 1)
-static int isog_dsparse = 1;
 //   GTO_ISO_READBACK_SHORT=1  TEST: the first readback copies no triangles, so that the second one does (default 0)
 static int isog_readback_short = 0;
 //   GTO_ISO_FN_CAP=n          TEST: fewer functions than the factored kernels hold (ISOG_FN_CAP), to exercise the sets
@@ -172,8 +168,6 @@ void md_gto_iso_gpu_initialize(md_gpu_device_t device) {
     if (e && e[0]) isog_flood_atoms = atoi(e);
     e = getenv("GTO_ISO_CHUNKS");
     if (e && e[0]) isog_chunks = atoi(e);
-    e = getenv("GTO_ISO_DSPARSE");
-    if (e && e[0]) isog_dsparse = atoi(e);
     // Read here, with the others, and not on an extraction's first use: extractions run on any thread
     isog_readback_short = getenv("GTO_ISO_READBACK_SHORT") != NULL;
     isog_fn_cap = ISOG_FN_CAP;
@@ -289,8 +283,8 @@ void md_gto_iso_gpu_shutdown(void) {
 
 struct md_gto_iso_gpu_set_t {
     md_gpu_mem_t shells, prims, crit, ao_nrm, ao_ijk, C, terms, fn_tail, wts, dmat, fdmat, drs, dprop;
-    md_gpu_mem_t dm_tao, dm_map, dm_rows;   // dsparse: the pattern the matrices are in (md_gto_gpu_dmat_view)
-    uint32_t     dsparse, dm_nt, dm_pool;   // dm_pool: floats per matrix
+    md_gpu_mem_t dm_tao, dm_map, dm_rows;   // the pattern the matrices' tiles are in (md_gto_gpu_dmat_view)
+    uint32_t     dm_nt, dm_pool;            // dm_pool: floats per matrix
     uint32_t     num_shells, num_ao, num_fn, fn_stride, num_fields;
     bool         orbitals_only;     // every field one function, one linear term: iso_eval_orbital
     bool         canon;             // every term w a, w a^2 or w a b (a even, b = a + 1): wts holds them per column
@@ -441,34 +435,11 @@ static bool isog_density_square_rows(md_temp_scope_t temp, const iso_density_t* 
     return true;
 }
 
-// A density's matrix from its terms, D = sum_t w_t sym(a_t b_t^T), into Dd (num_ao^2): every term as
-// squares (isog_density_square_rows) through the blocked product md_gto_density_from_orbitals. An SCF
-// density from its orbitals is num_occ squares, which a plain loop over the terms would take num_occ
-// passes over the whole matrix for. False when out of memory.
-//
-// On the calling thread: md_gto_iso_gpu_set_create takes no executor. This is the dense fallback only, for when the
-// tiles cannot be made (isog_dmat_tiles) or GTO_ISO_DSPARSE=0; the tiles are built on the device.
-static bool isog_dmat_from_terms(double* Dd, const iso_density_t* d) {
-    const size_t na = (size_t)d->num_ao, nf = (size_t)d->num_fn;
-    md_temp_scope_t temp = md_temp_begin();
-    bool ok = false;
-    if (isog_density_squares(d)) {
-        const double* w = isog_density_column_weights(temp, d);
-        ok = w && md_gto_density_from_orbitals(Dd, d->C, 1, nf, w, nf, na, NULL);
-    } else {
-        double *rows, *w;
-        size_t nr;
-        ok = isog_density_square_rows(temp, d, na, &rows, &w, &nr) && md_gto_density_from_orbitals(Dd, rows, na, 1, w, nr, na, NULL);
-    }
-    md_temp_end(temp);
-    return ok;
-}
-
 // The D form's matrices in tiles of the AO pairs that meet (md_gto_gpu_dmat), one pattern for all, built on the device
-// from each density's functions, or uploaded from the matrix it was made of: set->dmat holds num_dmat pools of
+// from each density's functions: set->dmat holds num_dmat pools of
 // set->dm_pool floats, set->dm_tao and set->dm_map the pattern. Per field its matrix into fdm, and the matrices'
 // properties (d_psd, d_slack; d_sraw with the row sums, isog_dmat_rows). False, with nothing kept, where md_gto
-// cannot (md_gto_gpu_initialize not called, out of memory): the matrices are then made dense.
+// cannot (md_gto_gpu_initialize not called, out of memory): the set then has no D form.
 static bool isog_dmat_tiles(md_gto_iso_gpu_set_t* set, md_gpu_stream_t stream, const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
                             const md_gto_iso_field_t* const* fields, uint32_t num_fields, const int* first_of, uint32_t* fdm, uint32_t num_dmat) {
     // for the cutoff the extraction's AO lists are for (isog_set_eps), plus a margin for their different radii
@@ -499,12 +470,7 @@ static bool isog_dmat_tiles(md_gto_iso_gpu_set_t* set, md_gpu_stream_t stream, c
         const md_gto_iso_field_t* fk = fields[k];
         const iso_density_t* d = fk->f.dens;
         md_temp_scope_t temp = md_temp_begin();     // the build's inputs: md_gto_gpu_dmat_build* consumes them before returning
-        if (fk->dmat && fk->dmat_dim == nao) {
-            // the matrix the field was made from: floats, which md_gto_gpu_dmat_set_matrix takes as doubles
-            double* Dd = md_temp_alloc_array(temp, double, nao * nao + 1);
-            if (Dd) for (size_t e = 0; e < nao * nao; ++e) Dd[e] = fk->dmat[e];
-            ok = Dd && md_gto_gpu_dmat_set_matrix(stream, dm, Dd);
-        } else if (isog_density_squares(d)) {
+        if (isog_density_squares(d)) {
             const double* w = isog_density_column_weights(temp, d);
             ok = w && md_gto_gpu_dmat_build_columns(stream, dm, d->C, (size_t)d->num_fn, w, (size_t)d->num_fn);
         } else {
@@ -522,10 +488,9 @@ static bool isog_dmat_tiles(md_gto_iso_gpu_set_t* set, md_gpu_stream_t stream, c
     if (!ok || u != num_dmat) {
         md_gpu_free(stream, set->dmat.gpu); md_gpu_free(stream, set->dm_tao.gpu); md_gpu_free(stream, set->dm_map.gpu);
         set->dmat = set->dm_tao = set->dm_map = (md_gpu_mem_t){0};
-        MD_LOG_DEBUG("md_gto_iso_gpu_set_create: the matrices in tiles could not be made; dense");
+        MD_LOG_DEBUG("md_gto_iso_gpu_set_create: the matrices in tiles could not be made; no D form");
         return false;
     }
-    set->dsparse = 1;
     set->dm_nt = v.nt;
     set->dm_pool = (uint32_t)pool;
     MD_LOG_DEBUG("md_gto_iso_gpu_set_create: %u matrices in tiles, %llu of %llu tile pairs (%.1f MB each); the pattern %.1f ms, the builds' host part %.1f ms",
@@ -551,7 +516,6 @@ static bool isog_dmat_rows(md_gto_iso_gpu_set_t* set, md_gpu_stream_t stream) {
     memset(&a, 0, sizeof(a));
     a.num_ao = n;
     a.num_dmat = nm;
-    a.dsparse = 1;
     a.dm_nt = set->dm_nt;
     a.dm_pool = set->dm_pool;
     a.dmat = set->dmat.gpu;
@@ -840,60 +804,16 @@ static const char* isog_set_build(md_gto_iso_gpu_set_t* set, md_gpu_stream_t str
     }
     MD_ASSERT(np == num_prims && nc == num_crit);
 
-    // the densities as matrices (dform): D = sum of the terms' symmetrized products, times the AO
-    // normalizations, one per distinct field; when every field is a density of products (no linear
-    // terms) and the local lists of the kernels hold every shell
+    // the densities as matrices (dform): D = sum of the terms' symmetrized products, in tiles, one per distinct field;
+    // when every field is a density of products (no linear terms) and the local lists of the kernels hold every shell
     uint32_t num_dmat = 0;
     uint32_t fdm[MD_GTO_ISO_GPU_MAX_FIELDS] = {0};
     bool dform = dform_ok;
     for (uint32_t k = 0; k < num_fields && dform; ++k) if (first_of[k] == (int)k) num_dmat++;
-    // in tiles of the AO pairs that meet, built on the device (isog_dmat_tiles); dense on the host where that fails
-    const bool dsparse = dform && isog_dsparse && isog_dmat_tiles(set, stream, basis, atom_xyz, atom_xyz_stride, fields, num_fields, first_of, fdm, num_dmat);
-    set->dm_eps_exp = dsparse ? isog_eval_eps_exp : 0;
-    float* Dm = NULL;
-    float* Rs = NULL;
-    if (dform && !dsparse) {
-        Dm = md_temp_alloc_array(temp, float, (size_t)num_dmat * nao * nao + 1);
-        Rs = md_temp_alloc_array(temp, float, (size_t)num_dmat * nao + 1);
-        double* Dd = md_temp_alloc_array(temp, double, (size_t)nao * nao + 1);
-        uint32_t u = 0;
-        for (uint32_t k = 0; k < num_fields && Dm && Rs && Dd; ++k) {
-            if (first_of[k] != (int)k) { fdm[k] = fdm[first_of[k]]; continue; }
-            const md_gto_iso_field_t* fk = fields[k];
-            const iso_density_t* d = fk->f.dens;
-            if (fk->dmat && fk->dmat_dim == nao) {
-                // the matrix the field was made from
-                for (size_t e = 0; e < (size_t)nao * nao; ++e) Dd[e] = fk->dmat[e];
-            } else if (!isog_dmat_from_terms(Dd, d)) {
-                break;      // out of memory: u stays short of num_dmat
-            }
-            // with the AO normalizations (the kernels' AO values leave them out); the octree's tails:
-            // per AO the sum of |D| over the other AOs (each below eps over a box that drops it), and
-            // the sum of |D| without normalizations
-            float* out = Dm + (size_t)u * nao * nao;
-            double sraw = 0.0;
-            for (uint32_t i = 0; i < nao; ++i) {
-                double rs = 0.0;
-                for (uint32_t j = 0; j < nao; ++j) {
-                    const double v = Dd[(size_t)i * nao + j];
-                    const float  g = (float)(v * nrm[i] * nrm[j]);
-                    out[(size_t)i * nao + j] = g;
-                    sraw += fabs(v);
-                    rs += fabs((double)g) / fmax(fabs((double)nrm[j]), 1e-300);
-                }
-                Rs[(size_t)u * nao + i] = isog_f32_up(rs * (1.0 + 1.0e-6));
-            }
-            set->d_sraw[u] = sraw;
-            set->d_psd[u] = isog_density_psd(d);
-            set->d_slack[u] = isog_f32_up(d->slack);
-            fdm[k] = u++;
-        }
-        if (u < num_dmat) {     // Dm, Rs or Dd not had, or a matrix's scratch
-            MD_LOG_DEBUG("md_gto_iso_gpu_set_create: out of memory for the D form's dense matrices (%u of %u x %u)", num_dmat, nao, nao);
-            dform = false;
-        }
-    }
+    // in tiles of the AO pairs that meet, built on the device (isog_dmat_tiles); where they cannot be made, no D form
+    if (dform && !isog_dmat_tiles(set, stream, basis, atom_xyz, atom_xyz_stride, fields, num_fields, first_of, fdm, num_dmat)) dform = false;
     if (!dform) num_dmat = 0;
+    set->dm_eps_exp = num_dmat ? isog_eval_eps_exp : 0;
     if (factorless && !num_dmat) return "more functions than the factored kernels hold, and the D form's matrices could not be made";
 
     // per function column: the sum of |C| (the tails for the shells a box drops: isog_set_eps), and the
@@ -919,10 +839,6 @@ static const char* isog_set_build(md_gto_iso_gpu_set_t* set, md_gpu_stream_t str
     ISOG_UP(terms,   terms, sizeof(isog_term_t) * num_terms);
     ISOG_UP(fn_tail, tail,  sizeof(float) * stride);
     ISOG_UP(wts,     W,     sizeof(float) * (size_t)num_fields * 3 * stride);
-    if (num_dmat && !dsparse) {
-        ISOG_UP(dmat, Dm, sizeof(float) * (size_t)num_dmat * nao * nao);
-        ISOG_UP(drs,  Rs, sizeof(float) * (size_t)num_dmat * nao);
-    }
     if (num_dmat) {
         ISOG_UP(fdmat, fdm, sizeof(fdm));
         set->dprop = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, sizeof(md_gpu_float4) * MD_GTO_ISO_GPU_MAX_FIELDS);
@@ -931,7 +847,7 @@ static const char* isog_set_build(md_gto_iso_gpu_set_t* set, md_gpu_stream_t str
 #undef ISOG_UP
     set->num_dmat = num_dmat;
     // the tiles' row sums (drs, and d_sraw), with the AO normalizations above
-    if (num_dmat && dsparse && !isog_dmat_rows(set, stream)) return "the D form's row sums could not be made";
+    if (num_dmat && !isog_dmat_rows(set, stream)) return "the D form's row sums could not be made";
     if (!isog_set_dprop(stream, set, 1.0e-10)) return "out of device memory";     // the radii above are for 1e-10
 
     // per shell, the largest coefficient of its AOs over the set's functions (orbitals: coefficient screening)
@@ -1234,7 +1150,6 @@ static void isog_args_set(isog_args_t* a, const md_gto_iso_gpu_set_t* set) {
     a->num_dmat = set->num_dmat;
     a->dform = ((isog_dform || set->factorless) && set->num_dmat > 0) ? 1u : 0u;
     a->drs = set->drs.gpu;
-    a->dsparse = set->dsparse;
     a->dm_nt = set->dm_nt;
     a->dm_pool = set->dm_pool;
     a->dm_tao = set->dm_tao.gpu;
