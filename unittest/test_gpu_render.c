@@ -1984,6 +1984,9 @@ UTEST(gpu_render, headless_surface_frames_resize_and_minimise) {
     ASSERT_TRUE(rb.cpu != NULL);
     for (uint64_t frame = 0; frame < 8; ++frame) {
         if (frame == 4) md_gpu_surface_resize(sf, 48, 40);
+        /* the present mode changed on the surface: its swapchain made again in place of the old one */
+        if (frame == 2) md_gpu_surface_set_present_mode(sf, MD_GPU_PRESENT_IMMEDIATE);
+        if (frame == 6) md_gpu_surface_set_present_mode(sf, MD_GPU_PRESENT_VSYNC);
         md_gpu_sync_wait(frame_done[frame % 2]);
         md_gpu_texture_t back = md_gpu_surface_acquire(f.gfx, sf);
         ASSERT_TRUE(back != NULL);

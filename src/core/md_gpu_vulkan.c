@@ -350,7 +350,8 @@ typedef struct md_gpu_surface {
     md_gpu_surface_desc_t  desc;
     char                   label[64];
     VkSurfaceFormatKHR     vk_format;
-    VkPresentModeKHR       present_mode;
+    VkPresentModeKHR       present_mode;   /* the next build's (device_mutex)  */
+    bool                   has_mailbox, has_immediate;
     VkImageUsageFlags      image_usage;
 
     uint32_t               want_width, want_height;
@@ -5032,6 +5033,18 @@ fail:
     return NULL;
 }
 
+/* The mode the surface can do for md_gpu's, with md_gpu_present_mode_t's
+   fallbacks. */
+static VkPresentModeKHR md_vk_present_mode(md_gpu_surface_t sf, md_gpu_present_mode_t mode) {
+    if (mode == MD_GPU_PRESENT_IMMEDIATE) {
+        return sf->has_immediate ? VK_PRESENT_MODE_IMMEDIATE_KHR : (sf->has_mailbox ? VK_PRESENT_MODE_MAILBOX_KHR : VK_PRESENT_MODE_FIFO_KHR);
+    }
+    if (mode == MD_GPU_PRESENT_MAILBOX) {
+        return sf->has_mailbox ? VK_PRESENT_MODE_MAILBOX_KHR : VK_PRESENT_MODE_FIFO_KHR;
+    }
+    return VK_PRESENT_MODE_FIFO_KHR;
+}
+
 /* Build (or rebuild) the swapchain at the current size. *zero_size is set,
    and nothing built, while the drawable has no area. */
 static bool md_vk_surface_rebuild(md_gpu_surface_t sf, bool* zero_size) {
@@ -5043,6 +5056,7 @@ static bool md_vk_surface_rebuild(md_gpu_surface_t sf, bool* zero_size) {
 
     md_mutex_lock(&dev->device_mutex);
     uint32_t w = sf->want_width, h = sf->want_height;
+    const VkPresentModeKHR mode = sf->present_mode;
     md_mutex_unlock(&dev->device_mutex);
     VkExtent2D ext;
     if (caps.currentExtent.width != UINT32_MAX) {
@@ -5075,7 +5089,7 @@ static bool md_vk_surface_rebuild(md_gpu_surface_t sf, bool* zero_size) {
     md_vk_set_sharing(dev, &sci.imageSharingMode, &sci.queueFamilyIndexCount, &sci.pQueueFamilyIndices);
     sci.preTransform     = caps.currentTransform;
     sci.compositeAlpha   = alpha;
-    sci.presentMode      = sf->present_mode;
+    sci.presentMode      = mode;
     sci.clipped          = VK_TRUE;
     sci.oldSwapchain     = sf->sc ? sf->sc->swapchain : VK_NULL_HANDLE;
 
@@ -5283,17 +5297,11 @@ md_gpu_surface_t md_gpu_surface_create(md_gpu_device_t dev, const md_gpu_surface
         VkPresentModeKHR modes[16];
         if (n > 16) n = 16;
         vkGetPhysicalDeviceSurfacePresentModesKHR(dev->phys, vs, &n, modes);
-        bool has_mailbox = false, has_immediate = false;
         for (uint32_t i = 0; i < n; ++i) {
-            if (modes[i] == VK_PRESENT_MODE_MAILBOX_KHR)   has_mailbox   = true;
-            if (modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR) has_immediate = true;
+            if (modes[i] == VK_PRESENT_MODE_MAILBOX_KHR)   sf->has_mailbox   = true;
+            if (modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR) sf->has_immediate = true;
         }
-        sf->present_mode = VK_PRESENT_MODE_FIFO_KHR;
-        if (desc->present_mode == MD_GPU_PRESENT_IMMEDIATE) {
-            sf->present_mode = has_immediate ? VK_PRESENT_MODE_IMMEDIATE_KHR : (has_mailbox ? VK_PRESENT_MODE_MAILBOX_KHR : VK_PRESENT_MODE_FIFO_KHR);
-        } else if (desc->present_mode == MD_GPU_PRESENT_MAILBOX) {
-            sf->present_mode = has_mailbox ? VK_PRESENT_MODE_MAILBOX_KHR : VK_PRESENT_MODE_FIFO_KHR;
-        }
+        sf->present_mode = md_vk_present_mode(sf, desc->present_mode);
     }
 
     for (uint32_t i = 0; i < MD_VK_ACQUIRE_SEMS; ++i) {
@@ -5352,6 +5360,18 @@ void md_gpu_surface_destroy(md_gpu_surface_t sf) {
     }
     md_mutex_unlock(&dev->device_mutex);
     md_free(dev->alloc, sf, sizeof(*sf));
+}
+
+void md_gpu_surface_set_present_mode(md_gpu_surface_t sf, md_gpu_present_mode_t mode) {
+    if (!sf) return;
+    md_gpu_device_t dev = sf->device;
+    const VkPresentModeKHR m = md_vk_present_mode(sf, mode);
+    md_mutex_lock(&dev->device_mutex);
+    if (m != sf->present_mode) {
+        sf->present_mode = m;
+        sf->dirty = true;
+    }
+    md_mutex_unlock(&dev->device_mutex);
 }
 
 void md_gpu_surface_resize(md_gpu_surface_t sf, uint32_t width, uint32_t height) {

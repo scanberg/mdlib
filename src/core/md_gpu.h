@@ -1474,9 +1474,13 @@ bool md_gpu_draw_indexed_indirect_at(md_gpu_stream_t stream, md_gpu_pipeline_t p
            md_gpu_surface_present(gfx, surface);
        }
 
-   Acquire waits for the presentation engine to hand back an image; with
-   VSYNC that is what paces the frame loop. Apart from the sync calls and
-   teardown it is the only call in md_gpu that blocks. It returns NULL when
+   Acquire waits for the presentation engine to hand back an image. Apart
+   from the sync calls and teardown it is the only call in md_gpu that
+   blocks. Some drivers hand an image back before the display is done with
+   it and leave the wait to the GPU, so acquire alone does not keep the CPU
+   from running frames ahead of the display (each ahead a frame of the
+   latency from input to the screen): bound that with a sync, as below. It
+   returns NULL when
    the drawable size is zero (a minimised window: skip the frame) or on
    failure (md_gpu_last_error says which). Out-of-date swapchains are rebuilt
    inside acquire at the size last given to md_gpu_surface_resize.
@@ -1540,6 +1544,12 @@ void md_gpu_surface_destroy(md_gpu_surface_t surface);
 
 /* From the window's framebuffer-size callback; applied at the next acquire. */
 void md_gpu_surface_resize(md_gpu_surface_t surface, uint32_t width, uint32_t height);
+
+/* Applied at the next acquire, with the fallbacks above: the swapchain made
+   again in place of the old one. Not a new surface for the window: while the
+   old one's destruction is deferred some drivers refuse a second swapchain
+   for it (VK_ERROR_NATIVE_WINDOW_IN_USE_KHR). */
+void md_gpu_surface_set_present_mode(md_gpu_surface_t surface, md_gpu_present_mode_t mode);
 
 md_gpu_texture_t md_gpu_surface_acquire(md_gpu_stream_t stream, md_gpu_surface_t surface);
 bool             md_gpu_surface_present(md_gpu_stream_t stream, md_gpu_surface_t surface);

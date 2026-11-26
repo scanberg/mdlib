@@ -329,6 +329,7 @@ typedef struct md_gpu_surface {
     char                   label[64];
     uint32_t               want_width, want_height;
     uint32_t               width, height;       /* drawableSize last set */
+    bool                   want_sync, sync;     /* displaySyncEnabled: wanted (device_mutex), set */
     uint64_t               frame;
     /* Between acquire and present. */
     __unsafe_unretained id<CAMetalDrawable> drawable;
@@ -3124,8 +3125,9 @@ md_gpu_surface_t md_gpu_surface_create(md_gpu_device_t dev, const md_gpu_surface
         /* Copies from the drawable (screenshots, readback) are legal on every
            backend, so the drawable is never framebuffer-only. */
         layer.framebufferOnly = NO;
+        sf->want_sync = sf->sync = desc->present_mode != MD_GPU_PRESENT_IMMEDIATE;
 #if defined(TARGET_OS_OSX) && TARGET_OS_OSX
-        layer.displaySyncEnabled = desc->present_mode == MD_GPU_PRESENT_IMMEDIATE ? NO : YES;
+        layer.displaySyncEnabled = sf->sync ? YES : NO;
 #endif
         if (sf->want_width && sf->want_height) {
             layer.drawableSize = CGSizeMake(sf->want_width, sf->want_height);
@@ -3173,6 +3175,13 @@ void md_gpu_surface_destroy(md_gpu_surface_t sf) {
     md_free(dev->alloc, sf, sizeof(*sf));
 }
 
+void md_gpu_surface_set_present_mode(md_gpu_surface_t sf, md_gpu_present_mode_t mode) {
+    if (!sf) return;
+    md_mutex_lock(&sf->device->device_mutex);
+    sf->want_sync = mode != MD_GPU_PRESENT_IMMEDIATE;
+    md_mutex_unlock(&sf->device->device_mutex);
+}
+
 void md_gpu_surface_resize(md_gpu_surface_t sf, uint32_t width, uint32_t height) {
     if (!sf) return;
     md_mutex_lock(&sf->device->device_mutex);
@@ -3191,11 +3200,18 @@ md_gpu_texture_t md_gpu_surface_acquire(md_gpu_stream_t s, md_gpu_surface_t sf) 
 
     md_mutex_lock(&dev->device_mutex);
     const uint32_t w = sf->want_width, h = sf->want_height;
+    const bool sync = sf->want_sync;
     md_mutex_unlock(&dev->device_mutex);
     if (w == 0 || h == 0) return NULL;     /* minimised: skip the frame */
 
     md_gpu_texture_t t = NULL;
     @autoreleasepool {
+        if (sync != sf->sync) {
+#if defined(TARGET_OS_OSX) && TARGET_OS_OSX
+            sf->layer.displaySyncEnabled = sync ? YES : NO;
+#endif
+            sf->sync = sync;
+        }
         if (w != sf->width || h != sf->height) {
             sf->layer.drawableSize = CGSizeMake(w, h);
             sf->width  = w;
