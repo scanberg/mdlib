@@ -3,6 +3,8 @@
 //
 //   gto_dmat.density_matches_packed   h2o and mol: the volume through a dmat (from the orbitals, and from
 //                                     the matrix) against the packed matrix
+//   gto_dmat.matches_cpu_tiles        h2o and mol: the volume through a dmat built on the GPU (float) against the
+//                                     CPU's tiles (md_gto_dmat_t, double) at the voxel centres, the same pattern
 //   gto_dmat.pattern_follows_motion   the pattern holds within margin / 2 and not beyond
 //   gto_dmat.density_job_matches_launch  mol: md_gto_gpu_density_job_begin, polled, bitwise the launch (the dmat
 //                                     and the packed matrix); a job ended before it is issued writes nothing
@@ -32,6 +34,7 @@
 #include "vlx_test_util.h"
 
 #include <md_gto.h>
+#include <md_gto_dmat.h>
 #include <md_qm.h>
 #include <md_molden.h>
 #include <core/md_os.h>
@@ -201,6 +204,49 @@ UTEST(gto_dmat, density_matches_packed) {
             EXPECT_GT(ref_max, 1.0);
         }
         free(out); free(ref);
+        md_gto_gpu_dmat_destroy(g.s, dm);
+        dm_gpu_free(&g);
+        dm_free(&s);
+    }
+}
+
+UTEST(gto_dmat, matches_cpu_tiles) {
+    static const char* files[] = {"h2o.h5", "mol.h5"};
+    for (int fi = 0; fi < 2; ++fi) {
+        dm_src_t s;
+        ASSERT_TRUE(dm_load(&s, files[fi]));
+        const md_grid_t grid = dm_grid(&s, 37, 0.3f);
+        dm_gpu_t g;
+        if (!dm_gpu_init(&g, &s, &grid)) { dm_gpu_free(&g); dm_free(&s); UTEST_SKIP("no GPU device"); }
+        md_gto_gpu_dmat_t dm = md_gto_gpu_dmat_create(g.s, &(md_gto_gpu_dmat_desc_t){
+            .basis = &s.basis, .atom_xyz = s.xyz, .cutoff = 1.0e-6, .margin = 1.0 });
+        ASSERT_TRUE(dm != NULL);
+        md_gto_dmat_t cpu;
+        ASSERT_TRUE(md_gto_dmat_init(&cpu, &(md_gto_dmat_desc_t){ .basis = &s.basis, .atom_xyz = s.xyz, .cutoff = 1.0e-6, .margin = 1.0 },
+                                     md_get_heap_allocator()));
+        md_gto_gpu_dmat_info_t info;
+        md_gto_gpu_dmat_info(&info, dm);
+        EXPECT_EQ(info.num_tiles, (size_t)cpu.num_tiles);
+        ASSERT_TRUE(md_gto_gpu_dmat_build(g.s, dm, s.rows, s.w, s.num_mo));
+        ASSERT_TRUE(md_gto_dmat_build(&cpu, s.rows, s.num_ao, 1, s.w, s.num_mo, NULL));
+        float* out = (float*)malloc(sizeof(float) * g.num_vox);
+        float* pts = (float*)malloc(sizeof(float) * 3 * g.num_vox);
+        double* rho = (double*)malloc(sizeof(double) * g.num_vox);
+        dm_eval(&g, dm, out);
+        size_t v = 0;
+        for (int z = 0; z < grid.dim[2]; ++z) for (int y = 0; y < grid.dim[1]; ++y) for (int x = 0; x < grid.dim[0]; ++x, ++v) {
+            pts[3 * v + 0] = grid.origin.x + ((float)x + 0.5f) * grid.spacing.x;
+            pts[3 * v + 1] = grid.origin.y + ((float)y + 0.5f) * grid.spacing.y;
+            pts[3 * v + 2] = grid.origin.z + ((float)z + 0.5f) * grid.spacing.z;
+        }
+        ASSERT_EQ(md_gto_dmat_evaluate(rho, NULL, NULL, &cpu, &s.basis, s.xyz, 0, pts, g.num_vox, 0, NULL), g.num_vox);
+        double d = 0.0, m = 0.0;
+        for (size_t i = 0; i < g.num_vox; ++i) { d = fmax(d, fabs((double)out[i] - rho[i])); m = fmax(m, fabs(rho[i])); }
+        printf("  %s, %llu tile pairs: the GPU's tiles (float) against the CPU's (double): max |diff| / max |rho| = %.2e (max %.3g)\n",
+               files[fi], (unsigned long long)cpu.num_tiles, d / m, m);
+        EXPECT_LT(d / m, 1.0e-5);
+        free(out); free(pts); free(rho);
+        md_gto_dmat_free(&cpu);
         md_gto_gpu_dmat_destroy(g.s, dm);
         dm_gpu_free(&g);
         dm_free(&s);

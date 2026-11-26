@@ -1,4 +1,5 @@
 ﻿#include <md_gto.h>
+#include <md_gto_dmat.h>
 #include <md_system.h>
 
 #include <core/md_platform.h>
@@ -730,6 +731,30 @@ static uint32_t gto_basis_num_shell_prims(const md_gto_basis_t* basis) {
     return n;
 }
 
+// A shell's radius of influence at a cutoff: the largest over its Cartesian components and primitives, each
+// coefficient rounded to float as the GPU holds it. The one definition every screening of shells uses.
+static double gto_shell_radius(const md_gto_basis_t* basis, uint32_t si, double cutoff) {
+    const md_gto_shell_t* shell = &basis->shells[si];
+    const int l = (int)shell->l;
+    const gto_lmn_t* lmn = gto_cart_lmn(l);
+    double max_r = 0.0;
+    for (int ic = 0; ic < (int)md_gto_num_cart_ao(shell->l); ic++) {
+        const double nrm = gto_cart_norm(l, ic);
+        for (uint32_t ip = 0; ip < shell->num_primitives; ip++) {
+            const float alpha = basis->alpha[shell->primitive_offset + ip];
+            const float coeff = (float)(basis->coeff[shell->primitive_offset + ip] * nrm);
+            const double r = md_gto_compute_radius_of_influence(lmn[ic][0], lmn[ic][1], lmn[ic][2], (double)coeff, (double)alpha, cutoff);
+            max_r = MD_MAX(max_r, r);
+        }
+    }
+    return max_r;
+}
+
+void md_gto_basis_shell_radii(float* out_r, const md_gto_basis_t* basis, double cutoff) {
+    if (!out_r || !basis) return;
+    for (uint32_t si = 0; si < basis->num_shells; si++) out_r[si] = (float)gto_shell_radius(basis, si, cutoff);
+}
+
 // Shell-level device data for the shell and GEMM kernels.
 // out_shell_atom_idx: [num_shells]
 // out_shell_r:        [num_shells] max radius of influence over all Cartesian components and
@@ -748,18 +773,7 @@ static void gto_expand_basis_gpu_shells(uint32_t* out_shell_atom_idx, float* out
         const int ncart  = (int)md_gto_num_cart_ao(shell->l);
         const int nprims = (int)shell->num_primitives;
         const uint32_t prim_base = shell->primitive_offset;
-        const gto_lmn_t* lmn = gto_cart_lmn(l);
-
-        double max_r = 0.0;
-        for (int ic = 0; ic < ncart; ic++) {
-            const double nrm = gto_cart_norm(l, ic);
-            for (int ip = 0; ip < nprims; ip++) {
-                const float alpha = basis->alpha[prim_base + ip];
-                const float coeff = (float)(basis->coeff[prim_base + ip] * nrm);
-                const double r = md_gto_compute_radius_of_influence(lmn[ic][0], lmn[ic][1], lmn[ic][2], (double)coeff, (double)alpha, cutoff);
-                max_r = MD_MAX(max_r, r);
-            }
-        }
+        const double max_r = gto_shell_radius(basis, si, cutoff);
         for (int ip = 0; ip < nprims; ip++) {
             out_shell_prim[2 * (prim_off + ip) + 0] = basis->coeff[prim_base + ip];
             out_shell_prim[2 * (prim_off + ip) + 1] = (float)((double)basis->alpha[prim_base + ip] * LOG2E);
@@ -1280,157 +1294,64 @@ size_t md_gto_gpu_basis_num_atoms(md_gto_gpu_basis_t gb) {
 #define GTO_DMAT_REVISION    "r3 (16 x 128 blocks on the GEMM core, 16 x 4 threads of 4 x 8)"
 
 struct md_gto_gpu_dmat {
-    uint32_t      num_ao, num_atoms, nt;    // nt: tiles per edge
+    md_gto_dmat_t pat;                      // the pattern (md_gto_dmat_init), without host tiles
+    uint32_t      num_ao, nt;               // of pat, for the kernels' arguments
     uint64_t      num_tiles, num_items;
-    double        margin;
-    float*        xyz;                      // the positions the pattern was made for, 3 per atom
-    int32_t*      perm;                     // tiled AO -> AO, -1 past num_ao (16 nt)
-    uint64_t*     row_ptr;                  // per row tile: its first entry (nt + 1)
-    uint32_t*     cols;                     // per entry: its column tile (>= the row tile)
     md_gpu_addr_t tao, map, tiles, items, cols_buf;
     md_gpu_addr_t P, w;                     // the orbitals of md_gto_gpu_dmat_build, grown as needed
     size_t        P_cap, w_cap;             // floats
 };
 
-// The shells' sort keys themselves, which hold the shell in their low bits: no state beside the arrays, so that
-// patterns may be made on several threads at once
-static int gto_dmat_cmp(const void* a, const void* b) {
-    const uint64_t x = *(const uint64_t*)a, y = *(const uint64_t*)b;
-    return x < y ? -1 : x > y;
-}
-
-static void gto_dmat_free_host(md_gto_gpu_dmat_t dm) {
-    free(dm->xyz); free(dm->perm); free(dm->row_ptr); free(dm->cols);
-}
-
 md_gto_gpu_dmat_t md_gto_gpu_dmat_create(md_gpu_stream_t stream, const md_gto_gpu_dmat_desc_t* desc) {
-    if (!stream || !desc || !desc->basis || !desc->atom_xyz || !(desc->cutoff > 0.0) || !(desc->margin >= 0.0)) {
-        MD_LOG_ERROR("md_gto_gpu_dmat_create: invalid arguments (a basis, positions, a cutoff > 0, a margin >= 0)");
-        return NULL;
-    }
-    const md_gto_basis_t* basis = desc->basis;
-    const uint32_t ns = basis->num_shells;
-    const uint32_t num_ao = (uint32_t)md_gto_basis_num_ao(basis);
-    const uint32_t num_atoms = gto_basis_num_atoms(basis);
-    if (ns == 0 || num_ao == 0) {
-        MD_LOG_ERROR("md_gto_gpu_dmat_create: empty basis");
-        return NULL;
-    }
-    if (ns > 0xFFFFFu || num_atoms > 0xFFFFFu) {
-        MD_LOG_ERROR("md_gto_gpu_dmat_create: more than 2^20 shells or atoms");
+    if (!stream || !desc) {
+        MD_LOG_ERROR("md_gto_gpu_dmat_create: invalid arguments");
         return NULL;
     }
     md_gto_gpu_dmat_t dm = (md_gto_gpu_dmat_t)calloc(1, sizeof(struct md_gto_gpu_dmat));
     if (!dm) return NULL;
-    dm->num_ao = num_ao;
-    dm->num_atoms = num_atoms;
-    dm->margin = desc->margin;
-    dm->nt = (num_ao + GTO_DMAT_T - 1) / GTO_DMAT_T;
-    const uint32_t nt = dm->nt;
+    const md_gto_dmat_desc_t pd = { .basis = desc->basis, .atom_xyz = desc->atom_xyz, .atom_xyz_stride = desc->atom_xyz_stride,
+                                    .cutoff = desc->cutoff, .margin = desc->margin };
+    if (!md_gto_dmat_init(&dm->pat, &pd, md_get_heap_allocator())) {
+        free(dm);
+        return NULL;
+    }
+    const md_gto_dmat_t* pat = &dm->pat;
+    const uint32_t nt = pat->nt;
+    dm->num_ao = pat->num_ao;
+    dm->nt = nt;
+    dm->num_tiles = pat->num_tiles;
+    for (uint32_t I = 0; I < nt; ++I) dm->num_items += (pat->row_ptr[I + 1] - pat->row_ptr[I] + 7) / 8;
 
     md_temp_scope_t temp = md_temp_begin();
-    // the shells' screening radii, as md_gto_gpu_basis_create makes them for this cutoff
-    uint32_t* shell_atom_idx = (uint32_t*)md_temp_alloc(temp, sizeof(uint32_t) * ns);
-    float*    shell_r        = (float*)   md_temp_alloc(temp, sizeof(float) * ns);
-    uint32_t* shell_info     = (uint32_t*)md_temp_alloc(temp, sizeof(uint32_t) * 4 * ns);
-    float*    shell_prim     = (float*)   md_temp_alloc(temp, sizeof(float) * 2 * MD_MAX(1, gto_basis_num_shell_prims(basis)));
-    uint64_t* key            = (uint64_t*)md_temp_alloc(temp, sizeof(uint64_t) * ns);
-    uint32_t* order          = (uint32_t*)md_temp_alloc(temp, sizeof(uint32_t) * ns);
-    uint32_t* tao0           = (uint32_t*)md_temp_alloc(temp, sizeof(uint32_t) * ns);
-    uint32_t* tao            = (uint32_t*)md_temp_alloc(temp, sizeof(uint32_t) * num_ao);
-    uint8_t*  on             = (uint8_t*) md_temp_alloc(temp, (size_t)nt * nt);
-    uint32_t* map            = (uint32_t*)md_temp_alloc(temp, sizeof(uint32_t) * (size_t)nt * nt);
-    dm->xyz     = (float*)malloc(sizeof(float) * 3 * MD_MAX(1, num_atoms));
-    dm->perm    = (int32_t*)malloc(sizeof(int32_t) * (size_t)nt * GTO_DMAT_T);
-    dm->row_ptr = (uint64_t*)calloc((size_t)nt + 1, sizeof(uint64_t));
-    bool ok = shell_atom_idx && shell_r && shell_info && shell_prim && key && order && tao0 && tao && on && map && dm->xyz && dm->perm && dm->row_ptr;
+    uint32_t* map   = (uint32_t*)md_temp_alloc(temp, sizeof(uint32_t) * (size_t)nt * nt);
+    uint32_t* items = (uint32_t*)md_temp_alloc(temp, sizeof(uint32_t) * 4 * (size_t)MD_MAX(1, dm->num_items));
+    bool ok = map && items;
     if (ok) {
-        gto_expand_basis_gpu_shells(shell_atom_idx, shell_r, shell_info, shell_prim, basis, desc->cutoff);
-        const size_t stride = desc->atom_xyz_stride ? desc->atom_xyz_stride : sizeof(float) * 3;
-        for (uint32_t a = 0; a < num_atoms; ++a) {
-            const float* p = (const float*)((const uint8_t*)desc->atom_xyz + a * stride);
-            dm->xyz[3 * a + 0] = p[0]; dm->xyz[3 * a + 1] = p[1]; dm->xyz[3 * a + 2] = p[2];
-        }
-        // the tiled order: radius class (2 bohr), then atom, then the shell; a shell's AOs stay together
-        for (uint32_t s = 0; s < ns; ++s) {
-            key[s] = ((uint64_t)(shell_r[s] * 0.5f) << 40) | ((uint64_t)basis->shells[s].atom_idx << 20) | s;
-            order[s] = s;
-        }
-        qsort(key, ns, sizeof(uint64_t), gto_dmat_cmp);
-        for (uint32_t i = 0; i < ns; ++i) order[i] = (uint32_t)(key[i] & 0xFFFFFu);
-        for (size_t i = 0; i < (size_t)nt * GTO_DMAT_T; ++i) dm->perm[i] = -1;
-        uint32_t acc = 0;
-        for (uint32_t i = 0; i < ns; ++i) {
-            const uint32_t s = order[i];
-            const uint32_t nc = (uint32_t)md_gto_num_cart_ao(basis->shells[s].l);
-            tao0[s] = acc;
-            for (uint32_t c = 0; c < nc; ++c) {
-                dm->perm[acc + c] = (int32_t)(shell_info[4 * s + 3] + c);
-                tao[shell_info[4 * s + 3] + c] = acc + c;
-            }
-            acc += nc;
-        }
-        // the tile pairs of the shell pairs that meet (centres no further apart than their radii, plus margin)
-        md_memset(on, 0, (size_t)nt * nt);
-        for (uint32_t s = 0; s < ns; ++s) {
-            if (!(shell_r[s] > 0.0f)) continue;
-            const float* p = dm->xyz + 3 * shell_atom_idx[s];
-            const uint32_t ns_c = (uint32_t)md_gto_num_cart_ao(basis->shells[s].l);
-            for (uint32_t u = s; u < ns; ++u) {
-                if (!(shell_r[u] > 0.0f)) continue;
-                const float* q = dm->xyz + 3 * shell_atom_idx[u];
-                const double dx = p[0] - q[0], dy = p[1] - q[1], dz = p[2] - q[2];
-                const double lim = (double)shell_r[s] + (double)shell_r[u] + desc->margin;
-                if (dx * dx + dy * dy + dz * dz > lim * lim) continue;
-                const uint32_t nu_c = (uint32_t)md_gto_num_cart_ao(basis->shells[u].l);
-                for (uint32_t i = tao0[s] / GTO_DMAT_T; i <= (tao0[s] + ns_c - 1) / GTO_DMAT_T; ++i) {
-                    for (uint32_t j = tao0[u] / GTO_DMAT_T; j <= (tao0[u] + nu_c - 1) / GTO_DMAT_T; ++j) {
-                        on[(size_t)MD_MIN(i, j) * nt + MD_MAX(i, j)] = 1;
-                    }
-                }
-            }
-        }
-        // rows of tiles: their column tiles, work items of up to 8, and the map
+        // the map of the tile pairs to their entries, and work items of up to 8 entries of a row
+        uint64_t it = 0;
+        for (size_t i = 0; i < (size_t)nt * nt; ++i) map[i] = GTO_DMAT_NONE;
         for (uint32_t I = 0; I < nt; ++I) {
-            uint64_t c = 0;
-            for (uint32_t J = I; J < nt; ++J) c += on[(size_t)I * nt + J];
-            dm->row_ptr[I + 1] = dm->row_ptr[I] + c;
-            dm->num_items += (c + 7) / 8;
+            for (uint64_t e = pat->row_ptr[I]; e < pat->row_ptr[I + 1]; ++e) map[(size_t)I * nt + pat->cols[e]] = (uint32_t)e;
+            for (uint64_t e0 = pat->row_ptr[I]; e0 < pat->row_ptr[I + 1]; e0 += 8) {
+                items[4 * it + 0] = I;
+                items[4 * it + 1] = (uint32_t)e0;
+                items[4 * it + 2] = (uint32_t)MD_MIN(8, pat->row_ptr[I + 1] - e0);
+                items[4 * it + 3] = 0;
+                ++it;
+            }
         }
-        dm->num_tiles = dm->row_ptr[nt];
-        dm->cols = (uint32_t*)malloc(sizeof(uint32_t) * (size_t)MD_MAX(1, dm->num_tiles));
-        uint32_t* items = (uint32_t*)md_temp_alloc(temp, sizeof(uint32_t) * 4 * (size_t)MD_MAX(1, dm->num_items));
-        ok = dm->cols && items;
+        dm->tao      = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, sizeof(uint32_t) * dm->num_ao).gpu;
+        dm->map      = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, sizeof(uint32_t) * (size_t)nt * nt).gpu;
+        dm->items    = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, sizeof(uint32_t) * 4 * (size_t)MD_MAX(1, dm->num_items)).gpu;
+        dm->cols_buf = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, sizeof(uint32_t) * (size_t)MD_MAX(1, dm->num_tiles)).gpu;
+        dm->tiles    = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, sizeof(float) * 256 * (size_t)MD_MAX(1, dm->num_tiles)).gpu;
+        ok = dm->tao && dm->map && dm->items && dm->cols_buf && dm->tiles;
         if (ok) {
-            uint64_t e = 0, it = 0;
-            for (size_t i = 0; i < (size_t)nt * nt; ++i) map[i] = GTO_DMAT_NONE;
-            for (uint32_t I = 0; I < nt; ++I) {
-                for (uint32_t J = I; J < nt; ++J) {
-                    if (!on[(size_t)I * nt + J]) continue;
-                    map[(size_t)I * nt + J] = (uint32_t)e;
-                    dm->cols[e++] = J;
-                }
-                for (uint64_t e0 = dm->row_ptr[I]; e0 < dm->row_ptr[I + 1]; e0 += 8) {
-                    items[4 * it + 0] = I;
-                    items[4 * it + 1] = (uint32_t)e0;
-                    items[4 * it + 2] = (uint32_t)MD_MIN(8, dm->row_ptr[I + 1] - e0);
-                    items[4 * it + 3] = 0;
-                    ++it;
-                }
-            }
-            dm->tao      = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, sizeof(uint32_t) * num_ao).gpu;
-            dm->map      = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, sizeof(uint32_t) * (size_t)nt * nt).gpu;
-            dm->items    = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, sizeof(uint32_t) * 4 * (size_t)MD_MAX(1, dm->num_items)).gpu;
-            dm->cols_buf = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, sizeof(uint32_t) * (size_t)MD_MAX(1, dm->num_tiles)).gpu;
-            dm->tiles    = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, sizeof(float) * 256 * (size_t)MD_MAX(1, dm->num_tiles)).gpu;
-            ok = dm->tao && dm->map && dm->items && dm->cols_buf && dm->tiles;
-            if (ok) {
-                ok = md_gpu_upload(stream, dm->tao, tao, sizeof(uint32_t) * num_ao)
-                  && md_gpu_upload(stream, dm->map, map, sizeof(uint32_t) * (size_t)nt * nt)
-                  && md_gpu_upload(stream, dm->items, items, sizeof(uint32_t) * 4 * (size_t)MD_MAX(1, dm->num_items))
-                  && md_gpu_upload(stream, dm->cols_buf, dm->cols, sizeof(uint32_t) * (size_t)MD_MAX(1, dm->num_tiles))
-                  && md_gpu_memset(stream, dm->tiles, 0, sizeof(float) * 256 * (size_t)MD_MAX(1, dm->num_tiles));
-            }
+            ok = md_gpu_upload(stream, dm->tao, pat->tao, sizeof(uint32_t) * dm->num_ao)
+              && md_gpu_upload(stream, dm->map, map, sizeof(uint32_t) * (size_t)nt * nt)
+              && md_gpu_upload(stream, dm->items, items, sizeof(uint32_t) * 4 * (size_t)MD_MAX(1, dm->num_items))
+              && md_gpu_upload(stream, dm->cols_buf, pat->cols, sizeof(uint32_t) * (size_t)MD_MAX(1, dm->num_tiles))
+              && md_gpu_memset(stream, dm->tiles, 0, sizeof(float) * 256 * (size_t)MD_MAX(1, dm->num_tiles));
         }
     }
     md_temp_end(temp);
@@ -1451,20 +1372,12 @@ void md_gto_gpu_dmat_destroy(md_gpu_stream_t stream, md_gto_gpu_dmat_t dm) {
     md_gpu_free(stream, dm->tiles);
     md_gpu_free(stream, dm->P);
     md_gpu_free(stream, dm->w);
-    gto_dmat_free_host(dm);
+    md_gto_dmat_free(&dm->pat);
     free(dm);
 }
 
 bool md_gto_gpu_dmat_pattern_valid(md_gto_gpu_dmat_t dm, const float* atom_xyz, size_t atom_xyz_stride) {
-    if (!dm || !atom_xyz) return false;
-    const size_t stride = atom_xyz_stride ? atom_xyz_stride : sizeof(float) * 3;
-    const double lim = 0.25 * dm->margin * dm->margin;
-    for (uint32_t a = 0; a < dm->num_atoms; ++a) {
-        const float* p = (const float*)((const uint8_t*)atom_xyz + a * stride);
-        const double dx = p[0] - dm->xyz[3 * a + 0], dy = p[1] - dm->xyz[3 * a + 1], dz = p[2] - dm->xyz[3 * a + 2];
-        if (dx * dx + dy * dy + dz * dz > lim) return false;
-    }
-    return true;
+    return dm && md_gto_dmat_pattern_valid(&dm->pat, atom_xyz, atom_xyz_stride);
 }
 
 static bool gto_dmat_grow(md_gpu_stream_t stream, md_gpu_addr_t* buf, size_t* cap, size_t floats) {
@@ -1489,7 +1402,7 @@ static void gto_dmat_pack(float* P, const md_gto_gpu_dmat_t dm, const double* co
         for (size_t k0 = 0; k0 < r; k0 += B) {
             const size_t k1 = MD_MIN(r, k0 + B);
             for (size_t t = t0; t < t1; ++t) {
-                const int32_t ao = dm->perm[t];
+                const int32_t ao = dm->pat.perm[t];
                 if (ao < 0) {
                     for (size_t k = k0; k < k1; ++k) P[k * ntao + t] = 0.0f;
                     continue;
@@ -1581,13 +1494,13 @@ bool md_gto_gpu_dmat_set_matrix(md_gpu_stream_t stream, md_gto_gpu_dmat_t dm, co
     if (!dst) return false;
     const size_t n = dm->num_ao;
     for (uint32_t I = 0; I < dm->nt; ++I) {
-        for (uint64_t e = dm->row_ptr[I]; e < dm->row_ptr[I + 1]; ++e) {
-            const uint32_t J = dm->cols[e];
+        for (uint64_t e = dm->pat.row_ptr[I]; e < dm->pat.row_ptr[I + 1]; ++e) {
+            const uint32_t J = dm->pat.cols[e];
             float* t = dst + e * 256;
             for (uint32_t a = 0; a < GTO_DMAT_T; ++a) {
-                const int32_t i = dm->perm[I * GTO_DMAT_T + a];
+                const int32_t i = dm->pat.perm[I * GTO_DMAT_T + a];
                 for (uint32_t c = 0; c < GTO_DMAT_T; ++c) {
-                    const int32_t j = dm->perm[J * GTO_DMAT_T + c];
+                    const int32_t j = dm->pat.perm[J * GTO_DMAT_T + c];
                     t[a * GTO_DMAT_T + c] = (i < 0 || j < 0) ? 0.0f : (float)(0.5 * (matrix[(size_t)i * n + (size_t)j] + matrix[(size_t)j * n + (size_t)i]));
                 }
             }

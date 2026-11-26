@@ -214,6 +214,8 @@ set(MD_ANALYSIS_FILES
 set(MD_QM_FILES
   src/qm/md_gto.c
   src/qm/md_gto.h
+  src/qm/md_gto_dmat.c
+  src/qm/md_gto_dmat.h
   src/qm/md_gto_int.c
   src/qm/md_gto_int.h
   src/qm/md_gto_iso.c

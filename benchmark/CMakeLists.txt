@@ -78,6 +78,17 @@ if (MD_ENABLE_HDF5)
     target_link_libraries(md_dmat_census_bench PRIVATE mdlib)
     add_dependencies(md_dmat_census_bench md_bench_rev)
     target_include_directories(md_dmat_census_bench PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+
+    # What the cutoff of the one tile representation of the density matrix (md_gto_dmat_t) costs and loses: its
+    # tiles and build time, and rho, ELF and LOL from them against a negligible cutoff (see bench_dmat_cutoff.c).
+    # CPU only.
+    add_executable(md_dmat_cutoff_bench bench_dmat_cutoff.c)
+    target_compile_definitions(md_dmat_cutoff_bench PRIVATE MD_BENCHMARK_DATA_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/../test_data\" ${MD_DEFINES})
+    target_compile_options(md_dmat_cutoff_bench PRIVATE ${MD_FLAGS} $<$<CONFIG:Debug>:${MD_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_FLAGS_REL}>)
+    target_link_options(md_dmat_cutoff_bench PRIVATE ${MD_LINK_FLAGS} $<$<CONFIG:Debug>:${MD_LINK_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_LINK_FLAGS_REL}>)
+    target_link_libraries(md_dmat_cutoff_bench PRIVATE mdlib)
+    add_dependencies(md_dmat_cutoff_bench md_bench_rev)
+    target_include_directories(md_dmat_cutoff_bench PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 endif()
 
 # How structure files (PDB, GRO) load over threads: best and median per thread count, the speedup, and a hash of the

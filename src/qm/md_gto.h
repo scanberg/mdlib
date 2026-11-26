@@ -166,6 +166,10 @@ size_t md_gto_basis_num_ao(const md_gto_basis_t* basis);
 // pure basis. Readers use this to size their input before conversion.
 size_t md_gto_basis_num_sph_ao(const md_gto_basis_t* basis);
 
+// Each shell's radius of influence at a cutoff (bohr): no AO of the shell is above the cutoff further than this from
+// its atom. out_r: [basis->num_shells]. The radii every screening of shells uses, the GPU's included.
+void md_gto_basis_shell_radii(float* out_r, const md_gto_basis_t* basis, double cutoff);
+
 // Number of atoms the shell list indexes into, i.e. max(shell.atom_idx) + 1.
 size_t md_gto_basis_num_atoms(const md_gto_basis_t* basis);
 
@@ -354,7 +358,8 @@ void md_gto_gpu_coeff_pack_mo(float* dst, const double* const* mo_coeffs, const 
 // both reach some point, with the shell radii of the md_gto_gpu_basis it is evaluated with (the same
 // cutoff). No point has both AOs of any other pair above the cutoff, so leaving those out changes
 // nothing the cutoff does not already. Stored as 16 x 16 tiles in an order of the AOs that keeps the
-// tiles full: shells by radius class (2 bohr), then by atom (the input order, along a chain).
+// tiles full: shells by radius class (2 bohr), then by atom (the input order, along a chain). The pattern
+// is md_gto_dmat_t's (md_gto_dmat.h), made by md_gto_dmat_init; the values here are float.
 //
 // Protein of 1152 atoms (9636 Cartesian AOs) at 1e-6: 18.6% of the triangle in tiles, 35 MB against
 // 186 MB packed, and built from its 2147 occupied orbitals with 5.4x fewer multiply-adds than the whole
