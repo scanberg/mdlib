@@ -1302,24 +1302,15 @@ struct md_gto_gpu_dmat {
     size_t        P_cap, w_cap;             // floats
 };
 
-md_gto_gpu_dmat_t md_gto_gpu_dmat_create(md_gpu_stream_t stream, const md_gto_gpu_dmat_desc_t* desc) {
-    if (!stream || !desc) {
-        MD_LOG_ERROR("md_gto_gpu_dmat_create: invalid arguments");
-        return NULL;
-    }
-    md_gto_gpu_dmat_t dm = (md_gto_gpu_dmat_t)calloc(1, sizeof(struct md_gto_gpu_dmat));
-    if (!dm) return NULL;
-    const md_gto_dmat_desc_t pd = { .basis = desc->basis, .atom_xyz = desc->atom_xyz, .atom_xyz_stride = desc->atom_xyz_stride,
-                                    .cutoff = desc->cutoff, .margin = desc->margin };
-    if (!md_gto_dmat_init(&dm->pat, &pd, md_get_heap_allocator())) {
-        free(dm);
-        return NULL;
-    }
+// The device side of dm, whose pattern (dm->pat) is made: its tables uploaded on stream, its tiles zero. False when out
+// of memory (dm then for md_gto_gpu_dmat_destroy).
+static bool gto_dmat_gpu_setup(md_gpu_stream_t stream, md_gto_gpu_dmat_t dm) {
     const md_gto_dmat_t* pat = &dm->pat;
     const uint32_t nt = pat->nt;
     dm->num_ao = pat->num_ao;
     dm->nt = nt;
     dm->num_tiles = pat->num_tiles;
+    dm->num_items = 0;
     for (uint32_t I = 0; I < nt; ++I) dm->num_items += (pat->row_ptr[I + 1] - pat->row_ptr[I] + 7) / 8;
 
     md_temp_scope_t temp = md_temp_begin();
@@ -1355,8 +1346,75 @@ md_gto_gpu_dmat_t md_gto_gpu_dmat_create(md_gpu_stream_t stream, const md_gto_gp
         }
     }
     md_temp_end(temp);
-    if (!ok) {
+    return ok;
+}
+
+md_gto_gpu_dmat_t md_gto_gpu_dmat_create(md_gpu_stream_t stream, const md_gto_gpu_dmat_desc_t* desc) {
+    if (!stream || !desc) {
+        MD_LOG_ERROR("md_gto_gpu_dmat_create: invalid arguments");
+        return NULL;
+    }
+    md_gto_gpu_dmat_t dm = (md_gto_gpu_dmat_t)calloc(1, sizeof(struct md_gto_gpu_dmat));
+    if (!dm) return NULL;
+    const md_gto_dmat_desc_t pd = { .basis = desc->basis, .atom_xyz = desc->atom_xyz, .atom_xyz_stride = desc->atom_xyz_stride,
+                                    .cutoff = desc->cutoff, .margin = desc->margin };
+    if (!md_gto_dmat_init(&dm->pat, &pd, md_get_heap_allocator())) {
+        free(dm);
+        return NULL;
+    }
+    if (!gto_dmat_gpu_setup(stream, dm)) {
         MD_LOG_ERROR("md_gto_gpu_dmat_create: out of memory");
+        md_gto_gpu_dmat_destroy(stream, dm);
+        return NULL;
+    }
+    return dm;
+}
+
+// A dmat of the pattern pat (copied), its tiles zero
+static md_gto_gpu_dmat_t gto_dmat_create_pattern(md_gpu_stream_t stream, const md_gto_dmat_t* pat, const char* who) {
+    md_gto_gpu_dmat_t dm = (md_gto_gpu_dmat_t)calloc(1, sizeof(struct md_gto_gpu_dmat));
+    if (!dm) return NULL;
+    if (!md_gto_dmat_init_like(&dm->pat, pat, md_get_heap_allocator())) {
+        free(dm);
+        return NULL;
+    }
+    if (!gto_dmat_gpu_setup(stream, dm)) {
+        MD_LOG_ERROR("%s: out of memory", who);
+        md_gto_gpu_dmat_destroy(stream, dm);
+        return NULL;
+    }
+    return dm;
+}
+
+md_gto_gpu_dmat_t md_gto_gpu_dmat_create_like(md_gpu_stream_t stream, md_gto_gpu_dmat_t like) {
+    if (!stream || !like) {
+        MD_LOG_ERROR("md_gto_gpu_dmat_create_like: invalid arguments");
+        return NULL;
+    }
+    return gto_dmat_create_pattern(stream, &like->pat, "md_gto_gpu_dmat_create_like");
+}
+
+md_gto_gpu_dmat_t md_gto_gpu_dmat_upload(md_gpu_stream_t stream, const md_gto_dmat_t* src) {
+    if (!stream || !src || !src->perm) {
+        MD_LOG_ERROR("md_gto_gpu_dmat_upload: invalid arguments");
+        return NULL;
+    }
+    if (src->num_tiles > 0 && !src->tiles) {
+        MD_LOG_ERROR("md_gto_gpu_dmat_upload: the tiles have not been built (md_gto_dmat_build)");
+        return NULL;
+    }
+    md_gto_gpu_dmat_t dm = gto_dmat_create_pattern(stream, src, "md_gto_gpu_dmat_upload");
+    if (!dm || dm->num_tiles == 0) return dm;
+    // the same tiles in the same order: their values in float
+    const size_t n = 256 * (size_t)dm->num_tiles;
+    float* dst = (float*)md_gpu_upload_begin(stream, dm->tiles, sizeof(float) * n);
+    bool ok = dst != NULL;
+    if (ok) {
+        for (size_t i = 0; i < n; ++i) dst[i] = (float)src->tiles[i];
+        ok = md_gpu_upload_end(stream);
+    }
+    if (!ok) {
+        MD_LOG_ERROR("md_gto_gpu_dmat_upload: the upload of %.1f MB failed", sizeof(float) * n / (1024.0 * 1024.0));
         md_gto_gpu_dmat_destroy(stream, dm);
         return NULL;
     }
@@ -1484,31 +1542,6 @@ bool md_gto_gpu_dmat_build(md_gpu_stream_t stream, md_gto_gpu_dmat_t dm, const d
     return gto_dmat_build_packed(stream, dm, coeff, dm->num_ao, 1, weight, num_mo);
 }
 
-bool md_gto_gpu_dmat_set_matrix(md_gpu_stream_t stream, md_gto_gpu_dmat_t dm, const double* matrix) {
-    if (!stream || !dm || !matrix) {
-        MD_LOG_ERROR("md_gto_gpu_dmat_set_matrix: invalid arguments");
-        return false;
-    }
-    if (dm->num_tiles == 0) return true;
-    float* dst = (float*)md_gpu_upload_begin(stream, dm->tiles, sizeof(float) * 256 * (size_t)dm->num_tiles);
-    if (!dst) return false;
-    const size_t n = dm->num_ao;
-    for (uint32_t I = 0; I < dm->nt; ++I) {
-        for (uint64_t e = dm->pat.row_ptr[I]; e < dm->pat.row_ptr[I + 1]; ++e) {
-            const uint32_t J = dm->pat.cols[e];
-            float* t = dst + e * 256;
-            for (uint32_t a = 0; a < GTO_DMAT_T; ++a) {
-                const int32_t i = dm->pat.perm[I * GTO_DMAT_T + a];
-                for (uint32_t c = 0; c < GTO_DMAT_T; ++c) {
-                    const int32_t j = dm->pat.perm[J * GTO_DMAT_T + c];
-                    t[a * GTO_DMAT_T + c] = (i < 0 || j < 0) ? 0.0f : (float)(0.5 * (matrix[(size_t)i * n + (size_t)j] + matrix[(size_t)j * n + (size_t)i]));
-                }
-            }
-        }
-    }
-    return md_gpu_upload_end(stream);
-}
-
 void md_gto_gpu_dmat_info(md_gto_gpu_dmat_info_t* out, md_gto_gpu_dmat_t dm) {
     if (!out) return;
     md_memset(out, 0, sizeof(*out));
@@ -1516,6 +1549,8 @@ void md_gto_gpu_dmat_info(md_gto_gpu_dmat_info_t* out, md_gto_gpu_dmat_t dm) {
     out->num_ao = dm->num_ao;
     out->num_tiles = (size_t)dm->num_tiles;
     out->num_tiles_total = (size_t)dm->nt * (dm->nt + 1) / 2;
+    out->cutoff = dm->pat.cutoff;
+    out->margin = dm->pat.margin;
     out->revision = GTO_DMAT_REVISION;
     out->bytes = sizeof(float) * 256 * (size_t)dm->num_tiles + sizeof(uint32_t) * ((size_t)dm->nt * dm->nt + dm->num_ao + 4 * (size_t)dm->num_items + (size_t)dm->num_tiles);
 }

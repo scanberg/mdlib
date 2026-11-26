@@ -1147,9 +1147,8 @@ UTEST(gto, gradients_gpu_match_cpu) {
         GT_CHECK("sum w psi^2", 1.0e-5);
     }
     {   // the density, a launch and a job of the packed matrix, and a launch of it in tiles (a dmat)
-        md_gto_gpu_dmat_t dm = md_gto_gpu_dmat_create(stream, &(md_gto_gpu_dmat_desc_t){ .basis = &basis, .atom_xyz = atom_xyz, .cutoff = 1.0e-6 });
+        md_gto_gpu_dmat_t dm = qm_test_gpu_dmat_from_matrix(stream, &basis, atom_xyz, 0, D, 1.0e-6, 0.0);
         ASSERT_TRUE(dm != NULL);
-        ASSERT_TRUE(md_gto_gpu_dmat_set_matrix(stream, dm, D));
         for (int job = 0; job < 3; ++job) {
             gto_test_poison(stream, tex, nan_buf, num_vox);
             gto_test_poison(stream, gtex, nan_buf, 4 * num_vox);

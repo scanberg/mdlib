@@ -198,8 +198,8 @@ static bool gpu_init(gpu_t* g, md_gpu_stream_t st, const src_t* s, const md_grid
         for (size_t i = 0; i < s->num_ao * s->num_ao; ++i) Dk[i] = 0.5 * s->D[i];
     }
     for (int k = 0; k < spins; ++k) {
-        g->dmat[k] = md_gto_gpu_dmat_create(st, &(md_gto_gpu_dmat_desc_t){ .basis = &s->basis, .atom_xyz = s->xyz, .cutoff = cutoff, .margin = 1.0 });
-        if (!g->dmat[k] || !md_gto_gpu_dmat_set_matrix(st, g->dmat[k], Dk ? Dk : s->D)) { free(Dk); return false; }
+        g->dmat[k] = qm_test_gpu_dmat_from_matrix(st, &s->basis, s->xyz, 0, Dk ? Dk : s->D, cutoff, 1.0);
+        if (!g->dmat[k]) { free(Dk); return false; }
     }
     free(Dk);
     g->tex = md_gpu_texture_create(st, &(md_gpu_texture_desc_t){

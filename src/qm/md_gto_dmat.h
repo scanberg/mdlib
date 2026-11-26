@@ -10,7 +10,8 @@
 // matrix. No point has both AOs of any other pair above the cutoff, so leaving those out changes nothing the cutoff
 // does not already. Kept as the tile pairs (I, J), I <= J, of 16 x 16 entries in an order of the AOs that keeps the
 // tiles full: shells by radius class (2 bohr), then by atom (the input order, along a chain), then shell; a shell's
-// AOs together. The GPU's md_gto_gpu_dmat_t has this same pattern (made by md_gto_dmat_init), its values in float.
+// AOs together. The GPU's md_gto_gpu_dmat_t has this same pattern, its values in float (md_gto_gpu_dmat_upload copies
+// a density's tiles to the device).
 //
 // The pattern depends on where the atoms are. margin (bohr) also keeps the pairs up to that much further apart, so
 // that it holds while no atom has moved more than margin / 2 from where it was made (md_gto_dmat_pattern_valid).
@@ -57,6 +58,10 @@ extern "C" {
 bool md_gto_dmat_init(md_gto_dmat_t* dm, const md_gto_dmat_desc_t* desc, struct md_allocator_i* alloc);
 
 void md_gto_dmat_free(md_gto_dmat_t* dm);
+
+// A copy of src's pattern (made for the same basis, positions, cutoff and margin); the tiles are allocated by the
+// first md_gto_dmat_build, not copied. From alloc. False (logged) for invalid arguments or out of memory, dm then empty.
+bool md_gto_dmat_init_like(md_gto_dmat_t* dm, const md_gto_dmat_t* src, struct md_allocator_i* alloc);
 
 // Whether the pattern holds for these positions: the same number of atoms, none further than margin / 2 from where
 // the pattern was made.

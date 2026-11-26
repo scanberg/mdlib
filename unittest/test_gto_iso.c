@@ -5161,6 +5161,103 @@ UTEST(gto_iso_gpu_lib, evaluate_matches_cpu) {
 // one takes, so there are many), polled until done, the values bitwise those of the launch; the progress from 0 to
 // 1. Points shuffled, then in Morton order (md_gto_iso_gpu_morton_order): the same values point by point, to the
 // evaluation cutoff.
+// A density's tiles given with its field (md_gto_iso_field_set_gpu_dmat), as viamd gives the host's tiles uploaded
+// (md_gto_gpu_dmat_upload): a set takes them as they are (its pool their copy, their cutoff its tiles'), builds another
+// density into their pattern, and evaluates both as from tiles of its own; tiles made for a looser cutoff than the
+// set's are not taken
+UTEST(gto_iso_gpu_lib, given_tiles_are_taken) {
+    iso_gpu_t g;
+    if (!iso_gpu_init(&g)) { iso_gpu_free(&g); UTEST_SKIP(iso_gpu_no_device()); }
+    md_gto_iso_gpu_initialize(g.dev);
+    iso_dens_src_t s;
+    ASSERT_TRUE(iso_dens_src_load(&s, "amide.h5"));
+    iso_dens_prod_t ps, pd;
+    iso_dens_products(&ps, &s, ISO_D_SCF);
+    iso_dens_products(&pd, &s, ISO_D_DIFF);
+    ASSERT_GT(pd.count, 0u);
+    md_gto_iso_field_t* scf = iso_dens_field(&s, &ps, false);
+    md_gto_iso_field_t* diff = iso_dens_field(&s, &pd, false);
+    ASSERT_TRUE(scf && diff);
+
+    // the SCF density's tiles on the host at the set's cutoff, a tighter one and a looser one; uploaded
+    enum { NC = 3 };
+    md_gto_dmat_t ht[NC];
+    md_gto_gpu_dmat_t up[NC];
+    const double cut[NC] = {1.0e-6, 1.0e-8, 1.0e-5};
+    const int cut_exp[NC] = {6, 8, 5};
+    for (int k = 0; k < NC; ++k) {
+        ASSERT_TRUE(md_gto_dmat_init(&ht[k], &(md_gto_dmat_desc_t){ .basis = &s.basis, .atom_xyz = s.xyz, .cutoff = cut[k], .margin = 1.0 },
+                                     md_get_heap_allocator()));
+        ASSERT_TRUE(md_gto_dmat_build(&ht[k], ps.left, s.num_ao, 1, ps.w, ps.count, NULL));
+        up[k] = md_gto_gpu_dmat_upload(g.s, &ht[k]);
+        ASSERT_TRUE(up[k] != NULL);
+    }
+    md_gpu_stream_sync(g.s);
+
+    enum { N = 2000 };
+    iso_rng_t rng = {0x7a11e5};
+    double* pd3 = (double*)malloc(sizeof(double) * 3 * N);
+    float* pts = (float*)malloc(sizeof(float) * 3 * N);
+    float* val = (float*)malloc(sizeof(float) * 2 * N);
+    float* grad = (float*)malloc(sizeof(float) * 6 * N);
+    iso_dens_points(pd3, N, &s, &rng);
+    for (int i = 0; i < 3 * N; ++i) pts[i] = (float)pd3[i];
+    const int saved_dform = isog_dform;
+    isog_dform = 1;     // the values from the tiles, not the functions
+
+    for (int k = 0; k < NC; ++k) {
+        md_gto_iso_field_set_gpu_dmat(scf, up[k]);
+        const md_gto_iso_field_t* fl[2] = {scf, diff};
+        md_gto_iso_gpu_set_t* set = md_gto_iso_gpu_set_create(g.s, &s.basis, s.xyz, 0, fl, 2, md_get_heap_allocator());
+        ASSERT_TRUE(set != NULL);
+        ASSERT_EQ(2u, set->num_dmat);
+        md_gto_gpu_dmat_info_t hi;
+        md_gto_gpu_dmat_info(&hi, up[k]);
+        const size_t pool = 256 * (size_t)hi.num_tiles;
+        const bool taken = cut_exp[k] >= 6;
+        // taken: its pattern, its cutoff, the SCF density's pool its tiles exactly; not taken (made for 1e-5): a pattern
+        // of the set's own for its cutoff, the SCF density built on the device (not the host's tiles to the bit)
+        EXPECT_EQ(taken ? cut_exp[k] : 6, set->dm_eps_exp);
+        if (pool == (size_t)set->dm_pool) {     // a small molecule keeps every tile at either cutoff
+            md_gto_gpu_dmat_view_t v;
+            md_gto_gpu_dmat_view(&v, up[k]);
+            md_gpu_mem_t rb = md_gpu_malloc(g.s, MD_GPU_MEM_HOST_READ, sizeof(float) * 2 * pool);
+            ASSERT_TRUE(rb.cpu != NULL);
+            ASSERT_TRUE(md_gpu_copy(g.s, rb.gpu, set->dmat.gpu, sizeof(float) * pool));     // field 0's: the first matrix
+            ASSERT_TRUE(md_gpu_copy(g.s, rb.gpu + sizeof(float) * pool, v.tiles, sizeof(float) * pool));
+            md_gpu_stream_sync(g.s);
+            const bool same = memcmp(rb.cpu, (const float*)rb.cpu + pool, sizeof(float) * pool) == 0;
+            EXPECT_EQ(taken, same);
+            md_gpu_free(g.s, rb.gpu);
+        } else {
+            EXPECT_FALSE(taken);
+        }
+        ASSERT_TRUE(md_gto_iso_gpu_evaluate(g.s, set, (const uint32_t[]){0, 1}, 2, pts, 0, N, val, grad));
+        for (int f = 0; f < 2; ++f) {
+            const iso_ev_err_t e = iso_ev_compare(fl[f], pts, 0, N, val + (size_t)f * N, grad + 3 * (size_t)f * N, 3);
+            printf("  amide, the SCF density's tiles %s (1e-%d), %s: max |f| %.2e, |df| %.1e (%.1e rel), max |grad| %.2e, |dgrad| %.1e\n",
+                   taken ? "given" : "not taken", cut_exp[k], f == 0 ? "SCF density " : "difference density", e.fmax, e.val, e.val / e.fmax, e.gmax, e.grad);
+            EXPECT_LT(e.val, 1.0e-5 * e.fmax + 1.0e-5);
+            EXPECT_LT(e.grad, 1.0e-5 * e.gmax + 1.0e-5);
+        }
+        md_gto_iso_gpu_set_destroy(g.s, set);
+    }
+    isog_dform = saved_dform;
+
+    free(pd3); free(pts); free(val); free(grad);
+    for (int k = 0; k < NC; ++k) {
+        md_gto_gpu_dmat_destroy(g.s, up[k]);
+        md_gto_dmat_free(&ht[k]);
+    }
+    md_gto_iso_field_destroy(scf);
+    md_gto_iso_field_destroy(diff);
+    iso_dens_prod_free(&ps);
+    iso_dens_prod_free(&pd);
+    iso_dens_src_free(&s);
+    md_gto_iso_gpu_shutdown();
+    iso_gpu_free(&g);
+}
+
 UTEST(gto_iso_gpu_lib, evaluate_job_matches_launch) {
     iso_gpu_t g;
     if (!iso_gpu_init(&g)) { iso_gpu_free(&g); UTEST_SKIP(iso_gpu_no_device()); }

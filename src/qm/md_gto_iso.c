@@ -2586,6 +2586,9 @@ struct md_gto_iso_field_t {
     double*                coeff;      // an orbital's AO coefficients (the GPU path takes them as a function)
     size_t                 num_coeff;
     bool                   maxima_at_atoms;   // md_gto_iso_field_set_maxima_at_atoms
+#if MD_ENABLE_GPU
+    md_gto_gpu_dmat_t      gpu_dmat;          // md_gto_iso_field_set_gpu_dmat: the caller's, not owned
+#endif
 };
 
 static float* iso_pack_atoms(const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride, size_t* out_num_atoms) {
@@ -2805,6 +2808,12 @@ void md_gto_iso_field_destroy(md_gto_iso_field_t* field) {
 void md_gto_iso_field_set_maxima_at_atoms(md_gto_iso_field_t* field, bool maxima_at_atoms) {
     if (field) field->maxima_at_atoms = maxima_at_atoms;
 }
+
+#if MD_ENABLE_GPU
+void md_gto_iso_field_set_gpu_dmat(md_gto_iso_field_t* field, md_gto_gpu_dmat_t dmat) {
+    if (field) field->gpu_dmat = dmat;
+}
+#endif
 
 void md_gto_iso_field_info(md_gto_iso_field_info_t* out, const md_gto_iso_field_t* field) {
     if (!out) return;

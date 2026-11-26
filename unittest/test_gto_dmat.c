@@ -194,16 +194,23 @@ UTEST(gto_dmat, density_matches_packed) {
         float* out = (float*)malloc(sizeof(float) * g.num_vox);
         dm_eval(&g, NULL, ref);
         double ref_max = 0.0;
+        // the matrix's tiles on the host, copied to the device: the same pattern (the same basis, places, cutoff, margin)
+        md_gto_gpu_dmat_t dm_up = qm_test_gpu_dmat_from_matrix(g.s, &s.basis, s.xyz, 0, s.D, 1.0e-6, 0.0);
+        ASSERT_TRUE(dm_up != NULL);
+        md_gto_gpu_dmat_info_t up;
+        md_gto_gpu_dmat_info(&up, dm_up);
+        ASSERT_EQ(info.num_tiles, up.num_tiles);
         for (int from = 0; from < 2; ++from) {
-            ASSERT_TRUE(from == 0 ? md_gto_gpu_dmat_build(g.s, dm, s.rows, s.w, s.num_mo) : md_gto_gpu_dmat_set_matrix(g.s, dm, s.D));
-            dm_eval(&g, dm, out);
+            if (from == 0) ASSERT_TRUE(md_gto_gpu_dmat_build(g.s, dm, s.rows, s.w, s.num_mo));
+            dm_eval(&g, from == 0 ? dm : dm_up, out);
             const double rel = dm_rel_diff(out, ref, g.num_vox, &ref_max);
             printf("  %s, %zu AOs, %zu of %zu tile pairs, from the %s: max |diff| / max |rho| = %.2e (max %.3g)\n",
-                   files[fi], info.num_ao, info.num_tiles, info.num_tiles_total, from == 0 ? "orbitals" : "matrix  ", rel, ref_max);
+                   files[fi], info.num_ao, info.num_tiles, info.num_tiles_total, from == 0 ? "orbitals" : "matrix's tiles, uploaded", rel, ref_max);
             EXPECT_LT(rel, 1.0e-5);
             EXPECT_GT(ref_max, 1.0);
         }
         free(out); free(ref);
+        md_gto_gpu_dmat_destroy(g.s, dm_up);
         md_gto_gpu_dmat_destroy(g.s, dm);
         dm_gpu_free(&g);
         dm_free(&s);
@@ -421,6 +428,90 @@ UTEST(gto_dmat, pattern_follows_motion) {
     dm_free(&s);
 }
 
+// The host's tiles on the device (md_gto_gpu_dmat_upload): the same pattern, their values rounded to float and nothing
+// else; a dmat like it (md_gto_gpu_dmat_create_like) the same pattern, zero until built, and its build the same as
+// into a dmat of its own pattern made from the same inputs
+UTEST(gto_dmat, upload_is_the_hosts_tiles_in_float) {
+    dm_src_t s;
+    ASSERT_TRUE(dm_load(&s, "mol.h5"));
+    const md_grid_t grid = dm_grid(&s, 8, 0.3f);
+    dm_gpu_t g;
+    if (!dm_gpu_init(&g, &s, &grid)) { dm_gpu_free(&g); dm_free(&s); UTEST_SKIP("no GPU device"); }
+    md_gto_dmat_t cpu;
+    ASSERT_TRUE(md_gto_dmat_init(&cpu, &(md_gto_dmat_desc_t){ .basis = &s.basis, .atom_xyz = s.xyz, .cutoff = 1.0e-6, .margin = 1.0 },
+                                 md_get_heap_allocator()));
+    EXPECT_TRUE(md_gto_gpu_dmat_upload(g.s, &cpu) == NULL);     // not built
+    ASSERT_TRUE(md_gto_dmat_build(&cpu, s.rows, s.num_ao, 1, s.w, s.num_mo, NULL));
+    md_gto_gpu_dmat_t up = md_gto_gpu_dmat_upload(g.s, &cpu);
+    ASSERT_TRUE(up != NULL);
+    md_gto_gpu_dmat_t like = md_gto_gpu_dmat_create_like(g.s, up);
+    ASSERT_TRUE(like != NULL);
+    md_gto_gpu_dmat_t own = md_gto_gpu_dmat_create(g.s, &(md_gto_gpu_dmat_desc_t){ .basis = &s.basis, .atom_xyz = s.xyz, .cutoff = 1.0e-6, .margin = 1.0 });
+    ASSERT_TRUE(own != NULL);
+
+    md_gto_gpu_dmat_info_t iu, il;
+    md_gto_gpu_dmat_info(&iu, up);
+    md_gto_gpu_dmat_info(&il, like);
+    EXPECT_EQ((size_t)cpu.num_tiles, iu.num_tiles);
+    EXPECT_EQ(iu.num_tiles, il.num_tiles);
+    EXPECT_EQ(1.0e-6, iu.cutoff);
+    EXPECT_EQ(1.0, iu.margin);
+    EXPECT_TRUE(md_gto_gpu_dmat_pattern_valid(like, s.xyz, 0));
+
+    const size_t nt = (size_t)cpu.nt, nf = 256 * (size_t)cpu.num_tiles;
+    md_gto_gpu_dmat_view_t vu, vl, vo;
+    md_gto_gpu_dmat_view(&vu, up);
+    md_gto_gpu_dmat_view(&vl, like);
+    md_gto_gpu_dmat_view(&vo, own);
+    md_gpu_mem_t rb = md_gpu_malloc(g.s, MD_GPU_MEM_HOST_READ, sizeof(float) * 3 * nf + sizeof(uint32_t) * 2 * (nt * nt + cpu.num_ao));
+    ASSERT_TRUE(rb.cpu != NULL);
+    float* fu = (float*)rb.cpu;
+    float* fl = fu + nf;
+    float* fo = fl + nf;
+    uint32_t* map_u = (uint32_t*)(fo + nf);
+    uint32_t* map_l = map_u + nt * nt;
+    uint32_t* tao_u = map_l + nt * nt;
+    uint32_t* tao_l = tao_u + cpu.num_ao;
+    ASSERT_TRUE(md_gpu_copy(g.s, rb.gpu, vu.tiles, sizeof(float) * nf));
+    ASSERT_TRUE(md_gpu_copy(g.s, rb.gpu + sizeof(float) * nf, vl.tiles, sizeof(float) * nf));     // zero: not built
+    ASSERT_TRUE(md_gpu_copy(g.s, (md_gpu_addr_t)(rb.gpu + (uint8_t*)map_u - (uint8_t*)rb.cpu), vu.map, sizeof(uint32_t) * nt * nt));
+    ASSERT_TRUE(md_gpu_copy(g.s, (md_gpu_addr_t)(rb.gpu + (uint8_t*)map_l - (uint8_t*)rb.cpu), vl.map, sizeof(uint32_t) * nt * nt));
+    ASSERT_TRUE(md_gpu_copy(g.s, (md_gpu_addr_t)(rb.gpu + (uint8_t*)tao_u - (uint8_t*)rb.cpu), vu.tao, sizeof(uint32_t) * cpu.num_ao));
+    ASSERT_TRUE(md_gpu_copy(g.s, (md_gpu_addr_t)(rb.gpu + (uint8_t*)tao_l - (uint8_t*)rb.cpu), vl.tao, sizeof(uint32_t) * cpu.num_ao));
+    md_gpu_stream_sync(g.s);
+    size_t differ = 0, nonzero = 0;
+    for (size_t i = 0; i < nf; ++i) {
+        differ += fu[i] != (float)cpu.tiles[i];
+        nonzero += fl[i] != 0.0f;
+    }
+    EXPECT_EQ(0u, differ);
+    EXPECT_EQ(0u, nonzero);
+    EXPECT_EQ(0, memcmp(map_u, map_l, sizeof(uint32_t) * nt * nt));
+    EXPECT_EQ(0, memcmp(tao_u, tao_l, sizeof(uint32_t) * cpu.num_ao));
+    EXPECT_EQ(0, memcmp(tao_u, cpu.tao, sizeof(uint32_t) * cpu.num_ao));
+
+    // a build into the like is a build into a pattern of its own (the same inputs, the same pattern)
+    ASSERT_TRUE(md_gto_gpu_dmat_build(g.s, like, s.rows, s.w, s.num_mo));
+    ASSERT_TRUE(md_gto_gpu_dmat_build(g.s, own, s.rows, s.w, s.num_mo));
+    ASSERT_TRUE(md_gpu_copy(g.s, rb.gpu + sizeof(float) * nf, vl.tiles, sizeof(float) * nf));
+    ASSERT_TRUE(md_gpu_copy(g.s, rb.gpu + sizeof(float) * 2 * nf, vo.tiles, sizeof(float) * nf));
+    md_gpu_stream_sync(g.s);
+    EXPECT_EQ(0, memcmp(fl, fo, sizeof(float) * nf));
+    double d = 0.0, m = 0.0;
+    for (size_t i = 0; i < nf; ++i) { d = fmax(d, fabs((double)fl[i] - cpu.tiles[i])); m = fmax(m, fabs(cpu.tiles[i])); }
+    printf("  mol.h5, %llu tile pairs: uploaded exactly (float of the host's); built on the device within %.2e of them (max %.3g)\n",
+           (unsigned long long)cpu.num_tiles, d / m, m);
+    EXPECT_LT(d / m, 1.0e-5);
+
+    md_gpu_free(g.s, rb.gpu);
+    md_gto_gpu_dmat_destroy(g.s, own);
+    md_gto_gpu_dmat_destroy(g.s, like);
+    md_gto_gpu_dmat_destroy(g.s, up);
+    md_gto_dmat_free(&cpu);
+    dm_gpu_free(&g);
+    dm_free(&s);
+}
+
 UTEST(gto_dmat, benchmark) {
     const char* file = getenv("GTO_DMAT_FILE");
     if (!file || !file[0]) UTEST_SKIP("set GTO_DMAT_FILE=<file in test_data/vlx>");
@@ -470,10 +561,18 @@ UTEST(gto_dmat, benchmark) {
     printf("  build from the orbitals (median of %d): %.1f ms, of it %.1f ms after the host returned (the kernel and the upload in flight);"
            " %.3g multiply-adds, %.1f G/s overall; %.1f MB of orbitals\n",
            nr, tb[nr / 2] * 1e3, tk[nr / 2] * 1e3, fma, fma / tb[nr / 2] / 1e9, 4.0 * (double)s.num_mo * (double)(16 * ((s.num_ao + 15) / 16)) / 1e6);
-    t0 = md_tick_now();
-    ASSERT_TRUE(md_gto_gpu_dmat_set_matrix(g.s, dm, s.D));
-    md_gpu_stream_sync(g.s);
-    printf("  fill from a matrix on the host: %.1f ms\n", md_tick_to_seconds(md_tick_now() - t0) * 1e3);
+    {   // the host's tiles of the same pattern, copied to the device (md_gto_gpu_dmat_upload): a new dmat, its tables too
+        md_gto_dmat_t ht;
+        ASSERT_TRUE(qm_test_dmat_from_matrix_at(&ht, &s.basis, s.xyz, 0, s.D, 1.0e-6, margin, md_get_heap_allocator()));
+        t0 = md_tick_now();
+        md_gto_gpu_dmat_t up = md_gto_gpu_dmat_upload(g.s, &ht);
+        md_gpu_stream_sync(g.s);
+        printf("  upload of the host's tiles (%.1f MB in float, with the pattern's tables): %.1f ms\n",
+               4.0 * 256.0 * (double)ht.num_tiles / 1e6, md_tick_to_seconds(md_tick_now() - t0) * 1e3);
+        ASSERT_TRUE(up != NULL);
+        md_gto_gpu_dmat_destroy(g.s, up);
+        md_gto_dmat_free(&ht);
+    }
 
     // a sub-volume around the centre, the packed matrix against the dmat (from the orbitals)
     ASSERT_TRUE(md_gto_gpu_dmat_build(g.s, dm, s.rows, s.w, s.num_mo));
@@ -579,8 +678,7 @@ static bool loc_eval_gpu(float* out, const loc_src_t* s, const md_grid_t* grid, 
     md_gpu_addr_t coeff[2] = {0, 0};
     for (int k = 0; k < s->num_spins; ++k) {
         if (use_dmat) {
-            desc.dmat[k] = md_gto_gpu_dmat_create(st, &(md_gto_gpu_dmat_desc_t){ .basis = &s->basis, .atom_xyz = s->xyz, .cutoff = cutoff });
-            md_gto_gpu_dmat_set_matrix(st, desc.dmat[k], s->D[k]);
+            desc.dmat[k] = qm_test_gpu_dmat_from_matrix(st, &s->basis, s->xyz, 0, s->D[k], cutoff, 0.0);
         } else {
             coeff[k] = md_gpu_malloc(st, MD_GPU_MEM_DEVICE, md_gto_gpu_coeff_size_density(s->num_ao)).gpu;
             p = (float*)md_gpu_upload_begin(st, coeff[k], md_gto_gpu_coeff_size_density(s->num_ao));
@@ -857,8 +955,8 @@ UTEST(gto_gpu, plane_matches_volume) {
         if (!dm_gpu_init(&g, &s, &any)) { dm_gpu_free(&g); dm_free(&s); UTEST_SKIP("no GPU device"); }
         plane_pair_t pp;
         ASSERT_TRUE(plane_pair_init(&pp, g.s, s.xyz, s.num_atoms));
-        md_gto_gpu_dmat_t dm = md_gto_gpu_dmat_create(g.s, &(md_gto_gpu_dmat_desc_t){ .basis = &s.basis, .atom_xyz = s.xyz, .cutoff = 1.0e-6 });
-        ASSERT_TRUE(dm && md_gto_gpu_dmat_set_matrix(g.s, dm, s.D));
+        md_gto_gpu_dmat_t dm = qm_test_gpu_dmat_from_matrix(g.s, &s.basis, s.xyz, 0, s.D, 1.0e-6, 0.0);
+        ASSERT_TRUE(dm != NULL);
         double m = 0.0, rel = 0.0;
         // the density
         {

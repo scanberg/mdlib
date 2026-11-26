@@ -289,6 +289,21 @@ static inline bool qm_test_dmat_from_matrix(md_gto_dmat_t* dm, const md_gto_basi
     return dm->num_tiles == (uint64_t)dm->nt * (dm->nt + 1) / 2;
 }
 
+#if MD_ENABLE_GPU
+// The device's copy (md_gto_gpu_dmat_upload) of qm_test_dmat_from_matrix_at's tiles of D: the tests' way to a dmat of
+// a matrix, as the library's own is to a dmat of a density's tiles. NULL on failure.
+static inline md_gto_gpu_dmat_t qm_test_gpu_dmat_from_matrix(md_gpu_stream_t stream, const md_gto_basis_t* basis, const float* atom_xyz,
+                                                             size_t atom_xyz_stride, const double* D, double cutoff, double margin) {
+    md_gto_dmat_t t;
+    md_gto_gpu_dmat_t dm = NULL;
+    if (qm_test_dmat_from_matrix_at(&t, basis, atom_xyz, atom_xyz_stride, D, cutoff, margin, md_get_heap_allocator())) {
+        dm = md_gto_gpu_dmat_upload(stream, &t);
+    }
+    md_gto_dmat_free(&t);
+    return dm;
+}
+#endif
+
 // rho = ao^T D ao (D: n x n, row major, symmetric) from qm_test_ao_at's values
 static inline double qm_test_density_from_ao(const double* D, const double* ao, size_t n) {
     double r = 0.0;

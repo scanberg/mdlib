@@ -178,6 +178,43 @@ bool md_gto_dmat_init(md_gto_dmat_t* dm, const md_gto_dmat_desc_t* desc, md_allo
     return true;
 }
 
+bool md_gto_dmat_init_like(md_gto_dmat_t* dm, const md_gto_dmat_t* src, md_allocator_i* alloc) {
+    if (!dm) return false;
+    md_memset(dm, 0, sizeof(*dm));
+    if (!src || !src->perm || !alloc) {
+        MD_LOG_ERROR("md_gto_dmat_init_like: invalid arguments (a pattern, an allocator)");
+        return false;
+    }
+    dm->alloc      = alloc;
+    dm->num_ao     = src->num_ao;
+    dm->num_atoms  = src->num_atoms;
+    dm->num_shells = src->num_shells;
+    dm->nt         = src->nt;
+    dm->num_tiles  = src->num_tiles;
+    dm->cutoff     = src->cutoff;
+    dm->margin     = src->margin;
+    dm->xyz       = dmat_alloc(alloc, sizeof(float) * 3 * dm->num_atoms);
+    dm->shell_r   = dmat_alloc(alloc, sizeof(float) * dm->num_shells);
+    dm->perm      = dmat_alloc(alloc, sizeof(int32_t) * DMAT_T * dm->nt);
+    dm->tao       = dmat_alloc(alloc, sizeof(uint32_t) * dm->num_ao);
+    dm->shell_tao = dmat_alloc(alloc, sizeof(uint32_t) * dm->num_shells);
+    dm->row_ptr   = dmat_alloc(alloc, sizeof(uint64_t) * (dm->nt + 1));
+    dm->cols      = dmat_alloc(alloc, sizeof(uint32_t) * dm->num_tiles);
+    if (!dm->xyz || !dm->shell_r || !dm->perm || !dm->tao || !dm->shell_tao || !dm->row_ptr || !dm->cols) {
+        MD_LOG_ERROR("md_gto_dmat_init_like: out of memory");
+        md_gto_dmat_free(dm);
+        return false;
+    }
+    md_memcpy(dm->xyz,       src->xyz,       sizeof(float) * 3 * dm->num_atoms);
+    md_memcpy(dm->shell_r,   src->shell_r,   sizeof(float) * dm->num_shells);
+    md_memcpy(dm->perm,      src->perm,      sizeof(int32_t) * DMAT_T * dm->nt);
+    md_memcpy(dm->tao,       src->tao,       sizeof(uint32_t) * dm->num_ao);
+    md_memcpy(dm->shell_tao, src->shell_tao, sizeof(uint32_t) * dm->num_shells);
+    md_memcpy(dm->row_ptr,   src->row_ptr,   sizeof(uint64_t) * (dm->nt + 1));
+    md_memcpy(dm->cols,      src->cols,      sizeof(uint32_t) * dm->num_tiles);
+    return true;
+}
+
 bool md_gto_dmat_pattern_valid(const md_gto_dmat_t* dm, const float* atom_xyz, size_t atom_xyz_stride) {
     if (!dm || !dm->xyz || !atom_xyz) return false;
     const size_t stride = atom_xyz_stride ? atom_xyz_stride : sizeof(float) * 3;

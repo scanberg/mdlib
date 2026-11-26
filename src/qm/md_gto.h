@@ -359,7 +359,9 @@ void md_gto_gpu_coeff_pack_mo(float* dst, const double* const* mo_coeffs, const 
 // cutoff). No point has both AOs of any other pair above the cutoff, so leaving those out changes
 // nothing the cutoff does not already. Stored as 16 x 16 tiles in an order of the AOs that keeps the
 // tiles full: shells by radius class (2 bohr), then by atom (the input order, along a chain). The pattern
-// is md_gto_dmat_t's (md_gto_dmat.h), made by md_gto_dmat_init; the values here are float.
+// is md_gto_dmat_t's (md_gto_dmat.h); the values here are float. Made with a pattern of its own (md_gto_gpu_dmat_create)
+// and built on the device from orbitals, or as the copy of a density's tiles on the host (md_gto_gpu_dmat_upload): the
+// one way a density that is in tiles on the host reaches the device, with no build there.
 //
 // Protein of 1152 atoms (9636 Cartesian AOs) at 1e-6: 18.6% of the triangle in tiles, 35 MB against
 // 186 MB packed, and built from its 2147 occupied orbitals with 5.4x fewer multiply-adds than the whole
@@ -368,11 +370,12 @@ void md_gto_gpu_coeff_pack_mo(float* dst, const double* const* mo_coeffs, const 
 // The pattern depends on where the atoms are. margin (bohr) also keeps the pairs up to that much further
 // apart, so that it holds while no atom has moved more than margin / 2 from where it was made
 // (md_gto_gpu_dmat_pattern_valid): a trajectory makes a new one only when that fails, and refills the
-// matrix (md_gto_gpu_dmat_build, md_gto_gpu_dmat_set_matrix) per frame.
+// matrix (md_gto_gpu_dmat_build) per frame.
 //
 // A dmat may be made and built on any thread, on a stream of that thread's, while others evaluate on theirs:
 // an evaluation on another stream waits for its build first (md_gpu_stream_wait).
 
+struct md_gto_dmat_t;    // md_gto_dmat.h
 typedef struct md_gto_gpu_dmat* md_gto_gpu_dmat_t;
 
 typedef struct md_gto_gpu_dmat_desc_t {
@@ -384,6 +387,16 @@ typedef struct md_gto_gpu_dmat_desc_t {
 } md_gto_gpu_dmat_desc_t;
 
 md_gto_gpu_dmat_t md_gto_gpu_dmat_create(md_gpu_stream_t stream, const md_gto_gpu_dmat_desc_t* desc);
+
+// A dmat of like's pattern (copied), its tiles zero: for another density to be built into the same pattern, so that
+// what reads both reads one pattern (md_gto_iso_gpu_set_create).
+md_gto_gpu_dmat_t md_gto_gpu_dmat_create_like(md_gpu_stream_t stream, md_gto_gpu_dmat_t like);
+
+// The copy of tiles built on the host (md_gto_dmat_build): their pattern, and their values in float, uploaded on
+// stream (stream-ordered: the host's tiles may change or go once this returns). NULL (logged) for tiles not built, or
+// out of memory. Protein of 9636 AOs at 1e-6, margin 1: 37.6 MB, where a build on the device uploads its 2147
+// occupied orbitals, 83 MB.
+md_gto_gpu_dmat_t md_gto_gpu_dmat_upload(md_gpu_stream_t stream, const struct md_gto_dmat_t* tiles);
 
 // Stream-ordered: the memory is freed at this point in `stream`.
 void md_gto_gpu_dmat_destroy(md_gpu_stream_t stream, md_gto_gpu_dmat_t dmat);
@@ -401,14 +414,11 @@ bool md_gto_gpu_dmat_build(md_gpu_stream_t stream, md_gto_gpu_dmat_t dmat, const
 // coeff[i * ld + k] (an md_gto_iso field's functions), weight num_mo weights.
 bool md_gto_gpu_dmat_build_columns(md_gpu_stream_t stream, md_gto_gpu_dmat_t dmat, const double* coeff, size_t ld, const double* weight, size_t num_mo);
 
-// The kept tiles of a matrix on the host (num_ao x num_ao, row major; its symmetric part), gathered and
-// uploaded: for a density that is at hand as a matrix.
-bool md_gto_gpu_dmat_set_matrix(md_gpu_stream_t stream, md_gto_gpu_dmat_t dmat, const double* matrix);
-
 typedef struct md_gto_gpu_dmat_info_t {
     size_t num_ao;
     size_t num_tiles;        // tile pairs kept
     size_t num_tiles_total;  // tile pairs in the triangle
+    double cutoff, margin;   // of the pattern (md_gto_gpu_dmat_desc_t)
     size_t bytes;            // device memory: tiles, map and tables (not the orbital scratch)
     const char* revision;    // of the build (gto_dmat.slang), for measurements: bumped with every change to it
 } md_gto_gpu_dmat_info_t;
