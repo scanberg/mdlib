@@ -21,6 +21,7 @@ typedef struct topo_gto_input_t {
     qm_test_t      t;
     md_gto_basis_t basis;
     double*        density;
+    md_gto_dmat_t  dm;          // the density as tiles, every pair kept (qm_test_dmat_from_matrix)
     float          xyz[3 * 3];  // Bohr
 } topo_gto_input_t;
 
@@ -36,14 +37,14 @@ static bool topo_gto_load_water(topo_gto_input_t* in) {
     const md_attribute_t* coord = qm_test_attr(&in->t, MD_STR_LIT("qm/atom/coordinate"));   // Angstrom
     if (!coord || md_attribute_extract_f64(xyz, 9, &in->t.sys.attributes, coord, md_attribute_slice_all(), md_unit_none()) != 9) return false;
     for (int i = 0; i < 9; ++i) in->xyz[i] = (float)(xyz[i] * QM_TEST_ANGSTROM_TO_BOHR);
-    return true;
+    return qm_test_dmat_from_matrix(&in->dm, &in->basis, in->xyz, 0, in->density, in->t.alloc);
 }
 
 static md_topo_gto_desc_t topo_gto_desc(const topo_gto_input_t* in) {
     return (md_topo_gto_desc_t){
         .basis = &in->basis,
         .atom_xyz = in->xyz,
-        .density_matrix = in->density,
+        .dmat = &in->dm,
         .rho_min = 1.0e-4,
         .h_min = 1.0e-4,
         .trace_separatrices = true,
@@ -273,6 +274,7 @@ typedef struct topo_gto_pair_t {
     md_gto_basis_t basis;
     float          xyz[9 * TOPO_GTO_CHAIN_MAX];
     double*        D;
+    md_gto_dmat_t  dm;          // D as tiles, every pair kept
     size_t         N;
 } topo_gto_pair_t;
 
@@ -294,14 +296,14 @@ static bool topo_gto_make_chain(topo_gto_pair_t* p, const topo_gto_input_t* in, 
     for (int c = 0; c < k; ++c) {
         for (size_t i = 0; i < n; ++i) for (size_t j = 0; j < n; ++j) p->D[(c * n + i) * p->N + c * n + j] = in->density[i * n + j];
     }
-    return md_gto_basis_num_ao(&p->basis) == p->N;
+    return md_gto_basis_num_ao(&p->basis) == p->N && qm_test_dmat_from_matrix(&p->dm, &p->basis, p->xyz, 0, p->D, alloc);
 }
 
 static md_topo_gto_desc_t topo_gto_pair_desc(const topo_gto_input_t* in, const topo_gto_pair_t* p, double rho_min) {
     md_topo_gto_desc_t desc = topo_gto_desc(in);
     desc.basis = &p->basis;
     desc.atom_xyz = p->xyz;
-    desc.density_matrix = p->D;
+    desc.dmat = &p->dm;
     desc.rho_min = rho_min;
     return desc;
 }

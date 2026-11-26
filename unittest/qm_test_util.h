@@ -21,6 +21,7 @@
 #include <md_gto_dmat.h>
 #include <md_qm.h>
 #include <core/md_allocator.h>
+#include <core/md_common.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_str.h>
 
@@ -255,15 +256,14 @@ static inline void qm_test_ao_at(double* ao, double* aog, const md_gto_basis_t* 
     }
 }
 
-// Tiles holding the whole of a matrix's symmetric part: every tile pair kept (md_gto_dmat_t's pattern at a negligible
-// cutoff and a margin past any test's extent), filled from D (num_ao x num_ao, row major). For the tests alone, which
-// feed made-up densities, and the file's own, as matrices: the library itself never takes a whole matrix.
-static inline bool qm_test_dmat_from_matrix(md_gto_dmat_t* dm, const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
-                                            const double* D, md_allocator_i* alloc) {
-    const md_gto_dmat_desc_t desc = { .basis = basis, .atom_xyz = atom_xyz, .atom_xyz_stride = atom_xyz_stride, .cutoff = 1.0e-300, .margin = 1.0e6 };
+// A matrix's symmetric part in md_gto_dmat_t's tiles at cutoff and margin, filled from D (num_ao x num_ao, row major):
+// what the one tile representation of it holds. For the tests and measurements alone, which feed made-up densities,
+// and the file's own, as matrices: the library itself never takes a whole matrix.
+static inline bool qm_test_dmat_from_matrix_at(md_gto_dmat_t* dm, const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
+                                               const double* D, double cutoff, double margin, md_allocator_i* alloc) {
+    const md_gto_dmat_desc_t desc = { .basis = basis, .atom_xyz = atom_xyz, .atom_xyz_stride = atom_xyz_stride, .cutoff = cutoff, .margin = margin };
     if (!md_gto_dmat_init(dm, &desc, alloc)) return false;
-    if (dm->num_tiles != (uint64_t)dm->nt * (dm->nt + 1) / 2) return false;
-    dm->tiles = (double*)md_alloc(alloc, sizeof(double) * 256 * dm->num_tiles);
+    dm->tiles = (double*)md_alloc(alloc, MD_MAX(sizeof(double) * 256 * dm->num_tiles, 1));   // as md_gto_dmat_free frees it
     if (!dm->tiles) return false;
     const size_t n = dm->num_ao;
     for (uint32_t I = 0; I < dm->nt; ++I) {
@@ -280,6 +280,13 @@ static inline bool qm_test_dmat_from_matrix(md_gto_dmat_t* dm, const md_gto_basi
         }
     }
     return true;
+}
+
+// The same with every tile pair kept (a negligible cutoff, a margin past any test's extent): the whole matrix
+static inline bool qm_test_dmat_from_matrix(md_gto_dmat_t* dm, const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
+                                            const double* D, md_allocator_i* alloc) {
+    if (!qm_test_dmat_from_matrix_at(dm, basis, atom_xyz, atom_xyz_stride, D, 1.0e-300, 1.0e6, alloc)) return false;
+    return dm->num_tiles == (uint64_t)dm->nt * (dm->nt + 1) / 2;
 }
 
 // rho = ao^T D ao (D: n x n, row major, symmetric) from qm_test_ao_at's values

@@ -494,9 +494,12 @@ static void run(const char* path, const opts_t* o, const md_executor_t* ex) {
     pattern_t topo[4];
     int num_topo = 0;
     if (o->topo) {
-        md_topo_gto_desc_t td = { .basis = &src.basis, .atom_xyz = src.xyz, .density_matrix = src.D, .executor = ex };
+        // the whole matrix as tiles: the reach as of the whole D
+        md_gto_dmat_t tdm;
+        const bool tiled = qm_test_dmat_from_matrix(&tdm, &src.basis, src.xyz, 0, src.D, md_get_heap_allocator());
+        md_topo_gto_desc_t td = { .basis = &src.basis, .atom_xyz = src.xyz, .dmat = &tdm, .executor = ex };
         md_topo_gto_reach_t reach;
-        if (md_topo_gto_reach(&reach, &td, md_get_heap_allocator()) && reach.num_shells == S.ns) {
+        if (tiled && md_topo_gto_reach(&reach, &td, md_get_heap_allocator()) && reach.num_shells == S.ns) {
             printf("  topology (md_topo_gto_reach, setup %.0f ms): tau %.2e, rung %u, region margin %.2f bohr (CPU cubes alone %.2f)\n",
                    reach.ms_setup, reach.tau, reach.screening_rung, reach.region_margin, reach.region_margin_cpu);
             double rl_max = 0, rf_max = 0;
@@ -514,6 +517,7 @@ static void run(const char* path, const opts_t* o, const md_executor_t* ex) {
         } else {
             printf("  topology: md_topo_gto_reach failed\n\n");
         }
+        md_gto_dmat_free(&tdm);
     }
 
     // D-weighted: the bounds of every pair, then a pattern per delta

@@ -139,13 +139,17 @@ bool md_topo_gpu_context_extract(md_topo_extremum_graph_t* out_graph, md_topo_gp
 // the executor (returns false, info.cancelled).
 
 struct md_gto_basis_t;
+struct md_gto_dmat_t;
 struct md_executor_t;
 
 typedef struct md_topo_gto_desc_t {
     const struct md_gto_basis_t* basis;  // Cartesian basis, md_gto conventions
     const float*  atom_xyz;              // atom positions in Bohr, indexed by shell.atom_idx
     size_t        atom_xyz_stride;       // bytes between positions, 0 = packed float[3]
-    const double* density_matrix;        // [num_ao * num_ao] row major, Cartesian AO order of the basis
+    const struct md_gto_dmat_t* dmat;    // D: the density's tiles over the basis (md_gto_dmat.h). The search certifies the
+                                         // critical points of the density they hold; at viamd's cutoff (1e-6, margin 1)
+                                         // a 1152 atom protein's are those of its whole matrix to 1e-11 Bohr
+                                         // (md_topo_gto_bench --tiles)
     double        rho_min;               // only critical points with rho >= rho_min are sought (0 -> 1e-4)
     double        h_min;                 // smallest cube half-width before a cube is reported unresolved (0 -> 1e-4 Bohr)
     double        h_root;                // root cube half-width (0 -> 1 Bohr)
@@ -200,8 +204,8 @@ typedef struct md_topo_gto_info_t {
     uint64_t num_gpu_box_evals;          // cubes decided (or handed over) by the GPU; included in num_box_evals
     uint32_t num_escalated_boxes;        // cubes fp32 could not decide, finished on the CPU with their subtree
     uint32_t num_gpu_dispatches;
-    uint64_t gpu_density_bytes;          // D on the device: dense, or (when that takes at most half) the 16 x 16 tiles of
-                                         // the AO pairs that can meet in a local list, and their map
+    uint64_t gpu_density_bytes;          // D on the device: the 16 x 16 tiles (the basis' AO order) of the AO pairs that
+                                         // can meet in a local list and that the density's tiles keep, and their map
     // Wall-clock milliseconds per phase. ms_sweep is the whole octree sweep; the three after it are parts of it.
     double   ms_setup;                   // tables, screening radii, domain
     double   ms_sweep;
@@ -244,8 +248,8 @@ bool md_topo_compute_extremum_graph_gto(md_topo_extremum_graph_t* out_graph, md_
 // and a polish's point list (CP positions as if nothing were left out) only where
 //     |A_s - A_t| <= radius_far[s] + radius_far[t].
 // Every other pair enters only through the tail bounds, which take |D| over whole rows in setup. The GPU sweep's
-// D tiles are made with radius_far + region_margin today (a superset of both). For measurements: what a stored
-// sparse density matrix must hold for the search to read only what it holds (benchmark/bench_dmat_census.c).
+// D tiles are made with radius_far + region_margin (a superset of both). For measurements: how far the search
+// reads, beyond what the density's tiles keep (benchmark/bench_dmat_census.c).
 typedef struct md_topo_gto_reach_t {
     uint32_t num_shells;
     double*  radius_local;       // [num_shells] bohr: the local radius (the rung chosen in setup)
@@ -257,7 +261,7 @@ typedef struct md_topo_gto_reach_t {
     double   ms_setup;
 } md_topo_gto_reach_t;
 
-// desc as for md_topo_compute_extremum_graph_gto (the density matrix is read: tau depends on it). The arrays are
+// desc as for md_topo_compute_extremum_graph_gto (the density's tiles are read: tau depends on them). The arrays are
 // allocated from alloc; release with md_topo_gto_reach_free.
 bool md_topo_gto_reach(md_topo_gto_reach_t* out, const md_topo_gto_desc_t* desc, struct md_allocator_i* alloc);
 void md_topo_gto_reach_free(md_topo_gto_reach_t* reach, struct md_allocator_i* alloc);

@@ -682,6 +682,7 @@ void md_topo_extremum_graph_copy(md_topo_extremum_graph_t* out_graph, const md_t
 // those notes are not in the tree) are not implemented.
 
 #include <md_gto.h>
+#include <md_gto_dmat.h>
 #include <core/md_os.h>
 #include <core/md_common.h>
 #include <math.h>
@@ -737,7 +738,12 @@ typedef struct cpg_ctx_t {
     double* coeff;
     int    (*ao_ijk)[3];
     double* ao_nrm;
-    const double* D;
+    // D: the density's tiles (md_gto_dmat_t, symmetric), read through cpg_d. dmap: the entry of the tile pair
+    // (min(I, J), max(I, J)) at [I dnt + J] for both orders, -1 where it is not kept (0 in D)
+    const md_gto_dmat_t* dm;
+    const uint32_t* tao;        // AO (the basis order) -> tiled AO
+    int32_t* dmap;
+    int      dnt;
     double tail_rho, tail_g, tail_H;    // every shell beyond its far radius, at once (the global tails)
     double tau;
     // Screening by region: a shell is local to a cube or batch within rung_loc's radius; between that and
@@ -756,8 +762,12 @@ typedef struct cpg_ctx_t {
 } cpg_ctx_t;
 
 // Per-thread scratch; the context above is shared and read-only once set up.
+#define CPG_DROWS 8     // rows of D gathered at once (cpg_point_r)
+
 typedef struct cpg_scratch_t {
     int*    L;          // local AO list
+    uint32_t* TL;       // its AOs' places in the tiles' order (ctx->tao)
+    double* drow;       // [CPG_DROWS * N] rows of D over the local list, gathered from the tiles
     int*    shells;     // local shell list
     double* V;          // [n][CPG_NV]
     double* Dv;         // [n][CPG_NDV]
@@ -777,6 +787,36 @@ typedef struct cpg_scratch_t {
     double* tc_B;       // [tc_n * tc_n] row-major: B[i n + j] = D[L[i]][L[j]]
     size_t  tc_cap;     // doubles allocated for tc_B
 } cpg_scratch_t;
+
+// D between the AOs at tiled places ti and tj (ctx->tao): 0 for a pair the tiles do not keep
+static inline double cpg_d(const cpg_ctx_t* ctx, uint32_t ti, uint32_t tj) {
+    const uint32_t I = ti >> 4, J = tj >> 4;
+    const int32_t e = ctx->dmap[(size_t)I * ctx->dnt + J];
+    if (e < 0) return 0.0;
+    const double* t = ctx->dm->tiles + 256 * (size_t)e;
+    return I <= J ? t[(ti & 15) * 16 + (tj & 15)] : t[(tj & 15) * 16 + (ti & 15)];
+}
+
+// The row of D of the AO at tiled place ti over n AOs at tiled places TL: out[j] = D(ti, TL[j]). A local list
+// holds a shell's AOs one after the other, together in the tiles' order too: the tile is looked up as it changes.
+static inline void cpg_drow(const cpg_ctx_t* ctx, uint32_t ti, const uint32_t* TL, int n, double* out) {
+    const uint32_t I = ti >> 4, a = ti & 15;
+    const int32_t* m = ctx->dmap + (size_t)I * ctx->dnt;
+    const double* tiles = ctx->dm->tiles;
+    uint32_t last = UINT32_MAX;
+    const double* t = NULL;     // the tile's row a (I <= J), or its column a (I > J)
+    uint32_t step = 0;
+    for (int j = 0; j < n; ++j) {
+        const uint32_t tj = TL[j], J = tj >> 4;
+        if (J != last) {
+            last = J;
+            const int32_t e = m[J];
+            t = e < 0 ? NULL : tiles + 256 * (size_t)e + (I <= J ? a * 16 : a);
+            step = I <= J ? 1 : 16;
+        }
+        out[j] = t ? t[(tj & 15) * step] : 0.0;
+    }
+}
 
 // A cube c +- h and its 1.5x cube c +- 1.5h, from one local AO list screened against the latter.
 typedef struct cpg_eval_t {
@@ -1194,7 +1234,7 @@ static int cpg_local_aos_region(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const d
         const int m = cpg_screen_rung(ctx, s, cpg_box_dist2(s->A, c, h));
         if (m < 0) {
             sc->shells[ns++] = si;
-            for (int ci = 0; ci < s->ncart; ++ci) sc->L[n++] = (int)s->ao_offset + ci;
+            for (int ci = 0; ci < s->ncart; ++ci) { sc->TL[n] = ctx->tao[s->ao_offset + ci]; sc->L[n++] = (int)s->ao_offset + ci; }
         } else if (m > 0) {
             for (int k = 0; k < 3; ++k) t[k] += ctx->rung_tau[m] * s->tw[k];
         }
@@ -1216,7 +1256,7 @@ static int cpg_local_aos(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const double c
         const double r = trace ? s->radius_trace : s->radius;
         if (cpg_box_dist2(s->A, c, h) < r * r) {
             sc->shells[ns++] = si;
-            for (int ci = 0; ci < s->ncart; ++ci) sc->L[n++] = (int)s->ao_offset + ci;
+            for (int ci = 0; ci < s->ncart; ++ci) { sc->TL[n] = ctx->tao[s->ao_offset + ci]; sc->L[n++] = (int)s->ao_offset + ci; }
         }
     }
     *out_num_shells = ns;
@@ -1238,34 +1278,32 @@ static void cpg_point_r(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const double x[
         k += s->ncart;
     }
     // D V for the channels needed (1 for the gradient, 4 for the Hessian). With one channel a row's sum
-    // is a single chain of dependent adds; CPG_PT_ROWS rows at a time keep that many chains in flight
-    // (separatrices: ~5x in the matrix form). Each row still sums over j in order: the same result.
+    // is a single chain of dependent adds; CPG_DROWS rows at a time keep that many chains in flight
+    // (separatrices: ~5x in the matrix form). Each row still sums over j in order: the same result. The rows
+    // are gathered from the tiles over the local list first.
     const int ndv = deriv >= 2 ? 4 : 1;
-    #define CPG_PT_ROWS 8
-    for (int i0 = 0; i0 < n; i0 += CPG_PT_ROWS) {
-        const int nr = MD_MIN(CPG_PT_ROWS, n - i0);
-        double acc[CPG_PT_ROWS][4] = {{0}};
-        const double* row[CPG_PT_ROWS];
-        for (int t = 0; t < CPG_PT_ROWS; ++t) row[t] = ctx->D + (size_t)sc->L[i0 + MD_MIN(t, nr - 1)] * ctx->nao;
+    for (int i0 = 0; i0 < n; i0 += CPG_DROWS) {
+        const int nr = MD_MIN(CPG_DROWS, n - i0);
+        double acc[CPG_DROWS][4] = {{0}};
+        const double* row[CPG_DROWS];
+        for (int t = 0; t < nr; ++t) cpg_drow(ctx, sc->TL[i0 + t], sc->TL, n, sc->drow + (size_t)t * n);
+        for (int t = 0; t < CPG_DROWS; ++t) row[t] = sc->drow + (size_t)MD_MIN(t, nr - 1) * n;
         if (ndv == 1) {
             for (int j = 0; j < n; ++j) {
-                const int lj = sc->L[j];
                 const double v0 = sc->V[(size_t)j * CPG_NV];
-                for (int t = 0; t < CPG_PT_ROWS; ++t) acc[t][0] += row[t][lj] * v0;
+                for (int t = 0; t < CPG_DROWS; ++t) acc[t][0] += row[t][j] * v0;
             }
         } else {
             for (int j = 0; j < n; ++j) {
-                const int lj = sc->L[j];
                 const double* v = sc->V + (size_t)j * CPG_NV;
-                for (int t = 0; t < CPG_PT_ROWS; ++t) {
-                    const double d = row[t][lj];
+                for (int t = 0; t < CPG_DROWS; ++t) {
+                    const double d = row[t][j];
                     for (int m = 0; m < 4; ++m) acc[t][m] += d * v[m];
                 }
             }
         }
         for (int t = 0; t < nr; ++t) for (int m = 0; m < ndv; ++m) sc->Dv[(size_t)(i0 + t) * CPG_NDV + m] = acc[t][m];
     }
-    #undef CPG_PT_ROWS
     double r = 0.0, gg[3] = {0, 0, 0}, HH[3][3] = {{0}};
     for (int i = 0; i < n; ++i) {
         const double* v = sc->V + (size_t)i * CPG_NV;
@@ -1313,14 +1351,15 @@ static void cpg_box_eval(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const double c
     const double* Er = sc->E;
     {
         // D-products Dv = D V (all 20 channels) and the |D| products Q[i*8 + .]: 0 |D|E1, 1 |D|E2,
-        // 2 |D|E3, 3..5 |D|Ea2, in one pass over the local rows of D (read in place: no n x n copy,
-        // which was the per-thread scratch's N^2 for a large basis)
+        // 2 |D|E3, 3..5 |D|Ea2, in one pass over the local rows of D (each gathered from the tiles over the
+        // local list: no n x n copy, which was the per-thread scratch's N^2 for a large basis)
         for (int i = 0; i < n; ++i) {
-            const double* row = ctx->D + (size_t)sc->L[i] * ctx->nao;
+            double* row = sc->drow;
+            cpg_drow(ctx, sc->TL[i], sc->TL, n, row);
             double acc[CPG_NDV] = {0};
             double q[6] = {0};
             for (int j = 0; j < n; ++j) {
-                const double d = row[sc->L[j]];
+                const double d = row[j];
                 const double* v = sc->V + (size_t)j * CPG_NV;
                 for (int m = 0; m < CPG_NDV; ++m) acc[m] += d * v[m];
                 const double ad = fabs(d);
@@ -1582,9 +1621,8 @@ static void cpg_point_trace(const cpg_ctx_t* ctx, cpg_scratch_t* sc, const doubl
         md_memcpy(sc->tc_L, sc->L, sizeof(int) * n);
         md_memcpy(sc->tc_shells, sc->shells, sizeof(int) * ns);
         for (int i = 0; i < n; ++i) {     // the upper triangle (read as symmetric below)
-            const double* row = ctx->D + (size_t)sc->tc_L[i] * ctx->nao;
             double* b = sc->tc_B + (size_t)i * n;
-            for (int j = i; j < n; ++j) b[j] = row[sc->tc_L[j]];
+            cpg_drow(ctx, sc->TL[i], sc->TL + i, n - i, b + i);
         }
         sc->tc_n = n;
         sc->tc_ns = ns;
@@ -2038,6 +2076,8 @@ static int cpg_rootrec_cmp(const void* pa, const void* pb) {
 
 static void cpg_scratch_alloc(cpg_scratch_t* sc, int N, int nshell, md_allocator_i* heap) {
     sc->L      = (int*)md_alloc(heap, sizeof(int) * N);
+    sc->TL     = (uint32_t*)md_alloc(heap, sizeof(uint32_t) * N);
+    sc->drow   = (double*)md_alloc(heap, sizeof(double) * CPG_DROWS * N);
     sc->shells = (int*)md_alloc(heap, sizeof(int) * (nshell + 1));
     sc->V      = (double*)md_alloc(heap, sizeof(double) * N * CPG_NV);
     sc->Dv     = (double*)md_alloc(heap, sizeof(double) * N * CPG_NDV);
@@ -2059,6 +2099,8 @@ static void cpg_scratch_free(cpg_scratch_t* sc, int N, int nshell, md_allocator_
     md_free(heap, sc->Dv, sizeof(double) * N * CPG_NDV);
     md_free(heap, sc->V,  sizeof(double) * N * CPG_NV);
     md_free(heap, sc->shells, sizeof(int) * (nshell + 1));
+    md_free(heap, sc->drow, sizeof(double) * CPG_DROWS * N);
+    md_free(heap, sc->TL, sizeof(uint32_t) * N);
     md_free(heap, sc->L,  sizeof(int) * N);
 }
 
@@ -2151,14 +2193,29 @@ static double cpg_pad_bound(const cpg_ctx_t* ctx, double pad, const double* M, i
             b += T[k] * s;
         }
     } else {
-        const int N = ctx->nao;
         for (int si = 0; si < ctx->nshell; ++si) {
             const cpg_shell_t* sh = &ctx->shell[si];
             for (int ci = 0; ci < sh->ncart; ++ci) T[sh->ao_offset + ci] = cpg_tail_ao(ctx, sh, ci, 0, pad);
         }
-        for (int i = 0; i < N; ++i) {
-            if (T[i] == 0.0) continue;
-            for (int j = 0; j < N; ++j) b += T[i] * fabs(ctx->D[(size_t)i * N + j]) * T[j];
+        // over the kept tiles, an off-diagonal one for both orders
+        const md_gto_dmat_t* dm = ctx->dm;
+        for (uint32_t I = 0; I < dm->nt; ++I) {
+            for (uint64_t e = dm->row_ptr[I]; e < dm->row_ptr[I + 1]; ++e) {
+                const uint32_t J = dm->cols[e];
+                const double* t = dm->tiles + 256 * e;
+                double s = 0.0;
+                for (uint32_t a = 0; a < 16; ++a) {
+                    const int32_t i = dm->perm[16 * I + a];
+                    if (i < 0 || T[i] == 0.0) continue;
+                    double u = 0.0;
+                    for (uint32_t c = 0; c < 16; ++c) {
+                        const int32_t j = dm->perm[16 * J + c];
+                        if (j >= 0) u += fabs(t[a * 16 + c]) * T[j];
+                    }
+                    s += T[i] * u;
+                }
+                b += I == J ? s : 2.0 * s;
+            }
         }
     }
     return b;
@@ -2222,9 +2279,28 @@ static void cpg_run_init(cpg_run_t* R, const md_topo_gto_desc_t* desc) {
     if (!ok) {
         MD_LOG_ERROR("md_topo_compute_extremum_graph_gto: unsupported shell (l > %d or more than %d primitives)", CPG_LMAX, CPG_MAXPRIM);
     }
-    ctx->D = desc->density_matrix;
     const int N = ctx->nao;
     const int NS = ctx->nshell;
+    // D: the tiles, and the map of their tile pairs for reading an entry at once (cpg_d)
+    const md_gto_dmat_t* dm = desc->dmat;
+    if (ok && (!dm->tiles || (int)dm->num_ao != N || (int)dm->num_shells != NS)) {
+        MD_LOG_ERROR("md_topo_compute_extremum_graph_gto: the density's tiles are of another basis (%u AOs, %u shells; the basis %d, %d), or not built",
+                     dm->num_ao, dm->num_shells, N, NS);
+        ok = false;
+    }
+    if (ok) {
+        ctx->dm = dm;
+        ctx->tao = dm->tao;
+        ctx->dnt = (int)dm->nt;
+        ctx->dmap = (int32_t*)md_alloc(heap, sizeof(int32_t) * (size_t)dm->nt * dm->nt);
+        for (size_t k = 0; k < (size_t)dm->nt * dm->nt; ++k) ctx->dmap[k] = -1;
+        for (uint32_t I = 0; I < dm->nt; ++I) {
+            for (uint64_t e = dm->row_ptr[I]; e < dm->row_ptr[I + 1]; ++e) {
+                const uint32_t J = dm->cols[e];
+                ctx->dmap[(size_t)I * dm->nt + J] = ctx->dmap[(size_t)J * dm->nt + I] = (int32_t)e;
+            }
+        }
+    }
 
     R->workers = (cpg_worker_t*)md_alloc(heap, sizeof(cpg_worker_t) * nthreads);
     md_memset(R->workers, 0, sizeof(cpg_worker_t) * nthreads);
@@ -2291,15 +2367,27 @@ static void cpg_run_init(cpg_run_t* R, const md_topo_gto_desc_t* desc) {
     // below tau: the global tails.
     double* Ri = (double*)md_alloc(heap, sizeof(double) * 3 * (size_t)N);
     md_memset(Ri, 0, sizeof(double) * 3 * (size_t)N);
-    for (int i = 0; i < N; ++i) {
-        const double* Drow = ctx->D + (size_t)i * N;
-        double r0 = 0.0, r1 = 0.0, r2 = 0.0;
-        for (int j = 0; j < N; ++j) {
-            const double d = fabs(Drow[j]);
-            const double* pm = phimax + ao_key[j] * 3;
-            r0 += d * pm[0]; r1 += d * pm[1]; r2 += d * pm[2];
+    // over the kept tiles: an entry of an off-diagonal tile is in row i and, as D_ji, in row j
+    for (uint32_t I = 0; I < dm->nt; ++I) {
+        for (uint64_t e = dm->row_ptr[I]; e < dm->row_ptr[I + 1]; ++e) {
+            const uint32_t J = dm->cols[e];
+            const double* t = dm->tiles + 256 * e;
+            for (uint32_t a = 0; a < 16; ++a) {
+                const int32_t i = dm->perm[16 * I + a];
+                if (i < 0) continue;
+                for (uint32_t c = 0; c < 16; ++c) {
+                    const int32_t j = dm->perm[16 * J + c];
+                    if (j < 0) continue;
+                    const double d = fabs(t[a * 16 + c]);
+                    const double* pj = phimax + ao_key[j] * 3;
+                    Ri[3 * i + 0] += d * pj[0]; Ri[3 * i + 1] += d * pj[1]; Ri[3 * i + 2] += d * pj[2];
+                    if (I != J) {
+                        const double* pi = phimax + ao_key[i] * 3;
+                        Ri[3 * j + 0] += d * pi[0]; Ri[3 * j + 1] += d * pi[1]; Ri[3 * j + 2] += d * pi[2];
+                    }
+                }
+            }
         }
-        Ri[3 * i + 0] = r0; Ri[3 * i + 1] = r1; Ri[3 * i + 2] = r2;
     }
     md_free(heap, phimax, sizeof(double) * K * 3);
     double Rs[3] = {0, 0, 0};
@@ -2400,9 +2488,22 @@ static void cpg_run_init(cpg_run_t* R, const md_topo_gto_desc_t* desc) {
     double* T0 = (double*)md_alloc(heap, sizeof(double) * NT);
     if (by_key) {
         md_memset(M, 0, sizeof(double) * (size_t)K * K);
-        for (int i = 0; i < N; ++i) {
-            double* Mi = M + (size_t)ao_key[i] * K;
-            for (int j = 0; j < N; ++j) Mi[ao_key[j]] += fabs(ctx->D[(size_t)i * N + j]);
+        for (uint32_t I = 0; I < dm->nt; ++I) {
+            for (uint64_t e = dm->row_ptr[I]; e < dm->row_ptr[I + 1]; ++e) {
+                const uint32_t J = dm->cols[e];
+                const double* t = dm->tiles + 256 * e;
+                for (uint32_t a = 0; a < 16; ++a) {
+                    const int32_t i = dm->perm[16 * I + a];
+                    if (i < 0) continue;
+                    for (uint32_t c = 0; c < 16; ++c) {
+                        const int32_t j = dm->perm[16 * J + c];
+                        if (j < 0) continue;
+                        const double d = fabs(t[a * 16 + c]);
+                        M[(size_t)ao_key[i] * K + ao_key[j]] += d;
+                        if (I != J) M[(size_t)ao_key[j] * K + ao_key[i]] += d;
+                    }
+                }
+            }
         }
     }
     double plo = 0.0, phi = 1.0;
@@ -2797,6 +2898,7 @@ static void cpg_run_free(cpg_run_t* R) {
     if (R->gpu) cpg_gpu_keep_free(R);
 #endif
     if (R->tile_need) md_free(heap, R->tile_need, sizeof(uint64_t) * (size_t)R->ntiles * R->tile_words);
+    if (ctx->dmap) md_free(heap, ctx->dmap, sizeof(int32_t) * (size_t)ctx->dnt * ctx->dnt);
     md_free(heap, ctx->ao_nrm, sizeof(double) * N);
     md_free(heap, ctx->ao_ijk, sizeof(int[3]) * N);
     md_free(heap, ctx->coeff, sizeof(double) * basis->num_primitives);
@@ -2807,8 +2909,8 @@ static void cpg_run_free(cpg_run_t* R) {
 }
 
 static bool cpg_check_desc(const md_topo_gto_desc_t* desc, const char* fn) {
-    if (!desc->basis || !desc->atom_xyz || !desc->density_matrix) {
-        MD_LOG_ERROR("%s: basis, atom_xyz and density_matrix are required", fn);
+    if (!desc->basis || !desc->atom_xyz || !desc->dmat) {
+        MD_LOG_ERROR("%s: basis, atom_xyz and dmat are required", fn);
         return false;
     }
     return true;
@@ -2908,7 +3010,7 @@ typedef struct cpg_gpu_args_t {
     float    h_min;
     uint32_t chunk_seq;
     uint32_t pad_seq;
-    uint32_t dt_n;              // 0: D dense; else D in 16 x 16 tiles, dt_n tiles per row of dt_map
+    uint32_t dt_n;              // D in 16 x 16 tiles, dt_n tiles per row of dt_map (0, D dense, is no longer made)
     uint32_t dt_pad;
     // separatrix tracer (trace_main)
     uint32_t tr_num_paths;
@@ -2933,7 +3035,8 @@ typedef struct cpg_gpu_args_t {
     md_gpu_addr_t ep;
     md_gpu_addr_t outcome;
     md_gpu_addr_t ao_order;
-    md_gpu_addr_t dt_map;       // dt_n x dt_n: the slot of tile (I, J) in D, 0 (all NaN) where no pair meets
+    md_gpu_addr_t dt_map;       // dt_n x dt_n: the slot of tile (I, J) in D, 0 (all NaN) where no pair meets, 1 (all 0) where
+                                // they meet but the density's tiles keep none of its pairs
     md_gpu_addr_t tr_paths;
     md_gpu_addr_t tr_slots;
     md_gpu_addr_t tr_queue;
@@ -3218,50 +3321,90 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
         fn[i] = (float)ctx->ao_nrm[i];
         ijk[i] = (uint32_t)ctx->ao_ijk[i][0] | ((uint32_t)ctx->ao_ijk[i][1] << 8) | ((uint32_t)ctx->ao_ijk[i][2] << 16);
     }
-    // D, dense or, when they take at most half the dense size, in 16 x 16 tiles of the AO pairs that meet
-    // (cpg_run_init's tile map: every pair any batch's local list holds lies in one), each tile row-major
-    // at 256 * its slot. Slot 0 is all NaN: by the map's construction gemm_main never reads it; if it did,
-    // the NaN would fail the cube's tests rather than pass them as a zero would.
+    // D in 16 x 16 tiles of the basis' AO order, of the AO pairs that meet (cpg_run_init's tile map: every pair any
+    // batch's local list holds lies in one), each row-major at 256 * its slot, filled from the density's tiles (a
+    // pair they do not keep is 0). Slot 0 is all NaN: by the map's construction gemm_main never reads it; if it
+    // did, the NaN would fail the cube's tests rather than pass them as a zero would. Slot 1 is all 0, shared by
+    // every tile the map needs that holds no pair the density's tiles keep.
     const int dtn = R->ntiles, dtw = R->tile_words;
-    size_t dt_kept = 0;
-    for (size_t w = 0; w < (size_t)dtn * dtw; ++w) dt_kept += (size_t)md_popcnt64(R->tile_need[w]);
-    const size_t dense_floats = (size_t)N * N, tiled_floats = (dt_kept + 1) * CPG_DTILE * CPG_DTILE + (size_t)dtn * dtn;
-    const bool dt_on = 2 * tiled_floats <= dense_floats && (size_t)dtn * dtn < (1ull << 31) && dt_kept + 1 < (1ull << 24);
-    const size_t fD_count = dt_on ? (dt_kept + 1) * CPG_DTILE * CPG_DTILE : dense_floats;
-    float* fD = (float*)md_alloc(heap, sizeof(float) * fD_count);
-    uint32_t* dt_map = dt_on ? (uint32_t*)md_alloc(heap, sizeof(uint32_t) * (size_t)dtn * dtn) : NULL;
-    if (dt_on) {
-        uint32_t slot = 1;
-        for (int k = 0; k < CPG_DTILE * CPG_DTILE; ++k) fD[k] = NAN;
-        for (int I = 0; I < dtn; ++I) for (int J = 0; J < dtn; ++J) {
-            if (!(R->tile_need[(size_t)I * dtw + J / 64] & (1ull << (J % 64)))) { dt_map[(size_t)I * dtn + J] = 0; continue; }
-            float* t = fD + (size_t)slot * CPG_DTILE * CPG_DTILE;
-            for (int u = 0; u < CPG_DTILE; ++u) for (int v = 0; v < CPG_DTILE; ++v) {
-                const int i = I * CPG_DTILE + u, j = J * CPG_DTILE + v;
-                t[u * CPG_DTILE + v] = i < N && j < N ? (float)ctx->D[(size_t)i * N + j] : 0.0f;
+    const md_gto_dmat_t* dm = ctx->dm;
+    // the tiles that hold a kept pair: of each kept entry, its tile and its mirror's
+    uint64_t* nz = (uint64_t*)md_alloc(heap, sizeof(uint64_t) * (size_t)dtn * dtw);
+    md_memset(nz, 0, sizeof(uint64_t) * (size_t)dtn * dtw);
+    for (uint32_t I = 0; I < dm->nt; ++I) {
+        for (uint64_t e = dm->row_ptr[I]; e < dm->row_ptr[I + 1]; ++e) {
+            const uint32_t J = dm->cols[e];
+            for (uint32_t u = 0; u < 16; ++u) {
+                const int32_t i = dm->perm[16 * I + u];
+                if (i < 0) continue;
+                for (uint32_t v = 0; v < 16; ++v) {
+                    const int32_t j = dm->perm[16 * J + v];
+                    if (j < 0) continue;
+                    const int bi = i / CPG_DTILE, bj = j / CPG_DTILE;
+                    nz[(size_t)bi * dtw + bj / 64] |= 1ull << (bj % 64);
+                    nz[(size_t)bj * dtw + bi / 64] |= 1ull << (bi % 64);
+                }
             }
+        }
+    }
+    size_t dt_kept = 0;
+    for (size_t w = 0; w < (size_t)dtn * dtw; ++w) dt_kept += (size_t)md_popcnt64(R->tile_need[w] & nz[w]);
+    const size_t fD_count = (dt_kept + 2) * CPG_DTILE * CPG_DTILE;
+    bool dt_ok = (size_t)dtn * dtn < (1ull << 31) && dt_kept + 2 < (1ull << 24);
+    if (!dt_ok) MD_LOG_ERROR("md_topo_compute_extremum_graph_gto_gpu: D in %zu tiles of a %d x %d map, more than the kernels index", dt_kept, dtn, dtn);
+    float* fD = dt_ok ? (float*)md_alloc(heap, sizeof(float) * fD_count) : NULL;
+    uint32_t* dt_map = dt_ok ? (uint32_t*)md_alloc(heap, sizeof(uint32_t) * (size_t)dtn * dtn) : NULL;
+    if (dt_ok) {
+        uint32_t slot = 2;
+        for (int k = 0; k < CPG_DTILE * CPG_DTILE; ++k) { fD[k] = NAN; fD[CPG_DTILE * CPG_DTILE + k] = 0.0f; }
+        for (int I = 0; I < dtn; ++I) for (int J = 0; J < dtn; ++J) {
+            const uint64_t bit = 1ull << (J % 64);
+            const size_t w = (size_t)I * dtw + J / 64;
+            if (!(R->tile_need[w] & bit)) { dt_map[(size_t)I * dtn + J] = 0; continue; }
+            if (!(nz[w] & bit)) { dt_map[(size_t)I * dtn + J] = 1; continue; }
+            md_memset(fD + (size_t)slot * CPG_DTILE * CPG_DTILE, 0, sizeof(float) * CPG_DTILE * CPG_DTILE);
             dt_map[(size_t)I * dtn + J] = slot++;
         }
-    } else {
-        for (size_t i = 0; i < dense_floats; ++i) fD[i] = (float)ctx->D[i];
+        // the kept entries into their tiles, an off-diagonal tile's also as its mirror D_ji
+        for (uint32_t I = 0; I < dm->nt; ++I) {
+            for (uint64_t e = dm->row_ptr[I]; e < dm->row_ptr[I + 1]; ++e) {
+                const uint32_t J = dm->cols[e];
+                const double* t = dm->tiles + 256 * e;
+                for (uint32_t u = 0; u < 16; ++u) {
+                    const int32_t i = dm->perm[16 * I + u];
+                    if (i < 0) continue;
+                    for (uint32_t v = 0; v < 16; ++v) {
+                        const int32_t j = dm->perm[16 * J + v];
+                        if (j < 0) continue;
+                        const float d = (float)t[u * 16 + v];
+                        const uint32_t sl = dt_map[(size_t)(i / CPG_DTILE) * dtn + j / CPG_DTILE];
+                        if (sl >= 2) fD[(size_t)sl * CPG_DTILE * CPG_DTILE + (i % CPG_DTILE) * CPG_DTILE + j % CPG_DTILE] = d;
+                        if (I == J) continue;
+                        const uint32_t sm = dt_map[(size_t)(j / CPG_DTILE) * dtn + i / CPG_DTILE];
+                        if (sm >= 2) fD[(size_t)sm * CPG_DTILE * CPG_DTILE + (j % CPG_DTILE) * CPG_DTILE + i % CPG_DTILE] = d;
+                    }
+                }
+            }
+        }
     }
-    R->info.gpu_density_bytes = sizeof(float) * fD_count + (dt_on ? sizeof(uint32_t) * (size_t)dtn * dtn : 0);
+    md_free(heap, nz, sizeof(uint64_t) * (size_t)dtn * dtw);
+    R->info.gpu_density_bytes = dt_ok ? sizeof(float) * fD_count + sizeof(uint32_t) * (size_t)dtn * dtn : 0;
 
     cpg_gpu_args_t a = {0};
     a.num_shells = (uint32_t)NS;
     a.num_ao = (uint32_t)N;
     a.eps = (float)ctx->eps;            // a threshold, not a rigorous quantity
     a.h_min = (float)R->h_min;
-    a.dt_n = dt_on ? (uint32_t)dtn : 0u;
+    a.dt_n = (uint32_t)dtn;
 
-    bool ok = cpg_gpu_upload(stream, &a.shells, sh, sizeof(cpg_gpu_shell_t) * NS)
+    bool ok = dt_ok && cpg_gpu_upload(stream, &a.shells, sh, sizeof(cpg_gpu_shell_t) * NS)
            && cpg_gpu_upload(stream, &a.alpha, fa, sizeof(float) * NP)
            && cpg_gpu_upload(stream, &a.coeff, fc, sizeof(float) * NP)
            && cpg_gpu_upload(stream, &a.ao_nrm, fn, sizeof(float) * N)
            && cpg_gpu_upload(stream, &a.ao_ijk, ijk, sizeof(uint32_t) * N)
            && cpg_gpu_upload(stream, &a.D, fD, sizeof(float) * fD_count)
-           && (!dt_on || cpg_gpu_upload(stream, &a.dt_map, dt_map, sizeof(uint32_t) * (size_t)dtn * dtn));
-    md_free(heap, fD, sizeof(float) * fD_count);
+           && cpg_gpu_upload(stream, &a.dt_map, dt_map, sizeof(uint32_t) * (size_t)dtn * dtn);
+    if (fD) md_free(heap, fD, sizeof(float) * fD_count);
     if (dt_map) md_free(heap, dt_map, sizeof(uint32_t) * (size_t)dtn * dtn);
     md_free(heap, ijk, sizeof(uint32_t) * N);
     md_free(heap, fn, sizeof(float) * N);

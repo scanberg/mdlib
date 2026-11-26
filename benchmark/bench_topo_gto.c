@@ -14,8 +14,8 @@
 //                   run then includes the driver's kernel compilation)
 //   --dump <prefix> write each run's critical points to <prefix>.cpu.txt / <prefix>.gpu.txt ("type x y z rho")
 //   --compare <f>   list the critical points that differ from a --dump file (another run, build or machine)
-//   --tiles c[,m]   also search D cut to the tiles of md_gto_dmat_t at cutoff c and margin m (default 1 Bohr):
-//                   every entry outside its pattern 0, as the one tile representation of a density matrix holds it.
+//   --tiles c[,m]   also search D in the tiles of md_gto_dmat_t at cutoff c and margin m (default 1 Bohr), as the one
+//                   tile representation of a density matrix holds it (the runs above: every pair kept).
 //                   One more run on the last path, compared with the whole D's: the critical points (count per
 //                   type, those matched within 1e-3 Bohr, their largest shift in position and relative rho, and
 //                   those only one of the two has)
@@ -63,6 +63,7 @@
 #include <string.h>
 
 #include "../unittest/test_executor.h"   // the benchmark's own threads: mdlib owns none
+#include "../unittest/qm_test_util.h"    // qm_test_dmat_from_matrix(_at): the file's matrix as tiles
 #include "bench_rev.h"     // MD_BENCH_SOURCE_REV, generated at build time by bench_version.cmake
 
 #ifndef MD_BENCHMARK_DATA_DIR
@@ -92,8 +93,10 @@ typedef struct input_t {
     md_system_t       sys;
     md_system_state_t state;
     md_gto_basis_t    basis;
-    double*           density;
-    double*           density_cut;  // --tiles: D with every entry outside the tile pattern 0
+    double*           density;      // the file's matrix: tiled whole into dm (every pair kept), and for the fingerprint
+    md_gto_dmat_t     dm;
+    md_gto_dmat_t     dm_cut;       // --tiles: the tiles at its cutoff and margin, filled from the same matrix
+    bool              have_cut;
     uint64_t          cut_tiles, cut_total;
     float*            xyz;          // Bohr, per basis atom
     size_t            num_atoms;
@@ -194,6 +197,10 @@ static bool input_load(input_t* in, const char* path) {
     }
     in->xyz = (float*)md_alloc(in->alloc, sizeof(float) * 3 * MD_MAX(in->num_atoms, 1));
     for (size_t i = 0; i < 3 * in->num_atoms; ++i) in->xyz[i] = (float)(xyz[i] * ANGSTROM_TO_BOHR);
+    if (!qm_test_dmat_from_matrix(&in->dm, &in->basis, in->xyz, 0, in->density, in->alloc)) {
+        fprintf(stderr, "%s: the density matrix could not be tiled\n", path);
+        return false;
+    }
     return true;
 }
 
@@ -202,27 +209,12 @@ static void input_free(input_t* in) {
     memset(in, 0, sizeof(*in));
 }
 
-// --tiles: D cut to the pattern of md_gto_dmat_t at cutoff, margin (what the one tile representation holds)
+// --tiles: the file's matrix in md_gto_dmat_t's tiles at cutoff and margin (what the one tile representation holds)
 static bool input_cut_to_tiles(input_t* in, double cutoff, double margin) {
-    md_gto_dmat_t dm;
-    const md_gto_dmat_desc_t desc = { .basis = &in->basis, .atom_xyz = in->xyz, .cutoff = cutoff, .margin = margin };
-    if (!md_gto_dmat_init(&dm, &desc, md_get_heap_allocator())) return false;
-    const size_t n = in->num_ao, nt = dm.nt;
-    uint8_t* kept = (uint8_t*)calloc(nt * nt, 1);
-    for (uint32_t I = 0; I < nt; ++I) {
-        for (uint64_t e = dm.row_ptr[I]; e < dm.row_ptr[I + 1]; ++e) kept[I * nt + dm.cols[e]] = kept[dm.cols[e] * nt + I] = 1;
-    }
-    in->density_cut = (double*)md_alloc(in->alloc, sizeof(double) * n * n);
-    for (size_t i = 0; i < n; ++i) {
-        const size_t I = dm.tao[i] / 16;
-        for (size_t j = 0; j < n; ++j) {
-            in->density_cut[i * n + j] = kept[I * nt + dm.tao[j] / 16] ? in->density[i * n + j] : 0.0;
-        }
-    }
-    in->cut_tiles = dm.num_tiles;
-    in->cut_total = (uint64_t)nt * (nt + 1) / 2;
-    free(kept);
-    md_gto_dmat_free(&dm);
+    if (!qm_test_dmat_from_matrix_at(&in->dm_cut, &in->basis, in->xyz, 0, in->density, cutoff, margin, in->alloc)) return false;
+    in->have_cut = true;
+    in->cut_tiles = in->dm_cut.num_tiles;
+    in->cut_total = (uint64_t)in->dm_cut.nt * (in->dm_cut.nt + 1) / 2;
     return true;
 }
 
@@ -633,7 +625,7 @@ int main(int argc, char** argv) {
         md_topo_gto_desc_t desc = {
             .basis = &in.basis,
             .atom_xyz = in.xyz,
-            .density_matrix = in.density,
+            .dmat = &in.dm,
             .rho_min = rho_min,
             .h_min = 1.0e-4,
             .trace_separatrices = true,
@@ -733,9 +725,9 @@ int main(int argc, char** argv) {
                 printf("\n");
             }
             // --tiles: once more with the cut D, on the last path asked for, against this path's whole D
-            if (in.density_cut && pass == (want_gpu ? 1 : 0)) {
+            if (in.have_cut && pass == (want_gpu ? 1 : 0)) {
                 md_topo_gto_desc_t cut_desc = desc;
-                cut_desc.density_matrix = in.density_cut;
+                cut_desc.dmat = &in.dm_cut;
                 run_t cut;
                 const bool cut_ok = run_once(&cut, &cut_desc, s);
                 printf("       D cut to the tiles (%s, %.0f ms%s):\n", gpu ? "GPU" : "CPU", cut.ms_total,
