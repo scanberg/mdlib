@@ -908,6 +908,16 @@ static float half_bits_to_float(uint32_t h) {
     return s ? -v : v;
 }
 
+/* A still surface's motion: none. On Metal, whose fast math may round the two projections of a point (now and a
+   frame before) their own ways, a rounding's worth (an M4's: 3e-7 px), far below any a resolve would act on */
+static bool motion_still(double mx, double my) {
+#if MD_GPU_BACKEND_METAL
+    return fabs(mx) < 1e-3 && fabs(my) < 1e-3;
+#else
+    return mx == 0.0 && my == 0.0;
+#endif
+}
+
 static void oct_decode(uint32_t bits, double n[3]) {
     double x = half_bits_to_float(bits & 0xFFFFu), y = half_bits_to_float(bits >> 16), z = 1.0 - fabs(x) - fabs(y);
     if (z < 0) { double px = (1 - fabs(y)) * (x >= 0 ? 1 : -1), py = (1 - fabs(x)) * (y >= 0 ? 1 : -1); x = px; y = py; }
@@ -2470,6 +2480,15 @@ static bool tri_ref_hit(const tri_ref_t* k, ray_t r, double* t, double w[3]) {
     return *t > 0;
 }
 
+/* The view depth of the plane of k where the ray meets it */
+static double tri_ref_plane_depth(const tri_ref_t* k, ray_t r) {
+    double e1[3], e2[3], n[3], a[3];
+    for (int i = 0; i < 3; ++i) { e1[i] = k->q[1][i] - k->q[0][i]; e2[i] = k->q[2][i] - k->q[0][i]; a[i] = k->q[0][i] - r.o[i]; }
+    n[0] = e1[1] * e2[2] - e1[2] * e2[1]; n[1] = e1[2] * e2[0] - e1[0] * e2[2]; n[2] = e1[0] * e2[1] - e1[1] * e2[0];
+    const double t = dot3(a, n) / dot3(r.d, n);
+    return -(r.o[2] + r.d[2] * t);
+}
+
 /* The nearest hit along a ray: its triangle (-1 none), t and weights */
 static int tri_ref_cast(const tri_ref_t* refs, int n, ray_t r, double* t, double w[3]) {
     int best = -1;
@@ -2628,7 +2647,16 @@ UTEST(render, triangles_match_their_mesh) {
             /* depth: the raster's own, within a hundredth of a pixel's depth step at it */
             const double zv = -c.n / dp[i], tp = zv / r.d[2];
             const double dz = fabs(tp - t) * fabs(r.d[2]);
-            const double tol = 1e-5 * -zv;                             /* far more than a float depth's step there */
+            double tol = 1e-5 * -zv;                                   /* far more than a float depth's step there */
+#if MD_GPU_BACKEND_METAL
+            /* and on Metal, whose raster snaps the corners to its sub-pixel grid (taken as a 256th of a pixel; an
+               M4's depths were the plane's a thousandth of a pixel away), the plane's depth over that step */
+            {
+                const double zx = tri_ref_plane_depth(q, pixel_ray(&c, W, H, x + 1.0, y + 0.5)) - tri_ref_plane_depth(q, pixel_ray(&c, W, H, x, y + 0.5));
+                const double zy = tri_ref_plane_depth(q, pixel_ray(&c, W, H, x + 0.5, y + 1.0)) - tri_ref_plane_depth(q, pixel_ray(&c, W, H, x + 0.5, y));
+                tol += fmax(fabs(zx), fabs(zy)) / 256.0;
+            }
+#endif
             worst_depth = fmax(worst_depth, dz / tol);
             if (dz > tol) { bad++; if (bad < 8) printf("    pixel (%u, %u): depth %.6f against %.6f\n", x, y, -zv, t * -r.d[2]); continue; }
             /* the normal: by the weights (smooth) or the plane's, facing the eye */
@@ -2742,7 +2770,7 @@ UTEST(render, triangles_match_their_mesh) {
                 int k = tri_ref_cast(ref, nref, r, &t, w);
                 if (k < 0 || (id[2 * i + 1] >> 20) - 1u != ref[k].slot || id[2 * i] != ref[k].linear) continue;
                 const double mx = half_bits_to_float(mo[i] & 0xFFFFu), my = half_bits_to_float(mo[i] >> 16);
-                if (ref[k].slot != 3) { still += mx == 0.0 && my == 0.0; continue; }
+                if (ref[k].slot != 3) { still += motion_still(mx, my); continue; }
                 /* the hit point, the field there (the batch's transform: a move up by 3.4) */
                 double P[3] = { r.o[0] + r.d[0] * t, r.o[1] + r.d[1] * t, r.o[2] + r.d[2] * t };
                 double d[3] = { P[0] - cc[0], P[1] - 3.4 - cc[1], P[2] - cc[2] };
@@ -3931,6 +3959,28 @@ UTEST(render, compose_slices) {
    compute raster, capsules, triangles, polygons, a spline), the same depth as the full frame of the same scene, and
    the view's targets that depth alone: no ids (not picked), nothing resolved. The same view drawn a full frame
    remakes its targets, and a depth-only one again; a transparent batch is refused. */
+/* Two depth targets of one scene from different pipelines: the pixels that differ. Metal compiles md_render with
+   fast math, which may round each pipeline's copy of a hit its own way: there a pixel differs past a few rounding
+   steps (1e-5 of its depth) where both are covered, or where one alone is, past a silhouette's pixel or so (one
+   in a hundred covered). */
+static int depths_differ(const float* a, const float* b, uint32_t n, int covered) {
+    int differ = 0, flips = 0;
+    for (uint32_t i = 0; i < n; ++i) {
+        if (a[i] == b[i]) continue;
+#if MD_GPU_BACKEND_METAL
+        if (a[i] > 0.0f && b[i] > 0.0f) {
+            differ += fabs((double)a[i] - (double)b[i]) > 1e-5 * fmax(a[i], b[i]);
+        } else {
+            flips++;
+        }
+#else
+        differ++;
+#endif
+    }
+    if (flips) printf("    %d pixels covered in one alone\n", flips);
+    return differ + (flips > covered / 100 ? flips : 0);
+}
+
 UTEST(render, depth_only) {
     fix_t fx;
     if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
@@ -3995,11 +4045,9 @@ UTEST(render, depth_only) {
     EXPECT_TRUE(t1.depth != NULL);
     EXPECT_TRUE(t1.id == NULL && t1.color == NULL && t1.normal == NULL && t1.motion == NULL && t1.mask == NULL);
     ASSERT_TRUE(f_read(&fx, t0.depth, d0, P * 4) && f_read(&fx, t1.depth, d1, P * 4));
-    int covered = 0, differ = 0, kinds = 0;
-    for (uint32_t i = 0; i < P; ++i) {
-        covered += d0[i] > 0.0f;
-        differ += d0[i] != d1[i];
-    }
+    int covered = 0, kinds = 0;
+    for (uint32_t i = 0; i < P; ++i) covered += d0[i] > 0.0f;
+    const int differ = depths_differ(d0, d1, P, covered);
     /* every kind drew some of it: the full frame's ids name each batch */
     uint32_t* i0 = malloc(P * 8);
     ASSERT_TRUE(f_read(&fx, t0.id, i0, P * 8));
@@ -4027,7 +4075,7 @@ UTEST(render, depth_only) {
     t1 = md_render_view_targets(dv);
     EXPECT_TRUE(t1.id == NULL);
     ASSERT_TRUE(f_read(&fx, t1.depth, d1, P * 4));
-    EXPECT_EQ(0, memcmp(d0, d1, P * 4));
+    EXPECT_EQ(0, depths_differ(d0, d1, P, covered));
 
     /* transparent: refused */
     md_render_batch_t bt = b[0];
@@ -5782,11 +5830,11 @@ UTEST(render, motion_of_the_dominant_surface) {
             EXPECT_NEAR(ex, mx, 0.15 * fabs(ex));
             EXPECT_NEAR(ey, my, 0.15 * fabs(ey));
         } else {
-            EXPECT_EQ(0.0, mx);
-            EXPECT_EQ(0.0, my);
+            EXPECT_TRUE(motion_still(mx, my));
         }
         /* outside the transparent sphere: the opaque one's */
-        EXPECT_EQ(0u, mo[(H / 2 + 12) * W + W / 2 - 12]);
+        const uint32_t wo = mo[(H / 2 + 12) * W + W / 2 - 12];
+        EXPECT_TRUE(motion_still(half_to_float(wo & 0xFFFFu), half_to_float(wo >> 16)));
     }
     free(mo);
     f_close(&fx);
