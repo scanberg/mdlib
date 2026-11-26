@@ -14,6 +14,11 @@
 //                   run then includes the driver's kernel compilation)
 //   --dump <prefix> write each run's critical points to <prefix>.cpu.txt / <prefix>.gpu.txt ("type x y z rho")
 //   --compare <f>   list the critical points that differ from a --dump file (another run, build or machine)
+//   --tiles c[,m]   also search D cut to the tiles of md_gto_dmat_t at cutoff c and margin m (default 1 Bohr):
+//                   every entry outside its pattern 0, as the one tile representation of a density matrix holds it.
+//                   One more run on the last path, compared with the whole D's: the critical points (count per
+//                   type, those matched within 1e-3 Bohr, their largest shift in position and relative rho, and
+//                   those only one of the two has)
 //   --profile       also a GPU run that waits for every kernel to time it (per-kernel times, GEMM FLOP/s),
 //                   and the kernels' driver statistics (registers, shared memory) where the driver gives them
 //   --device <sel>  GPU adapter: an index from --list-devices or a case-insensitive part of its name
@@ -37,6 +42,7 @@
 
 #include <md_system.h>
 #include <md_gto.h>
+#include <md_gto_dmat.h>
 #include <md_topo.h>
 #include <md_molden.h>
 #if defined(MD_HDF5)
@@ -87,6 +93,8 @@ typedef struct input_t {
     md_system_state_t state;
     md_gto_basis_t    basis;
     double*           density;
+    double*           density_cut;  // --tiles: D with every entry outside the tile pattern 0
+    uint64_t          cut_tiles, cut_total;
     float*            xyz;          // Bohr, per basis atom
     size_t            num_atoms;
     size_t            num_ao;
@@ -192,6 +200,30 @@ static bool input_load(input_t* in, const char* path) {
 static void input_free(input_t* in) {
     if (in->alloc) md_arena_allocator_destroy(in->alloc);
     memset(in, 0, sizeof(*in));
+}
+
+// --tiles: D cut to the pattern of md_gto_dmat_t at cutoff, margin (what the one tile representation holds)
+static bool input_cut_to_tiles(input_t* in, double cutoff, double margin) {
+    md_gto_dmat_t dm;
+    const md_gto_dmat_desc_t desc = { .basis = &in->basis, .atom_xyz = in->xyz, .cutoff = cutoff, .margin = margin };
+    if (!md_gto_dmat_init(&dm, &desc, md_get_heap_allocator())) return false;
+    const size_t n = in->num_ao, nt = dm.nt;
+    uint8_t* kept = (uint8_t*)calloc(nt * nt, 1);
+    for (uint32_t I = 0; I < nt; ++I) {
+        for (uint64_t e = dm.row_ptr[I]; e < dm.row_ptr[I + 1]; ++e) kept[I * nt + dm.cols[e]] = kept[dm.cols[e] * nt + I] = 1;
+    }
+    in->density_cut = (double*)md_alloc(in->alloc, sizeof(double) * n * n);
+    for (size_t i = 0; i < n; ++i) {
+        const size_t I = dm.tao[i] / 16;
+        for (size_t j = 0; j < n; ++j) {
+            in->density_cut[i * n + j] = kept[I * nt + dm.tao[j] / 16] ? in->density[i * n + j] : 0.0;
+        }
+    }
+    in->cut_tiles = dm.num_tiles;
+    in->cut_total = (uint64_t)nt * (nt + 1) / 2;
+    free(kept);
+    md_gto_dmat_free(&dm);
+    return true;
 }
 
 // One run; the graph is kept for the comparisons.
@@ -373,6 +405,45 @@ static uint32_t common_edges(const md_topo_extremum_graph_t* a, const md_topo_ex
 }
 
 // Errors only: the readers and md_gpu log a lot at debug level, which would bury the tables.
+// --tiles: the critical points of the cut D (b) against the whole D's (a), one to one, nearest of the same type
+static void compare_cut(const md_topo_extremum_graph_t* a, const md_topo_extremum_graph_t* b, double tol) {
+    uint32_t ca[MD_TOPO_NUM_TYPES] = {0}, cb[MD_TOPO_NUM_TYPES] = {0};
+    md_topo_count_vertex_types(ca, a);
+    md_topo_count_vertex_types(cb, b);
+    bool* used = (bool*)calloc(MD_MAX(b->num_vertices, 1), 1);
+    uint32_t matched = 0;
+    double dpos = 0.0, drho = 0.0;
+    for (uint32_t i = 0; i < a->num_vertices; ++i) {
+        double best = HUGE_VAL; uint32_t bj = 0;
+        for (uint32_t j = 0; j < b->num_vertices; ++j) {
+            if (used[j] || a->types[i] != b->types[j]) continue;
+            const double dx = a->vertices[i].x - b->vertices[j].x, dy = a->vertices[i].y - b->vertices[j].y, dz = a->vertices[i].z - b->vertices[j].z;
+            const double dd = sqrt(dx * dx + dy * dy + dz * dz);
+            if (dd < best) { best = dd; bj = j; }
+        }
+        if (best > tol) continue;
+        used[bj] = true;
+        ++matched;
+        // the double vertices where both have them (the float ones are rounded)
+        if (a->vertices_f64 && b->vertices_f64) {
+            const md_topo_vert_f64_t *p = &a->vertices_f64[i], *q = &b->vertices_f64[bj];
+            const double dx = p->x - q->x, dy = p->y - q->y, dz = p->z - q->z;
+            dpos = fmax(dpos, sqrt(dx * dx + dy * dy + dz * dz));
+            drho = fmax(drho, fabs(p->value - q->value) / fmax(fabs(p->value), 1e-300));
+        } else {
+            dpos = fmax(dpos, best);
+            drho = fmax(drho, fabs((double)a->vertices[i].value - b->vertices[bj].value) / fmax(fabs((double)a->vertices[i].value), 1e-30));
+        }
+    }
+    free(used);
+    printf("       whole D %u/%u/%u/%u, cut %u/%u/%u/%u (max/bcp/rcp/ccp); %u matched within %.0e Bohr: position at most %.2g Bohr apart, rho %.2g relative\n",
+           ca[MD_TOPO_MAXIMUM], ca[MD_TOPO_SPLIT_SADDLE], ca[MD_TOPO_JOIN_SADDLE], ca[MD_TOPO_MINIMUM],
+           cb[MD_TOPO_MAXIMUM], cb[MD_TOPO_SPLIT_SADDLE], cb[MD_TOPO_JOIN_SADDLE], cb[MD_TOPO_MINIMUM], matched, tol, dpos, drho);
+    const uint32_t na = list_unmatched("whole D", a, b, tol, 40);
+    const uint32_t nb = list_unmatched("cut D", b, a, tol, 40);
+    printf("       %u only with the whole D, %u only with the cut D\n", na, nb);
+}
+
 static void quiet_log(struct md_logger_o* inst, md_log_type_t type, const char* msg) {
     (void)inst;
     if (type == MD_LOG_TYPE_ERROR) fprintf(stderr, "%s\n", msg);
@@ -408,6 +479,7 @@ int main(int argc, char** argv) {
     bool kernel_stats_printed = false;
     const char* dump_path = NULL;      // --dump <prefix>: <prefix>.cpu.txt / .gpu.txt
     const char* compare_path = NULL;   // --compare <file>: a --dump file from another run
+    double tiles_cutoff = 0.0, tiles_margin = 1.0;   // --tiles c[,m]
     bool warmup = true;
     const char* device_sel = NULL;
     bool list_devices = false;
@@ -430,6 +502,13 @@ int main(int argc, char** argv) {
         else if (!strcmp(a, "--no-warmup")) warmup = false;
         else if (!strcmp(a, "--dump") && i + 1 < argc) dump_path = argv[++i];
         else if (!strcmp(a, "--compare") && i + 1 < argc) compare_path = argv[++i];
+        else if (!strcmp(a, "--tiles") && i + 1 < argc) {
+            const char* v = argv[++i];
+            tiles_cutoff = atof(v);
+            const char* comma = strchr(v, ',');
+            if (comma) tiles_margin = atof(comma + 1);
+            if (!(tiles_cutoff > 0.0) || !(tiles_margin >= 0.0)) { fprintf(stderr, "--tiles %s: a cutoff > 0 and a margin >= 0\n", v); return 1; }
+        }
         else if (!strcmp(a, "--device") && i + 1 < argc) device_sel = argv[++i];
         else if (!strcmp(a, "--list-devices")) list_devices = true;
         else if (!strcmp(a, "--prefer") && i + 1 < argc) {
@@ -444,7 +523,7 @@ int main(int argc, char** argv) {
         }
         else if (!strcmp(a, "--verbose")) verbose = true;
         else if (!strcmp(a, "-h") || !strcmp(a, "--help")) {
-            printf("usage: %s [--rho v] [--reps n] [--threads n] [--cpu|--gpu] [--no-warmup] [--dump prefix] [--compare file] [--profile] [--device sel] [--prefer high-performance|low-power] [--list-devices] [--data dir] [--verbose] [dataset ...]\n", argv[0]);
+            printf("usage: %s [--rho v] [--reps n] [--threads n] [--cpu|--gpu] [--no-warmup] [--dump prefix] [--compare file] [--tiles c[,m]] [--profile] [--device sel] [--prefer high-performance|low-power] [--list-devices] [--data dir] [--verbose] [dataset ...]\n", argv[0]);
             return 0;
         }
         else if (a[0] == '-') { fprintf(stderr, "unknown option %s (see --help)\n", a); return 1; }
@@ -542,6 +621,11 @@ int main(int argc, char** argv) {
             h = fnv64(h, in.basis.coeff, sizeof(*in.basis.coeff) * in.basis.num_primitives);
             h = fnv64(h, in.density, sizeof(double) * in.num_ao * in.num_ao);
             printf("  input fingerprint %016llx (geometry, basis, density matrix)\n", (unsigned long long)h);
+        }
+        if (tiles_cutoff > 0.0) {
+            if (!input_cut_to_tiles(&in, tiles_cutoff, tiles_margin)) { printf("  --tiles: the pattern could not be made\n\n"); input_free(&in); continue; }
+            printf("  --tiles: D cut to the tiles of md_gto_dmat_t at %.1e, margin %.3g Bohr: %llu of %llu tile pairs (%.1f%%)\n", tiles_cutoff, tiles_margin,
+                   (unsigned long long)in.cut_tiles, (unsigned long long)in.cut_total, 100.0 * (double)in.cut_tiles / (double)MD_MAX(in.cut_total, 1));
         }
         printf("  %-4s %10s %8s %10s %10s %8s %9s %8s %8s %7s | %9s %6s %5s | %s\n", "path", "total ms", "setup", "sweep",
                "gpu", "polish", "cpu lvls", "host", "separ.", "clust.", "cubes", "escal.", "disp.", "max/bcp/rcp/ccp");
@@ -647,6 +731,17 @@ int main(int argc, char** argv) {
                 printf(" of the wall time:");
                 for (int m = 0; m < NUM_PROGRESS_MARKS; ++m) printf(" %.0f%%", 100.0 * runs[0].progress[m]);
                 printf("\n");
+            }
+            // --tiles: once more with the cut D, on the last path asked for, against this path's whole D
+            if (in.density_cut && pass == (want_gpu ? 1 : 0)) {
+                md_topo_gto_desc_t cut_desc = desc;
+                cut_desc.density_matrix = in.density_cut;
+                run_t cut;
+                const bool cut_ok = run_once(&cut, &cut_desc, s);
+                printf("       D cut to the tiles (%s, %.0f ms%s):\n", gpu ? "GPU" : "CPU", cut.ms_total,
+                       cut_ok ? (cut.info.complete ? ", complete" : ", INCOMPLETE") : ", the run reported failure");
+                compare_cut(&runs[0].graph, &cut.graph, 1.0e-3);
+                md_topo_extremum_graph_free(&cut.graph);
             }
             if (gpu) res.gpu_ms = MED(ms_total); else res.cpu_ms = MED(ms_total);
             if (!gpu) {
