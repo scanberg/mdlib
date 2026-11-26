@@ -130,8 +130,8 @@ struct RootArgs {
     float h_min;
     uint  chunk_seq;            // decide_main writes it after the outcomes (outcome[8 num_batches]), so
     uint  pad_seq;              // the host can tell this chunk's readback from a stale one
-    uint  dt_n;                 // 0: D dense; else D in 16 x 16 tiles, dt_n tiles per row of dt_map
-    uint  dt_pad;
+    uint  dm_nt;                // D in the density's 16 x 16 tiles (md_gto_gpu_dmat): dm_nt tiles per edge
+    uint  dm_pad;
     // separatrix tracer (trace_main)
     uint  tr_num_paths;
     uint  tr_num_slots;         // groups of a dispatch: each a slot that takes paths in turn
@@ -142,28 +142,38 @@ struct RootArgs {
     float tr_lo, tr_hi;         // a descent ends below tr_lo, an ascent above tr_hi (cpg_trace)
     Batch*    batches;
     uint*     batch_shells;     // global shell index per local shell, ascending per batch
-    uint*     row_ao;           // global AO index per row (written by ao_main)
+    uint*     row_tao;          // the tiled index (dm_tao) of each row's AO (written by ao_main)
     uint2*    row_tiles;        // (batch, first local row) per 32-row tile of the GEMM
     GtoShell* shells;
     float*    alpha;
     float*    coeff;
     float*    ao_nrm;
     uint*     ao_ijk;           // i | j << 8 | k << 16
-    float*    D;                // num_ao * num_ao, or its tiles (dt_n)
+    float*    D;                // the density's tiles (md_gto_gpu_dmat_view: tiles), 256 floats each
     float*    phi;              // rows * PHI_W
     float*    dv;               // rows * DV_W
     float*    ep;               // EP_W * 8 * num_batches, by field
     uint*     outcome;          // 8 * num_batches, then chunk_seq
     uint*     ao_order;         // ao_main's group -> batch, largest batches first
-    uint*     dt_map;           // dt_n x dt_n: the slot of tile (I, J) in D (tile row-major at 256 slot)
+    uint*     dm_map;           // dm_nt x dm_nt, I <= J: the entry of tile pair (I, J) in D, DM_NONE where it is not kept
     TracePath* tr_paths;
     TraceSlot* tr_slots;
     uint*     tr_queue;         // [0] the next path to take, [1] paths ended
-    uint*     tr_ao;            // per slot: local AOs [tr_n_cap]
+    uint*     tr_ao;            // per slot: its local AOs' tiled indices (dm_tao) [tr_n_cap]
     float4*   tr_phi;           // per slot: phi, dphi/dx, dy, dz of each local AO [tr_n_cap]
     float4*   tr_targets;       // CPs a path can end at: position (Bohr), type (as a float); in the CPU's order
+    uint*     dm_tao;           // per AO (the basis' order): its tiled index
 };
 MD_SHADER_ARGS(RootArgs);
+
+#define DM_NONE 0xFFFFFFFFu
+
+// D between the AOs of tiled indices ti and tj (md_gto_gpu_dmat's layout, as gto_dmat_at): 0 for a pair not kept
+float dm_at(float* D, uint* map, uint nt, uint ti, uint tj) {
+    const uint lo = min(ti, tj), hi = max(ti, tj);
+    const uint e = map[(lo >> 4) * nt + (hi >> 4)];
+    return e == DM_NONE ? 0.0 : D[e * 256u + (lo & 15u) * 16u + (hi & 15u)];
+}
 #define args (*md_root.args)
 
 // ------------------------------------------------------------------------------------ multi-indices
@@ -617,7 +627,7 @@ void ao_main(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
             const uint r = f - gs_cs_prod[cs];
             const uint ci = r / 8u, k = r % 8u;
             const uint row = row0 + gs_cs_row[cs] + ci;
-            if (k == 0u) args.row_ao[row] = args.shells[min(gs_cs_shell[cs], args.num_shells - 1u)].info.z + ci;   // for the GEMMs
+            if (k == 0u) args.row_tao[row] = args.dm_tao[args.shells[min(gs_cs_shell[cs], args.num_shells - 1u)].info.z + ci];   // for the GEMMs
             ao_products(cs, ci, k, row, h, n);
         }
         GroupMemoryBarrierWithGroupSync();
@@ -658,11 +668,11 @@ GC_MEM_MAP(TopoGc, GT, GCJ * 32, 1, 5)
 
 struct TopoGemmStager : IGemmStager {
     static const int kFull = 1;
-    uint n, base, r0, N, dt_n, k0;
-    uint*  row_ao;
+    uint n, base, r0, NT, dm_nt, k0;                       // NT: 16 dm_nt, the tiled indices
+    uint*  row_tao;
     float* Dm;
     float* phi;
-    uint*  dt_map;
+    uint*  dm_map;
     [mutating] void begin(uint m0, uint tid) { k0 = 0u; }
     [mutating] uint stage(uint m0, uint tid) {
         if (k0 >= n) return GC_END;
@@ -672,10 +682,9 @@ struct TopoGemmStager : IGemmStager {
             const uint r = e / GKC, kk = e % GKC;
             float d = 0.0;
             if (r0 + r < n && k0 + kk < n) {
-                const uint ai = min(row_ao[base + r0 + r], N - 1u);
-                const uint aj = min(row_ao[base + k0 + kk], N - 1u);
-                if (dt_n == 0u) d = Dm[ai * N + aj];
-                else d = Dm[dt_map[(ai >> 4) * dt_n + (aj >> 4)] * 256u + (ai & 15u) * 16u + (aj & 15u)];
+                const uint ti = min(row_tao[base + r0 + r], NT - 1u);
+                const uint tj = min(row_tao[base + k0 + kk], NT - 1u);
+                d = dm_at(Dm, dm_map, dm_nt, ti, tj);
             }
             TopoGc::st(kk * uint(GT) + r, d);
         }
@@ -715,8 +724,8 @@ void gemm_main(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID, uint tid :
     const uint2 rtd = args.row_tiles[rt];
     const Batch bt = args.batches[min(rtd.x, args.num_batches - 1u)];
     TopoGemmStager st;
-    st.n = bt.info.y; st.base = bt.info.z; st.r0 = rtd.y; st.N = args.num_ao; st.dt_n = args.dt_n; st.k0 = 0u;
-    st.row_ao = args.row_ao; st.Dm = args.D; st.phi = args.phi; st.dt_map = args.dt_map;
+    st.n = bt.info.y; st.base = bt.info.z; st.r0 = rtd.y; st.NT = 16u * args.dm_nt; st.dm_nt = args.dm_nt; st.k0 = 0u;
+    st.row_tao = args.row_tao; st.Dm = args.D; st.phi = args.phi; st.dm_map = args.dm_map;
     TopoGemmEpilogue epi;
     epi.n = st.n; epi.base = st.base; epi.r0 = st.r0; epi.dv = args.dv;
     gemm_core_staged<GT, GCJ * 32, 32, 8, TopoGc, TopoGemmStager, TopoGemmEpilogue>(st, epi, uint(DV_W), tid, gtid.x, gtid.y);
@@ -1305,7 +1314,7 @@ void decide_main(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
 #define TR_LDS 1408     // local AOs held in groupshared memory (22.5 + 5.5 KB; Metal allows 32 KB per group)
 
 groupshared float4 tr_ph_s[TR_LDS];     // phi, dphi/dx, dy, dz of the local AOs; afterwards the group's sums
-groupshared uint   tr_l_s[TR_LDS];      // their AO indices; before that, the scan of the per-thread counts
+groupshared uint   tr_l_s[TR_LDS];      // their AOs' tiled indices (dm_tao); before that, the scan of the per-thread counts
 groupshared int    tr_path_s;
 groupshared uint   tr_hit_s;            // the step's end tests (set by thread 0 at the start of a step)
 groupshared uint   tr_near_s;
@@ -1314,10 +1323,6 @@ groupshared TracePath tr_P_s;           // the slot's path and its state, as thr
 groupshared TraceSlot tr_st_s;
 groupshared float4 tr_val_s;            // rho, grad rho at the point evaluated last
 
-float tr_D(float* Dp, uint* mp, uint dtn, uint ai, uint aj, uint N) {
-    if (dtn == 0u) return Dp[ai * N + aj];
-    return Dp[mp[(ai >> 4) * dtn + (aj >> 4)] * 256u + (ai & 15u) * 16u + (aj & 15u)];
-}
 
 // One pair (i, j), j >= i, into acc: rho += w D_ij phi_i phi_j, grad += w D_ij (dphi_i phi_j + phi_i dphi_j),
 // w = 1 on the diagonal, else 2 (the j == i terms enter grad twice, as they should: 2 D_ii dphi_i phi_i).
@@ -1337,15 +1342,15 @@ void tr_pair(inout float4 acc, float4 pi, float4 pj, float d, bool diag) {
         uint j = i + lane;                                                                          \
         for (; j + 96u < n; j += 128u) {                                                            \
             const uint a0 = LDL(j), a1 = LDL(j + 32u), a2 = LDL(j + 64u), a3 = LDL(j + 96u);        \
-            const float d0 = tr_D(Dp, mp, dtn, ai, a0, N), d1 = tr_D(Dp, mp, dtn, ai, a1, N);       \
-            const float d2 = tr_D(Dp, mp, dtn, ai, a2, N), d3 = tr_D(Dp, mp, dtn, ai, a3, N);       \
+            const float d0 = dm_at(Dp, mp, dtn, ai, a0), d1 = dm_at(Dp, mp, dtn, ai, a1);          \
+            const float d2 = dm_at(Dp, mp, dtn, ai, a2), d3 = dm_at(Dp, mp, dtn, ai, a3);          \
             const float4 p0 = LDPH(j), p1 = LDPH(j + 32u), p2 = LDPH(j + 64u), p3 = LDPH(j + 96u);  \
             tr_pair(acc, pi, p0, d0, j == i);                                                       \
             tr_pair(acc, pi, p1, d1, false);                                                        \
             tr_pair(acc, pi, p2, d2, false);                                                        \
             tr_pair(acc, pi, p3, d3, false);                                                        \
         }                                                                                           \
-        for (; j < n; j += 32u) tr_pair(acc, pi, LDPH(j), tr_D(Dp, mp, dtn, ai, LDL(j), N), j == i); \
+        for (; j < n; j += 32u) tr_pair(acc, pi, LDPH(j), dm_at(Dp, mp, dtn, ai, LDL(j)), j == i);    \
     }
 #define TR_LDS_L(k)  tr_l_s[k]
 #define TR_LDS_PH(k) tr_ph_s[k]
@@ -1361,8 +1366,9 @@ bool tr_eval(uint slot, uint tid, float3 o, float3 d) {
     float* coeff = args.coeff;
     float* ao_nrm = args.ao_nrm;
     float* Dp = args.D;
-    uint* mp = args.dt_map;
-    const uint dtn = args.dt_n;
+    uint* mp = args.dm_map;
+    const uint dtn = args.dm_nt;
+    uint* tao = args.dm_tao;
     uint* L = args.tr_ao + slot * cap;
     float4* PH = args.tr_phi + slot * cap;
     const uint per = (NS + TR_WG - 1u) / TR_WG;
@@ -1412,8 +1418,9 @@ bool tr_eval(uint slot, uint tid, float3 o, float3 d) {
             const float gy = (e.y > 0u ? float(e.y) * py[e.y - 1u] * S0 : 0.0) - 2.0 * py[e.y + 1u] * S1;
             const float gz = (e.z > 0u ? float(e.z) * pz[e.z - 1u] * S0 : 0.0) - 2.0 * pz[e.z + 1u] * S1;
             const float4 ph = nrm * float4(xi * yj * zk * S0, gx * yj * zk, xi * gy * zk, xi * yj * gz);
-            if (lds) { tr_l_s[k] = ao; tr_ph_s[k] = ph; }
-            else     { L[k] = ao; PH[k] = ph; }
+            const uint ta = tao[ao];                // D is read by tiled index (dm_at)
+            if (lds) { tr_l_s[k] = ta; tr_ph_s[k] = ph; }
+            else     { L[k] = ta; PH[k] = ph; }
             k++;
         }
     }

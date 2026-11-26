@@ -697,7 +697,6 @@ void md_topo_extremum_graph_copy(md_topo_extremum_graph_t* out_graph, const md_t
 #define CPG_SEP_EXTRA 2             // exact centre terms per 1D factor beyond each remainder's order (cpg_shell_rem)
 #define CPG_SEP_A   (4 + CPG_SEP_EXTRA + 1)  // 1D derivative orders 0 .. 4 + CPG_SEP_EXTRA
 #define CPG_CHUNK   32              // cubes per work chunk
-#define CPG_DTILE   16              // AOs per tile of D: the pairs that meet (D on the GPU)
 #define CPG_RUNGS   21              // screening rungs: tail thresholds tau 10^(m/2), m = 0..20 (cpg_screen_rung)
 #define CPG_SCREEN_TAIL 2.5e-4      // the local radius: the Hessian tail a region may carry, relative to rho_min (cpg_run_init)
 
@@ -2128,9 +2127,11 @@ typedef struct cpg_run_t {
     md_array(cpg_box_t)       unres;
     md_array(uint32_t)        kind;
     md_array(cpg_rootrec_t)   roots;
-    uint64_t*                 tile_need;    // ntiles x tile_words: bit J of row I, both orders (cpg_run_init)
-    int                       ntiles, tile_words;
-    void*                     gpu;          // GPU sweep: its tables and D, kept for the separatrices (cpg_gpu_keep_t)
+    void*                     gpu;          // GPU sweep: its tables, kept for the separatrices (cpg_gpu_keep_t)
+#if MD_ENABLE_GPU
+    md_gto_gpu_dmat_t         gpu_dmat;     // GPU sweep: the density's tiles on the device, the caller's (desc->gpu_dmat) or own
+    md_gpu_stream_t           gpu_dmat_own; // the stream the run's own were made on (destroyed with the run), NULL: the caller's
+#endif
     cpg_progress_t            prog;
     md_topo_gto_info_t        info;
 } cpg_run_t;
@@ -2439,15 +2440,6 @@ static void cpg_run_init(cpg_run_t* R, const md_topo_gto_desc_t* desc) {
     //     (e = 2.5 h_root: a GPU batch, P +- 2.5 hc with hc <= h_root; a CPU cube's inflated enclosure is
     //     1.5 h). Generous by 1e-6 for the GPU's conservative screen. n_bound: no local list holds more
     //     AOs (every shell of a list meets every other one of it).
-    //     The tile map: bit J of row I when some AO of tile I and some AO of tile J belong to shells that
-    //     meet (both orders), kept for the GPU's D.
-    const int ntiles = (N + CPG_DTILE - 1) / CPG_DTILE;
-    const int ntw = (ntiles + 63) / 64;
-    uint64_t* tile_need = (uint64_t*)md_alloc(heap, sizeof(uint64_t) * (size_t)ntiles * ntw);
-    md_memset(tile_need, 0, sizeof(uint64_t) * (size_t)ntiles * ntw);
-    R->tile_need = tile_need;
-    R->ntiles = ntiles;
-    R->tile_words = ntw;
     uint32_t n_bound = 0;
     {
         const double rho2 = 2.0 * sqrt(3.0) * 2.5 * h_root;
@@ -2455,21 +2447,13 @@ static void cpg_run_init(cpg_run_t* R, const md_topo_gto_desc_t* desc) {
         for (int si = 0; si < NS; ++si) nmeet[si] = (uint32_t)ctx->shell[si].ncart;
         for (int si = 0; si < NS; ++si) {
             const cpg_shell_t* a = &ctx->shell[si];
-            const int ia0 = (int)a->ao_offset / CPG_DTILE, ia1 = ((int)a->ao_offset + a->ncart - 1) / CPG_DTILE;
-            for (int ti = si; ti < NS; ++ti) {
+            for (int ti = si + 1; ti < NS; ++ti) {
                 const cpg_shell_t* b = &ctx->shell[ti];
-                if (ti != si) {
-                    const double dx = a->A[0] - b->A[0], dy = a->A[1] - b->A[1], dz = a->A[2] - b->A[2];
-                    const double lim = (a->radius + b->radius + rho2) * (1.0 + 1e-6);
-                    if (dx * dx + dy * dy + dz * dz > lim * lim) continue;
-                    nmeet[si] += (uint32_t)b->ncart;
-                    nmeet[ti] += (uint32_t)a->ncart;
-                }
-                const int ib0 = (int)b->ao_offset / CPG_DTILE, ib1 = ((int)b->ao_offset + b->ncart - 1) / CPG_DTILE;
-                for (int I = ia0; I <= ia1; ++I) for (int J = ib0; J <= ib1; ++J) {
-                    tile_need[(size_t)I * ntw + J / 64] |= 1ull << (J % 64);
-                    tile_need[(size_t)J * ntw + I / 64] |= 1ull << (I % 64);
-                }
+                const double dx = a->A[0] - b->A[0], dy = a->A[1] - b->A[1], dz = a->A[2] - b->A[2];
+                const double lim = (a->radius + b->radius + rho2) * (1.0 + 1e-6);
+                if (dx * dx + dy * dy + dz * dz > lim * lim) continue;
+                nmeet[si] += (uint32_t)b->ncart;
+                nmeet[ti] += (uint32_t)a->ncart;
             }
         }
         for (int si = 0; si < NS; ++si) n_bound = MD_MAX(n_bound, nmeet[si]);
@@ -2897,7 +2881,9 @@ static void cpg_run_free(cpg_run_t* R) {
 #if MD_ENABLE_GPU
     if (R->gpu) cpg_gpu_keep_free(R);
 #endif
-    if (R->tile_need) md_free(heap, R->tile_need, sizeof(uint64_t) * (size_t)R->ntiles * R->tile_words);
+#if MD_ENABLE_GPU
+    if (R->gpu_dmat_own) md_gto_gpu_dmat_destroy(R->gpu_dmat_own, R->gpu_dmat);    // stream-ordered: after the run's kernels
+#endif
     if (ctx->dmap) md_free(heap, ctx->dmap, sizeof(int32_t) * (size_t)ctx->dnt * ctx->dnt);
     md_free(heap, ctx->ao_nrm, sizeof(double) * N);
     md_free(heap, ctx->ao_ijk, sizeof(int[3]) * N);
@@ -3010,8 +2996,8 @@ typedef struct cpg_gpu_args_t {
     float    h_min;
     uint32_t chunk_seq;
     uint32_t pad_seq;
-    uint32_t dt_n;              // D in 16 x 16 tiles, dt_n tiles per row of dt_map (0, D dense, is no longer made)
-    uint32_t dt_pad;
+    uint32_t dm_nt;             // D in the density's 16 x 16 tiles (md_gto_gpu_dmat): dm_nt tiles per edge
+    uint32_t dm_pad;
     // separatrix tracer (trace_main)
     uint32_t tr_num_paths;
     uint32_t tr_num_slots;
@@ -3022,7 +3008,7 @@ typedef struct cpg_gpu_args_t {
     float    tr_lo, tr_hi;
     md_gpu_addr_t batches;
     md_gpu_addr_t batch_shells;
-    md_gpu_addr_t row_ao;
+    md_gpu_addr_t row_tao;
     md_gpu_addr_t row_tiles;
     md_gpu_addr_t shells;
     md_gpu_addr_t alpha;
@@ -3035,14 +3021,14 @@ typedef struct cpg_gpu_args_t {
     md_gpu_addr_t ep;
     md_gpu_addr_t outcome;
     md_gpu_addr_t ao_order;
-    md_gpu_addr_t dt_map;       // dt_n x dt_n: the slot of tile (I, J) in D, 0 (all NaN) where no pair meets, 1 (all 0) where
-                                // they meet but the density's tiles keep none of its pairs
+    md_gpu_addr_t dm_map;       // dm_nt x dm_nt, I <= J: the entry of tile pair (I, J) in D, 0xFFFFFFFF where it is not kept
     md_gpu_addr_t tr_paths;
     md_gpu_addr_t tr_slots;
     md_gpu_addr_t tr_queue;
     md_gpu_addr_t tr_ao;
     md_gpu_addr_t tr_phi;
     md_gpu_addr_t tr_targets;
+    md_gpu_addr_t dm_tao;       // per AO: its tiled index
 } cpg_gpu_args_t;
 
 // trace_main's records (topo_gto_cube.slang: TracePath, TraceSlot)
@@ -3057,7 +3043,8 @@ typedef struct cpg_gpu_slot_t {
     int32_t info[4];
 } cpg_gpu_slot_t;
 
-// What the GPU sweep leaves on the device for the separatrices: the stream, the tables and D.
+// What the GPU sweep leaves on the device for the separatrices: the stream and the tables (D is the density's tiles:
+// the caller's, or the run's own, R->gpu_dmat).
 typedef struct cpg_gpu_keep_t {
     md_gpu_stream_t stream;
     cpg_gpu_args_t  a;
@@ -3321,91 +3308,48 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
         fn[i] = (float)ctx->ao_nrm[i];
         ijk[i] = (uint32_t)ctx->ao_ijk[i][0] | ((uint32_t)ctx->ao_ijk[i][1] << 8) | ((uint32_t)ctx->ao_ijk[i][2] << 16);
     }
-    // D in 16 x 16 tiles of the basis' AO order, of the AO pairs that meet (cpg_run_init's tile map: every pair any
-    // batch's local list holds lies in one), each row-major at 256 * its slot, filled from the density's tiles (a
-    // pair they do not keep is 0). Slot 0 is all NaN: by the map's construction gemm_main never reads it; if it
-    // did, the NaN would fail the cube's tests rather than pass them as a zero would. Slot 1 is all 0, shared by
-    // every tile the map needs that holds no pair the density's tiles keep.
-    const int dtn = R->ntiles, dtw = R->tile_words;
+    // D: the density's tiles on the device (md_gto_gpu_dmat), read by tiled index (dm_tao) as gto_dmat_at reads them,
+    // a pair they do not keep 0. The caller's (desc->gpu_dmat), of the same tiles as desc->dmat; else uploaded from
+    // those here (md_gto_gpu_dmat_upload) and kept for the run.
     const md_gto_dmat_t* dm = ctx->dm;
-    // the tiles that hold a kept pair: of each kept entry, its tile and its mirror's
-    uint64_t* nz = (uint64_t*)md_alloc(heap, sizeof(uint64_t) * (size_t)dtn * dtw);
-    md_memset(nz, 0, sizeof(uint64_t) * (size_t)dtn * dtw);
-    for (uint32_t I = 0; I < dm->nt; ++I) {
-        for (uint64_t e = dm->row_ptr[I]; e < dm->row_ptr[I + 1]; ++e) {
-            const uint32_t J = dm->cols[e];
-            for (uint32_t u = 0; u < 16; ++u) {
-                const int32_t i = dm->perm[16 * I + u];
-                if (i < 0) continue;
-                for (uint32_t v = 0; v < 16; ++v) {
-                    const int32_t j = dm->perm[16 * J + v];
-                    if (j < 0) continue;
-                    const int bi = i / CPG_DTILE, bj = j / CPG_DTILE;
-                    nz[(size_t)bi * dtw + bj / 64] |= 1ull << (bj % 64);
-                    nz[(size_t)bj * dtw + bi / 64] |= 1ull << (bi % 64);
-                }
-            }
+    md_gto_gpu_dmat_t gdm = R->gpu_dmat;
+    if (!gdm && R->desc->gpu_dmat) {
+        md_gto_gpu_dmat_info_t gi;
+        md_gto_gpu_dmat_info(&gi, R->desc->gpu_dmat);
+        if (gi.num_ao == dm->num_ao && gi.num_tiles == dm->num_tiles && gi.cutoff == dm->cutoff && gi.margin == dm->margin) {
+            gdm = R->desc->gpu_dmat;
+        } else {
+            MD_LOG_ERROR("md_topo_compute_extremum_graph_gto_gpu: desc.gpu_dmat is not of desc.dmat's tiles (%zu of %zu AOs' tile pairs at %g, margin %g;"
+                         " those %llu of %u at %g, margin %g): uploading those", gi.num_tiles, gi.num_ao, gi.cutoff, gi.margin,
+                         (unsigned long long)dm->num_tiles, dm->num_ao, dm->cutoff, dm->margin);
         }
     }
-    size_t dt_kept = 0;
-    for (size_t w = 0; w < (size_t)dtn * dtw; ++w) dt_kept += (size_t)md_popcnt64(R->tile_need[w] & nz[w]);
-    const size_t fD_count = (dt_kept + 2) * CPG_DTILE * CPG_DTILE;
-    bool dt_ok = (size_t)dtn * dtn < (1ull << 31) && dt_kept + 2 < (1ull << 24);
-    if (!dt_ok) MD_LOG_ERROR("md_topo_compute_extremum_graph_gto_gpu: D in %zu tiles of a %d x %d map, more than the kernels index", dt_kept, dtn, dtn);
-    float* fD = dt_ok ? (float*)md_alloc(heap, sizeof(float) * fD_count) : NULL;
-    uint32_t* dt_map = dt_ok ? (uint32_t*)md_alloc(heap, sizeof(uint32_t) * (size_t)dtn * dtn) : NULL;
-    if (dt_ok) {
-        uint32_t slot = 2;
-        for (int k = 0; k < CPG_DTILE * CPG_DTILE; ++k) { fD[k] = NAN; fD[CPG_DTILE * CPG_DTILE + k] = 0.0f; }
-        for (int I = 0; I < dtn; ++I) for (int J = 0; J < dtn; ++J) {
-            const uint64_t bit = 1ull << (J % 64);
-            const size_t w = (size_t)I * dtw + J / 64;
-            if (!(R->tile_need[w] & bit)) { dt_map[(size_t)I * dtn + J] = 0; continue; }
-            if (!(nz[w] & bit)) { dt_map[(size_t)I * dtn + J] = 1; continue; }
-            md_memset(fD + (size_t)slot * CPG_DTILE * CPG_DTILE, 0, sizeof(float) * CPG_DTILE * CPG_DTILE);
-            dt_map[(size_t)I * dtn + J] = slot++;
-        }
-        // the kept entries into their tiles, an off-diagonal tile's also as its mirror D_ji
-        for (uint32_t I = 0; I < dm->nt; ++I) {
-            for (uint64_t e = dm->row_ptr[I]; e < dm->row_ptr[I + 1]; ++e) {
-                const uint32_t J = dm->cols[e];
-                const double* t = dm->tiles + 256 * e;
-                for (uint32_t u = 0; u < 16; ++u) {
-                    const int32_t i = dm->perm[16 * I + u];
-                    if (i < 0) continue;
-                    for (uint32_t v = 0; v < 16; ++v) {
-                        const int32_t j = dm->perm[16 * J + v];
-                        if (j < 0) continue;
-                        const float d = (float)t[u * 16 + v];
-                        const uint32_t sl = dt_map[(size_t)(i / CPG_DTILE) * dtn + j / CPG_DTILE];
-                        if (sl >= 2) fD[(size_t)sl * CPG_DTILE * CPG_DTILE + (i % CPG_DTILE) * CPG_DTILE + j % CPG_DTILE] = d;
-                        if (I == J) continue;
-                        const uint32_t sm = dt_map[(size_t)(j / CPG_DTILE) * dtn + i / CPG_DTILE];
-                        if (sm >= 2) fD[(size_t)sm * CPG_DTILE * CPG_DTILE + (j % CPG_DTILE) * CPG_DTILE + i % CPG_DTILE] = d;
-                    }
-                }
-            }
-        }
+    if (!gdm) {
+        gdm = md_gto_gpu_dmat_upload(stream, dm);
+        R->gpu_dmat_own = gdm ? stream : NULL;
     }
-    md_free(heap, nz, sizeof(uint64_t) * (size_t)dtn * dtw);
-    R->info.gpu_density_bytes = dt_ok ? sizeof(float) * fD_count + sizeof(uint32_t) * (size_t)dtn * dtn : 0;
+    R->gpu_dmat = gdm;
+    md_gto_gpu_dmat_view_t dv = {0};
+    md_gto_gpu_dmat_view(&dv, gdm);
+    md_gto_gpu_dmat_info_t dinfo = {0};
+    md_gto_gpu_dmat_info(&dinfo, gdm);
+    R->info.gpu_density_bytes = R->gpu_dmat_own ? dinfo.bytes : 0;
 
     cpg_gpu_args_t a = {0};
     a.num_shells = (uint32_t)NS;
     a.num_ao = (uint32_t)N;
     a.eps = (float)ctx->eps;            // a threshold, not a rigorous quantity
     a.h_min = (float)R->h_min;
-    a.dt_n = (uint32_t)dtn;
+    a.dm_nt = dv.nt;
+    a.D = dv.tiles;
+    a.dm_map = dv.map;
+    a.dm_tao = dv.tao;
 
-    bool ok = dt_ok && cpg_gpu_upload(stream, &a.shells, sh, sizeof(cpg_gpu_shell_t) * NS)
+    bool ok = gdm && cpg_gpu_upload(stream, &a.shells, sh, sizeof(cpg_gpu_shell_t) * NS)
            && cpg_gpu_upload(stream, &a.alpha, fa, sizeof(float) * NP)
            && cpg_gpu_upload(stream, &a.coeff, fc, sizeof(float) * NP)
            && cpg_gpu_upload(stream, &a.ao_nrm, fn, sizeof(float) * N)
-           && cpg_gpu_upload(stream, &a.ao_ijk, ijk, sizeof(uint32_t) * N)
-           && cpg_gpu_upload(stream, &a.D, fD, sizeof(float) * fD_count)
-           && cpg_gpu_upload(stream, &a.dt_map, dt_map, sizeof(uint32_t) * (size_t)dtn * dtn);
-    if (fD) md_free(heap, fD, sizeof(float) * fD_count);
-    if (dt_map) md_free(heap, dt_map, sizeof(uint32_t) * (size_t)dtn * dtn);
+           && cpg_gpu_upload(stream, &a.ao_ijk, ijk, sizeof(uint32_t) * N);
     md_free(heap, ijk, sizeof(uint32_t) * N);
     md_free(heap, fn, sizeof(float) * N);
     md_free(heap, fc, sizeof(float) * MD_MAX(NP, 1));
@@ -3566,7 +3510,7 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
                 a.num_row_tiles = (uint32_t)tiles;
                 a.batches = d_batches;
                 a.batch_shells = d_pool;
-                a.row_ao = d_row_ao;
+                a.row_tao = d_row_ao;
                 a.row_tiles = d_tiles;
                 a.phi = d_phi;
                 a.dv = d_dv;
@@ -3765,16 +3709,16 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
         cpg_gpu_args_t keep = {0};
         keep.num_shells = a.num_shells;
         keep.num_ao = a.num_ao;
-        keep.dt_n = a.dt_n;
+        keep.dm_nt = a.dm_nt;
         keep.shells = a.shells; keep.alpha = a.alpha; keep.coeff = a.coeff; keep.ao_nrm = a.ao_nrm; keep.ao_ijk = a.ao_ijk;
-        keep.D = a.D; keep.dt_map = a.dt_map;
+        keep.D = a.D; keep.dm_map = a.dm_map; keep.dm_tao = a.dm_tao;     // the density's tiles: not the keep's
         if (ok && keep.shells && keep.D && k_topo_gto[CPG_K_TRACE] && R->desc->trace_separatrices) {
             cpg_gpu_keep_t* kp = (cpg_gpu_keep_t*)md_alloc(heap, sizeof(cpg_gpu_keep_t));
             kp->stream = stream;
             kp->a = keep;
             R->gpu = kp;
         } else {
-            md_gpu_addr_t kb[] = { keep.shells, keep.alpha, keep.coeff, keep.ao_nrm, keep.ao_ijk, keep.D, keep.dt_map };
+            md_gpu_addr_t kb[] = { keep.shells, keep.alpha, keep.coeff, keep.ao_nrm, keep.ao_ijk };
             for (size_t i = 0; i < sizeof(kb) / sizeof(kb[0]); ++i) if (kb[i]) md_gpu_free(stream, kb[i]);
         }
     }
@@ -3792,10 +3736,10 @@ static bool cpg_run_sweep_gpu(cpg_run_t* R, md_gpu_stream_t stream) {
 }
 
 // --------------------------------------------------------------------------------------- separatrices
-// The sweep's tables and D, kept on the device for trace_main.
+// The sweep's tables, kept on the device for trace_main (D is R->gpu_dmat, freed with the run if its own).
 static void cpg_gpu_keep_free(cpg_run_t* R) {
     cpg_gpu_keep_t* G = (cpg_gpu_keep_t*)R->gpu;
-    const md_gpu_addr_t kb[] = { G->a.shells, G->a.alpha, G->a.coeff, G->a.ao_nrm, G->a.ao_ijk, G->a.D, G->a.dt_map };
+    const md_gpu_addr_t kb[] = { G->a.shells, G->a.alpha, G->a.coeff, G->a.ao_nrm, G->a.ao_ijk };
     for (size_t i = 0; i < sizeof(kb) / sizeof(kb[0]); ++i) if (kb[i]) md_gpu_free(G->stream, kb[i]);
     md_free(R->heap, G, sizeof(cpg_gpu_keep_t));
     R->gpu = NULL;

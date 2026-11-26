@@ -397,10 +397,10 @@ UTEST(topo_gto, gpu_matches_cpu) {
     md_gpu_device_destroy(dev);
 }
 
-// D on the device as the 16 x 16 tiles of AO pairs that can meet in a local list, chosen when they take
-// at most half the dense size: eight waters 60 Bohr apart in a row with a block-diagonal D, where the
-// tiles that hold only pairs across them are dropped. The same graph as the CPU's. (rho_min 1e-2 keeps
-// the domain small; every CP of water lies far above it.)
+// D on the device as the density's tiles (md_gto_gpu_dmat), uploaded by the run or given (desc.gpu_dmat): eight
+// waters 60 Bohr apart in a row with a block-diagonal D, its tiles at 1e-6, margin 1 (viamd's), which drop the pairs
+// across them: at most half the dense size. The same graph as the CPU's either way, and the given tiles read in place
+// (no density bytes of the run's own). (rho_min 1e-2 keeps the domain small; every CP of water lies far above it.)
 UTEST(topo_gto, gpu_density_tiles) {
     md_gpu_device_t dev = md_gpu_device_create(&(md_gpu_device_desc_t){ .label = "topo_gto unittest" });
     if (!dev) UTEST_SKIP("no GPU device");
@@ -410,15 +410,19 @@ UTEST(topo_gto, gpu_density_tiles) {
     ASSERT_TRUE(topo_gto_load_water(&in));
     topo_gto_pair_t pair;
     ASSERT_TRUE(topo_gto_make_chain(&pair, &in, 8, 60.0f, in.t.alloc));
-    const md_topo_gto_desc_t desc = topo_gto_pair_desc(&in, &pair, 1.0e-2);
     const size_t N = pair.N;
+    md_gto_dmat_t cut;
+    ASSERT_TRUE(qm_test_dmat_from_matrix_at(&cut, &pair.basis, pair.xyz, 0, pair.D, 1.0e-6, 1.0, in.t.alloc));
+    md_topo_gto_desc_t desc = topo_gto_pair_desc(&in, &pair, 1.0e-2);
+    desc.dmat = &cut;
 
-    md_topo_extremum_graph_t c = { .alloc = in.t.alloc }, g = { .alloc = in.t.alloc };
-    md_topo_gto_info_t ic, ig;
+    md_topo_extremum_graph_t c = { .alloc = in.t.alloc }, g = { .alloc = in.t.alloc }, g2 = { .alloc = in.t.alloc };
+    md_topo_gto_info_t ic, ig, ig2;
     ASSERT_TRUE(md_topo_compute_extremum_graph_gto(&c, &ic, &desc));
     ASSERT_TRUE(md_topo_compute_extremum_graph_gto_gpu(&g, &ig, &desc, stream));
     EXPECT_TRUE(ig.used_gpu);
     EXPECT_TRUE(ig.complete);
+    EXPECT_GT(ig.gpu_density_bytes, 0u);
     EXPECT_LE(2 * ig.gpu_density_bytes, sizeof(float) * N * N);   // tiles, not the dense matrix
     uint32_t count[MD_TOPO_NUM_TYPES] = {0};
     md_topo_count_vertex_types(count, &g);
@@ -426,8 +430,22 @@ UTEST(topo_gto, gpu_density_tiles) {
     EXPECT_EQ(16u, count[MD_TOPO_SPLIT_SADDLE]);
     EXPECT_TRUE(topo_gto_same_graph(&c, &g));
 
+    // given: read in place, the same graph bit for bit
+    desc.gpu_dmat = md_gto_gpu_dmat_upload(stream, &cut);
+    ASSERT_TRUE(desc.gpu_dmat != NULL);
+    ASSERT_TRUE(md_topo_compute_extremum_graph_gto_gpu(&g2, &ig2, &desc, stream));
+    EXPECT_TRUE(ig2.used_gpu);
+    EXPECT_EQ(0u, ig2.gpu_density_bytes);
+    ASSERT_EQ(g.num_vertices, g2.num_vertices);
+    ASSERT_EQ(g.num_edges, g2.num_edges);
+    EXPECT_EQ(0, memcmp(g.vertices, g2.vertices, sizeof(md_topo_vert_t) * g.num_vertices));
+    EXPECT_EQ(0, memcmp(g.edges, g2.edges, sizeof(md_topo_edge_t) * g.num_edges));
+    md_gto_gpu_dmat_destroy(stream, desc.gpu_dmat);
+
     md_topo_extremum_graph_free(&c);
     md_topo_extremum_graph_free(&g);
+    md_topo_extremum_graph_free(&g2);
+    md_gto_dmat_free(&cut);
     md_free(in.t.alloc, pair.D, sizeof(double) * N * N);
     qm_test_free(&in.t);
     md_topo_gpu_shutdown();

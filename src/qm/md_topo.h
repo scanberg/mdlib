@@ -150,6 +150,9 @@ typedef struct md_topo_gto_desc_t {
                                          // critical points of the density they hold; at viamd's cutoff (1e-6, margin 1)
                                          // a 1152 atom protein's are those of its whole matrix to 1e-11 Bohr
                                          // (md_topo_gto_bench --tiles)
+    struct md_gto_gpu_dmat* gpu_dmat;    // GPU sweep, optional: the same tiles on the device (md_gto_gpu_dmat_upload of dmat),
+                                         // read in place, so that the density is in device memory once; complete on the
+                                         // stream the search is given, unchanged until it returns. NULL: uploaded for the run
     double        rho_min;               // only critical points with rho >= rho_min are sought (0 -> 1e-4)
     double        h_min;                 // smallest cube half-width before a cube is reported unresolved (0 -> 1e-4 Bohr)
     double        h_root;                // root cube half-width (0 -> 1 Bohr)
@@ -204,8 +207,8 @@ typedef struct md_topo_gto_info_t {
     uint64_t num_gpu_box_evals;          // cubes decided (or handed over) by the GPU; included in num_box_evals
     uint32_t num_escalated_boxes;        // cubes fp32 could not decide, finished on the CPU with their subtree
     uint32_t num_gpu_dispatches;
-    uint64_t gpu_density_bytes;          // D on the device: the 16 x 16 tiles (the basis' AO order) of the AO pairs that
-                                         // can meet in a local list and that the density's tiles keep, and their map
+    uint64_t gpu_density_bytes;          // D on the device that the run made: the density's tiles uploaded (md_gto_gpu_dmat),
+                                         // 0 when they were given (desc.gpu_dmat)
     // Wall-clock milliseconds per phase. ms_sweep is the whole octree sweep; the three after it are parts of it.
     double   ms_setup;                   // tables, screening radii, domain
     double   ms_sweep;
