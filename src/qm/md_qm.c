@@ -1052,6 +1052,80 @@ size_t md_qm_density_orbitals(double** out_rows, double** out_weights, size_t* o
     return qm_orbital_products(out_rows, out_weights, NULL, out_num_ao, sys, sa, sb, false, alloc);
 }
 
+size_t md_qm_density_factors(double** out_rows, double** out_weights, size_t* out_num_ao, const md_system_t* sys,
+                             md_str_t density_path, const md_attribute_slice_t* slice, md_allocator_i* alloc) {
+    if (!out_rows || !out_weights || !out_num_ao || !sys || !alloc) return 0;
+    *out_rows = NULL;
+    *out_weights = NULL;
+    *out_num_ao = 0;
+    if (md_str_eq(density_path, MD_STR_LIT("orbital/alpha/density")) || md_str_eq(density_path, MD_STR_LIT("orbital/beta/density")) ||
+        md_str_eq(density_path, MD_STR_LIT("orbital/total/density")) || md_str_eq(density_path, MD_STR_LIT("orbital/difference/density"))) {
+        return md_qm_density_orbitals(out_rows, out_weights, out_num_ao, sys, density_path, alloc);
+    }
+    char fp[256], wp[256];
+    if (md_snprintf(fp, sizeof(fp), MD_STR_FMT "/factor", MD_STR_ARG(density_path)) >= (int)sizeof(fp) ||
+        md_snprintf(wp, sizeof(wp), MD_STR_FMT "/weight", MD_STR_ARG(density_path)) >= (int)sizeof(wp)) {
+        return 0;
+    }
+    const md_attribute_t* fa = md_attributes_find(&sys->attributes, md_str_from_cstr(fp));
+    const md_attribute_t* wa = md_attributes_find(&sys->attributes, md_str_from_cstr(wp));
+    if (!fa || !wa) return 0;
+    const md_attribute_slice_t sl = slice ? *slice : md_attribute_slice_all();
+    md_attribute_format_t ff, wf;
+    if (!md_attribute_slice_format(&ff, fa, sl) || !md_attribute_slice_format(&wf, wa, sl) || ff.rank != 2 || wf.rank != 1 ||
+        ff.shape[0] != wf.shape[0]) {
+        MD_LOG_ERROR("md_qm_density_factors: '%s' and '%s' sliced are not {R,A} and {R}", fp, wp);
+        return 0;
+    }
+    const size_t R = ff.shape[0], A = ff.shape[1];
+    if (R == 0 || A == 0) return 0;
+    md_temp_scope_t temp = md_temp_begin();
+    double* f = (double*)md_temp_alloc(temp, sizeof(double) * R * A);
+    double* w = (double*)md_temp_alloc(temp, sizeof(double) * R);
+    size_t count = 0;
+    if (f && w && md_attribute_extract_f64(f, R * A, &sys->attributes, fa, sl, md_unit_none()) == R * A &&
+        md_attribute_extract_f64(w, R, &sys->attributes, wa, sl, md_unit_none()) == R) {
+        // the factors that carry something: a weight, and not all zero (a rank short of R leaves zero rows)
+        for (size_t r = 0; r < R; ++r) {
+            bool any = false;
+            for (size_t mu = 0; mu < A && w[r] != 0.0 && !any; ++mu) any = f[r * A + mu] != 0.0;
+            if (any) {
+                if (count != r) {
+                    md_memmove(f + count * A, f + r * A, sizeof(double) * A);
+                    w[count] = w[r];
+                }
+                ++count;
+            }
+        }
+        if (count) {
+            *out_rows = (double*)md_alloc(alloc, sizeof(double) * count * A);
+            *out_weights = (double*)md_alloc(alloc, sizeof(double) * count);
+            if (*out_rows && *out_weights) {
+                md_memcpy(*out_rows, f, sizeof(double) * count * A);
+                md_memcpy(*out_weights, w, sizeof(double) * count);
+                *out_num_ao = A;
+            } else {
+                if (*out_rows) md_free(alloc, *out_rows, sizeof(double) * count * A);
+                if (*out_weights) md_free(alloc, *out_weights, sizeof(double) * count);
+                *out_rows = NULL;
+                *out_weights = NULL;
+                count = 0;
+            }
+        }
+    } else {
+        MD_LOG_ERROR("md_qm_density_factors: could not read the %zu factors of '" MD_STR_FMT "'", R, MD_STR_ARG(density_path));
+    }
+    md_temp_end(temp);
+    return count;
+}
+
+bool md_qm_density_factors_available(const md_system_t* sys, md_str_t density_path) {
+    if (!sys) return false;
+    char fp[256];
+    if (md_snprintf(fp, sizeof(fp), MD_STR_FMT "/factor", MD_STR_ARG(density_path)) >= (int)sizeof(fp)) return false;
+    return md_attributes_find(&sys->attributes, md_str_from_cstr(fp)) != NULL;
+}
+
 size_t md_qm_alie_orbitals(double** out_rows, double** out_weights, double** out_energy_weights, size_t* out_num_ao,
                            const md_system_t* sys, md_allocator_i* alloc) {
     if (!out_rows || !out_weights || !out_energy_weights || !out_num_ao || !sys || !alloc) return 0;

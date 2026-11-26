@@ -7,6 +7,9 @@
 #include <core/md_vec_math.h>
 #include <core/md_grid.h>
 #include <md_gto_iso.h>
+#include <md_qm.h>
+#include <string.h>
+#include <stdio.h>
 
 #include <math.h>
 #include <float.h>
@@ -429,119 +432,130 @@ UTEST(vlx, combined_spin_densities_h2o) {
 	qm_test_free(&t);
 }
 
-// The transition densities: attachment, detachment and their difference. There is nothing to
-// compare them against - the file carries no reference matrices - so what is checked here is the
-// MECHANICS and the invariants that hold whatever the numbers are.
-//
-// They are the one place in the table where a slice is load bearing rather than a convenience. The
-// attribute is {S,A,A} and every plane costs a full reconstruction from the response eigenvectors,
-// so asking for one state has to mean reconstructing one state. Both paths are exercised below.
+// An excited state's attachment, detachment and difference densities, published as their factors
+// (vlx/rsp/transition_density/<name>/factor {S,R,A}, virtual, and /weight {S,R}, resident), never as matrices: what
+// md_qm_density_factors hands out sums to the densities formed here from the amplitudes the long way (C_v^T t^T t C_v,
+// C_o^T t t^T C_o, a dense reference only this test makes). A slice is load bearing: one state's factors are computed
+// for one state. Both paths are exercised below, and the physics each must keep: both densities hold |t|^2 electrons
+// (tr(D S), the orbitals orthonormal in S), and the difference none.
+static double* td_reference(const vlx_test_t* t, uint32_t state, int which, size_t* out_num_ao) {
+	const size_t nocc = (size_t)(qm_test_scalar(t, MD_STR_LIT("vlx/rsp/num_core"), 0.0) > 0.0 ? qm_test_scalar(t, MD_STR_LIT("vlx/rsp/num_core"), 0.0)
+	                                                                                          : qm_test_scalar(t, MD_STR_LIT("vlx/rsp/num_valence"), 0.0));
+	const size_t nvir = (size_t)qm_test_scalar(t, MD_STR_LIT("vlx/rsp/num_virtual"), 0.0);
+	const md_attribute_t* sol = qm_test_attr(t, MD_STR_LIT("vlx/rsp/solution_matrix"));
+	const md_attribute_t* ca = qm_test_attr(t, MD_STR_LIT("orbital/alpha/coefficient"));
+	if (!sol || !ca || !nocc || !nvir) return NULL;
+	const size_t vec_len = sol->format.shape[1], nmo = ca->format.shape[0], A = ca->format.shape[1];
+	double* row = (double*)malloc(sizeof(double) * vec_len);
+	double* C = (double*)malloc(sizeof(double) * nmo * A);
+	double* amp = (double*)malloc(sizeof(double) * nocc * nvir);
+	double* P = (double*)calloc(nmo * nmo, sizeof(double));     // the density in the MO basis
+	double* D = (double*)calloc(A * A, sizeof(double));
+	md_attribute_extract_f64(row, vec_len, &t->sys.attributes, sol, md_attribute_slice_1(state), md_unit_none());
+	md_attribute_extract_f64(C, nmo * A, &t->sys.attributes, ca, md_attribute_slice_all(), md_unit_none());
+	for (size_t k = 0; k < nocc * nvir; ++k) amp[k] = vec_len == 2 * nocc * nvir ? row[k] - row[nocc * nvir + k] : row[k];
+	const double s_att = which == 1 ? 0.0 : 1.0, s_det = which == 0 ? 0.0 : which == 1 ? 1.0 : -1.0;     // difference: attachment - detachment
+	for (size_t a = 0; a < nvir; ++a) for (size_t b = 0; b < nvir; ++b) {
+		double v = 0.0;
+		for (size_t i = 0; i < nocc; ++i) v += amp[i * nvir + a] * amp[i * nvir + b];
+		P[(nocc + a) * nmo + nocc + b] += s_att * v;
+	}
+	for (size_t i = 0; i < nocc; ++i) for (size_t j = 0; j < nocc; ++j) {
+		double v = 0.0;
+		for (size_t a = 0; a < nvir; ++a) v += amp[i * nvir + a] * amp[j * nvir + a];
+		P[i * nmo + j] += s_det * v;
+	}
+	for (size_t p = 0; p < nmo; ++p) for (size_t q = 0; q < nmo; ++q) {
+		const double v = P[p * nmo + q];
+		if (v == 0.0) continue;
+		for (size_t mu = 0; mu < A; ++mu) for (size_t nu = 0; nu < A; ++nu) D[mu * A + nu] += v * C[p * A + mu] * C[q * A + nu];
+	}
+	free(row); free(C); free(amp); free(P);
+	*out_num_ao = A;
+	return D;
+}
+
 static void check_transition_density_attributes(int* utest_result, md_str_t file) {
 	vlx_test_t t = {0};
 	ASSERT_TRUE(vlx_test_load(&t, file, MD_MEGABYTES(64)));
 
 	const size_t num_states = qm_test_count(&t, MD_STR_LIT("vlx/rsp/oscillator_strength"));
 	ASSERT_TRUE(num_states > 0);
-
-	md_str_t paths[3] = {
-		MD_STR_INIT("vlx/rsp/transition_density/attachment"),
-		MD_STR_INIT("vlx/rsp/transition_density/detachment"),
-		MD_STR_INIT("vlx/rsp/transition_density/difference"),
-	};
-
-	const md_attribute_t* attr[3] = {0};
-	for (int i = 0; i < 3; ++i) {
-		attr[i] = qm_test_attr(&t, paths[i]);
-		ASSERT_TRUE(attr[i] != NULL);
-
-		// {S,A,A}: state outermost, then the AO x AO matrix. Square is load bearing downstream -
-		// the GL and GPU density paths pack only the upper triangle.
-		EXPECT_TRUE(md_attribute_is_virtual(attr[i]));
-		EXPECT_EQ(attr[i]->format.type, MD_ATTRIBUTE_TYPE_F64);
-		ASSERT_EQ(attr[i]->format.rank, 3u);
-		EXPECT_EQ(attr[i]->format.shape[0], (uint32_t)num_states);
-		EXPECT_EQ(attr[i]->format.shape[1], attr[i]->format.shape[2]);
-
-		// A virtual attribute hands out no resident storage to write into.
-		EXPECT_TRUE(md_attributes_data(&t.sys.attributes, attr[i]->id, MD_ATTRIBUTE_TYPE_F64) == NULL);
-	}
-
-	const size_t num_ao = attr[0]->format.shape[1];
-	ASSERT_TRUE(num_ao > 0);
-
-	// The AO axis is the one the coefficients and the overlap live on; if these disagreed the
-	// matrices would be reconstructed against a basis they do not belong to.
 	const md_attribute_t* coeff = qm_test_attr(&t, MD_STR_LIT("orbital/alpha/coefficient"));
 	ASSERT_TRUE(coeff != NULL);
-	EXPECT_EQ(coeff->format.shape[1], (uint32_t)num_ao);
+	const size_t A = coeff->format.shape[1];
+	size_t sn = 0;
+	double* S = qm_test_matrix(&t, MD_STR_LIT("basis/overlap"), &sn);
+	ASSERT_TRUE(S != NULL);
+	ASSERT_EQ(A, sn);
 
-	const size_t plane = num_ao * num_ao;
-	double* mat[3] = {0};
+	static const char* names[3] = { "attachment", "detachment", "difference" };
+	for (int k = 0; k < 3; ++k) {
+		char fp[96], wp[96], dp[96];
+		snprintf(dp, sizeof(dp), "vlx/rsp/transition_density/%s", names[k]);
+		snprintf(fp, sizeof(fp), "%s/factor", dp);
+		snprintf(wp, sizeof(wp), "%s/weight", dp);
+		const md_attribute_t* fa = qm_test_attr(&t, md_str_from_cstr(fp));
+		const md_attribute_t* wa = qm_test_attr(&t, md_str_from_cstr(wp));
+		ASSERT_TRUE(fa != NULL && wa != NULL);
+		EXPECT_TRUE(qm_test_attr(&t, md_str_from_cstr(dp)) == NULL);     // no matrix
+		EXPECT_TRUE(md_qm_density_factors_available(&t.sys, md_str_from_cstr(dp)));
+		// {S,R,A} virtual, its weights {S,R} resident; the AO axis the coefficients'
+		EXPECT_TRUE(md_attribute_is_virtual(fa));
+		EXPECT_FALSE(md_attribute_is_virtual(wa));
+		ASSERT_EQ(fa->format.rank, 3u);
+		ASSERT_EQ(wa->format.rank, 2u);
+		EXPECT_EQ(fa->format.shape[0], (uint32_t)num_states);
+		EXPECT_EQ(fa->format.shape[1], wa->format.shape[1]);
+		EXPECT_EQ(fa->format.shape[2], (uint32_t)A);
+		const size_t R = fa->format.shape[1];
 
-	// One state at a time, which is the shape a representation asks in.
-	for (int i = 0; i < 3; ++i) {
-		const md_attribute_slice_t slice = md_attribute_slice_1(0);
-
-		md_attribute_format_t sliced = {0};
-		ASSERT_TRUE(md_attribute_slice_format(&sliced, attr[i], slice));
-		EXPECT_EQ(sliced.rank, 2u);
-		EXPECT_EQ(sliced.shape[0], (uint32_t)num_ao);
-		EXPECT_EQ(sliced.shape[1], (uint32_t)num_ao);
-		ASSERT_EQ(md_attribute_slice_count(attr[i], slice), plane);
-
-		mat[i] = (double*)md_alloc(t.alloc, sizeof(double) * plane);
-		ASSERT_EQ(md_attribute_extract_f64(mat[i], plane, &t.sys.attributes, attr[i], slice, md_unit_none()), plane);
-	}
-
-	double max_asym = 0.0;
-	double max_value = 0.0;
-	for (size_t i = 0; i < 3; ++i) {
-		for (size_t r = 0; r < num_ao; ++r) {
-			for (size_t c = 0; c < num_ao; ++c) {
-				const double v = mat[i][r * num_ao + c];
-				ASSERT_TRUE(v == v);                    // not NaN
-				ASSERT_TRUE(fabs(v) < DBL_MAX);         // not inf
-				max_asym  = MD_MAX(max_asym,  fabs(v - mat[i][c * num_ao + r]));
-				max_value = MD_MAX(max_value, fabs(v));
+		for (uint32_t st = 0; st < (uint32_t)num_states && st < 3; ++st) {
+			const md_attribute_slice_t slice = md_attribute_slice_1(st);
+			double *rows = NULL, *w = NULL;
+			size_t na = 0;
+			const size_t n = md_qm_density_factors(&rows, &w, &na, &t.sys, md_str_from_cstr(dp), &slice, t.alloc);
+			ASSERT_GT(n, 0u);
+			ASSERT_LE(n, R);
+			ASSERT_EQ(A, na);
+			size_t rn = 0;
+			double* ref = td_reference(&t, st, k, &rn);
+			ASSERT_TRUE(ref != NULL);
+			ASSERT_EQ(A, rn);
+			double emax = 0.0, rmax = 0.0, nel = 0.0, nel_ref = 0.0;
+			for (size_t mu = 0; mu < A; ++mu) for (size_t nu = 0; nu < A; ++nu) {
+				double v = 0.0;
+				for (size_t r = 0; r < n; ++r) v += w[r] * rows[r * A + mu] * rows[r * A + nu];
+				emax = fmax(emax, fabs(v - ref[mu * A + nu]));
+				rmax = fmax(rmax, fabs(ref[mu * A + nu]));
+				nel += v * S[mu * A + nu];
+				nel_ref += ref[mu * A + nu] * S[mu * A + nu];
 			}
+			printf("  " MD_STR_FMT " state %u %-10s %zu of %zu factors: %.1e of max %.3g; tr(D S) %.3e (reference %.3e)\n", MD_STR_ARG(file), st, names[k],
+				   n, R, emax / rmax, rmax, nel, nel_ref);
+			EXPECT_TRUE(rmax > 1.0e-8);
+			EXPECT_LT(emax, 1.0e-12 * rmax);
+			EXPECT_NEAR(nel_ref, nel, 1.0e-10);
+			// attachment and detachment hold as many electrons, |t|^2: to within the orbitals' orthonormality in the
+			// overlap integrated from the basis (overlap_describes_the_same_basis_as_the_coefficients: 1e-5)
+			if (k == 2) { EXPECT_NEAR(0.0, nel, 1.0e-5); }
+			free(ref);
+			md_free(t.alloc, rows, sizeof(double) * n * A);
+			md_free(t.alloc, w, sizeof(double) * n);
 		}
-	}
 
-	// Symmetric by construction, and the GL/GPU density paths read only the upper triangle - so an
-	// asymmetric matrix would be silently half consumed.
-	EXPECT_NEAR(0.0, max_asym, 1.0e-12);
-
-	// Reconstructed from a real excitation, so not the zero matrix a declining provider would have
-	// been indistinguishable from before the extract started reporting a short write.
-	EXPECT_TRUE(max_value > 1.0e-8);
-
-	// The difference IS attachment minus detachment. Cheap to state and it pins the one relation
-	// between the three that no reference values are needed to know.
-	double max_diff = 0.0;
-	for (size_t i = 0; i < plane; ++i) {
-		max_diff = MD_MAX(max_diff, fabs(mat[2][i] - (mat[0][i] - mat[1][i])));
-	}
-	EXPECT_NEAR(0.0, max_diff, 1.0e-12);
-
-	// The whole attribute, every state at once. Same values in state 0's plane as the slice gave,
-	// which is the property that makes a slice an optimisation rather than a second code path.
-	for (int i = 0; i < 3; ++i) {
-		const size_t total = num_states * plane;
-		ASSERT_EQ(md_attribute_element_count(&attr[i]->format), total);
-
+		// the whole attribute, every state at once: state 0's plane as its slice gave it
+		const size_t plane = R * A, total = num_states * plane;
+		double* one = (double*)md_alloc(t.alloc, sizeof(double) * plane);
 		double* all = (double*)md_alloc(t.alloc, sizeof(double) * total);
-		ASSERT_EQ(md_attribute_extract_f64(all, total, &t.sys.attributes, attr[i], md_attribute_slice_all(), md_unit_none()), total);
-
-		for (size_t v = 0; v < plane; ++v) {
-			ASSERT_NEAR(mat[i][v], all[v], 1.0e-12);
-		}
+		ASSERT_EQ(md_attribute_extract_f64(one, plane, &t.sys.attributes, fa, md_attribute_slice_1(0), md_unit_none()), plane);
+		ASSERT_EQ(md_attribute_extract_f64(all, total, &t.sys.attributes, fa, md_attribute_slice_all(), md_unit_none()), total);
+		EXPECT_EQ(0, memcmp(one, all, sizeof(double) * plane));
+		// a state past the end selects nothing rather than reading past the array
+		const md_attribute_slice_t past_end = md_attribute_slice_1((uint32_t)num_states);
+		EXPECT_EQ(md_attribute_slice_count(fa, past_end), 0u);
+		EXPECT_EQ(md_attribute_extract_f64(one, plane, &t.sys.attributes, fa, past_end, md_unit_none()), 0u);
 	}
-
-	// A state past the end selects nothing rather than reading past the array.
-	const md_attribute_slice_t past_end = md_attribute_slice_1((uint32_t)num_states);
-	EXPECT_EQ(md_attribute_slice_count(attr[0], past_end), 0u);
-	EXPECT_EQ(md_attribute_extract_f64(mat[0], plane, &t.sys.attributes, attr[0], past_end, md_unit_none()), 0u);
-
 	qm_test_free(&t);
 }
 
@@ -1612,7 +1626,7 @@ UTEST(vlx, density_property_without_scf) {
 	EXPECT_FALSE(qm_test_has(&t, MD_STR_LIT("orbital/alpha/density")));
 	EXPECT_FALSE(qm_test_has(&t, MD_STR_LIT("vlx/scf/type")));
 	EXPECT_FALSE(qm_test_has(&t, MD_STR_LIT("dipole/ground_state/vector")));
-	EXPECT_FALSE(qm_test_has(&t, MD_STR_LIT("vlx/rsp/transition_density/attachment")));
+	EXPECT_FALSE(qm_test_has(&t, MD_STR_LIT("vlx/rsp/transition_density/attachment/factor")));
 	EXPECT_FALSE(qm_test_has(&t, MD_STR_LIT("vlx/rsp/nto/particle/coefficient")));
 
 	// The response stands on its own: its occupied/virtual split comes from the electron count at the

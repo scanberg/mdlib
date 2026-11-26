@@ -242,6 +242,20 @@ bool md_qm_publish_orbital_densities(struct md_system_t* sys);
 size_t md_qm_density_orbitals(double** out_rows, double** out_weights, size_t* out_num_ao, const struct md_system_t* sys,
                               md_str_t density_path, struct md_allocator_i* alloc);
 
+// The factors any density is a sum of: D = sum_k w_k f_k f_k^T. For an SCF density (orbital/*/density, slice not
+// read) md_qm_density_orbitals'. Any other density is published as its factors, not as a matrix: <density_path>/factor
+// {..., R, A} and <density_path>/weight {..., R} beside it (an excited state's attachment, detachment and difference
+// densities: vlx/rsp/transition_density/{attachment,detachment,difference}, {S,R,A} and {S,R}, sliced by state). The
+// slice (NULL: all) is applied to both and must leave {R,A} and {R}. Factors of zero weight, and zero factors, are left
+// out. rows: count x num_ao, weights: count, both allocated from 'alloc' (free with sizeof(double) * count * num_ao
+// and sizeof(double) * count). What md_gto_dmat_build and md_gto_iso_field_create_products take. Returns count; 0 for
+// a density with nothing to read, or zero.
+size_t md_qm_density_factors(double** out_rows, double** out_weights, size_t* out_num_ao, const struct md_system_t* sys,
+                             md_str_t density_path, const struct md_attribute_slice_t* slice, struct md_allocator_i* alloc);
+
+// Whether the density at density_path is published as factors (<density_path>/factor). Cheap: a lookup.
+bool md_qm_density_factors_available(const struct md_system_t* sys, md_str_t density_path);
+
 // The orbitals of the AVERAGE LOCAL IONIZATION ENERGY (Sjoberg, Murray, Brinck and Politzer, Can. J. Chem. 68,
 // 1440 (1990)),
 //

@@ -1559,12 +1559,21 @@ UTEST(gto_iso_density, matches_products_of_orbitals) {
             iso_dens_prod_t p;
             iso_dens_products(&p, &s, ISO_D_ATTACH + k);
             double* D = iso_dens_matrix(&p, nao);
-            const md_attribute_t* a = qm_test_attr(&s.t, md_str_from_cstr(vlx_path[k]));
-            ASSERT_TRUE(a != NULL);
-            double* ref = (double*)malloc(sizeof(double) * nao * nao);
-            ASSERT_EQ(md_attribute_extract_f64(ref, nao * nao, &s.t.sys.attributes, a, md_attribute_slice_1(0), md_unit_none()), nao * nao);
+            // the factors md_vlx publishes for the same density (md_qm_density_factors), summed here
+            double *fr = NULL, *fw = NULL;
+            size_t fna = 0;
+            const md_attribute_slice_t s0 = md_attribute_slice_1(0);
+            const size_t nf = md_qm_density_factors(&fr, &fw, &fna, &s.t.sys, md_str_from_cstr(vlx_path[k]), &s0, md_get_heap_allocator());
+            ASSERT_GT(nf, 0u);
+            ASSERT_EQ(nao, fna);
+            double* ref = (double*)calloc(nao * nao, sizeof(double));
+            for (size_t r = 0; r < nf; ++r)
+                for (size_t i = 0; i < nao; ++i)
+                    for (size_t j = 0; j < nao; ++j) ref[i * nao + j] += fw[r] * fr[r * nao + i] * fr[r * nao + j];
+            md_free(md_get_heap_allocator(), fr, sizeof(double) * nf * nao);
+            md_free(md_get_heap_allocator(), fw, sizeof(double) * nf);
             const double e = iso_rel_diff(ref, D, nao * nao);
-            printf("            %-6s NTO products vs %s: %.1e\n", iso_d_name[ISO_D_ATTACH + k], vlx_path[k], e);
+            printf("            %-6s NTO products vs %s's factors: %.1e\n", iso_d_name[ISO_D_ATTACH + k], vlx_path[k], e);
             // the NTOs kept are those with lambda > 1e-6, so this agrees to about that
             EXPECT_LT(e, 1.0e-4);
             free(ref); free(D);

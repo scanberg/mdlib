@@ -3159,202 +3159,109 @@ static bool h5_read_core_data(vlx_t* vlx, hid_t handle) {
 	return true;
 }
 
-static void vlx_symmetrize_square(double* mat, size_t dim) {
-	MD_ASSERT(mat);
-	for (size_t i = 0; i < dim; ++i) {
-		for (size_t j = i + 1; j < dim; ++j) {
-			const double value = 0.5 * (mat[i * dim + j] + mat[j * dim + i]);
-			mat[i * dim + j] = value;
-			mat[j * dim + i] = value;
-		}
+// AN EXCITED STATE'S DENSITIES AS FACTORS, never as matrices.
+//
+// With t = X - Y the state's (occupied x virtual) amplitudes and C the MO coefficients (rows), the attachment density
+// is C_v^T (t^T t) C_v and the detachment density C_o^T (t t^T) C_o. Each is published as a set of factors f_k with
+// weights w_k, D = sum_k w_k f_k f_k^T (md_qm_density_factors), which is what the tiles (md_gto_dmat_build) and the
+// isosurface fields (md_gto_iso_field_create_products) are made of: exact, and nothing A x A is formed.
+//
+//   attachment: B = t C_v, one factor per occupied orbital (B^T B = C_v^T t^T t C_v): nocc * nvir * A.
+//   detachment: a pivoted Cholesky of M = t t^T (occupied x occupied, positive semidefinite), M = L L^T to round off,
+//               its rank r factors sum_i L_ik c_i: nocc^2 nvir / 2 for M, nocc^2 r for L, r * nocc * A for the factors.
+//   difference: attachment minus detachment, both sets, the detachment's weights negated.
+
+// t = X - Y from one state's row of the response solutions {vec_len}: amp {nocc, nvir}. False for a row of neither
+// nocc * nvir (X) nor twice that (X and Y).
+static bool vlx_state_amplitudes(double* amp, const double* solution_vector, size_t vec_len, size_t nocc, size_t nvir) {
+	const size_t n = nocc * nvir;
+	if (vec_len == n) {
+		md_memcpy(amp, solution_vector, sizeof(double) * n);
+	} else if (vec_len == 2 * n) {
+		for (size_t k = 0; k < n; ++k) amp[k] = solution_vector[k] - solution_vector[n + k];
+	} else {
+		MD_LOG_ERROR("Response solution vector holds %zu values, expected %zu or %zu (%zu occupied x %zu virtual)", vec_len, n, 2 * n, nocc, nvir);
+		return false;
 	}
+	return true;
 }
 
-// D_ao = C^T P C over the MO block [mo_offset, mo_offset + mo_count), with C stored row per MO.
-//
-// Both contractions are accumulated into their destination rather than summed into a scalar, so
-// every innermost loop walks one ROW of C, of the work matrix and of the output - all contiguous.
-// Written as inner products instead, the innermost loop strides down a column of C by num_ao
-// doubles and misses cache on essentially every step; at 1600 atomic orbitals that alone cost an
-// order of magnitude more than the arithmetic.
-static void vlx_transform_mo_density_to_ao(double* out_ao, const double* mo_density, const double* coeff, size_t mo_offset, size_t mo_count, size_t num_ao) {
-	MD_ASSERT(out_ao);
-	MD_ASSERT(mo_density);
-	MD_ASSERT(coeff);
-
-	md_temp_scope_t temp = md_temp_begin();
-	double* work = md_temp_alloc_array(temp, double, mo_count * num_ao);
-	md_memset(work, 0, sizeof(double) * mo_count * num_ao);
-
-	// work = P C
-	for (size_t i = 0; i < mo_count; ++i) {
-		double* work_row = work + i * num_ao;
-		for (size_t j = 0; j < mo_count; ++j) {
-			const double p = mo_density[i * mo_count + j];
-			if (p == 0.0) {
-				continue;
-			}
-			const double* coeff_row = coeff + (mo_offset + j) * num_ao;
-			for (size_t ao = 0; ao < num_ao; ++ao) {
-				work_row[ao] += p * coeff_row[ao];
-			}
-		}
-	}
-
-	// out = C^T work
-	md_memset(out_ao, 0, sizeof(double) * num_ao * num_ao);
-	for (size_t i = 0; i < mo_count; ++i) {
-		const double* coeff_row = coeff + (mo_offset + i) * num_ao;
-		const double* work_row  = work + i * num_ao;
-		for (size_t ao_i = 0; ao_i < num_ao; ++ao_i) {
-			const double c = coeff_row[ao_i];
-			if (c == 0.0) {
-				continue;
-			}
-			double* out_row = out_ao + ao_i * num_ao;
-			for (size_t ao_j = 0; ao_j < num_ao; ++ao_j) {
-				out_row[ao_j] += c * work_row[ao_j];
-			}
-		}
-	}
-
-	md_temp_end(temp);
-}
-
-// The attachment density in the AO basis, WITHOUT ever forming its virtual x virtual MO block.
-//
-// With t the (occupied x virtual) amplitudes, the attachment density is C_v^T (t^T t) C_v, which
-// factorises as B^T B with B = t C_v - one (occupied x atomic orbital) matrix. That turns
-// nvir^2 * nao + nao^2 * nvir arithmetic into nocc * nvir * nao + nocc * nao^2, and nocc is the
-// small dimension: at 1600 atomic orbitals with 100 occupied it is two orders of magnitude less
-// work, and it is the same matrix, not an approximation of it.
-//
-// B^T B is symmetric by construction, so only the upper triangle is accumulated and then mirrored.
-static void vlx_build_attachment_density_ao(double* out_ao, const double* amp, size_t nocc, size_t nvir,
-	const double* coeff, size_t num_ao)
-{
-	MD_ASSERT(out_ao);
-	MD_ASSERT(amp);
-	MD_ASSERT(coeff);
-
-	md_temp_scope_t temp = md_temp_begin();
-
-	// B = t C_v, one row per occupied orbital.
-	double* B = md_temp_alloc_array(temp, double, nocc * num_ao);
-	md_memset(B, 0, sizeof(double) * nocc * num_ao);
-
+// The attachment density's factors: out {nocc, A}, row i = sum_a t_ia c_(nocc + a)
+static void vlx_attachment_factors(double* out, const double* amp, size_t nocc, size_t nvir, const double* coeff, size_t num_ao) {
+	md_memset(out, 0, sizeof(double) * nocc * num_ao);
 	for (size_t i = 0; i < nocc; ++i) {
-		double* b_row = B + i * num_ao;
+		double* row = out + i * num_ao;
 		for (size_t a = 0; a < nvir; ++a) {
 			const double t = amp[i * nvir + a];
-			if (t == 0.0) {
-				continue;
-			}
-			const double* coeff_row = coeff + (nocc + a) * num_ao;
-			for (size_t ao = 0; ao < num_ao; ++ao) {
-				b_row[ao] += t * coeff_row[ao];
-			}
+			if (t == 0.0) continue;
+			const double* c = coeff + (nocc + a) * num_ao;
+			for (size_t mu = 0; mu < num_ao; ++mu) row[mu] += t * c[mu];
 		}
 	}
-
-	md_memset(out_ao, 0, sizeof(double) * num_ao * num_ao);
-	for (size_t i = 0; i < nocc; ++i) {
-		const double* b_row = B + i * num_ao;
-		for (size_t ao_i = 0; ao_i < num_ao; ++ao_i) {
-			const double b = b_row[ao_i];
-			if (b == 0.0) {
-				continue;
-			}
-			double* out_row = out_ao + ao_i * num_ao;
-			for (size_t ao_j = ao_i; ao_j < num_ao; ++ao_j) {
-				out_row[ao_j] += b * b_row[ao_j];
-			}
-		}
-	}
-
-	for (size_t ao_i = 0; ao_i < num_ao; ++ao_i) {
-		for (size_t ao_j = ao_i + 1; ao_j < num_ao; ++ao_j) {
-			out_ao[ao_j * num_ao + ao_i] = out_ao[ao_i * num_ao + ao_j];
-		}
-	}
-
-	md_temp_end(temp);
 }
 
-// The whole of the transition density reconstruction, in terms of a plain solution vector and a
-// plain AO coefficient matrix rather than a vlx_t. This is what lets the attribute provider
-// below reconstruct the same matrix with no vlx object in reach: everything it needs is one row of
-// a response solution and the (already resident) alpha MO coefficients.
-static bool vlx_build_transition_density_matrix(double* out_matrix, const double* solution_vector, size_t vec_len,
-	size_t nocc, size_t nvir, const double* coeff, size_t num_ao, vlx_transition_type_t type)
-{
-	MD_ASSERT(out_matrix);
-	MD_ASSERT(solution_vector);
-	MD_ASSERT(coeff);
-
-	if (nocc == 0 || nvir == 0 || num_ao == 0) {
-		return false;
-	}
-
-	const size_t amp_count = nocc * nvir;
-	bool has_y;
-	if (vec_len == amp_count) {
-		has_y = false;
-	} else if (vec_len == 2 * amp_count) {
-		has_y = true;
-	} else {
-		MD_LOG_ERROR("Response solution vector holds %zu values, expected %zu or %zu (%zu occupied x %zu virtual)", vec_len, amp_count, 2 * amp_count, nocc, nvir);
-		return false;
-	}
-
+// The detachment density's factors: out {nocc, A}, rows past the rank zero. Returns the rank: the pivots of M's
+// Cholesky above 1e-14 of its largest diagonal (what is left is below round off of M itself).
+static size_t vlx_detachment_factors(double* out, const double* amp, size_t nocc, size_t nvir, const double* coeff, size_t num_ao) {
+	md_memset(out, 0, sizeof(double) * nocc * num_ao);
 	md_temp_scope_t temp = md_temp_begin();
-
-	// t = X - Y, formed once. It was previously reassembled inside both accumulation loops, which
-	// put a branch on has_y in the innermost loop of the whole reconstruction.
-	double* amp = md_temp_alloc_array(temp, double, amp_count);
-	if (has_y) {
-		for (size_t k = 0; k < amp_count; ++k) {
-			amp[k] = solution_vector[k] - solution_vector[amp_count + k];
-		}
-	} else {
-		md_memcpy(amp, solution_vector, sizeof(double) * amp_count);
-	}
-
-	// The detachment density keeps the MO space route: its block is occupied x occupied, which is
-	// the small dimension, and factorising it the way the attachment density is factorised below
-	// would contract over the virtual index instead and cost more, not less.
-	if (type == VLX_TRANSITION_DETACHMENT || type == VLX_TRANSITION_DIFFERENCE) {
-		double* detach_mo = md_temp_alloc_array(temp, double, nocc * nocc);
-		md_memset(detach_mo, 0, sizeof(double) * nocc * nocc);
-
+	double* M = md_temp_alloc_array(temp, double, nocc * nocc);    // M = t t^T
+	double* L = md_temp_alloc_array(temp, double, nocc * nocc);    // column k at [k * nocc]
+	double* d = md_temp_alloc_array(temp, double, nocc);           // what is left of M's diagonal
+	uint8_t* used = md_temp_alloc_array(temp, uint8_t, nocc);
+	size_t r = 0;
+	if (M && L && d && used) {
 		for (size_t i = 0; i < nocc; ++i) {
+			const double* ti = amp + i * nvir;
 			for (size_t j = i; j < nocc; ++j) {
-				double value = 0.0;
-				for (size_t a = 0; a < nvir; ++a) {
-					value += amp[i * nvir + a] * amp[j * nvir + a];
-				}
-				detach_mo[i * nocc + j] = value;
-				detach_mo[j * nocc + i] = value;
+				const double* tj = amp + j * nvir;
+				double v = 0.0;
+				for (size_t a = 0; a < nvir; ++a) v += ti[a] * tj[a];
+				M[i * nocc + j] = v;
+				M[j * nocc + i] = v;
 			}
 		}
-
-		if (type == VLX_TRANSITION_DETACHMENT) {
-			vlx_transform_mo_density_to_ao(out_matrix, detach_mo, coeff, 0, nocc, num_ao);
-		} else {
-			double* detach_ao = md_temp_alloc_array(temp, double, num_ao * num_ao);
-			vlx_transform_mo_density_to_ao(detach_ao, detach_mo, coeff, 0, nocc, num_ao);
-			vlx_build_attachment_density_ao(out_matrix, amp, nocc, nvir, coeff, num_ao);
-			for (size_t i = 0; i < num_ao * num_ao; ++i) {
-				out_matrix[i] -= detach_ao[i];
+		double dmax = 0.0;
+		for (size_t i = 0; i < nocc; ++i) {
+			d[i] = M[i * nocc + i];
+			used[i] = 0;
+			dmax = MD_MAX(dmax, d[i]);
+		}
+		const double tol = 1.0e-14 * dmax;
+		for (r = 0; r < nocc; ++r) {
+			size_t p = nocc;
+			double best = tol;
+			for (size_t i = 0; i < nocc; ++i) {
+				if (!used[i] && d[i] > best) { best = d[i]; p = i; }
+			}
+			if (p == nocc) break;
+			used[p] = 1;
+			double* Lk = L + r * nocc;
+			const double lpp = sqrt(d[p]);
+			for (size_t i = 0; i < nocc; ++i) {
+				if (used[i] && i != p) { Lk[i] = 0.0; continue; }
+				double v = M[i * nocc + p];
+				for (size_t k = 0; k < r; ++k) v -= L[k * nocc + i] * L[k * nocc + p];
+				Lk[i] = i == p ? lpp : v / lpp;
+			}
+			for (size_t i = 0; i < nocc; ++i) {
+				if (!used[i]) d[i] -= Lk[i] * Lk[i];
+			}
+			d[p] = 0.0;
+		}
+		// the factors: row k = sum_i L_ik c_i
+		for (size_t k = 0; k < r; ++k) {
+			double* row = out + k * num_ao;
+			const double* Lk = L + k * nocc;
+			for (size_t i = 0; i < nocc; ++i) {
+				if (Lk[i] == 0.0) continue;
+				const double* c = coeff + i * num_ao;
+				for (size_t mu = 0; mu < num_ao; ++mu) row[mu] += Lk[i] * c[mu];
 			}
 		}
-	} else {
-		vlx_build_attachment_density_ao(out_matrix, amp, nocc, nvir, coeff, num_ao);
 	}
-
-	vlx_symmetrize_square(out_matrix, num_ao);
 	md_temp_end(temp);
-	return true;
+	return r;
 }
 
 static double vlx_dot(const double* a, const double* b, size_t count) {
@@ -4722,15 +4629,15 @@ static bool vlx_centre_of_charge(md_double3_t* out_angstrom, const vlx_t* vlx) {
 	return true;
 }
 
-// Reconstructs one excited state's AO-basis transition density purely from attributes already on
-// 'sys' - the response solution vectors and the alpha MO coefficients - so this runs with no vlx
-// object in reach, and keeps working after one is torn down. 'type' is baked in by the three thin
-// wrappers below, one per sibling path, the same shape as the MO coefficient split above.
+// One excited state's densities as their factors (above), from attributes already on 'sys' - the response
+// solution vectors and the alpha MO coefficients - so this runs with no vlx object in reach, and keeps working after
+// one is torn down: {S, R, A}, R the occupied orbitals (attachment, detachment: rows past the rank zero) or twice that
+// (difference: the attachment's, then the detachment's), weighted by the resident <path>/weight beside them (+1, and
+// -1 for the difference's detachment rows). 'type' is baked in by the three thin wrappers below, one per path.
 //
-// A whole (unsliced) request reconstructs every state one after another into 'dst'; expensive, but
-// no more so than the vlx-based accessor doing the same loop, and slicing by state is how a caller
-// avoids paying for states it does not need.
-static size_t vlx_transition_density_provide(void* dst, size_t cap, const md_attributes_t* table, const md_attribute_t* attr, const md_attribute_slice_t* slice, vlx_transition_type_t type) {
+// A whole (unsliced) request builds every state one after another into 'dst'; slicing by state is how a caller avoids
+// paying for states it does not need.
+static size_t vlx_transition_factor_provide(void* dst, size_t cap, const md_attributes_t* table, const md_attribute_t* attr, const md_attribute_slice_t* slice, vlx_transition_type_t type) {
 
 	const md_attribute_t* sol   = md_attributes_find(table, MD_STR_LIT("vlx/rsp/solution_matrix"));
 	const md_attribute_t* coeff = md_attributes_find(table, MD_STR_LIT("orbital/alpha/coefficient"));
@@ -4770,15 +4677,16 @@ static size_t vlx_transition_density_provide(void* dst, size_t cap, const md_att
 		return 0;
 	}
 
-	// The destination is sized by the CALLER's slice, and this writes num_ao^2 per state. Nothing
+	// The destination is sized by the CALLER's slice, and this writes num_rows x num_ao per state. Nothing
 	// upstream guarantees the two agree - the shape was published from the vlx object's coefficient
 	// matrix while num_ao here comes off the published coefficient attribute -
 	// so disagreeing is an overrun, not a wrong picture. Check before writing a single value.
+	const size_t num_rows = type == VLX_TRANSITION_DIFFERENCE ? 2 * nocc : nocc;
 	const size_t states_written = (slice && slice->num_idx > 0) ? 1 : num_states;
-	const size_t needed = states_written * num_ao * num_ao;
+	const size_t needed = states_written * num_rows * num_ao;
 	if (needed != cap) {
-		MD_LOG_ERROR("'" MD_STR_FMT "': asked for %zu values, would write %zu (%zu state(s) x %zu x %zu atomic orbitals)",
-			MD_STR_ARG(attr->path), cap, needed, states_written, num_ao, num_ao);
+		MD_LOG_ERROR("'" MD_STR_FMT "': asked for %zu values, would write %zu (%zu state(s) x %zu factors x %zu atomic orbitals)",
+			MD_STR_ARG(attr->path), cap, needed, states_written, num_rows, num_ao);
 		return 0;
 	}
 
@@ -4787,8 +4695,9 @@ static size_t vlx_transition_density_provide(void* dst, size_t cap, const md_att
 
 	double* coeff_data = md_temp_alloc_array(temp, double, num_mo * num_ao);
 	double* row        = md_temp_alloc_array(temp, double, vec_len);
-	if (!coeff_data || !row) {
-		MD_LOG_ERROR("'" MD_STR_FMT "': failed to allocate %zu doubles of scratch", MD_STR_ARG(attr->path), num_mo * num_ao + vec_len);
+	double* amp        = md_temp_alloc_array(temp, double, nocc * nvir);
+	if (!coeff_data || !row || !amp) {
+		MD_LOG_ERROR("'" MD_STR_FMT "': failed to allocate %zu doubles of scratch", MD_STR_ARG(attr->path), num_mo * num_ao + vec_len + nocc * nvir);
 		goto done;
 	}
 
@@ -4810,10 +4719,15 @@ static size_t vlx_transition_density_provide(void* dst, size_t cap, const md_att
 				MD_STR_ARG(attr->path), state_idx, vec_len, MD_STR_ARG(sol->path), sol->format.shape[0], sol->format.shape[1]);
 			goto done;
 		}
-		if (!vlx_build_transition_density_matrix((double*)dst + s * num_ao * num_ao, row, vec_len, nocc, nvir, coeff_data, num_ao, type)) {
-			MD_LOG_ERROR("'" MD_STR_FMT "': could not build state %u's density from %zu occupied x %zu virtual over %zu atomic orbitals",
-				MD_STR_ARG(attr->path), state_idx, nocc, nvir, num_ao);
+		if (!vlx_state_amplitudes(amp, row, vec_len, nocc, nvir)) {
+			MD_LOG_ERROR("'" MD_STR_FMT "': could not take state %u's amplitudes (%zu occupied x %zu virtual) from its solution vector",
+				MD_STR_ARG(attr->path), state_idx, nocc, nvir);
 			goto done;
+		}
+		double* out = (double*)dst + s * num_rows * num_ao;
+		if (type != VLX_TRANSITION_DETACHMENT) vlx_attachment_factors(out, amp, nocc, nvir, coeff_data, num_ao);
+		if (type != VLX_TRANSITION_ATTACHMENT) {
+			vlx_detachment_factors(out + (type == VLX_TRANSITION_DIFFERENCE ? nocc * num_ao : 0), amp, nocc, nvir, coeff_data, num_ao);
 		}
 	}
 	result = cap;
@@ -4823,22 +4737,23 @@ done:
 	return result;
 }
 
-static size_t vlx_transition_density_attachment_provider(void* dst, size_t cap, const md_attributes_t* table, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+
+static size_t vlx_transition_attachment_factor_provider(void* dst, size_t cap, const md_attributes_t* table, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
 	(void)user_data;
 	(void)io;
-	return vlx_transition_density_provide(dst, cap, table, attr, slice, VLX_TRANSITION_ATTACHMENT);
+	return vlx_transition_factor_provide(dst, cap, table, attr, slice, VLX_TRANSITION_ATTACHMENT);
 }
 
-static size_t vlx_transition_density_detachment_provider(void* dst, size_t cap, const md_attributes_t* table, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+static size_t vlx_transition_detachment_factor_provider(void* dst, size_t cap, const md_attributes_t* table, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
 	(void)user_data;
 	(void)io;
-	return vlx_transition_density_provide(dst, cap, table, attr, slice, VLX_TRANSITION_DETACHMENT);
+	return vlx_transition_factor_provide(dst, cap, table, attr, slice, VLX_TRANSITION_DETACHMENT);
 }
 
-static size_t vlx_transition_density_difference_provider(void* dst, size_t cap, const md_attributes_t* table, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+static size_t vlx_transition_difference_factor_provider(void* dst, size_t cap, const md_attributes_t* table, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
 	(void)user_data;
 	(void)io;
-	return vlx_transition_density_provide(dst, cap, table, attr, slice, VLX_TRANSITION_DIFFERENCE);
+	return vlx_transition_factor_provide(dst, cap, table, attr, slice, VLX_TRANSITION_DIFFERENCE);
 }
 
 // ---------------------------------------------------------------------------
@@ -5951,25 +5866,40 @@ void vlx_publish_whole_file_attributes(md_system_t* sys, const vlx_t* vlx) {
 		md_qm_publish_scalar(sys, MD_STR_LIT("vlx/rsp/num_valence"), (md_str_t){0}, md_unit_none(), (double)vlx->rsp.num_valence);
 		md_qm_publish_scalar(sys, MD_STR_LIT("vlx/rsp/num_virtual"), (md_str_t){0}, md_unit_none(), (double)vlx->rsp.num_virtual);
 
-		// One virtual attribute per sibling density, each computed on demand from the solution
-		// vectors and MO coefficients above. rank {S,A,A}: slice by state for one density, or take
-		// the whole thing and pay for reconstructing every state - see the caveat on
-		// vlx_transition_density_provide() about that cost.
+		// Each excited state's attachment, detachment and difference density as its factors (vlx_transition_factor_provide):
+		// <path>/factor {S,R,A}, virtual, computed on demand from the solution vectors and MO coefficients above (slice by
+		// state for one state's, or take the whole thing and pay for every state), and <path>/weight {S,R}, resident; what
+		// md_qm_density_factors reads. No density matrix: the densities are sums of squares of these.
 		// The AO axis of the MO COEFFICIENTS, deliberately, and not the basis set's: these are
-		// reconstructed from the coefficients, so they share their axis - and there is nothing to
-		// reconstruct them from when a file carries response data without orbitals.
+		// made from the coefficients, so they share their axis - and there is nothing to
+		// make them from when a file carries response data without orbitals.
 		const size_t num_ao = number_of_atomic_orbitals(&vlx->scf.alpha);
-		if (num_ao > 0) {
-			md_attribute_format_t density_format = {
-				.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 3,
-				.shape = { (uint32_t)num_states, (uint32_t)num_ao, (uint32_t)num_ao },
+		const size_t nocc = vlx->rsp.num_core > 0 ? (size_t)vlx->rsp.num_core : (size_t)vlx->rsp.num_valence;
+		if (num_ao > 0 && nocc > 0) {
+			static const char* names[3]  = { "attachment", "detachment", "difference" };
+			static const char* labels[3] = { "Attachment Density", "Detachment Density", "Difference Density" };
+			const md_attribute_provider_fn providers[3] = {
+				vlx_transition_attachment_factor_provider, vlx_transition_detachment_factor_provider, vlx_transition_difference_factor_provider,
 			};
-			md_attribute_virtual_t attach_virt = { .provider = vlx_transition_density_attachment_provider };
-			md_attribute_virtual_t detach_virt = { .provider = vlx_transition_density_detachment_provider };
-			md_attribute_virtual_t diff_virt   = { .provider = vlx_transition_density_difference_provider };
-			md_qm_publish_virtual(sys, MD_STR_LIT("vlx/rsp/transition_density/attachment"), MD_STR_LIT("Attachment Density"), md_unit_none(), density_format, &attach_virt);
-			md_qm_publish_virtual(sys, MD_STR_LIT("vlx/rsp/transition_density/detachment"), MD_STR_LIT("Detachment Density"), md_unit_none(), density_format, &detach_virt);
-			md_qm_publish_virtual(sys, MD_STR_LIT("vlx/rsp/transition_density/difference"), MD_STR_LIT("Difference Density"), md_unit_none(), density_format, &diff_virt);
+			md_temp_scope_t temp = md_temp_begin();
+			double* w = md_temp_alloc_array(temp, double, num_states * 2 * nocc);
+			for (int k = 0; k < 3 && w; ++k) {
+				const size_t R = k == 2 ? 2 * nocc : nocc;
+				for (size_t st = 0; st < num_states; ++st) {
+					for (size_t r = 0; r < R; ++r) w[st * R + r] = (k == 2 && r >= nocc) ? -1.0 : 1.0;
+				}
+				char path[96];
+				const md_attribute_format_t factor_format = {
+					.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 3,
+					.shape = { (uint32_t)num_states, (uint32_t)R, (uint32_t)num_ao },
+				};
+				const md_attribute_virtual_t virt = { .provider = providers[k] };
+				md_snprintf(path, sizeof(path), "vlx/rsp/transition_density/%s/factor", names[k]);
+				md_qm_publish_virtual(sys, md_str_from_cstr(path), md_str_from_cstr(labels[k]), md_unit_none(), factor_format, &virt);
+				md_snprintf(path, sizeof(path), "vlx/rsp/transition_density/%s/weight", names[k]);
+				md_qm_publish_matrix(sys, md_str_from_cstr(path), (md_str_t){0}, md_unit_none(), w, num_states, R);
+			}
+			md_temp_end(temp);
 		}
 	}
 
