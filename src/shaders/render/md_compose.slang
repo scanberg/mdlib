@@ -552,7 +552,6 @@ static const uint  MAX_VOL          = 4u;
 static const uint  MAX_ISO          = 8u;
 static const uint  MAX_STEPS        = 4096u;
 static const float REF_SAMPLING     = 150.0;   // a transfer function's opacity is of a slab 1/150 of the box
-static const float STEPS_PER_VOXEL  = 2.0;
 static const float T_MIN            = 0.005;   // below this transmittance the ray is opaque
 static const float T_FAR            = 1.0e30;
 
@@ -1087,6 +1086,7 @@ void compose(uint3 tid : SV_DispatchThreadID) {
     float3 vo[MAX_VOL], vd[MAX_VOL];
     float2 vr[MAX_VOL];
     float  t_beg = T_FAR, t_end = -T_FAR, rate = 0.0;
+    bool   emits = false;
     for (uint v = 0u; v < nv; ++v) {
         float4 c0 = vrec(a, v, 0u), c1 = vrec(a, v, 1u), c2 = vrec(a, v, 2u), c3 = vrec(a, v, 3u);
         vo[v] = (c0 * O.x + c1 * O.y + c2 * O.z + c3).xyz;
@@ -1096,10 +1096,15 @@ void compose(uint3 tid : SV_DispatchThreadID) {
             t_beg = min(t_beg, vr[v].x);
             t_end = max(t_end, vr[v].y);
             rate  = max(rate, length(vd[v] * vrec(a, v, 6u).xyz));     // voxels per unit of t
+            emits = emits || vrec(a, v, 6u).w >= 0.5;
         }
     }
     if (t_beg < t_end && rate > 0.0) {
-        uint   n   = min(uint(ceil((t_end - t_beg) * rate * STEPS_PER_VOXEL)), MAX_STEPS);
+        // A step a voxel of the finest volume, two where one emits (as viamd's fast isosurfaces and its DVR). The
+        // steps' samples are jittered by a pixel's hash, each one both where the crossings since the one before end
+        // and the emission's: a fetch a step. Step s: (tb - dt, tb], its sample at tb = t_beg + dt (s + jit); the
+        // emission's samples are the n before t_end.
+        uint   n   = min(uint(ceil((t_end - t_beg) * rate * (emits ? 2.0 : 1.0))), MAX_STEPS);
         n = max(n, 1u);
         float  dt  = (t_end - t_beg) / float(n);
         float  jit = float(hash_u(p * 0x9E3779B9u ^ hash_u(a.frame)) >> 8) / 16777216.0;
@@ -1108,8 +1113,8 @@ void compose(uint3 tid : SV_DispatchThreadID) {
         uint   state = 0u;          // bit v: volume v entered; bit 8 + v: left
         float  tau = 0.0, t_abs = t_beg;
         [ForceUnroll] for (uint v = 0u; v < MAX_VOL; ++v) { fprev[v] = 0.0; inside[v] = 0u; }
-        for (uint s = 0u; s < n && T >= T_MIN; ++s) {
-            float ta = t_beg + dt * float(s), tb = ta + dt, ts = ta + dt * jit;
+        for (uint s = 0u; s <= n && T >= T_MIN; ++s) {
+            float tb = t_beg + dt * (float(s) + jit), ta = tb - dt;
             // the crossings and the volumes' ends in (ta, tb], in order along the ray
             float ht[MAX_HITS];
             uint  he[MAX_HITS];
@@ -1135,11 +1140,11 @@ void compose(uint3 tid : SV_DispatchThreadID) {
             }
             // the events in order: crossings, layers, the emission's sample
             uint ih = 0u;
-            bool emitted = false;
+            bool emitted = !emits || tb >= t_end;
             for (uint guard = 0u; guard < 32u; ++guard) {
                 float th = ih < nh ? ht[ih] : T_FAR;
                 float tk = kl < nl && tl[kl] <= tb ? tl[kl] : T_FAR;
-                float te = emitted ? T_FAR : ts;
+                float te = emitted ? T_FAR : tb;
                 float t  = min(th, min(tk, te));
                 if (t >= T_FAR) break;
                 if (tau > 0.0) T *= exp(-tau * max(t - t_abs, 0.0));
@@ -1171,10 +1176,11 @@ void compose(uint3 tid : SV_DispatchThreadID) {
                 } else {
                     emitted = true;
                     // each volume there through its transfer function, the
-                    // opacity for the step's length in texture space
+                    // opacity for the step's length in texture space: the
+                    // step's sample, fetched for the crossings (fprev)
                     for (uint v = 0u; v < nv; ++v) {
-                        if (vrec(a, v, 6u).w < 0.5 || ts < vr[v].x || ts > vr[v].y) continue;
-                        float  f  = vol_field(a, v, vo[v] + vd[v] * ts);
+                        if (vrec(a, v, 6u).w < 0.5 || tb < vr[v].x || tb > vr[v].y) continue;
+                        float  f  = fprev[v];
                         float  u  = saturate((f - vrec(a, v, 4u).w) * vrec(a, v, 5u).w);
                         float4 tf = vol_transfer(a, v, u);
                         float  w  = dt * length(vd[v]) * REF_SAMPLING;

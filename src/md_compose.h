@@ -112,10 +112,12 @@ typedef struct md_compose_shading_t {
                 density of the surfaces the ray is inside of absorbing the
                 light in between. INSIDE isosurface i: the field on the far
                 side of its value from 0 (f >= v for v >= 0, f <= v for v < 0)
-   Marched at half a voxel of the finest volume the ray is in, all of them
-   together (overlapping volumes are sampled at the same points); the
-   emission's samples jittered by a pixel's hash (a temporal resolve after it
-   averages them); a crossing found between two samples and refined on the
+   Marched at a voxel of the finest volume the ray is in, half a voxel where
+   one emits (as viamd's fast isosurfaces and its DVR), all of them together
+   (overlapping volumes are sampled at the same points); the samples
+   jittered by a pixel's hash (a temporal resolve after it averages them),
+   each the emission's and where the crossings since the one before end: a
+   fetch a step. A crossing found between two samples is refined on the
    trilinear field, so where it is does not depend on the sampling, but one
    the ray enters and leaves within a step is missed (as viamd's fast mode).
    An isosurface's colour is its iso_colors' times, when given, the colour
