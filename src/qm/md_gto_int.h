@@ -149,19 +149,19 @@ typedef struct md_gto_int_charges_t {
     uint32_t*           item;              // [num_gaussians + num_points]: a gaussian, or num_gaussians + a point
 } md_gto_int_charges_t;
 
+struct md_gto_dmat_t;
+
 typedef struct md_gto_int_charges_desc_t {
-    // GAUSSIAN PART: density_scale * sum_{mu,nu} density_matrix[mu][nu] phi_mu(r) phi_nu(r)
-    // Optional: leave basis and both density_matrix and density_packed NULL for point charges only.
+    // GAUSSIAN PART: density_scale * sum_{mu,nu} D_{mu nu} phi_mu(r) phi_nu(r), D the density's tiles (md_gto_dmat.h),
+    // a pair they do not keep adding nothing. Made over basis at atom_xyz; at viamd's cutoff (1e-6, margin 1) the
+    // distribution of a 1152 atom protein is the same as of its whole matrix: the same gaussians, no change in the
+    // potential (bench_dmat_census.c), the threshold below dropping more than the tiles leave out.
+    // Optional: leave basis and dmat NULL for point charges only.
     const md_gto_basis_t* basis;
     const float*  atom_xyz;          // bohr, one position per atom the shells index
     size_t        atom_xyz_stride;   // bytes between positions, 0 = packed (12 bytes)
-    const double* density_matrix;    // [N][N] row major, N = md_gto_basis_num_ao(basis)
-    // Or, instead of density_matrix (which then stays NULL), its symmetric part as the packed upper triangle,
-    // [N (N + 1) / 2]: row mu holding columns mu..N-1 (MD_ATTRIBUTE_FLAG_PACKED_SYMMETRIC's layout, what
-    // md_qm_extract_packed_symmetric_f64 makes). The same distribution as from the square matrix, to the bit
-    // where the square one is exactly symmetric.
-    const double* density_packed;
-    // Charge of one unit of density_matrix. 0 is taken as -1, an electron density, which is what
+    const struct md_gto_dmat_t* dmat;
+    // Charge of one unit of D. 0 is taken as -1, an electron density, which is what
     // almost every caller has. Pass +1 for a density that is meant to be positive.
     double        density_scale;
 
@@ -200,11 +200,9 @@ typedef struct md_gto_int_charges_desc_t {
 
 // Builds the distribution. Allocates from alloc; release with md_gto_int_charges_free.
 //
-// The density matrix need not be symmetric - only its symmetric part has a density, and that is
-// what is used - so a transition density goes in as it is (or packed: its symmetric part). It must be over the Cartesian AOs of
-// the basis in the order of md_gto.h, like every AO matrix this library takes.
+// The tiles hold a symmetric matrix, the only part of one that has a density (a transition density's symmetric part).
 //
-// Returns false on invalid input (inconsistent sizes, an angular momentum above
+// Returns false on invalid input (tiles of another basis or not built, an angular momentum above
 // MD_GTO_MAX_ANGULAR_MOMENTUM, a shell centred on an atom that has no position).
 bool md_gto_int_charges_init(md_gto_int_charges_t* out, const md_gto_int_charges_desc_t* desc, struct md_allocator_i* alloc);
 

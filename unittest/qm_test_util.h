@@ -18,6 +18,7 @@
 
 #include <md_system.h>
 #include <md_gto.h>
+#include <md_gto_dmat.h>
 #include <md_qm.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
@@ -252,6 +253,33 @@ static inline void qm_test_ao_at(double* ao, double* aog, const md_gto_basis_t* 
             }
         }
     }
+}
+
+// Tiles holding the whole of a matrix's symmetric part: every tile pair kept (md_gto_dmat_t's pattern at a negligible
+// cutoff and a margin past any test's extent), filled from D (num_ao x num_ao, row major). For the tests alone, which
+// feed made-up densities, and the file's own, as matrices: the library itself never takes a whole matrix.
+static inline bool qm_test_dmat_from_matrix(md_gto_dmat_t* dm, const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
+                                            const double* D, md_allocator_i* alloc) {
+    const md_gto_dmat_desc_t desc = { .basis = basis, .atom_xyz = atom_xyz, .atom_xyz_stride = atom_xyz_stride, .cutoff = 1.0e-300, .margin = 1.0e6 };
+    if (!md_gto_dmat_init(dm, &desc, alloc)) return false;
+    if (dm->num_tiles != (uint64_t)dm->nt * (dm->nt + 1) / 2) return false;
+    dm->tiles = (double*)md_alloc(alloc, sizeof(double) * 256 * dm->num_tiles);
+    if (!dm->tiles) return false;
+    const size_t n = dm->num_ao;
+    for (uint32_t I = 0; I < dm->nt; ++I) {
+        for (uint64_t e = dm->row_ptr[I]; e < dm->row_ptr[I + 1]; ++e) {
+            const uint32_t J = dm->cols[e];
+            double* t = dm->tiles + 256 * e;
+            for (uint32_t a = 0; a < 16; ++a) {
+                const int32_t i = dm->perm[16 * I + a];
+                for (uint32_t c = 0; c < 16; ++c) {
+                    const int32_t j = dm->perm[16 * J + c];
+                    t[16 * a + c] = (i < 0 || j < 0) ? 0.0 : 0.5 * (D[(size_t)i * n + (size_t)j] + D[(size_t)j * n + (size_t)i]);
+                }
+            }
+        }
+    }
+    return true;
 }
 
 // rho = ao^T D ao (D: n x n, row major, symmetric) from qm_test_ao_at's values

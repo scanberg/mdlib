@@ -74,6 +74,14 @@ bool md_gto_dmat_build(md_gto_dmat_t* dm, const double* coeff, size_t mo_stride,
 // D(i, j) in the basis' AO order: 0 for a pair that is not kept (or before a build).
 double md_gto_dmat_at(const md_gto_dmat_t* dm, uint32_t i, uint32_t j);
 
+// The entry of the tile pair (I, J), I <= J: its tile is tiles + 256 e. -1 where it is not kept.
+int64_t md_gto_dmat_find(const md_gto_dmat_t* dm, uint32_t I, uint32_t J);
+
+// The block of D between shells sa and sb (na and nb their AOs, the basis' shell indices): out[ca * nb + cb] is
+// D(ca of sa, cb of sb), 0 where the pair is not kept. For a consumer that works shell pair by shell pair: a shell's
+// AOs are together in the tiled order, so its block lies in at most 2 x 2 tiles. Returns whether any of it is kept.
+bool md_gto_dmat_shell_block(double* out, const md_gto_dmat_t* dm, uint32_t sa, uint32_t na, uint32_t sb, uint32_t nb);
+
 // rho = sum_ij D_ij phi_i phi_j, its gradient, and tau = 1/2 sum_ij D_ij grad phi_i . grad phi_j at points, in double,
 // from the kept tiles, with the AOs of the shells that reach each point (md_gto_dmat_t's radii). For ELF and LOL
 // (md_qm_elf, md_qm_lol: rho, |grad rho|^2 and tau of each spin). xyz: count points, xyz_stride bytes apart (0:

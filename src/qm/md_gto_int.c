@@ -1,4 +1,5 @@
 #include <md_gto_int.h>
+#include <md_gto_dmat.h>
 
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
@@ -555,25 +556,27 @@ static bool gto_int_build_gaussians(md_gto_int_charges_t* out, const md_gto_int_
     const size_t stride = desc->atom_xyz_stride ? desc->atom_xyz_stride : sizeof(float) * 3;
     const double scale  = desc->density_scale != 0.0 ? desc->density_scale : -1.0;
     const double threshold = MD_MAX(desc->threshold, 0.0);
-    const double* D = desc->density_matrix;
-    const double* Dp = D ? NULL : desc->density_packed;    // packed upper triangle (row mu: columns mu..N-1)
+    const md_gto_dmat_t* dm = desc->dmat;
     const size_t N = md_gto_basis_num_ao(basis);
+    if (!dm->tiles || dm->num_ao != N || dm->num_shells != basis->num_shells) {
+        MD_LOG_ERROR("md_gto_int: the density's tiles are of another basis (%u AOs, %u shells; the basis %zu, %u), or not built",
+                     dm->num_ao, dm->num_shells, N, basis->num_shells);
+        return false;
+    }
 
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
     md_allocator_i* temp_alloc = md_temp_allocator(temp);
     bool result = false;
 
-    // Shell offsets into the AO axis, and every shell's primitives mapped to a SITE: a unique
-    // (atom, exponent) pair. Two primitives at the same site are the same function up to a
-    // coefficient, so a pair of sites identifies a gaussian exactly. Keys are exact: the atom
-    // index and the bits of the float exponent the basis stores.
-    uint32_t* ao_off   = md_temp_alloc_array(temp, uint32_t, basis->num_shells);
+    // Every shell's primitives mapped to a SITE: a unique (atom, exponent) pair. Two primitives at
+    // the same site are the same function up to a coefficient, so a pair of sites identifies a
+    // gaussian exactly. Keys are exact: the atom index and the bits of the float exponent the
+    // basis stores.
     uint32_t* site_off = md_temp_alloc_array(temp, uint32_t, basis->num_shells);
-    if (!ao_off || !site_off) goto done;
+    if (!site_off) goto done;
 
     uint32_t num_shell_prims = 0;
     {
-        uint32_t ao = 0;
         for (uint32_t s = 0; s < basis->num_shells; ++s) {
             const md_gto_shell_t* sh = &basis->shells[s];
             if (sh->l > MD_GTO_MAX_ANGULAR_MOMENTUM) {
@@ -584,9 +587,7 @@ static bool gto_int_build_gaussians(md_gto_int_charges_t* out, const md_gto_int_
                 MD_LOG_ERROR("md_gto_int: shell %u spans primitives beyond the basis", s);
                 goto done;
             }
-            ao_off[s]   = ao;
             site_off[s] = num_shell_prims;
-            ao += md_gto_num_cart_ao(sh->l);
             num_shell_prims += sh->num_primitives;
         }
     }
@@ -647,11 +648,7 @@ static bool gto_int_build_gaussians(md_gto_int_charges_t* out, const md_gto_int_
 
     double dmax2 = 0.0;   // bounds |D_mu,nu + D_nu,mu|
     if (threshold > 0.0) {
-        if (Dp) {
-            for (size_t i = 0; i < N * (N + 1) / 2; ++i) dmax2 = MD_MAX(dmax2, fabs(Dp[i]));
-        } else {
-            for (size_t i = 0; i < N * N; ++i) dmax2 = MD_MAX(dmax2, fabs(D[i]));
-        }
+        for (uint64_t i = 0; i < 256 * dm->num_tiles; ++i) dmax2 = MD_MAX(dmax2, fabs(dm->tiles[i]));
         dmax2 *= 2.0;
     }
 
@@ -701,22 +698,15 @@ static bool gto_int_build_gaussians(md_gto_int_charges_t* out, const md_gto_int_
                 }
 
                 // The weight of every AO pair of the block. A diagonal block is summed over its
-                // full square, an off-diagonal one over (mu,nu) with both orders folded in.
+                // full square, an off-diagonal one over (mu,nu) with both orders folded in: the
+                // tiles hold a symmetric D, so that is 2 D_mu,nu.
+                double blk[GTO_INT_MAX_CART * GTO_INT_MAX_CART];
+                if (!md_gto_dmat_shell_block(blk, dm, sa, na, sb, nb)) continue;
                 double w[GTO_INT_MAX_CART][GTO_INT_MAX_CART];
                 double wmax = 0.0;
                 for (uint32_t ca = 0; ca < na; ++ca) {
-                    const size_t mu = ao_off[sa] + ca;
                     for (uint32_t cb = 0; cb < nb; ++cb) {
-                        const size_t nu = ao_off[sb] + cb;
-                        double d;
-                        if (Dp) {
-                            // the symmetric part P: P + P is D_mu,nu + D_nu,mu to the bit (a sum halved, then doubled)
-                            const size_t lo = MD_MIN(mu, nu), hi = MD_MAX(mu, nu);
-                            const double p = Dp[lo * (2 * N - lo + 1) / 2 + (hi - lo)];
-                            d = same ? p : p + p;
-                        } else {
-                            d = same ? D[mu * N + nu] : (D[mu * N + nu] + D[nu * N + mu]);
-                        }
+                        const double d = same ? blk[ca * nb + cb] : 2.0 * blk[ca * nb + cb];
                         w[ca][cb] = d;
                         wmax = MD_MAX(wmax, fabs(d));
                     }
@@ -895,7 +885,7 @@ bool md_gto_int_charges_init(md_gto_int_charges_t* out, const md_gto_int_charges
     }
     md_memset(out, 0, sizeof(*out));
 
-    const bool has_density = desc->basis && (desc->density_matrix || desc->density_packed) && desc->basis->num_shells > 0;
+    const bool has_density = desc->basis && desc->dmat && desc->basis->num_shells > 0;
     if (has_density) {
         if (!desc->atom_xyz) {
             MD_LOG_ERROR("md_gto_int_charges_init: a density was given without atom positions");

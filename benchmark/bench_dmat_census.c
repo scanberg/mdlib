@@ -51,6 +51,7 @@
 
 #include "bench_rev.h"      // MD_BENCH_SOURCE_REV, generated at build time by bench_version.cmake
 #include "../unittest/test_executor.h"
+#include "../unittest/qm_test_util.h"   // qm_test_dmat_from_matrix: a whole matrix as tiles, which only a measurement needs
 
 #include <float.h>
 #include <math.h>
@@ -392,11 +393,14 @@ static double esp_eval(double* out, const md_gto_int_charges_t* q, const float* 
     return ms_since(t0);
 }
 
+// D (whole, or cut to a pattern: 0 outside it) as tiles that keep every pair, so that what is left out is D's zeros
 static bool esp_build(md_gto_int_charges_t* out, const src_t* src, const double* D, double theta, double* ms) {
+    md_gto_dmat_t dm;
+    if (!qm_test_dmat_from_matrix(&dm, &src->basis, src->xyz, 0, D, md_get_heap_allocator())) return false;
     md_gto_int_charges_desc_t cd = {0};
     cd.basis = &src->basis;
     cd.atom_xyz = src->xyz;
-    cd.density_matrix = D;
+    cd.dmat = &dm;
     cd.density_scale = -1.0;
     cd.point_xyz = src->xyz;
     cd.point_charge = src->Z;
@@ -406,6 +410,7 @@ static bool esp_build(md_gto_int_charges_t* out, const src_t* src, const double*
     const md_tick_t t0 = md_tick_now();
     const bool ok = md_gto_int_charges_init(out, &cd, md_get_heap_allocator());
     *ms = ms_since(t0);
+    md_gto_dmat_free(&dm);
     return ok;
 }
 

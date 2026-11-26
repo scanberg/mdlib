@@ -23,6 +23,7 @@ typedef struct {
     double* atom_z;
     size_t  num_atoms;
     double* D;
+    md_gto_dmat_t dm;   // D as tiles, every pair kept
     size_t  num_ao;
 } box_test_qm_t;
 
@@ -41,8 +42,9 @@ static bool box_test_load(box_test_qm_t* m, md_gto_int_charges_t* q, vlx_test_t*
     m->D = qm_test_matrix(t, MD_STR_LIT("orbital/total/density"), &dim);
     if (!m->D) m->D = qm_test_matrix(t, MD_STR_LIT("orbital/alpha/density"), &dim);
     if (!m->D || dim != m->num_ao) return false;
+    if (!qm_test_dmat_from_matrix(&m->dm, &m->basis, m->atom_xyz, 0, m->D, t->alloc)) return false;
     md_gto_int_charges_desc_t desc = {
-        .basis = &m->basis, .atom_xyz = m->atom_xyz, .density_matrix = m->D, .density_scale = -1.0,
+        .basis = &m->basis, .atom_xyz = m->atom_xyz, .dmat = &m->dm, .density_scale = -1.0,
         .point_xyz = m->atom_xyz, .point_charge = m->atom_z, .num_points = m->num_atoms,
     };
     return md_gto_int_charges_init(q, &desc, t->alloc);

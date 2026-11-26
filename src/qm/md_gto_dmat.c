@@ -278,8 +278,8 @@ bool md_gto_dmat_build(md_gto_dmat_t* dm, const double* coeff, size_t mo_stride,
     return true;
 }
 
-// The entry of tile pair (I, J), I <= J, or -1
-static int64_t dmat_entry(const md_gto_dmat_t* dm, uint32_t I, uint32_t J) {
+int64_t md_gto_dmat_find(const md_gto_dmat_t* dm, uint32_t I, uint32_t J) {
+    if (!dm || !dm->row_ptr || I > J || J >= dm->nt) return -1;
     uint64_t lo = dm->row_ptr[I], hi = dm->row_ptr[I + 1];
     while (lo < hi) {
         const uint64_t mid = lo + (hi - lo) / 2;
@@ -292,8 +292,36 @@ double md_gto_dmat_at(const md_gto_dmat_t* dm, uint32_t i, uint32_t j) {
     if (!dm || !dm->tiles || i >= dm->num_ao || j >= dm->num_ao) return 0.0;
     uint32_t ti = dm->tao[i], tj = dm->tao[j];
     if (ti / DMAT_T > tj / DMAT_T) { const uint32_t x = ti; ti = tj; tj = x; }
-    const int64_t e = dmat_entry(dm, ti / DMAT_T, tj / DMAT_T);
+    const int64_t e = md_gto_dmat_find(dm, ti / DMAT_T, tj / DMAT_T);
     return e < 0 ? 0.0 : dm->tiles[256 * (size_t)e + (ti % DMAT_T) * DMAT_T + (tj % DMAT_T)];
+}
+
+bool md_gto_dmat_shell_block(double* out, const md_gto_dmat_t* dm, uint32_t sa, uint32_t na, uint32_t sb, uint32_t nb) {
+    if (!out) return false;
+    md_memset(out, 0, sizeof(double) * na * nb);
+    if (!dm || !dm->tiles || sa >= dm->num_shells || sb >= dm->num_shells) return false;
+    const uint32_t ta = dm->shell_tao[sa], tb = dm->shell_tao[sb];
+    bool any = false;
+    // the at most 2 x 2 tile pairs the block spans, each looked up once
+    for (uint32_t I = ta / DMAT_T; I <= (ta + na - 1) / DMAT_T; ++I) {
+        for (uint32_t J = tb / DMAT_T; J <= (tb + nb - 1) / DMAT_T; ++J) {
+            const bool swap = I > J;
+            const int64_t e = swap ? md_gto_dmat_find(dm, J, I) : md_gto_dmat_find(dm, I, J);
+            if (e < 0) continue;
+            any = true;
+            const double* tile = dm->tiles + 256 * (size_t)e;
+            for (uint32_t ca = 0; ca < na; ++ca) {
+                const uint32_t ti = ta + ca;
+                if (ti / DMAT_T != I) continue;
+                for (uint32_t cb = 0; cb < nb; ++cb) {
+                    const uint32_t tj = tb + cb;
+                    if (tj / DMAT_T != J) continue;
+                    out[ca * nb + cb] = swap ? tile[(tj % DMAT_T) * DMAT_T + ti % DMAT_T] : tile[(ti % DMAT_T) * DMAT_T + tj % DMAT_T];
+                }
+            }
+        }
+    }
+    return any;
 }
 
 // ---------------------------------------------------------------------------------------------------- at points

@@ -4,6 +4,8 @@
 #include <md_system.h>
 #include <md_gto.h>
 #include <md_gto_int.h>
+#include <md_gto_dmat.h>
+#include <md_qm.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_log.h>
@@ -29,7 +31,7 @@ typedef struct {
     float*          atom_xyz;   // bohr
     double*         atom_z;
     size_t          num_atoms;
-    double*         D;
+    md_gto_dmat_t   dm;         // the density's tiles as viamd makes them: from the orbitals, at 1e-6, margin 1
     md_grid_t       grid;
 } bench_esp_t;
 
@@ -44,9 +46,7 @@ static bool bench_esp_load(bench_esp_t* b) {
     }
     const md_attribute_t* c = md_attributes_find(&sys.attributes, MD_STR_LIT("qm/atom/coordinate"));
     const md_attribute_t* z = md_attributes_find(&sys.attributes, MD_STR_LIT("qm/atom/nuclear_charge"));
-    const md_attribute_t* d = md_attributes_find(&sys.attributes, MD_STR_LIT("orbital/total/density"));
-    if (!d) d = md_attributes_find(&sys.attributes, MD_STR_LIT("orbital/alpha/density"));
-    if (!c || !z || !d || !md_gto_basis_extract_attributes(&b->basis, &sys.attributes, b->arena)) {
+    if (!c || !z || !md_gto_basis_extract_attributes(&b->basis, &sys.attributes, b->arena)) {
         MD_LOG_ERROR("Benchmark file lacks a basis, a geometry or a density");
         return false;
     }
@@ -64,9 +64,14 @@ static bool bench_esp_load(bench_esp_t* b) {
         lo = md_float3_min(lo, p);
         hi = md_float3_max(hi, p);
     }
-    const size_t n = md_gto_basis_num_ao(&b->basis);
-    b->D = md_arena_allocator_push(b->arena, sizeof(double) * n * n);
-    md_attribute_extract_f64(b->D, n * n, &sys.attributes, d, md_attribute_slice_all(), md_unit_none());
+    double* rows = NULL; double* w = NULL; size_t n = 0;
+    size_t num_mo = md_qm_density_orbitals(&rows, &w, &n, &sys, MD_STR_LIT("orbital/total/density"), b->arena);
+    if (num_mo == 0) num_mo = md_qm_density_orbitals(&rows, &w, &n, &sys, MD_STR_LIT("orbital/alpha/density"), b->arena);
+    const md_gto_dmat_desc_t dd = { .basis = &b->basis, .atom_xyz = b->atom_xyz, .cutoff = 1.0e-6, .margin = 1.0 };
+    if (num_mo == 0 || !md_gto_dmat_init(&b->dm, &dd, b->arena) || !md_gto_dmat_build(&b->dm, rows, n, 1, w, num_mo, NULL)) {
+        MD_LOG_ERROR("Benchmark file lacks the orbitals of a density");
+        return false;
+    }
 
     const float h = 0.4f, margin = 6.0f;
     lo = md_float3_sub1(lo, margin);
@@ -82,7 +87,7 @@ static bool bench_esp_load(bench_esp_t* b) {
 
 static bool bench_esp_charges(md_gto_int_charges_t* q, const bench_esp_t* b, double threshold, md_allocator_i* alloc) {
     md_gto_int_charges_desc_t desc = {
-        .basis = &b->basis, .atom_xyz = b->atom_xyz, .density_matrix = b->D, .density_scale = -1.0,
+        .basis = &b->basis, .atom_xyz = b->atom_xyz, .dmat = &b->dm, .density_scale = -1.0,
         .point_xyz = b->atom_xyz, .point_charge = b->atom_z, .num_points = b->num_atoms,
         .threshold = threshold,
     };

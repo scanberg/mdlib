@@ -41,7 +41,8 @@ typedef struct {
     float*         atom_xyz;    // bohr
     double*        atom_z;
     size_t         num_atoms;
-    double*        D;
+    double*        D;           // the file's, for the references
+    md_gto_dmat_t  dm;          // the same as tiles, every pair kept (qm_test_dmat_from_matrix)
     size_t         num_ao;
 } int_test_qm_t;
 
@@ -67,14 +68,14 @@ static bool int_test_extract(int_test_qm_t* out, const qm_test_t* t) {
     size_t dim = 0;
     out->D = qm_test_matrix(t, MD_STR_LIT("orbital/total/density"), &dim);
     if (!out->D) out->D = qm_test_matrix(t, MD_STR_LIT("orbital/alpha/density"), &dim);
-    return out->D && dim == out->num_ao;
+    return out->D && dim == out->num_ao && qm_test_dmat_from_matrix(&out->dm, &out->basis, out->atom_xyz, 0, out->D, t->alloc);
 }
 
 static bool int_test_charges(md_gto_int_charges_t* q, const int_test_qm_t* m, double threshold, bool nuclei, md_allocator_i* alloc) {
     md_gto_int_charges_desc_t desc = {
         .basis          = &m->basis,
         .atom_xyz       = m->atom_xyz,
-        .density_matrix = m->D,
+        .dmat           = &m->dm,
         .density_scale  = -1.0,
         .point_xyz      = nuclei ? m->atom_xyz : NULL,
         .point_charge   = nuclei ? m->atom_z : NULL,
@@ -100,8 +101,10 @@ UTEST(gto_int, s_shell_closed_form) {
     const float  atom[3] = { 0.25f, -0.5f, 1.0f };
     const double D[1] = { 2.0 };
 
+    md_gto_dmat_t dm;
+    ASSERT_TRUE(qm_test_dmat_from_matrix(&dm, &basis, atom, 0, D, md_get_heap_allocator()));
     md_gto_int_charges_t q = {0};
-    md_gto_int_charges_desc_t desc = { .basis = &basis, .atom_xyz = atom, .density_matrix = D, .density_scale = 1.0 };
+    md_gto_int_charges_desc_t desc = { .basis = &basis, .atom_xyz = atom, .dmat = &dm, .density_scale = 1.0 };
     ASSERT_TRUE(md_gto_int_charges_init(&q, &desc, md_get_heap_allocator()));
     EXPECT_EQ(3u, q.num_gaussians);   // (a,a), (b,b) and the merged (a,b) = (b,a)
     EXPECT_EQ(0u, q.max_order);
@@ -142,6 +145,7 @@ UTEST(gto_int, s_shell_closed_form) {
     EXPECT_NEAR(charge * atom[1] * atom[2], m.second[4], 1e-12);
 
     md_gto_int_charges_free(&q, md_get_heap_allocator());
+    md_gto_dmat_free(&dm);
 }
 
 // Point charges only: Coulomb's law, and the field of each.
@@ -363,87 +367,47 @@ UTEST(gto_int, screening_error_is_bounded) {
     qm_test_free(&t);
 }
 
-// Only the symmetric part of an AO matrix has a density, and that is all the build uses: adding an
-// antisymmetric matrix changes nothing. (A transition density goes in as it is.)
-UTEST(gto_int, antisymmetric_part_is_ignored) {
+// The density's tiles as viamd makes them - from the orbitals, at its cutoff (1e-6, margin 1) - against the file's whole
+// matrix as tiles: the same distribution to rounding (the gaussians, and the potential at the reference points). On the
+// 1152 atom protein the tiles keep a fifth of the pairs and the distribution is the same too (bench_dmat_census.c).
+UTEST(gto_int, tiles_from_orbitals_match_the_matrix) {
     qm_test_t t = {0};
     qm_test_init(&t, MD_MEGABYTES(16));
     ASSERT_TRUE(md_molden_system_init_from_file(&t.sys, &t.state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden"), NULL));
     int_test_qm_t m;
     ASSERT_TRUE(int_test_extract(&m, &t));
-
-    md_gto_int_charges_t a = {0}, b = {0};
-    ASSERT_TRUE(int_test_charges(&a, &m, 0.0, false, t.alloc));
-    const size_t N = m.num_ao;
-    for (size_t i = 0; i < N; ++i) for (size_t j = 0; j < i; ++j) {
-        const double x = 0.01 * (double)((i * 7 + j * 13) % 17) - 0.08;
-        m.D[i * N + j] += x;
-        m.D[j * N + i] -= x;
-    }
-    ASSERT_TRUE(int_test_charges(&b, &m, 0.0, false, t.alloc));
-    EXPECT_EQ(a.num_gaussians, b.num_gaussians);
-
-    const float pts[3][3] = { {9.0f, 13.0f, 14.0f}, {12.0f, 10.0f, 15.0f}, {0.0f, 0.0f, 0.0f} };
-    double Va[3], Vb[3];
-    md_gto_int_potential_xyz(Va, NULL, &pts[0][0], 3, 0, &a);
-    md_gto_int_potential_xyz(Vb, NULL, &pts[0][0], 3, 0, &b);
-    for (int i = 0; i < 3; ++i) EXPECT_NEAR(Va[i], Vb[i], 1e-12 * MD_MAX(1.0, fabs(Va[i])));
-
-    md_gto_int_charges_free(&a, t.alloc);
-    md_gto_int_charges_free(&b, t.alloc);
-    qm_test_free(&t);
-}
-
-// The density as its packed upper triangle in double (md_qm_extract_packed_symmetric_f64, what viamd keeps of it)
-// makes the same distribution as the square matrix, to the bit where the square one is exactly symmetric: the
-// same gaussians, centres, exponents, bounds and coefficients, screened and not.
-UTEST(gto_int, packed_density_matches_square) {
-    qm_test_t t = {0};
-    qm_test_init(&t, MD_MEGABYTES(16));
-    ASSERT_TRUE(md_molden_system_init_from_file(&t.sys, &t.state, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden"), NULL));
-    int_test_qm_t m;
-    ASSERT_TRUE(int_test_extract(&m, &t));
-    const size_t N = m.num_ao;
-
-    const md_attribute_t* attr = md_attributes_find(&t.sys.attributes, MD_STR_LIT("orbital/total/density"));
-    if (!attr) attr = md_attributes_find(&t.sys.attributes, MD_STR_LIT("orbital/alpha/density"));
-    ASSERT_TRUE(attr != NULL);
-    ASSERT_EQ(N, md_qm_extract_packed_symmetric_f64(NULL, 0, &t.sys.attributes, attr, md_attribute_slice_all(), NULL));
-    const size_t len = N * (N + 1) / 2;
-    double* P = (double*)md_alloc(t.alloc, sizeof(double) * len);
-    EXPECT_EQ(0u, md_qm_extract_packed_symmetric_f64(P, len - 1, &t.sys.attributes, attr, md_attribute_slice_all(), NULL));
-    ASSERT_EQ(N, md_qm_extract_packed_symmetric_f64(P, len, &t.sys.attributes, attr, md_attribute_slice_all(), NULL));
-
-    // The square matrix (int_test_extract read the same attribute) as its symmetric part, exactly: what the
-    // packed one holds
-    for (size_t i = 0; i < N; ++i) for (size_t j = i + 1; j < N; ++j) {
-        const double s = 0.5 * (m.D[i * N + j] + m.D[j * N + i]);
-        m.D[i * N + j] = m.D[j * N + i] = s;
-    }
-    size_t k = 0, mismatch = 0;
-    for (size_t i = 0; i < N; ++i) for (size_t j = i; j < N; ++j, ++k) mismatch += P[k] != m.D[i * N + j];
-    EXPECT_EQ(0u, mismatch);
+    double* rows = NULL; double* w = NULL; size_t nao = 0;
+    md_str_t path = MD_STR_LIT("orbital/total/density");
+    size_t nmo = md_qm_density_orbitals(&rows, &w, &nao, &t.sys, path, t.alloc);
+    if (nmo == 0) nmo = md_qm_density_orbitals(&rows, &w, &nao, &t.sys, MD_STR_LIT("orbital/alpha/density"), t.alloc);
+    ASSERT_TRUE(nmo > 0);
+    ASSERT_EQ(m.num_ao, nao);
+    md_gto_dmat_t dm;
+    ASSERT_TRUE(md_gto_dmat_init(&dm, &(md_gto_dmat_desc_t){ .basis = &m.basis, .atom_xyz = m.atom_xyz, .cutoff = 1.0e-6, .margin = 1.0 }, t.alloc));
+    ASSERT_TRUE(md_gto_dmat_build(&dm, rows, nao, 1, w, nmo, NULL));
 
     const double thresholds[2] = { 0.0, 1e-6 };
     for (int ti = 0; ti < 2; ++ti) {
         md_gto_int_charges_t a = {0}, b = {0};
         md_gto_int_charges_desc_t desc = {
-            .basis = &m.basis, .atom_xyz = m.atom_xyz, .density_matrix = m.D, .density_scale = -1.0,
+            .basis = &m.basis, .atom_xyz = m.atom_xyz, .dmat = &m.dm, .density_scale = -1.0,
             .point_xyz = m.atom_xyz, .point_charge = m.atom_z, .num_points = m.num_atoms, .threshold = thresholds[ti],
         };
         ASSERT_TRUE(md_gto_int_charges_init(&a, &desc, t.alloc));
-        desc.density_matrix = NULL;
-        desc.density_packed = P;
+        desc.dmat = &dm;
         ASSERT_TRUE(md_gto_int_charges_init(&b, &desc, t.alloc));
-        ASSERT_EQ(a.num_gaussians, b.num_gaussians);
-        ASSERT_EQ(a.num_coeffs, b.num_coeffs);
-        EXPECT_EQ(0, memcmp(a.center, b.center, sizeof(double) * 3 * a.num_gaussians));
-        EXPECT_EQ(0, memcmp(a.exponent, b.exponent, sizeof(double) * a.num_gaussians));
-        EXPECT_EQ(0, memcmp(a.bound, b.bound, sizeof(double) * a.num_gaussians));
-        EXPECT_EQ(0, memcmp(a.coeff_offset, b.coeff_offset, sizeof(uint32_t) * a.num_gaussians));
-        EXPECT_EQ(0, memcmp(a.coeff, b.coeff, sizeof(double) * a.num_coeffs));
-        printf("h2o cc-pVDZ, threshold %.0e: %u gaussians, %zu coefficients, packed and square the same to the bit\n",
-               thresholds[ti], a.num_gaussians, a.num_coeffs);
+        EXPECT_EQ(a.num_gaussians, b.num_gaussians);
+        const size_t n = MD_COUNTOF(h2o_ccpvdz_esp_ref);
+        float  pts[MD_COUNTOF(h2o_ccpvdz_esp_ref)][3];
+        double Va[MD_COUNTOF(h2o_ccpvdz_esp_ref)], Vb[MD_COUNTOF(h2o_ccpvdz_esp_ref)];
+        for (size_t i = 0; i < n; ++i) for (int k = 0; k < 3; ++k) pts[i][k] = (float)h2o_ccpvdz_esp_ref[i][k];
+        md_gto_int_potential_xyz(Va, NULL, &pts[0][0], n, 0, &a);
+        md_gto_int_potential_xyz(Vb, NULL, &pts[0][0], n, 0, &b);
+        double d = 0.0;
+        for (size_t i = 0; i < n; ++i) d = fmax(d, fabs(Va[i] - Vb[i]) / fmax(1.0, fabs(Va[i])));
+        printf("h2o cc-pVDZ, threshold %.0e: %llu of %llu tile pairs; %u and %u gaussians; max |dV| / max(1, |V|) = %.2e\n", thresholds[ti],
+               (unsigned long long)dm.num_tiles, (unsigned long long)m.dm.num_tiles, a.num_gaussians, b.num_gaussians, d);
+        EXPECT_LT(d, 1.0e-12);
         md_gto_int_charges_free(&a, t.alloc);
         md_gto_int_charges_free(&b, t.alloc);
     }
@@ -493,6 +457,7 @@ typedef struct {
     double* atom_z;
     size_t  num_atoms;
     double* D;
+    md_gto_dmat_t dm;   // D as tiles, every pair kept
     size_t  num_ao;
 } int_test_cluster_t;
 
@@ -538,6 +503,7 @@ static void int_test_cluster(int_test_cluster_t* c, const int_test_qm_t* m, int 
             md_memcpy(c->D + (a0 + i) * c->num_ao + a0, m->D + i * m->num_ao, sizeof(double) * m->num_ao);
         }
     }
+    qm_test_dmat_from_matrix(&c->dm, &c->basis, c->atom_xyz, 0, c->D, alloc);
 }
 
 // The far field against the exact sum on a cluster of 4^3 waters, at points among and around
@@ -553,7 +519,7 @@ UTEST(gto_int, far_field_matches_exact) {
     int_test_cluster(&c, &m, 4, 5.6f, t.alloc);
 
     md_gto_int_charges_desc_t desc = {
-        .basis = &c.basis, .atom_xyz = c.atom_xyz, .density_matrix = c.D, .density_scale = -1.0,
+        .basis = &c.basis, .atom_xyz = c.atom_xyz, .dmat = &c.dm, .density_scale = -1.0,
         .point_xyz = c.atom_xyz, .point_charge = c.atom_z, .num_points = c.num_atoms, .threshold = 1e-8,
     };
     md_gto_int_charges_t exact = {0}, far = {0};
@@ -681,9 +647,11 @@ UTEST(gto_int, tabulated_boys_matches_series) {
     }
     const double Z[NA] = { 3.0, 1.0, 2.0 };
 
+    md_gto_dmat_t dm;
+    ASSERT_TRUE(qm_test_dmat_from_matrix(&dm, &basis, &atom_xyz[0][0], 0, D, alloc));
     md_gto_int_charges_t q = {0};
     md_gto_int_charges_desc_t desc = {
-        .basis = &basis, .atom_xyz = &atom_xyz[0][0], .density_matrix = D, .density_scale = -1.0,
+        .basis = &basis, .atom_xyz = &atom_xyz[0][0], .dmat = &dm, .density_scale = -1.0,
         .point_xyz = &atom_xyz[0][0], .point_charge = Z, .num_points = NA,
     };
     ASSERT_TRUE(md_gto_int_charges_init(&q, &desc, alloc));
@@ -1039,9 +1007,11 @@ UTEST(gto_int, all_orders_gpu_match_cpu) {
     }
     const double Z[NA] = { 3.0, 1.0, 2.0 };
 
+    md_gto_dmat_t dm;
+    ASSERT_TRUE(qm_test_dmat_from_matrix(&dm, &basis, &atom_xyz[0][0], 0, D, alloc));
     md_gto_int_charges_t q = {0};
     md_gto_int_charges_desc_t desc = {
-        .basis = &basis, .atom_xyz = &atom_xyz[0][0], .density_matrix = D, .density_scale = -1.0,
+        .basis = &basis, .atom_xyz = &atom_xyz[0][0], .dmat = &dm, .density_scale = -1.0,
         .point_xyz = &atom_xyz[0][0], .point_charge = Z, .num_points = NA,
     };
     ASSERT_TRUE(md_gto_int_charges_init(&q, &desc, alloc));
@@ -1089,7 +1059,7 @@ UTEST(gto_int, far_field_gpu_matches_exact) {
     int_test_cluster_t c;
     int_test_cluster(&c, &m, 3, 5.6f, t.alloc);
     md_gto_int_charges_desc_t cd = {
-        .basis = &c.basis, .atom_xyz = c.atom_xyz, .density_matrix = c.D, .density_scale = -1.0,
+        .basis = &c.basis, .atom_xyz = c.atom_xyz, .dmat = &c.dm, .density_scale = -1.0,
         .point_xyz = c.atom_xyz, .point_charge = c.atom_z, .num_points = c.num_atoms, .threshold = 1e-8,
     };
     md_gto_int_charges_t exact = {0}, far = {0};
@@ -1302,14 +1272,16 @@ UTEST(gto_int, benchmark) {
     double* rows = NULL; double* w = NULL; size_t num_ao = 0;
     const size_t num_mo = md_qm_density_orbitals(&rows, &w, &num_ao, &t.sys, MD_STR_LIT("orbital/total/density"), md_get_heap_allocator());
     ASSERT_TRUE(num_mo > 0 && num_ao == md_gto_basis_num_ao(&basis));
-    double* D = (double*)malloc(sizeof(double) * num_ao * num_ao);
-    ASSERT_TRUE(md_gto_density_from_orbitals(D, rows, num_ao, 1, w, num_mo, num_ao, NULL));
-    printf("\n  md_gto_int far field %s\n  device: %s | %s: %zu atoms, %zu AOs (loaded, and D, in %.1f s)\n",
+    // the density's tiles as viamd makes them: from the orbitals, at its cutoff
+    md_gto_dmat_t dm;
+    ASSERT_TRUE(md_gto_dmat_init(&dm, &(md_gto_dmat_desc_t){ .basis = &basis, .atom_xyz = xyz, .cutoff = 1.0e-6, .margin = 1.0 }, md_get_heap_allocator()));
+    ASSERT_TRUE(md_gto_dmat_build(&dm, rows, num_ao, 1, w, num_mo, NULL));
+    printf("\n  md_gto_int far field %s\n  device: %s | %s: %zu atoms, %zu AOs (loaded, and the tiles of D, in %.1f s)\n",
            MD_GTO_INT_FAR_FIELD_REVISION, dinfo.name, file, na, num_ao, md_tick_to_seconds(md_tick_now() - t0));
 
     md_allocator_i* heap = md_get_heap_allocator();
     md_gto_int_charges_desc_t cd = {
-        .basis = &basis, .atom_xyz = xyz, .density_matrix = D, .density_scale = -1.0,
+        .basis = &basis, .atom_xyz = xyz, .dmat = &dm, .density_scale = -1.0,
         .point_xyz = xyz, .point_charge = Z, .num_points = na, .threshold = 1e-6,
     };
     md_gto_int_charges_t exact = {0}, far = {0};
@@ -1490,7 +1462,8 @@ UTEST(gto_int, benchmark) {
     md_gto_int_charges_free(&far, heap);
     md_free(heap, rows, sizeof(double) * num_mo * num_ao);
     md_free(heap, w, sizeof(double) * num_mo);
-    free(D); free(Z); free(xyz);
+    md_gto_dmat_free(&dm);
+    free(Z); free(xyz);
     qm_test_free(&t);
     md_gto_int_gpu_shutdown();
     md_gpu_device_destroy(device);

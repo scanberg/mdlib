@@ -205,9 +205,8 @@ bool md_qm_publish_overlap(struct md_system_t* sys);
 // larger than the triangle is ever made; a square one is extracted whole into scratch first.
 size_t md_qm_extract_packed_symmetric_f32(float* dst, size_t cap, const struct md_attributes_t* table, const struct md_attribute_t* attr, md_attribute_slice_t slice, md_attribute_io_t* io);
 
-// The packed upper triangle as double, the same layout: what a CPU consumer keeps of a density (md_gto_int's
-// density_packed), half the square's size. A square attribute is extracted whole into scratch first and its
-// symmetric part kept, (D_ij + D_ji) / 2; a packed one is widened from its float.
+// The packed upper triangle as double, the same layout, half the square's size. A square attribute is extracted
+// whole into scratch first and its symmetric part kept, (D_ij + D_ji) / 2; a packed one is widened from its float.
 size_t md_qm_extract_packed_symmetric_f64(double* dst, size_t cap, const struct md_attributes_t* table, const struct md_attribute_t* attr, md_attribute_slice_t slice, md_attribute_io_t* io);
 
 // The whole N x N matrix as double, row major: a packed attribute is extracted into scratch and its
