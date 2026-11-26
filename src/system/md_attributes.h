@@ -94,6 +94,12 @@ typedef enum md_attribute_flags_t {
     // length). A statement about the data: what spreads values over a space (a surface coloured by its tesserae) takes
     // only the intensive, as the pattern of a total is that of the sizes it is of. Numeric; not checked otherwise.
     MD_ATTRIBUTE_FLAG_EXTENSIVE = 8,
+
+    // SAMPLING: each value is about how its index SAMPLES something continuous - a tessera's quadrature weight, its
+    // switching, the exponent its Gaussian is given from its area - rather than a value of what is sampled. A statement
+    // about the data: what spreads values over a space (a surface coloured by its tesserae) leaves these out, as their
+    // pattern is that of the discretization and not of the surface. Numeric; not checked otherwise.
+    MD_ATTRIBUTE_FLAG_SAMPLING = 16,
 } md_attribute_flags_t;
 
 // LAYOUT. Two independent things:

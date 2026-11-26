@@ -3867,7 +3867,8 @@ static double vlx_pressure_unit_to_gpa(md_str_t unit) {
 }
 
 // What the GOSTSHYP terms are per tessera and in all, from the input pressure p_inp and the tesserae (all in Angstrom),
-// published beside them (each with its description, the totals per tessera marked MD_ATTRIBUTE_FLAG_EXTENSIVE). The
+// published beside them (each with its description, the totals per tessera marked MD_ATTRIBUTE_FLAG_EXTENSIVE, what is of
+// the discretization MD_ATTRIBUTE_FLAG_SAMPLING). The
 // paths are older than the paper's terms and kept, as workspaces name them; the labels are the paper's:
 //   wall_energy            the tessera's GOSTSHYP energy p_j g~_j = p_inp a_j lambda_j (kJ/mol), summing to E^GOST (eq 5)
 //   wall_energy_per_area   p_inp lambda_j (kJ/mol/Angstrom^2): the decay length times one number, but in the units of
@@ -3921,12 +3922,12 @@ static void vlx_publish_gostshyp_wall(md_system_t* sys, double pressure_gpa, siz
 		MD_STR_LIT("The GOSTSHYP energy per area at the tessera, p_inp λ_j = p_inp g~_j / f~_j: the input pressure times the decay length, "
 		           "so its pattern is the decay length's, in the units of the energy it adds up to. Integrated over the cavity it is E^GOST."));
 	md_qm_publish_series_ex(sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/wall_density"), MD_STR_LIT("Normalized Potential g~"), md_unit_div(md_unit_elementary_charge(), md_unit_pow(bohr, 3)), dens, count, MD_ATTRIBUTE_FLAG_NONE,
-		MD_STR_LIT("The auxiliary vector g~_j = <ρ|G~_j>, the paper's normalized GOSTSHYP potential: the electron density averaged under the "
-		           "tessera's normalized Gaussian, what the electrons give the energy per amplitude (E^GOST = Σ_j p_j g~_j)."));
+		MD_STR_LIT("The normalized GOSTSHYP potential at the tessera, g~_j = <ρ|G~_j>: the electron density averaged under the tessera's "
+		           "normalized Gaussian, which is the energy per unit of its amplitude (E^GOST = Σ_j p_j g~_j)."));
 	md_qm_publish_series_ex(sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/amplitude_per_area"), MD_STR_LIT("Amplitude per Area"), md_unit_mul(md_unit_hartree(), bohr), p_area, count, MD_ATTRIBUTE_FLAG_NONE,
 		MD_STR_LIT("The amplitude over the tessera's area, p_j / a_j = p_inp / f~_j: the strength of the model potential there, free of "
 		           "the tessera's size. Large where the density hardly falls as the Gaussian moves out (small f~_j)."));
-	md_qm_publish_series_ex(sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/buried"), MD_STR_LIT("Buried"), md_unit_none(), buried, count, MD_ATTRIBUTE_FLAG_NONE,
+	md_qm_publish_series_ex(sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/buried"), MD_STR_LIT("Buried"), md_unit_none(), buried, count, MD_ATTRIBUTE_FLAG_SAMPLING,
 		MD_STR_LIT("1 for a tessera inside the sphere of another atom than its own (the switching keeps such points where spheres overlap), else 0."));
 	md_qm_publish_scalar(sys, MD_STR_LIT("vlx/scf/gostshyp/area"), MD_STR_LIT("Cavity Area"), md_unit_pow(ang, 2), A);
 	md_qm_publish_scalar(sys, MD_STR_LIT("vlx/scf/gostshyp/wall_energy"), MD_STR_LIT("GOSTSHYP Energy"), kjmol, E);
@@ -4065,18 +4066,18 @@ static void vlx_publish_gostshyp(const vlx_t* vlx, hid_t scf_handle) {
 		md_qm_publish_vec3_series(sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/coordinate"), MD_STR_LIT("Tessera Coordinate"), ang, center, count);
 		md_qm_publish_vec3_series(sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/normal"), MD_STR_LIT("Tessera Normal"), md_unit_none(), normal, count);
 		const md_attribute_flags_t ext = MD_ATTRIBUTE_FLAG_EXTENSIVE;
-		md_qm_publish_series_ex(sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/area"), MD_STR_LIT("Tessera Area"), md_unit_pow(ang, 2), area, count, ext,
+		md_qm_publish_series_ex(sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/area"), MD_STR_LIT("Tessera Area"), md_unit_pow(ang, 2), area, count, ext | MD_ATTRIBUTE_FLAG_SAMPLING,
 			MD_STR_LIT("The area a_j of the tessera, its Lebedev weight times its sphere's radius squared times its switching. With its "
 			           "position, the only parameter of the cavity in the GOSTSHYP equations. Sums to the cavity's area; a buried tessera's is (close to) 0."));
 		md_qm_publish_series_ex(sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/amplitude"), MD_STR_LIT("Amplitude"), au_p, amplitude, count, ext,
 			MD_STR_LIT("The amplitude p_j = p_inp a_j / f~_j of the tessera's Gaussian potential G_j = p_j G~_j, the only parameter optimized "
 			           "self-consistently. A total for the tessera: it goes with the tessera's size (Amplitude per Area is the density of it)."));
-		md_qm_publish_series_ex(sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/exponent"), MD_STR_LIT("Exponent ω"), md_unit_inv(md_unit_pow(ang, 2)), exponent, count, MD_ATTRIBUTE_FLAG_NONE,
+		md_qm_publish_series_ex(sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/exponent"), MD_STR_LIT("Exponent ω"), md_unit_inv(md_unit_pow(ang, 2)), exponent, count, MD_ATTRIBUTE_FLAG_SAMPLING,
 			MD_STR_LIT("The exponent ω_j = π ln 2 / a_j of the tessera's normalized Gaussian G~_j(r) = (ω_j / π)^(3/2) exp(-ω_j |r - r_j|^2): "
-			           "halved at the edge of the tessera taken as a disc, wider for a larger tessera. VeloxChem's 'width'."));
+			           "halved at the edge of the tessera taken as a disc, wider for a larger tessera. Its 'width' in the file."));
 		// the principal quantity of the tesserae (MD_ATTRIBUTE_FLAG_PRINCIPAL)
 		md_qm_publish_series_ex(sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/decay_length"), MD_STR_LIT("Decay Length"), ang, decay, count, MD_ATTRIBUTE_FLAG_PRINCIPAL,
-			MD_STR_LIT("VeloxChem's decay length λ_j = g~_j / f~_j: the density under the tessera's Gaussian over how fast it falls as the "
+			MD_STR_LIT("The decay length λ_j = g~_j / f~_j: the density under the tessera's Gaussian over how fast it falls as the "
 			           "Gaussian moves out. The effective volume per area: V^eff = Σ_j a_j λ_j and E^GOST = p_inp V^eff. Long where the "
 			           "electron density reaches far against the cavity, short where it is held in."));
 		md_qm_publish_column(sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/atom_index"), MD_STR_LIT("Tessera Atom"), md_unit_none(), MD_ATTRIBUTE_TYPE_U32, atom, sizeof(uint32_t), count);
@@ -4090,9 +4091,9 @@ static void vlx_publish_gostshyp(const vlx_t* vlx, hid_t scf_handle) {
 			.data        = radius,
 			.byte_size   = num_atoms * sizeof(double),
 		});
-		md_qm_publish_series_ex(sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/lebedev_weight"), MD_STR_LIT("Lebedev Weight"), md_unit_none(), weight, count, MD_ATTRIBUTE_FLAG_NONE,
+		md_qm_publish_series_ex(sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/lebedev_weight"), MD_STR_LIT("Lebedev Weight"), md_unit_none(), weight, count, MD_ATTRIBUTE_FLAG_SAMPLING,
 			MD_STR_LIT("The weight w_j of the tessera's point in the Lebedev grid of its sphere: its share of the sphere's area, before the switching."));
-		md_qm_publish_series_ex(sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/switching"), MD_STR_LIT("Switching"), md_unit_none(), switching, count, MD_ATTRIBUTE_FLAG_NONE,
+		md_qm_publish_series_ex(sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/switching"), MD_STR_LIT("Switching"), md_unit_none(), switching, count, MD_ATTRIBUTE_FLAG_SAMPLING,
 			MD_STR_LIT("The switching F_j of the tessera, from 1 to 0: how much of it is outside the other atoms' spheres. Where spheres overlap "
 			           "it falls smoothly, so that the cavity's surface and its tesserae change smoothly with the geometry."));
 
