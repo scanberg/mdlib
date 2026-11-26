@@ -78,6 +78,17 @@ if (MD_ENABLE_HDF5)
     target_link_libraries(md_dmat_census_bench PRIVATE mdlib)
     add_dependencies(md_dmat_census_bench md_bench_rev)
     target_include_directories(md_dmat_census_bench PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+
+    # What the density's GPU forms would cost in other basis sets: the AOs, the GEMM's blocks and the dmat's tiles in
+    # six AO orders, Cartesian and spherical, from a geometry and a basis set name alone (see bench_basis_census.c and
+    # basis_census_inputs.py). CPU only.
+    add_executable(md_basis_census_bench bench_basis_census.c)
+    target_compile_definitions(md_basis_census_bench PRIVATE ${MD_DEFINES})
+    target_compile_options(md_basis_census_bench PRIVATE ${MD_FLAGS} $<$<CONFIG:Debug>:${MD_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_FLAGS_REL}>)
+    target_link_options(md_basis_census_bench PRIVATE ${MD_LINK_FLAGS} $<$<CONFIG:Debug>:${MD_LINK_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_LINK_FLAGS_REL}>)
+    target_link_libraries(md_basis_census_bench PRIVATE mdlib)
+    add_dependencies(md_basis_census_bench md_bench_rev)
+    target_include_directories(md_basis_census_bench PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 endif()
 
 # How structure files (PDB, GRO) load over threads: best and median per thread count, the speedup, and a hash of the
