@@ -424,6 +424,10 @@ static int char_to_angular_momentum_type(int c) {
 	case 'D': return 2;
 	case 'F': return 3;
 	case 'G': return 4;
+	// Parsed so that a basis file which has them for some elements can be read at all (VeloxChem's CC-PVQZ has h
+	// functions for the transition metals); a molecule that would use one is refused in vlx_resolve_basis_set.
+	case 'H': return 5;
+	case 'I': return 6;
 	default: return -1;
 	}
 }
@@ -4531,6 +4535,15 @@ static bool vlx_resolve_basis_set(vlx_t* vlx, md_str_t filename) {
 		goto done;
 	}
 	normalize_basis_set(&vlx->basis_set);
+
+	for (size_t i = 0; i < vlx->number_of_atoms; ++i) {
+		const basis_set_basis_t* atom_basis = basis_set_get_atom_basis(&vlx->basis_set, vlx->atomic_numbers[i]);
+		if (atom_basis && atom_basis->max_type > MD_GTO_MAX_ANGULAR_MOMENTUM) {
+			MD_LOG_ERROR("Basis set '" MD_STR_FMT "' has %c functions for atom %zu (Z = %i), past the %c functions mdlib evaluates",
+				MD_STR_ARG(vlx->basis_set_ident), "SPDFGHI"[atom_basis->max_type], i, (int)vlx->atomic_numbers[i], "SPDFGHI"[MD_GTO_MAX_ANGULAR_MOMENTUM]);
+			goto done;
+		}
+	}
 
 	vlx->num_sph_ao = vlx_basis_num_sph_ao(vlx);
 	if (vlx->num_sph_ao == 0) {
