@@ -78,6 +78,19 @@ md_compose_ctx_t md_compose_create(md_gpu_device_t device) {
     return c;
 }
 
+/* For md_render_bench: the compiled kernels, by index, with what the driver
+   reports of each (registers, ...). False past the last. Not in the header. */
+bool md_compose_debug_kernel_info(md_compose_ctx_t c, uint32_t i, const char** name, md_gpu_kernel_info_t* info) {
+    if (!c) return false;
+    const struct { const char* n; md_gpu_kernel_t k; } ks[] = {
+        { "compose", c->k_compose }, { "ao_linear", c->k_linear }, { "ao_estimate", c->k_estimate },
+        { "ao_quality", c->k_quality }, { "ao_blur", c->k_blur },
+    };
+    if (i >= sizeof(ks) / sizeof(ks[0])) return false;
+    if (name) *name = ks[i].n;
+    return info ? md_gpu_kernel_info(ks[i].k, info) : true;
+}
+
 void md_compose_destroy(md_compose_ctx_t c) {
     if (!c) return;
     if (c->k_linear)   md_gpu_kernel_destroy(c->k_linear);

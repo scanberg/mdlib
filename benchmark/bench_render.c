@@ -39,6 +39,15 @@ md_render_bench: what clusters to cull by, and what md_render costs.
       back to c0) with the cull by phase for each: what a camera move costs
       phase 2.
 
+  md_render_bench compose [--res WxH] [--vol N[,N...]] [--reps N] [--dump PREFIX]
+      md_compose over a small molecule inside a volume of N^3 voxels (an
+      orbital: two lobes of opposite sign, filling most of the view), timed
+      on the GPU (the compose's own submission, md_gpu_sync_gpu_seconds):
+      without the volume, with its two isosurfaces (opaque, then
+      translucent), its emission (DVR) through a transfer function, and
+      both. Default sizes 48 and 96, 1920x1080. --dump writes each case's
+      image, PREFIX_<N>_<case>.ppm (tone mapped, sRGB): what was timed.
+
 Every run prints the mdlib revision it was built from, first.
 */
 
@@ -64,6 +73,7 @@ Every run prints the mdlib revision it was built from, first.
 #include <md_render.h>
 #include <md_render_mol.h>
 #include <md_render_debug.h>
+#include <md_compose.h>
 #include <core/md_gpu.h>
 #endif
 
@@ -1857,16 +1867,254 @@ static int run_heavy(int argc, char** argv) {
 }
 #endif
 
+#if MD_ENABLE_GPU
+/* ==========================================================================
+   md_compose: volumes
+   ========================================================================= */
+
+bool md_compose_debug_kernel_info(md_compose_ctx_t c, uint32_t i, const char** name, md_gpu_kernel_info_t* info);
+
+static md_gpu_addr_t gpu_copy(md_gpu_stream_t s, const void* src, size_t size) {
+    md_gpu_addr_t a = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, size).gpu;
+    if (a && !md_gpu_upload(s, a, src, size)) return 0;
+    return a;
+}
+
+static md_gpu_texture_t tex_make(md_gpu_stream_t s, md_gpu_tex_type_t type, md_gpu_format_t format, md_gpu_tex_usage_t usage,
+                                 uint32_t w, uint32_t h, uint32_t d, const void* src, size_t size, const char* label) {
+    md_gpu_texture_desc_t td;
+    memset(&td, 0, sizeof(td));
+    td.type = type; td.format = format; td.usage = usage; td.width = w; td.height = h; td.depth_or_layers = d; td.label = label;
+    md_gpu_texture_t t = md_gpu_texture_create(s, &td);
+    if (t && src) {
+        md_gpu_tex_region_t r;
+        memset(&r, 0, sizeof(r));
+        if (type != MD_GPU_TEX_3D) r.extent[2] = 1;
+        if (!md_gpu_upload_texture(s, t, &r, src, size)) { md_gpu_texture_destroy(t); return NULL; }
+    }
+    return t;
+}
+
+static float half_bits(uint16_t h) {
+    const uint32_t e = (h >> 10) & 31u, m = h & 1023u;
+    const float v = e == 0 ? m / 16777216.0f : e == 31 ? 65504.0f : ldexpf(1.0f + m / 1024.0f, (int)e - 15);
+    return (h & 0x8000u) ? -v : v;
+}
+
+/* The compose's target as a PPM: radiance over black, Reinhard, sRGB */
+static void dump_compose(md_gpu_stream_t s, md_gpu_texture_t t, uint32_t w, uint32_t h, const char* path) {
+    const size_t size = (size_t)w * h * 8;
+    md_gpu_tex_region_t r;
+    memset(&r, 0, sizeof(r));
+    r.extent[2] = 1;
+    md_gpu_mem_t rb = md_gpu_malloc(s, MD_GPU_MEM_HOST_READ, size);
+    if (!rb.cpu || !md_gpu_copy_from_texture(s, rb.gpu, t, &r)) { if (rb.gpu) md_gpu_free(s, rb.gpu); return; }
+    md_gpu_stream_sync(s);
+    FILE* f = fopen(path, "wb");
+    if (f) {
+        fprintf(f, "P6\n%u %u\n255\n", w, h);
+        const uint16_t* px = (const uint16_t*)rb.cpu;
+        for (size_t i = 0; i < (size_t)w * h; ++i) {
+            for (int k = 0; k < 3; ++k) {
+                float c = half_bits(px[4 * i + k]);
+                c = c > 0.0f ? c / (1.0f + c) : 0.0f;
+                c = c <= 0.0031308f ? 12.92f * c : 1.055f * powf(c, 1.0f / 2.4f) - 0.055f;
+                fputc((int)(c * 255.0f + 0.5f), f);
+            }
+        }
+        fclose(f);
+    }
+    md_gpu_free(s, rb.gpu);
+}
+
+/* The GPU's time of one compose, its own submission: the best and the median of reps, ms */
+static bool time_compose(md_gpu_stream_t s, md_compose_ctx_t cx, md_render_view_t view, md_compose_desc_t* d,
+                         uint32_t reps, double* best, double* median) {
+    double* t = malloc((reps + 2) * sizeof(double));
+    uint32_t n = 0;
+    for (uint32_t rr = 0; rr < reps + 2; ++rr) {
+        d->frame = rr;
+        md_gpu_stream_record(s);                         /* what came before: a submission of its own */
+        if (!md_compose(s, cx, view, d)) { free(t); return false; }
+        md_gpu_sync_t sy = md_gpu_stream_record(s);
+        md_gpu_sync_wait(sy);
+        double sec = -1.0;
+        for (int i = 0; i < 1000 && !md_gpu_sync_gpu_seconds(sy, &sec); ++i) md_thread_sleep(1);
+        if (rr >= 2 && sec >= 0.0) t[n++] = sec * 1.0e3;  /* the first two warm up */
+    }
+    if (!n) { free(t); return false; }
+    qsort(t, n, sizeof(double), cmp_d);
+    *best = t[0]; *median = t[n / 2];
+    free(t);
+    return true;
+}
+
+static int run_compose(int argc, char** argv) {
+    uint32_t W = 1920, H = 1080, reps = 20;
+    uint32_t sizes[8] = { 48, 96 }, n_sizes = 2;
+    const char* dump = NULL;
+    for (int i = 0; i < argc; ++i) {
+        if (!strcmp(argv[i], "--res") && i + 1 < argc) {
+            if (sscanf(argv[++i], "%ux%u", &W, &H) != 2) return 2;
+        } else if (!strcmp(argv[i], "--reps") && i + 1 < argc) {
+            reps = (uint32_t)atoi(argv[++i]);
+        } else if (!strcmp(argv[i], "--vol") && i + 1 < argc) {
+            n_sizes = 0;
+            for (char* p = argv[++i]; *p && n_sizes < 8; ) { sizes[n_sizes++] = (uint32_t)strtoul(p, &p, 10); if (*p == ',') ++p; }
+        } else if (!strcmp(argv[i], "--dump") && i + 1 < argc) {
+            dump = argv[++i];
+        }
+    }
+    if (reps < 1) reps = 1;
+
+    md_gpu_device_desc_t dd = {0};
+    dd.label = "md_render_bench";
+    md_gpu_device_t dev = md_gpu_device_create(&dd);
+    if (!dev) { fprintf(stderr, "no GPU device: %s\n", md_gpu_last_error()); return 1; }
+    md_gpu_device_info_t info;
+    md_gpu_device_info(dev, &info);
+    md_gpu_stream_t s = md_gpu_stream_default(dev, MD_GPU_STREAM_GRAPHICS);
+    md_render_ctx_t r = md_render_create(dev, NULL);
+    md_compose_ctx_t cx = md_compose_create(dev);
+    md_render_view_t view = r ? md_render_view_create(r, "compose") : NULL;
+    if (!s || !r || !cx || !view) { fprintf(stderr, "md_render or md_compose could not start\n"); return 1; }
+
+    printf("mdlib %s\n", MD_BENCH_SOURCE_REV);
+    printf("device: %s (%s)\n", info.name, info.driver);
+    {
+        const char* kn; md_gpu_kernel_info_t ki;
+        for (uint32_t i = 0; md_compose_debug_kernel_info(cx, i, &kn, &ki); ++i)
+            if (ki.stats[0]) printf("  kernel md_compose %-12s %s\n", kn, ki.stats);
+    }
+    printf("target %ux%u, GPU time of one compose, ms (best / median of %u)\n\n", W, H, reps);
+
+    /* the molecule: 40 atoms within 3 A of the box's centre, the origin */
+    enum { NA = 40 };
+    float pos[3 * NA], rad[NA];
+    uint32_t seed = 12345u;
+    for (int i = 0; i < NA; ++i) {
+        for (int k = 0; k < 3; ++k) { seed = seed * 1664525u + 1013904223u; pos[3 * i + k] = ((seed >> 8) / 16777216.0f * 2.0f - 1.0f) * 3.0f; }
+        rad[i] = 0.6f + 0.1f * (float)(i % 5);
+    }
+    md_render_batch_t b;
+    memset(&b, 0, sizeof(b));
+    b.key = 1; b.kind = MD_RENDER_SPHERES; b.count = NA; b.points.count = NA;
+    b.points.position = gpu_copy(s, pos, sizeof(pos));
+    b.points.radius   = gpu_copy(s, rad, sizeof(rad));
+    b.style.spheres.radius_scale = 1.0f;
+    b.color.mode = MD_RENDER_COLOR_UNIFORM; b.color.uniform = 0xFFC0C0C0u;
+
+    /* the box [-6, 6]^3, filling 70 % of the view's height at its centre */
+    const double ctr[3] = { 0, 0, 0 };
+    md_render_camera_t cam = camera_front(ctr, 6.0, 14.7, (float)W / (float)H);
+    md_render_frame_t f;
+    memset(&f, 0, sizeof(f));
+    f.width = W; f.height = H; f.camera = cam; f.batches = &b; f.batch_count = 1;
+    f.jitter = MD_RENDER_JITTER_NONE; f.samples = 1;
+    if (!md_render_view_draw(s, view, &f, NULL)) { fprintf(stderr, "the scene could not be drawn\n"); return 1; }
+    md_gpu_texture_t out = tex_make(s, MD_GPU_TEX_2D, MD_GPU_FORMAT_RGBA16_FLOAT, MD_GPU_TEX_STORAGE, W, H, 1, NULL, 0, "compose");
+
+    /* the transfer function over [-1, 1]: transparent about 0, the lobes' colours toward either end */
+    uint32_t tf[64];
+    for (int i = 0; i < 64; ++i) {
+        const float v = (i + 0.5f) / 64.0f * 2.0f - 1.0f, m = fabsf(v);
+        const float al = m < 0.05f ? 0.0f : fminf((m - 0.05f) / 0.5f, 1.0f) * 0.5f;
+        const uint32_t cr = v < 0 ? 220 : 60, cg = 90, cb = v < 0 ? 60 : 220;
+        tf[i] = cr | (cg << 8) | (cb << 16) | ((uint32_t)(al * 255.0f + 0.5f) << 24);
+    }
+    md_gpu_texture_t tft = tex_make(s, MD_GPU_TEX_2D, MD_GPU_FORMAT_RGBA8_UNORM, MD_GPU_TEX_SAMPLED, 64, 1, 1, tf, sizeof(tf), "transfer");
+
+    md_compose_desc_t d;
+    memset(&d, 0, sizeof(d));
+    d.camera = cam; d.target = out; d.ao = 5.0f;
+    d.shading.mode = MD_COMPOSE_SHADING_PBR;
+    d.shading.light_dir[0] = 0.3f; d.shading.light_dir[1] = 0.6f; d.shading.light_dir[2] = 0.75f;
+    d.shading.light_strength = 1.0f;
+    for (int k = 0; k < 3; ++k) { d.shading.dir_radiance[k] = 2.0f; d.shading.sky_radiance[k] = 0.4f; d.shading.ground_radiance[k] = 0.2f; }
+    d.shading.roughness = 0.4f; d.shading.f0 = 0.04f;
+
+    double best, med;
+    if (time_compose(s, cx, view, &d, reps, &best, &med)) printf("no volume                        %8.3f %8.3f\n", best, med);
+    if (dump) {
+        char path[512];
+        snprintf(path, sizeof(path), "%s_none.ppm", dump);
+        dump_compose(s, out, W, H, path);
+    }
+
+    for (uint32_t si = 0; si < n_sizes; ++si) {
+        const uint32_t N = sizes[si];
+        if (N < 2) continue;
+        /* an orbital: x exp(-|p|^2 / (2 0.3^2)) over p in [-1, 1]^3, its largest 1 */
+        float* fv = malloc((size_t)N * N * N * 4);
+        const double peak = 0.3 * exp(-0.5);
+        for (uint32_t z = 0; z < N; ++z) for (uint32_t y = 0; y < N; ++y) for (uint32_t x = 0; x < N; ++x) {
+            const double px = (x + 0.5) / N * 2 - 1, py = (y + 0.5) / N * 2 - 1, pz = (z + 0.5) / N * 2 - 1;
+            const double r2 = px * px + py * py + pz * pz;
+            fv[((size_t)z * N + y) * N + x] = (float)(px * exp(-r2 / (2 * 0.09)) / peak);
+        }
+        md_gpu_texture_t ft = tex_make(s, MD_GPU_TEX_3D, MD_GPU_FORMAT_R32_FLOAT, MD_GPU_TEX_SAMPLED, N, N, N, fv, (size_t)N * N * N * 4, "field");
+        free(fv);
+        if (!ft || !tft) { fprintf(stderr, "the volume could not be made\n"); return 1; }
+
+        md_compose_volume_t v;
+        memset(&v, 0, sizeof(v));
+        v.field = ft;
+        v.model[0] = v.model[5] = v.model[10] = 12.0f;
+        v.model[12] = v.model[13] = v.model[14] = -6.0f; v.model[15] = 1.0f;
+        v.clip_max[0] = v.clip_max[1] = v.clip_max[2] = 1.0f;
+        v.transfer_range[0] = -1.0f; v.transfer_range[1] = 1.0f;
+        v.iso_values[0] = 0.1f;  v.iso_colors[0][0] = 0.2f; v.iso_colors[0][1] = 0.4f; v.iso_colors[0][2] = 0.9f;
+        v.iso_values[1] = -0.1f; v.iso_colors[1][0] = 0.9f; v.iso_colors[1][1] = 0.3f; v.iso_colors[1][2] = 0.2f;
+        d.volumes = &v; d.volume_count = 1;
+
+        const struct { const char* name; const char* file; uint32_t isos; float alpha; bool dvr; } cases[] = {
+            { "isosurfaces",                "iso",       0, 1.0f, false },
+            { "isosurfaces, translucent",   "iso_half",  0, 0.5f, false },
+            { "emission (DVR)",             "dvr",       1, 1.0f, true  },
+            { "isosurfaces + emission",     "iso_dvr",   0, 1.0f, true  },
+            { "translucent + emission",     "half_dvr",  0, 0.5f, true  },
+        };
+        printf("volume %u^3\n", N);
+        for (size_t ci = 0; ci < sizeof(cases) / sizeof(cases[0]); ++ci) {
+            v.iso_count = cases[ci].isos ? 0 : 2;
+            v.iso_colors[0][3] = v.iso_colors[1][3] = cases[ci].alpha;
+            v.transfer = cases[ci].dvr ? tft : NULL;
+            if (time_compose(s, cx, view, &d, reps, &best, &med)) printf("  %-30s %8.3f %8.3f\n", cases[ci].name, best, med);
+            else printf("  %-30s failed: %s\n", cases[ci].name, md_gpu_last_error());
+            if (dump) {
+                char path[512];
+                snprintf(path, sizeof(path), "%s_%u_%s.ppm", dump, N, cases[ci].file);
+                dump_compose(s, out, W, H, path);
+            }
+        }
+        md_gpu_texture_destroy(ft);
+    }
+
+    md_gpu_stream_sync(s);
+    md_gpu_texture_destroy(out);
+    md_gpu_texture_destroy(tft);
+    md_gpu_free(s, b.points.position);
+    md_gpu_free(s, b.points.radius);
+    md_render_view_destroy(s, view);
+    md_compose_destroy(cx);
+    md_render_destroy(r);
+    md_gpu_device_destroy(dev);
+    return 0;
+}
+#endif
+
 int main(int argc, char** argv) {
     if (argc >= 2 && !strcmp(argv[1], "clusters")) return run_clusters(argc - 2, argv + 2);
 #if MD_ENABLE_GPU
     if (argc >= 2 && !strcmp(argv[1], "gpu")) return run_gpu(argc - 2, argv + 2);
     if (argc >= 2 && !strcmp(argv[1], "heavy")) return run_heavy(argc - 2, argv + 2);
+    if (argc >= 2 && !strcmp(argv[1], "compose")) return run_compose(argc - 2, argv + 2);
 #endif
     fprintf(stderr, "usage:\n  md_render_bench clusters <structure> [<trajectory>] [--frames N] [--size N]\n"
 #if MD_ENABLE_GPU
                     "  md_render_bench gpu [--atoms N[,N...]] [--res WxH] [--reps N] [--small P[,P...]] [--host-grid | --implicit] [--look NAME] [--resident F | --resident-random F] [--mol-order cells [--jitter A]]\n"
                     "  md_render_bench heavy [--grid N[,N...]] [--res WxH] [--reps N] [--look NAME] [--data DIR]   (N x N x N copies; default 1,4,8)\n"
+                    "  md_render_bench compose [--res WxH] [--vol N[,N...]] [--reps N] [--dump PREFIX]   (volumes of N^3; default 48,96)\n"
 #endif
            );
     return 1;
