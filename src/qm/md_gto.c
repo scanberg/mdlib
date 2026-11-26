@@ -789,16 +789,6 @@ static void gto_expand_basis_gpu_shells(uint32_t* out_shell_atom_idx, float* out
     }
 }
 
-// Convert a full N×N row-major double density matrix to compact upper-triangular float.
-static void density_matrix_upper_tri_extract_float(float* out, const double* dm, size_t n) {
-    size_t k = 0;
-    for (size_t i = 0; i < n; i++) {
-        for (size_t j = i; j < n; j++) {
-            out[k++] = (float)dm[i * n + j];
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // The derivative basis (md_gto_basis_derivative, md_gto_orbital_gradients)
 // ---------------------------------------------------------------------------
@@ -1122,7 +1112,7 @@ typedef struct {
     uint32_t        num_mos;
     uint32_t        mo_mode;
     uint32_t        has_weights;
-    uint32_t        dm_tiled;
+    uint32_t        dm_pad;
     uint32_t        dm_nt;
     uint32_t        d_spin_offset;
     uint32_t        spin;
@@ -1579,20 +1569,10 @@ void md_gto_gpu_atom_pack(float* dst_atom_xyzw, const float* atom_xyz, size_t at
 // Coefficient buffer helpers
 // ---------------------------------------------------------------------------
 
-size_t md_gto_gpu_coeff_size_density(size_t num_cgtos) {
-    size_t tri_len = (num_cgtos * (num_cgtos + 1)) / 2;
-    return sizeof(float) * tri_len;
-}
-
 size_t md_gto_gpu_coeff_size_mo(size_t num_mos, size_t num_cgtos) {
     MD_ASSERT(num_mos > 0);
     MD_ASSERT(num_cgtos > 0);
     return sizeof(float) * num_mos * num_cgtos;
-}
-
-void md_gto_gpu_coeff_pack_density(float* dst, const double* density_matrix, size_t num_cgtos) {
-    MD_ASSERT(dst && density_matrix && num_cgtos > 0);
-    density_matrix_upper_tri_extract_float(dst, density_matrix, num_cgtos);
 }
 
 void md_gto_gpu_coeff_pack_mo(float* dst, const double* const* mo_coeffs, const double* mo_scales, size_t num_mos, size_t num_cgtos) {
@@ -1740,8 +1720,8 @@ static void gto_gemm_args_init(gto_density_gemm_args_t* a, const md_grid_t* grid
 typedef struct gto_gemm_loc_t {
     uint32_t        on;
     uint32_t        num_spins;
-    md_gpu_addr_t   D[2], tao[2], map[2];   /* each spin's matrix: packed, or a dmat's tiles (tiled) */
-    uint32_t        nt, tiled;
+    md_gpu_addr_t   D[2], tao[2], map[2];   /* each spin's matrix: a dmat's tiles */
+    uint32_t        nt;
 } gto_gemm_loc_t;
 
 // The two-pass path: count, plan batches (blocks the calling thread for the counts),
@@ -2073,7 +2053,6 @@ static void gto_gemm_loc_spin(gto_gemm_plan_t* P, uint32_t sp) {
     a->spin          = sp;
     a->d_spin_offset = (uint32_t)(sp * P->max_db);
     a->D_matrix      = P->loc.D[sp];
-    a->dm_tiled      = P->loc.tiled;
     a->dm_nt         = P->loc.nt;
     a->dm_tao        = P->loc.tao[sp];
     a->dm_map        = P->loc.map[sp];
@@ -2206,13 +2185,12 @@ static int gto_loc_gemm_count(gto_gemm_pending_t* p, md_gpu_stream_t stream, con
         MD_LOG_ERROR("md_gto_gpu_localization: invalid arguments");
         return -1;
     }
-    const bool tiled = desc->dmat[0] != NULL;
     for (uint32_t s = 0; s < desc->num_spins; ++s) {
-        if (tiled ? (!desc->dmat[s] || desc->coeff[s]) : (!desc->coeff[s] || desc->dmat[s])) {
-            MD_LOG_ERROR("md_gto_gpu_localization: every spin's matrix packed (coeff) or in tiles (dmat), not both");
+        if (!desc->dmat[s]) {
+            MD_LOG_ERROR("md_gto_gpu_localization: spin %u's matrix (dmat) is missing", s);
             return -1;
         }
-        if (tiled && desc->dmat[s]->num_ao != desc->basis->layout.num_cgtos) {
+        if (desc->dmat[s]->num_ao != desc->basis->layout.num_cgtos) {
             MD_LOG_ERROR("md_gto_gpu_localization: the dmat spans %u AOs, the basis %u", desc->dmat[s]->num_ao, desc->basis->layout.num_cgtos);
             return -1;
         }
@@ -2239,15 +2217,14 @@ static int gto_loc_gemm_count(gto_gemm_pending_t* p, md_gpu_stream_t stream, con
     gto_gemm_loc_t loc = {0};
     loc.on        = 1;
     loc.num_spins = desc->num_spins;
-    loc.tiled     = tiled ? 1u : 0u;
-    loc.nt        = tiled ? desc->dmat[0]->nt : 0u;
+    loc.nt        = desc->dmat[0]->nt;
     for (uint32_t s = 0; s < desc->num_spins; ++s) {
-        loc.D[s]   = tiled ? desc->dmat[s]->tiles : desc->coeff[s];
-        loc.tao[s] = tiled ? desc->dmat[s]->tao : 0;
-        loc.map[s] = tiled ? desc->dmat[s]->map : 0;
+        loc.D[s]   = desc->dmat[s]->tiles;
+        loc.tao[s] = desc->dmat[s]->tao;
+        loc.map[s] = desc->dmat[s]->map;
     }
     /* spin 0's matrix in the arguments for the count (which reads none) */
-    a.D_matrix = loc.D[0]; a.dm_tiled = loc.tiled; a.dm_nt = loc.nt; a.dm_tao = loc.tao[0]; a.dm_map = loc.map[0];
+    a.D_matrix = loc.D[0]; a.dm_nt = loc.nt; a.dm_tao = loc.tao[0]; a.dm_map = loc.map[0];
 
     /* D_b gathered (d_mode 1): the core's B operand reads it */
     if (a.block_dim.x * a.block_dim.y * a.block_dim.z == 0) return 0;
@@ -2283,12 +2260,11 @@ static int gto_density_grad_count(gto_gemm_pending_t* p, md_gpu_stream_t stream,
     gto_gemm_loc_t loc = {0};
     loc.on        = 1;
     loc.num_spins = 1;
-    loc.tiled     = dm ? 1u : 0u;
-    loc.nt        = dm ? dm->nt : 0u;
-    loc.D[0]      = dm ? dm->tiles : desc->coeff;
-    loc.tao[0]    = dm ? dm->tao : 0;
-    loc.map[0]    = dm ? dm->map : 0;
-    a.D_matrix = loc.D[0]; a.dm_tiled = loc.tiled; a.dm_nt = loc.nt; a.dm_tao = loc.tao[0]; a.dm_map = loc.map[0];
+    loc.nt        = dm->nt;
+    loc.D[0]      = dm->tiles;
+    loc.tao[0]    = dm->tao;
+    loc.map[0]    = dm->map;
+    a.D_matrix = loc.D[0]; a.dm_nt = loc.nt; a.dm_tao = loc.tao[0]; a.dm_map = loc.map[0];
 
     if (a.block_dim.x * a.block_dim.y * a.block_dim.z == 0) return 0;
     if (!gto_gemm_count(p, stream, &a, desc->scratch_bytes, true, &cfg)) return -1;
@@ -2328,13 +2304,10 @@ static bool gto_density_gemm_setup(gto_density_gemm_args_t* a, gto_gemm_cfg_t* c
         return false;
     }
     gto_gemm_args_init(a, desc->grid, desc->sample_offset, desc->basis, desc->atom_xyz, desc->op, out);
-    a->D_matrix = desc->dmat ? desc->dmat->tiles : desc->coeff;
-    if (desc->dmat) {
-        a->dm_tiled = 1;
-        a->dm_nt    = desc->dmat->nt;
-        a->dm_tao   = desc->dmat->tao;
-        a->dm_map   = desc->dmat->map;
-    }
+    a->D_matrix = desc->dmat->tiles;
+    a->dm_nt    = desc->dmat->nt;
+    a->dm_tao   = desc->dmat->tao;
+    a->dm_map   = desc->dmat->map;
     return true;
 }
 
@@ -2343,17 +2316,17 @@ static void gto_density_launch_gemm(md_gpu_stream_t stream, const md_gto_gpu_den
     gto_density_gemm_args_t a;
     if (!gto_density_gemm_setup(&a, &cfg, desc, out)) return;
     /* D_b is gathered once per block before the GEMM pass (d_mode 1), so the GEMM
-       streams it with coalesced loads instead of gathering from the packed triangle. */
+       streams it with coalesced loads instead of gathering from the tiles. */
     gto_gemm_execute(stream, &a, desc->scratch_bytes, true, &cfg, desc->piece_work);
 }
 
 /* The storage the evaluation writes, or false (logged) */
 static bool gto_density_check(md_gpu_storage_tex_t* out, md_gpu_stream_t stream, const md_gto_gpu_density_desc_t* desc) {
-    if (!stream || !desc || !desc->basis || !desc->atom_xyz || !(desc->coeff || desc->dmat) || !desc->out_tex || !desc->grid) {
+    if (!stream || !desc || !desc->basis || !desc->atom_xyz || !desc->dmat || !desc->out_tex || !desc->grid) {
         MD_LOG_ERROR("md_gto_gpu_density_launch: invalid input");
         return false;
     }
-    if (desc->dmat && desc->dmat->num_ao != desc->basis->layout.num_cgtos) {
+    if (desc->dmat->num_ao != desc->basis->layout.num_cgtos) {
         MD_LOG_ERROR("md_gto_gpu_density_launch: the dmat spans %u AOs, the basis %u", desc->dmat->num_ao, desc->basis->layout.num_cgtos);
         return false;
     }

@@ -318,25 +318,19 @@ size_t md_gto_gpu_atom_buffer_size(size_t num_atoms);
 void md_gto_gpu_atom_pack(float* dst_atom_xyzw, const float* atom_xyz, size_t atom_xyz_stride, size_t num_atoms);
 
 // ---------------------------------------------------------------------------
-// Coefficient buffer helpers
+// Coefficient buffer helpers (orbitals; a density is in tiles, md_gto_gpu_dmat)
 // Coefficients live in a device allocation owned by the caller.
-// Tightly packed floats, no padding.
-//   density : float[(num_cgtos*(num_cgtos+1))/2]   — packed upper-triangular
-//   MO      : float[num_mos * num_cgtos]           — packed row-major
+// Tightly packed floats, no padding: float[num_mos * num_cgtos], packed row-major.
 // ---------------------------------------------------------------------------
 
 // Returns the required buffer size in bytes.
-size_t md_gto_gpu_coeff_size_density(size_t num_cgtos);
 size_t md_gto_gpu_coeff_size_mo(size_t num_mos, size_t num_cgtos);
 
-// Pack helpers — convert double-precision coefficients to the tightly-packed float
-// layout expected by the GPU shaders.  dst must point to at least
-// md_gto_gpu_coeff_size_*() bytes of writable memory; the caller decides where
-// that memory comes from (heap, temp arena, staging bump cpu_ptr, …).
-//
-//   density: upper-triangular row-major, length = num_cgtos*(num_cgtos+1)/2
-//   MO:      row-major [num_mos × num_cgtos]; mo_scales may be NULL (defaults to 1.0)
-void md_gto_gpu_coeff_pack_density(float* dst, const double* density_matrix, size_t num_cgtos);
+// Pack helper - converts double-precision coefficients to the tightly-packed float
+// layout expected by the GPU shaders. dst must point to at least
+// md_gto_gpu_coeff_size_mo() bytes of writable memory; the caller decides where
+// that memory comes from (heap, temp arena, staging bump cpu_ptr, ...).
+// Row-major [num_mos x num_cgtos]; mo_scales may be NULL (defaults to 1.0).
 void md_gto_gpu_coeff_pack_mo(float* dst, const double* const* mo_coeffs, const double* mo_scales, size_t num_mos, size_t num_cgtos);
 
 // Uploading coefficients no longer needs a helper: reserve the bytes, pack in
@@ -476,15 +470,15 @@ typedef enum md_gto_gpu_density_algo_t {
 // gemm_main: D and |D| times the AO channels, 64 x 256 tiles) on the core, staged, with a strided column map, |A|
 // column slots and full chunks unrolled (gemm_main's inner loop, beside it: MD_TOPO_GTO_GEMM=own). r12: the topology
 // GEMM's own loop retired (RTX 3080: the core's 115 registers to its 127, the GEMM's time the same or 5% less, the
-// critical points and edges bit for bit the same on every dataset of md_topo_gto_bench).
-#define MD_GTO_GPU_GEMM_CORE_REVISION "gemm-core r12 (a template: density, orbitals, ELF/LOL, dmat tiles on float chunks; the isosurface tiled, wide and D-form GEMMs staged, on float4 chunks read as float4s and written by float4 and component; the topology sweep's D and |D| GEMM staged, strided columns; D_b gather r2: the flat triangle)"
+// critical points and edges bit for bit the same on every dataset of md_topo_gto_bench). r13: D only from a dmat's tiles
+// (the packed triangle and the branch between the two gone from gto_d).
+#define MD_GTO_GPU_GEMM_CORE_REVISION "gemm-core r13 (a template: density, orbitals, ELF/LOL, dmat tiles on float chunks; the isosurface tiled, wide and D-form GEMMs staged, on float4 chunks read as float4s and written by float4 and component; the topology sweep's D and |D| GEMM staged, strided columns; D_b gather r2: the flat triangle; D from tiles only)"
 
 // Unified descriptor struct for density evaluation.
 typedef struct md_gto_gpu_density_desc_t {
 	md_gto_gpu_basis_t basis;
     md_gpu_addr_t    atom_xyz;
-    md_gpu_addr_t    coeff;       // packed upper-triangular D, or 0 with dmat
-    md_gto_gpu_dmat_t dmat;       // D in tiles instead of coeff (made with the cutoff of basis)
+    md_gto_gpu_dmat_t dmat;       // D in tiles (made with the cutoff of basis, or a tighter one): the only form it takes
     md_gpu_texture_t out_tex;     // needs MD_GPU_TEX_STORAGE; mip 0 is written
     // Optional: the gradient of the density too (xyz, per bohr; w 0), RGBA32_FLOAT with MD_GPU_TEX_STORAGE, taken by
     // op as the value is (md_gto_gpu_gradient_pack makes normals of it). The evaluation then takes ELF's two passes
@@ -515,8 +509,7 @@ typedef struct md_gto_gpu_density_desc_t {
 
 // Issue an electron density evaluation into `stream`.
 // atom_xyz must contain packed float4 atom positions (xyz in Bohr).
-// coeff must contain packed upper-triangular float coefficients
-// (md_gto_gpu_coeff_pack_density into md_gpu_upload_begin's pointer), or dmat be set.
+// dmat must be set: D in tiles (md_gto_gpu_dmat_upload of the host's, or built on the device).
 // Uploads issued earlier into the same stream are visible by program order.
 void md_gto_gpu_density_launch(md_gpu_stream_t stream, const md_gto_gpu_density_desc_t* desc);
 
@@ -583,9 +576,8 @@ typedef struct md_gto_gpu_localization_desc_t {
     md_gto_gpu_basis_t basis;
     md_gpu_addr_t      atom_xyz;      // packed float4, bohr
     // num_spins 1: [0] the total density of a closed shell (taken as two equal spins); 2: [0] alpha, [1] beta.
-    // Each a packed upper-triangular D (md_gto_gpu_coeff_pack_density) or a dmat; both of one kind.
+    // Each in tiles (md_gto_gpu_dmat), of one pattern.
     uint32_t           num_spins;
-    md_gpu_addr_t      coeff[2];
     md_gto_gpu_dmat_t  dmat[2];
     md_gto_gpu_localization_t kind;
     double             rho_min;       // where rho (both spins) is below it, 0 (md_qm_elf)

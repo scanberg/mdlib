@@ -686,15 +686,14 @@ UTEST(gto, density_gpu_algorithms_agree) {
     md_gto_gpu_basis_t gb = md_gto_gpu_basis_create(stream, &(md_gto_gpu_basis_desc_t){ .basis = &basis, .cutoff = 1.0e-6 });
     ASSERT_TRUE(gb != NULL);
     md_gpu_addr_t atoms = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, md_gto_gpu_atom_buffer_size(num_atoms)).gpu;
-    md_gpu_addr_t coeff = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, md_gto_gpu_coeff_size_density(num_ao)).gpu;
     {
         float* p = (float*)md_gpu_upload_begin(stream, atoms, md_gto_gpu_atom_buffer_size(num_atoms));
         md_gto_gpu_atom_pack(p, atom_xyz, 0, num_atoms);
         md_gpu_upload_end(stream);
-        p = (float*)md_gpu_upload_begin(stream, coeff, md_gto_gpu_coeff_size_density(num_ao));
-        md_gto_gpu_coeff_pack_density(p, D, num_ao);
-        md_gpu_upload_end(stream);
     }
+    // the whole matrix in tiles (every pair kept): the density as the matrix gives it
+    md_gto_gpu_dmat_t dmw = qm_test_gpu_dmat_from_matrix(stream, &basis, atom_xyz, 0, D, 1.0e-300, 1.0e6);
+    ASSERT_TRUE(dmw != NULL);
 
     // A grid that is not a multiple of 8 on any axis, around the molecule.
     const int gd[3] = { 37, 29, 34 };
@@ -730,7 +729,7 @@ UTEST(gto, density_gpu_algorithms_agree) {
     }
     {
         md_gto_gpu_density_desc_t desc = {
-            .basis = gb, .atom_xyz = atoms, .coeff = coeff, .out_tex = tex, .grid = &grid,
+            .basis = gb, .atom_xyz = atoms, .dmat = dmw, .out_tex = tex, .grid = &grid,
             .sample_offset = {0.5f, 0.5f, 0.5f}, .op = MD_GTO_OP_SET,
             .scratch_bytes = 256 * 1024,   // force several GEMM batches
         };
@@ -749,7 +748,7 @@ UTEST(gto, density_gpu_algorithms_agree) {
     const int32_t  sns[2] = { -1, 20 };
     for (int im = 0; im < 2; ++im) for (int is = 0; is < 2; ++is) {
         md_gto_gpu_density_desc_t desc = {
-            .basis = gb, .atom_xyz = atoms, .coeff = coeff, .out_tex = tex, .grid = &grid,
+            .basis = gb, .atom_xyz = atoms, .dmat = dmw, .out_tex = tex, .grid = &grid,
             .sample_offset = {0.5f, 0.5f, 0.5f}, .op = MD_GTO_OP_SET, .algorithm = MD_GTO_GPU_DENSITY_ALGO_GEMM,
             .scratch_bytes = 256 * 1024,
             .gemm_tile = gms[im], .gemm_small_block = sns[is],
@@ -765,7 +764,7 @@ UTEST(gto, density_gpu_algorithms_agree) {
 
     md_gpu_free(stream, rb.gpu);
     md_gpu_texture_destroy(tex);
-    md_gpu_free(stream, coeff);
+    md_gto_gpu_dmat_destroy(stream, dmw);
     md_gpu_free(stream, atoms);
     md_gto_gpu_basis_destroy(stream, gb);
     md_gpu_stream_sync(stream);
@@ -991,7 +990,6 @@ UTEST(gto, gradients_gpu_match_cpu) {
     ASSERT_TRUE(gb != NULL);
     md_gpu_addr_t atoms   = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, md_gto_gpu_atom_buffer_size(num_atoms)).gpu;
     md_gpu_addr_t coeff   = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, md_gto_gpu_coeff_size_mo(num_mo, num_ao)).gpu;
-    md_gpu_addr_t dcoeff  = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, md_gto_gpu_coeff_size_density(num_ao)).gpu;
     md_gpu_addr_t weights = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, sizeof(float) * num_mo).gpu;
     float w[8];
     for (size_t m = 0; m < num_mo; ++m) w[m] = (m & 1) ? -0.5f : 1.0f + 0.1f * (float)m;
@@ -1002,11 +1000,11 @@ UTEST(gto, gradients_gpu_match_cpu) {
         p = (float*)md_gpu_upload_begin(stream, coeff, md_gto_gpu_coeff_size_mo(num_mo, num_ao));
         md_gto_gpu_coeff_pack_mo(p, (const double* const*)mo, NULL, num_mo, num_ao);
         md_gpu_upload_end(stream);
-        p = (float*)md_gpu_upload_begin(stream, dcoeff, md_gto_gpu_coeff_size_density(num_ao));
-        md_gto_gpu_coeff_pack_density(p, D, num_ao);
-        md_gpu_upload_end(stream);
         md_gpu_upload(stream, weights, w, sizeof(float) * num_mo);
     }
+    // the whole density matrix in tiles (every pair kept)
+    md_gto_gpu_dmat_t dmw = qm_test_gpu_dmat_from_matrix(stream, &basis, atom_xyz, 0, D, 1.0e-300, 1.0e6);
+    ASSERT_TRUE(dmw != NULL);
 
     const int gd[3] = { 37, 29, 34 };
     md_grid_t grid = {
@@ -1153,7 +1151,7 @@ UTEST(gto, gradients_gpu_match_cpu) {
             gto_test_poison(stream, tex, nan_buf, num_vox);
             gto_test_poison(stream, gtex, nan_buf, 4 * num_vox);
             md_gto_gpu_density_desc_t dd = {
-                .basis = gb, .atom_xyz = atoms, .coeff = job == 2 ? 0 : dcoeff, .dmat = job == 2 ? dm : NULL,
+                .basis = gb, .atom_xyz = atoms, .dmat = job == 2 ? dm : dmw,
                 .out_tex = tex, .out_grad = gtex, .grid = &grid,
                 .sample_offset = {0.5f, 0.5f, 0.5f}, .op = MD_GTO_OP_SET, .scratch_bytes = 256 * 1024,
             };
@@ -1224,7 +1222,7 @@ UTEST(gto, gradients_gpu_match_cpu) {
     md_gpu_texture_destroy(gtex);
     md_gpu_texture_destroy(tex);
     md_gpu_free(stream, weights);
-    md_gpu_free(stream, dcoeff);
+    md_gto_gpu_dmat_destroy(stream, dmw);
     md_gpu_free(stream, coeff);
     md_gpu_free(stream, atoms);
     md_gto_gpu_basis_destroy(stream, gb);

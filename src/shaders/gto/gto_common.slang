@@ -68,13 +68,6 @@ float gto_monomial(float3 d, uint ijk) {
     return fx * fy * fz;
 }
 
-// Packed upper-triangular index for a symmetric N x N matrix.
-uint gto_tri_index(uint i, uint j, uint N) {
-    uint row = min(i, j);
-    uint col = max(i, j);
-    return row * (2u * N - row + 1u) / 2u + (col - row);
-}
-
 #include "gto_dmat_common.slang"
 
 float gto_apply_op(float value, float prev, uint operation) {

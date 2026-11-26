@@ -261,8 +261,8 @@ void phi_grad_main(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
 // Pass 1b (d_mode 1): gather D_b once per block
 // ---------------------------------------------------------------------------
 // D_b[i][j] = D[ao_list[i]][ao_list[j]] for i >= j (the only part the GEMM pass reads),
-// so that the GEMM pass streams it with coalesced loads instead of gathering from the
-// packed global triangle in each of its groups per block.
+// so that the GEMM pass streams it with coalesced loads instead of gathering from D's
+// tiles in each of its groups per block.
 //
 // The triangle's n (n + 1) / 2 entries in row order, 256 a round: every thread busy and the rounds independent (r2;
 // r1 went row by row, i + 1 threads of 256 on row i and n dependent rounds: 10.8 ms of the density's 74 on a protein,

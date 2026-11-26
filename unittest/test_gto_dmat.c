@@ -1,16 +1,16 @@
 // md_gto_gpu_dmat: a density matrix in tiles of the AO pairs that meet, built on the GPU from orbitals or
 // filled from a matrix, and evaluated by md_gto_gpu_density_launch.
 //
-//   gto_dmat.density_matches_packed   h2o and mol: the volume through a dmat (from the orbitals, and from
-//                                     the matrix) against the packed matrix
+//   gto_dmat.density_matches_whole   h2o and mol: the volume through a dmat (from the orbitals, and from
+//                                     the matrix) against the whole matrix's tiles
 //   gto_dmat.matches_cpu_tiles        h2o and mol: the volume through a dmat built on the GPU (float) against the
 //                                     CPU's tiles (md_gto_dmat_t, double) at the voxel centres, the same pattern
 //   gto_dmat.pattern_follows_motion   the pattern holds within margin / 2 and not beyond
 //   gto_dmat.density_job_matches_launch  mol: md_gto_gpu_density_job_begin, polled, bitwise the launch (the dmat
-//                                     and the packed matrix); a job ended before it is issued writes nothing
+//                                     and the whole matrix's tiles); a job ended before it is issued writes nothing
 //   gto_localization.matches_cpu      ELF and LOL (md_gto_gpu_localization_launch, on the GEMM core) against
 //                                     md_qm_elf_evaluate in double at the voxels: h2o and mol (closed shells; the
-//                                     packed matrix and a dmat), the OH radical (UHF, open shell); a cube and a
+//                                     the whole matrix's tiles and a dmat), the OH radical (UHF, open shell); a cube and a
 //                                     plane; in pieces as a job, bitwise the launch
 //   gto_gpu.plane_matches_volume      a grid of one layer (blocks of 32x16x1) against the first layer of the same
 //                                     grid 8 deep (8x8x8): density, orbitals, ELF and LOL
@@ -27,7 +27,7 @@
 //                                     job's progress reaches 1, and a job dropped midway lets the stream go on
 //   gto_dmat.benchmark                GTO_DMAT_FILE=<file in test_data/vlx> (protein.h5): the pattern, the
 //                                     build per frame (packing, upload, kernel), and a sub-volume through
-//                                     the dmat against the packed matrix; GTO_DMAT_REPS (5),
+//                                     the dmat against the whole matrix's tiles; GTO_DMAT_REPS (5),
 //                                     GTO_DMAT_MARGIN (0), GTO_DMAT_GRID (32: voxels per edge, 0.4 bohr)
 
 #include "utest.h"
@@ -87,7 +87,8 @@ typedef struct dm_gpu_t {
     md_gpu_device_t    dev;
     md_gpu_stream_t    s;
     md_gto_gpu_basis_t basis;
-    md_gpu_addr_t      atoms, coeff;     // the packed matrix
+    md_gpu_addr_t      atoms;
+    md_gto_gpu_dmat_t  whole;            // the whole matrix in tiles (every tile pair): the reference
     md_gpu_texture_t   tex;
     md_gpu_mem_t       rb;
     md_grid_t          grid;
@@ -102,13 +103,10 @@ static bool dm_gpu_init(dm_gpu_t* g, const dm_src_t* s, const md_grid_t* grid) {
     md_gto_gpu_initialize(g->dev);
     g->basis = md_gto_gpu_basis_create(g->s, &(md_gto_gpu_basis_desc_t){ .basis = &s->basis, .cutoff = 1.0e-6 });
     g->atoms = md_gpu_malloc(g->s, MD_GPU_MEM_DEVICE, md_gto_gpu_atom_buffer_size(s->num_atoms)).gpu;
-    g->coeff = md_gpu_malloc(g->s, MD_GPU_MEM_DEVICE, md_gto_gpu_coeff_size_density(s->num_ao)).gpu;
-    if (!g->basis || !g->atoms || !g->coeff) return false;
+    g->whole = qm_test_gpu_dmat_from_matrix(g->s, &s->basis, s->xyz, 0, s->D, 1.0e-300, 1.0e6);
+    if (!g->basis || !g->atoms || !g->whole) return false;
     float* p = (float*)md_gpu_upload_begin(g->s, g->atoms, md_gto_gpu_atom_buffer_size(s->num_atoms));
     md_gto_gpu_atom_pack(p, s->xyz, 0, s->num_atoms);
-    md_gpu_upload_end(g->s);
-    p = (float*)md_gpu_upload_begin(g->s, g->coeff, md_gto_gpu_coeff_size_density(s->num_ao));
-    md_gto_gpu_coeff_pack_density(p, s->D, s->num_ao);
     md_gpu_upload_end(g->s);
     g->grid = *grid;
     g->num_vox = (size_t)grid->dim[0] * grid->dim[1] * grid->dim[2];
@@ -124,7 +122,7 @@ static void dm_gpu_free(dm_gpu_t* g) {
     if (g->s) {
         md_gpu_free(g->s, g->rb.gpu);
         if (g->tex) md_gpu_texture_destroy(g->tex);
-        md_gpu_free(g->s, g->coeff);
+        if (g->whole) md_gto_gpu_dmat_destroy(g->s, g->whole);
         md_gpu_free(g->s, g->atoms);
         if (g->basis) md_gto_gpu_basis_destroy(g->s, g->basis);
         md_gpu_stream_sync(g->s);
@@ -134,10 +132,10 @@ static void dm_gpu_free(dm_gpu_t* g) {
     memset(g, 0, sizeof(*g));
 }
 
-// The volume into out (num_vox floats) through the packed matrix (dmat NULL) or the dmat
+// The volume into out (num_vox floats) through the dmat, or the whole matrix's (dmat NULL)
 static double dm_eval(dm_gpu_t* g, md_gto_gpu_dmat_t dmat, float* out) {
     md_gto_gpu_density_desc_t desc = {
-        .basis = g->basis, .atom_xyz = g->atoms, .coeff = dmat ? 0 : g->coeff, .dmat = dmat, .out_tex = g->tex, .grid = &g->grid,
+        .basis = g->basis, .atom_xyz = g->atoms, .dmat = dmat ? dmat : g->whole, .out_tex = g->tex, .grid = &g->grid,
         .sample_offset = {0.5f, 0.5f, 0.5f}, .op = MD_GTO_OP_SET,
     };
     md_gpu_stream_sync(g->s);
@@ -177,7 +175,7 @@ static md_grid_t dm_grid(const dm_src_t* s, int dim, float h) {
     return grid;
 }
 
-UTEST(gto_dmat, density_matches_packed) {
+UTEST(gto_dmat, density_matches_whole) {
     static const char* files[] = {"h2o.h5", "mol.h5"};
     for (int fi = 0; fi < 2; ++fi) {
         dm_src_t s;
@@ -282,7 +280,7 @@ UTEST(gto_dmat, density_job_matches_launch) {
             ASSERT_TRUE(md_gpu_copy_to_texture(g.s, g.tex, NULL, zero));
             md_gpu_free(g.s, zero);
             md_gto_gpu_density_desc_t desc = {
-                .basis = g.basis, .atom_xyz = g.atoms, .coeff = with_dmat ? 0 : g.coeff, .dmat = with_dmat ? dm : NULL, .out_tex = g.tex,
+                .basis = g.basis, .atom_xyz = g.atoms, .dmat = with_dmat ? dm : g.whole, .out_tex = g.tex,
                 .grid = &g.grid, .sample_offset = {0.5f, 0.5f, 0.5f}, .op = MD_GTO_OP_SET,
             };
             md_gto_gpu_job_t* job = md_gto_gpu_density_job_begin(g.s, &desc);
@@ -299,7 +297,7 @@ UTEST(gto_dmat, density_job_matches_launch) {
             double ref_max = 0.0;
             const double rel = dm_rel_diff(out, ref, g.num_vox, &ref_max);
             printf("  %s: issued after %d polls, %zu of %zu voxels differ from the launch, max |diff| / max |rho| = %.2e\n",
-                   with_dmat ? "dmat  " : "packed", polls, differ, g.num_vox, rel);
+                   with_dmat ? "dmat  " : "whole ", polls, differ, g.num_vox, rel);
             EXPECT_EQ(differ, (size_t)0);
         }
     }
@@ -340,7 +338,7 @@ UTEST(gto_dmat, density_pieces_match_launch) {
     for (int with_dmat = 0; with_dmat < 2; ++with_dmat) {
         dm_eval(&g, with_dmat ? dm : NULL, ref);
         md_gto_gpu_density_desc_t desc = {
-            .basis = g.basis, .atom_xyz = g.atoms, .coeff = with_dmat ? 0 : g.coeff, .dmat = with_dmat ? dm : NULL, .out_tex = g.tex,
+            .basis = g.basis, .atom_xyz = g.atoms, .dmat = with_dmat ? dm : g.whole, .out_tex = g.tex,
             .grid = &g.grid, .sample_offset = {0.5f, 0.5f, 0.5f}, .op = MD_GTO_OP_SET, .algorithm = MD_GTO_GPU_DENSITY_ALGO_GEMM,
             .piece_work = piece_work,
         };
@@ -374,7 +372,7 @@ UTEST(gto_dmat, density_pieces_match_launch) {
             size_t differ = 0;
             for (size_t i = 0; i < g.num_vox; ++i) differ += memcmp(&out[i], &ref[i], sizeof(float)) != 0;
             printf("  %s, %s: %d polls, progress %.3f, %zu of %zu voxels differ from the launch in one piece\n",
-                   with_dmat ? "dmat  " : "packed", as_job ? "job   " : "launch", polls, progress, differ, g.num_vox);
+                   with_dmat ? "dmat  " : "whole ", as_job ? "job   " : "launch", polls, progress, differ, g.num_vox);
             EXPECT_EQ(differ, (size_t)0);
             if (as_job) {
                 EXPECT_GT(polls, 0);    // more pieces than are kept in flight
@@ -539,9 +537,9 @@ UTEST(gto_dmat, benchmark) {
     md_gto_gpu_dmat_info_t info;
     md_gto_gpu_dmat_info(&info, dm);
     printf("  md_gto_gpu_dmat %s\n", info.revision);
-    printf("  pattern: %zu of %zu tile pairs (%.1f%%), %.1f MB on the device (the packed triangle: %.1f MB); made in %.3f s\n",
+    printf("  pattern: %zu of %zu tile pairs (%.1f%%), %.1f MB on the device (the whole matrix's: %.1f MB); made in %.3f s\n",
            info.num_tiles, info.num_tiles_total, 100.0 * (double)info.num_tiles / (double)info.num_tiles_total, (double)info.bytes / 1e6,
-           (double)md_gto_gpu_coeff_size_density(s.num_ao) / 1e6, t_create);
+           4.0 * 256.0 * (double)info.num_tiles_total / 1e6, t_create);
 
     // the build per frame: host (packing and upload) and the kernel, separately
     double tb[64], tk[64];
@@ -574,7 +572,7 @@ UTEST(gto_dmat, benchmark) {
         md_gto_dmat_free(&ht);
     }
 
-    // a sub-volume around the centre, the packed matrix against the dmat (from the orbitals)
+    // a sub-volume around the centre, the whole matrix's tiles against the dmat (from the orbitals)
     ASSERT_TRUE(md_gto_gpu_dmat_build(g.s, dm, s.rows, s.w, s.num_mo));
     float* ref = (float*)malloc(sizeof(float) * g.num_vox);
     float* out = (float*)malloc(sizeof(float) * g.num_vox);
@@ -584,7 +582,7 @@ UTEST(gto_dmat, benchmark) {
     td = fmin(td, dm_eval(&g, dm, out));
     double ref_max = 0.0;
     const double rel = dm_rel_diff(out, ref, g.num_vox, &ref_max);
-    printf("  %d^3 voxels of 0.4 bohr (GEMM): packed %.1f ms, dmat %.1f ms; max |diff| / max |rho| = %.2e (max %.3g)\n",
+    printf("  %d^3 voxels of 0.4 bohr (GEMM): whole %.1f ms, dmat %.1f ms; max |diff| / max |rho| = %.2e (max %.3g)\n",
            gdim, tp * 1e3, td * 1e3, rel, ref_max);
     EXPECT_LT(rel, 1.0e-4);
     free(out); free(ref);
@@ -653,7 +651,7 @@ static void loc_free(loc_src_t* s) {
     qm_test_free(&s->t);
 }
 
-// ELF (kind ELF) or LOL into out at the grid's voxel centres, by the kernel, from the packed matrices or dmats
+// ELF (kind ELF) or LOL into out at the grid's voxel centres, by the kernel, from the whole matrices' tiles or those at its cutoff
 static double loc_d_min = 0.0;   // the d_min the kernel is launched with (md_qm_elf; 0: none)
 static uint64_t loc_piece_work = 0;  // the work of a submission (0: the default)
 static bool loc_as_job = false;      // as a job (md_gto_gpu_localization_job_begin), polled without waiting
@@ -675,17 +673,9 @@ static bool loc_eval_gpu(float* out, const loc_src_t* s, const md_grid_t* grid, 
         .basis = basis, .atom_xyz = atoms, .num_spins = (uint32_t)s->num_spins, .kind = kind, .rho_min = rho_min,
         .d_min = loc_d_min, .grid = grid, .sample_offset = {0.5f, 0.5f, 0.5f}, .piece_work = loc_piece_work,
     };
-    md_gpu_addr_t coeff[2] = {0, 0};
-    for (int k = 0; k < s->num_spins; ++k) {
-        if (use_dmat) {
-            desc.dmat[k] = qm_test_gpu_dmat_from_matrix(st, &s->basis, s->xyz, 0, s->D[k], cutoff, 0.0);
-        } else {
-            coeff[k] = md_gpu_malloc(st, MD_GPU_MEM_DEVICE, md_gto_gpu_coeff_size_density(s->num_ao)).gpu;
-            p = (float*)md_gpu_upload_begin(st, coeff[k], md_gto_gpu_coeff_size_density(s->num_ao));
-            md_gto_gpu_coeff_pack_density(p, s->D[k], s->num_ao);
-            md_gpu_upload_end(st);
-            desc.coeff[k] = coeff[k];
-        }
+    for (int k = 0; k < s->num_spins; ++k) {   // the tiles at the kernel's cutoff, or the whole matrix's
+        desc.dmat[k] = use_dmat ? qm_test_gpu_dmat_from_matrix(st, &s->basis, s->xyz, 0, s->D[k], cutoff, 0.0)
+                                : qm_test_gpu_dmat_from_matrix(st, &s->basis, s->xyz, 0, s->D[k], 1.0e-300, 1.0e6);
     }
     const size_t n = (size_t)grid->dim[0] * grid->dim[1] * grid->dim[2];
     desc.out_tex = md_gpu_texture_create(st, &(md_gpu_texture_desc_t){
@@ -728,7 +718,6 @@ static bool loc_eval_gpu(float* out, const loc_src_t* s, const md_grid_t* grid, 
     md_gpu_free(st, rb.gpu);
     if (desc.out_tex) md_gpu_texture_destroy(desc.out_tex);
     for (int k = 0; k < 2; ++k) {
-        if (coeff[k]) md_gpu_free(st, coeff[k]);
         if (desc.dmat[k]) md_gto_gpu_dmat_destroy(st, desc.dmat[k]);
     }
     md_gpu_free(st, atoms);
@@ -783,7 +772,7 @@ UTEST(gto_localization, pieces_match_one_launch) {
 }
 
 // ELF and LOL by the GEMM core (Phi with gradients, a symmetric GEMM of four rows a voxel per spin, then the finish)
-// against md_qm_elf_evaluate in double: h2o and mol (closed shells; packed and dmat), the OH radical (UHF, two spins); a
+// against md_qm_elf_evaluate in double: h2o and mol (closed shells; whole and dmat), the OH radical (UHF, two spins); a
 // grid of one layer (blocks of 32x16x1); and in pieces of a few blocks as a job, bitwise the launch.
 UTEST(gto_localization, matches_cpu) {
     static const char* files[] = {"h2o.h5", "mol.h5", "oh_631gs_uhf.molden"};
@@ -848,7 +837,7 @@ UTEST(gto_localization, matches_cpu) {
                         ++nz;
                     }
                     printf("  %-20s %s %s %-6s: %zu voxels, gpu - cpu max %.2e mean %.2e; %zu at the floor, %zu unwritten; job (%d polls, progress %.3f): %zu differ\n",
-                           files[fi], plane ? "plane" : "cube ", kind ? "LOL" : "ELF", dmat ? "dmat" : "packed", nz, worst_cpu, nz ? sum_cpu / nz : 0.0,
+                           files[fi], plane ? "plane" : "cube ", kind ? "LOL" : "ELF", dmat ? "dmat " : "whole", nz, worst_cpu, nz ? sum_cpu / nz : 0.0,
                            edge, nans, polls, progress, job_differ);
                     EXPECT_EQ(nans, (size_t)0);
                     EXPECT_GT(nz, n / 20);
@@ -866,7 +855,7 @@ UTEST(gto_localization, matches_cpu) {
 }
 // A grid of one layer is evaluated in blocks of 32x16x1 voxels: what they give is the first layer of the same grid
 // eight layers deep, in blocks of 8x8x8, within the difference of what the two screen out. A turned grid at a plane's
-// spacing, as a plane's is; the density (packed and dmat), orbitals (1: shell, 4: shell of 8, 12: GEMM) and ELF, LOL.
+// spacing, as a plane's is; the density (whole and dmat), orbitals (1: shell, 4: shell of 8, 12: GEMM) and ELF, LOL.
 // With GTO_PLANE_TIMES=1, the times of one layer in 32x16x1 blocks and in 8x8x8 ones (MD_GTO_GPU_NO_2D), each a
 // second launch: on llvmpipe 5-9x faster for the density and the orbitals. Without it each grid is launched once, and
 // the one layer by the 8x8x8 kernels, which is only timed, not at all.
@@ -965,7 +954,7 @@ UTEST(gto_gpu, plane_matches_volume) {
                 for (int k = 0; k < num_k; ++k) {
                     if (k == 2) md_os_env_set("MD_GTO_GPU_NO_2D", "1");   // one layer again, by the 3D kernels: what it cost before
                     md_gto_gpu_density_desc_t d = {
-                        .basis = g.basis, .atom_xyz = g.atoms, .coeff = use_dm ? 0 : g.coeff, .dmat = use_dm ? dm : NULL,
+                        .basis = g.basis, .atom_xyz = g.atoms, .dmat = use_dm ? dm : g.whole,
                         .out_tex = k ? pp.t2 : pp.t3, .grid = k ? &pp.g2 : &pp.g3, .sample_offset = {0.5f, 0.5f, 0.5f},
                         .op = MD_GTO_OP_SET,
                     };
@@ -982,7 +971,7 @@ UTEST(gto_gpu, plane_matches_volume) {
                 }
                 if (!timed) plane_pair_read(&pp, g.s);
                 rel = plane_pair_diff(&pp, &m);
-                printf("  %-8s density, %s: max |plane - layer| / max = %.2e (max %.3g)", files[fi], use_dm ? "dmat  " : "packed", rel, m);
+                printf("  %-8s density, %s: max |plane - layer| / max = %.2e (max %.3g)", files[fi], use_dm ? "dmat  " : "whole ", rel, m);
                 if (timed) printf("; 1 layer %.1f ms (3D kernels %.1f ms)", ms[1], ms[2]);
                 printf("\n");
                 EXPECT_LT(rel, 1.0e-5);

@@ -4120,12 +4120,16 @@ static double iso_bench_dense(iso_gpu_t* g, const iso_dens_src_t* s, const md_gt
     float* p = (float*)md_gpu_upload_begin(g->s, atoms.gpu, md_gto_gpu_atom_buffer_size(s->num_atoms));
     md_gto_gpu_atom_pack(p, s->xyz, 0, s->num_atoms);
     md_gpu_upload_end(g->s);
-    const size_t cbytes = D ? md_gto_gpu_coeff_size_density(nao) : md_gto_gpu_coeff_size_mo((size_t)nfields, nao);
-    md_gpu_mem_t coeff = md_gpu_malloc(g->s, MD_GPU_MEM_DEVICE, cbytes);
-    p = (float*)md_gpu_upload_begin(g->s, coeff.gpu, cbytes);
-    if (D) md_gto_gpu_coeff_pack_density(p, D, nao);
-    else   md_gto_gpu_coeff_pack_mo(p, orb_rows, NULL, (size_t)nfields, nao);
-    md_gpu_upload_end(g->s);
+    // a density as viamd's volume takes it: its tiles at 1e-6, margin 1, uploaded; orbitals as their coefficients
+    md_gto_gpu_dmat_t dmat = D ? qm_test_gpu_dmat_from_matrix(g->s, &s->basis, s->xyz, 0, D, 1.0e-6, 1.0) : NULL;
+    const size_t cbytes = D ? 0 : md_gto_gpu_coeff_size_mo((size_t)nfields, nao);
+    md_gpu_mem_t coeff = {0};
+    if (!D) {
+        coeff = md_gpu_malloc(g->s, MD_GPU_MEM_DEVICE, cbytes);
+        p = (float*)md_gpu_upload_begin(g->s, coeff.gpu, cbytes);
+        md_gto_gpu_coeff_pack_mo(p, orb_rows, NULL, (size_t)nfields, nao);
+        md_gpu_upload_end(g->s);
+    }
     md_grid_t grid = {
         .orientation = md_float3x3_ident(),
         .origin  = md_float3_set((float)lo[0], (float)lo[1], (float)lo[2]),
@@ -4149,7 +4153,7 @@ static double iso_bench_dense(iso_gpu_t* g, const iso_dens_src_t* s, const md_gt
             md_tick_t t0 = md_tick_now();
             for (int k = 0; k < ntex; ++k) {
                 if (D) {
-                    md_gto_gpu_density_desc_t dd_ = {.basis = gb, .atom_xyz = atoms.gpu, .coeff = coeff.gpu, .out_tex = tex[k], .grid = &grid, .op = MD_GTO_OP_SET};
+                    md_gto_gpu_density_desc_t dd_ = {.basis = gb, .atom_xyz = atoms.gpu, .dmat = dmat, .out_tex = tex[k], .grid = &grid, .op = MD_GTO_OP_SET};
                     md_gto_gpu_density_launch(g->s, &dd_);
                 } else {
                     // one orbital per volume: its row of the coefficient buffer
@@ -4166,6 +4170,7 @@ static double iso_bench_dense(iso_gpu_t* g, const iso_dens_src_t* s, const md_gt
     for (int k = 0; k < ntex; ++k) if (tex[k]) md_gpu_texture_destroy(tex[k]);
     md_gpu_free(g->s, atoms.gpu);
     md_gpu_free(g->s, coeff.gpu);
+    if (dmat) md_gto_gpu_dmat_destroy(g->s, dmat);
     md_gto_gpu_basis_destroy(g->s, gb);
     return med;
 }

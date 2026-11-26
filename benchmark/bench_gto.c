@@ -4,6 +4,8 @@
 #include <md_system.h>
 #include <md_gto.h>
 #include <md_gto_iso.h>
+#include <md_gto_dmat.h>
+#include <md_qm.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_log.h>
@@ -39,7 +41,8 @@ typedef struct {
     float*          atom_xyz;   // bohr, packed
     size_t          num_atoms;
     size_t          num_ao;
-    double*         D;          // total density, [num_ao][num_ao]
+    double*         D;          // total density, [num_ao][num_ao] (the CPU reference)
+    md_gto_dmat_t   tiles;      // the same in tiles at BENCH_CUTOFF, margin 1 bohr, from the orbitals: what the GPU reads
     double*         mo;         // HOMO, [num_ao]
     int             mo_idx;
     md_grid_t       grid;
@@ -89,6 +92,19 @@ static bool bench_gto_load(bench_gto_t* b) {
     b->D  = md_arena_allocator_push(b->arena, sizeof(double) * n * n);
     b->mo = md_arena_allocator_push(b->arena, sizeof(double) * n);
     md_attribute_extract_f64(b->D, n * n, &sys.attributes, d, md_attribute_slice_all(), md_unit_none());
+
+    {   // the tiles as viamd makes them: from the occupied orbitals (md_qm_density_orbitals), in double
+        double* rows = NULL;
+        double* w = NULL;
+        size_t nao = 0;
+        const size_t nocc = md_qm_density_orbitals(&rows, &w, &nao, &sys, MD_STR_LIT("orbital/total/density"), b->arena);
+        const md_gto_dmat_desc_t td = { .basis = &b->basis, .atom_xyz = b->atom_xyz, .cutoff = BENCH_CUTOFF, .margin = 1.0 };
+        if (nocc == 0 || nao != n || !md_gto_dmat_init(&b->tiles, &td, b->arena) || !md_gto_dmat_build(&b->tiles, rows, n, 1, w, nocc, NULL)) {
+            MD_LOG_ERROR("Could not make the density's tiles");
+            bench_gto_free(b);
+            return false;
+        }
+    }
 
     // The HOMO: the last occupied orbital
     const size_t num_mo = md_attribute_value_count(&occ->format);
@@ -340,13 +356,15 @@ typedef struct {
     md_gpu_stream_t    stream;
     md_gto_gpu_basis_t basis;
     md_gpu_addr_t      atoms;
-    md_gpu_addr_t      coeff;   // sized for the density, the larger of the two packings
+    md_gpu_addr_t      coeff;   // the orbital's
+    md_gto_gpu_dmat_t  dmat;    // the density's tiles (bench_gto_t.tiles), uploaded
     md_gpu_texture_t   tex;
 } bench_gpu_t;
 
 static void bench_gpu_free(bench_gpu_t* g) {
     if (g->tex)   md_gpu_texture_destroy(g->tex);
     if (g->coeff) md_gpu_free(g->stream, g->coeff);
+    if (g->dmat)  md_gto_gpu_dmat_destroy(g->stream, g->dmat);
     if (g->atoms) md_gpu_free(g->stream, g->atoms);
     if (g->basis) md_gto_gpu_basis_destroy(g->stream, g->basis);
     if (g->stream) md_gpu_stream_sync(g->stream);
@@ -371,7 +389,7 @@ static bool bench_gpu_init(bench_gpu_t* g, const bench_gto_t* b) {
 
     const size_t atoms_size = md_gto_gpu_atom_buffer_size(b->num_atoms);
     g->atoms = md_gpu_malloc(g->stream, MD_GPU_MEM_DEVICE, atoms_size).gpu;
-    g->coeff = md_gpu_malloc(g->stream, MD_GPU_MEM_DEVICE, md_gto_gpu_coeff_size_density(num_cgtos)).gpu;
+    g->coeff = md_gpu_malloc(g->stream, MD_GPU_MEM_DEVICE, md_gto_gpu_coeff_size_mo(1, num_cgtos)).gpu;
     g->tex = md_gpu_texture_create(g->stream, &(md_gpu_texture_desc_t){
         .type = MD_GPU_TEX_3D, .format = MD_GPU_FORMAT_R32_FLOAT, .usage = MD_GPU_TEX_STORAGE,
         .width = (uint32_t)b->grid.dim[0], .height = (uint32_t)b->grid.dim[1], .depth_or_layers = (uint32_t)b->grid.dim[2],
@@ -395,10 +413,9 @@ static void bench_gpu_upload_mo(bench_gpu_t* g, const bench_gto_t* b) {
     md_gpu_upload_end(g->stream);
 }
 
-static void bench_gpu_upload_density(bench_gpu_t* g, const bench_gto_t* b) {
-    float* dst = md_gpu_upload_begin(g->stream, g->coeff, md_gto_gpu_coeff_size_density(b->num_ao));
-    md_gto_gpu_coeff_pack_density(dst, b->D, b->num_ao);
-    md_gpu_upload_end(g->stream);
+static bool bench_gpu_upload_density(bench_gpu_t* g, const bench_gto_t* b) {
+    g->dmat = md_gto_gpu_dmat_upload(g->stream, &b->tiles);
+    return g->dmat != NULL;
 }
 
 #define BENCH_GPU_MO(NAME, ALGO) \
@@ -430,9 +447,9 @@ UBENCH_EX(gto, NAME) { \
     if (!bench_gto_load(&b)) return; \
     bench_gpu_t g; \
     if (!bench_gpu_init(&g, &b)) { bench_gto_free(&b); return; } \
-    bench_gpu_upload_density(&g, &b); \
+    if (!bench_gpu_upload_density(&g, &b)) { bench_gpu_free(&g); bench_gto_free(&b); return; } \
     const md_gto_gpu_density_desc_t desc = { \
-        .basis = g.basis, .atom_xyz = g.atoms, .coeff = g.coeff, .out_tex = g.tex, .grid = &b.grid, \
+        .basis = g.basis, .atom_xyz = g.atoms, .dmat = g.dmat, .out_tex = g.tex, .grid = &b.grid, \
         .sample_offset = {0.5f, 0.5f, 0.5f}, .op = MD_GTO_OP_SET, .algorithm = ALGO, \
     }; \
     md_gto_gpu_density_launch(g.stream, &desc); \

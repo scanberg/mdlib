@@ -36,11 +36,11 @@ struct RootArgs {
     uint     num_aos;
     uint     operation;
     uint     num_blocks;        // blocks in this launch (phi/gemm), unused by count
-    uint     d_mode;            // 0: gather D from the packed triangle in the GEMM pass, 1: D_b pre-gathered by dgather_main
+    uint     d_mode;            // 0: D read from its tiles in the GEMM pass, 1: D_b pre-gathered by dgather_main
     uint     num_mos;           // orbital GEMM: number of MO rows in D_matrix (the coefficients)
     uint     mo_mode;           // orbital GEMM: 0 = psi, 1 = psi^2
     uint     has_weights;       // orbital GEMM: mo_weights is valid
-    uint     dm_tiled;          // density: D_matrix is the tile pool of a md_gto_gpu_dmat (dm_tao, dm_map)
+    uint     dm_pad;
     uint     dm_nt;             // its tiles per edge
     uint     d_spin_offset;     // floats into D_blocks of the spin being gathered and multiplied (ELF, LOL: two spins)
     uint     spin;              // ELF, LOL: the spin of this GEMM pass (its terms)
@@ -56,7 +56,7 @@ struct RootArgs {
     uint4*   shell_info;        // (prim_offset, num_prims, l, ao_offset)
     float2*  shell_prim;        // (coeff, alpha * log2(e))
     float4*  atom_xyz;
-    float*   D_matrix;          // density: packed upper triangular D, or the tile pool (dm_tiled); orbitals: MO coefficients [num_mos][num_aos]
+    float*   D_matrix;          // density: the tile pool of a md_gto_gpu_dmat (dm_tao, dm_map); orbitals: MO coefficients [num_mos][num_aos]
 
     uint2*   block_counts;      // count_main output, per grid block: (num shells, num AOs)
     uint4*   block_table;       // 2 per block in batch: (bx, by, bz, n_ao), (phi_offset, ao_offset, D_b offset, -)
@@ -64,8 +64,8 @@ struct RootArgs {
     float*   phi;               // batch scratch
     float*   D_blocks;          // batch scratch (d_mode 1): D_b, n_ao x n_ao per block, lower triangle filled
     float*   mo_weights;        // orbital GEMM: per-MO weight applied after psi / psi^2 (if has_weights)
-    uint*    dm_tao;            // dm_tiled: AO -> tiled index
-    uint*    dm_map;            // dm_tiled: tile pair -> pool entry
+    uint*    dm_tao;            // density: AO -> tiled index
+    uint*    dm_map;            // density: tile pair -> pool entry
     float*   terms;             // ELF, LOL: per spin rho, grad rho (3), tau of the batch's voxels: [spin][5][entry][512]
     DescriptorHandle<RWTexture3D<float>> out_tex;
     DescriptorHandle<RWTexture3D<float4>> out_grad;     // lol 2: the density's gradient (xyz)
@@ -82,10 +82,9 @@ uint3 block_voxel(uint p) {
     return uint3(p & (args.block_shape.x - 1u), (p >> lx) & (args.block_shape.y - 1u), p >> (lx + ly));
 }
 
-// D[i][j] of the density, packed or in tiles
+// D[i][j] of the density, from its tiles
 float gto_d(uint i, uint j) {
-    return args.dm_tiled != 0u ? gto_dmat_at(args.dm_tao, args.dm_map, args.D_matrix, args.dm_nt, i, j)
-                               : args.D_matrix[gto_tri_index(i, j, args.num_aos)];
+    return gto_dmat_at(args.dm_tao, args.dm_map, args.D_matrix, args.dm_nt, i, j);
 }
 
 #endif
