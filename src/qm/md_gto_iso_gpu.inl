@@ -16,7 +16,7 @@
 #include <gto_iso_gpu_shaders.inl>
 
 // BENCHMARK (temporary, branch gto-iso-gpu-opt): which round of changes this is, in every profile report
-#define ISOG_REVISION "r49 (a density's tiles given with its field: read where they are as the set's only matrix, else copied; r47: the D form in tiles only)"
+#define ISOG_REVISION "r50 (no factorization slack: densities as products only; r49: a density's tiles given with its field: read where they are as the set's only matrix, else copied; r47: the D form in tiles only)"
 
 typedef struct isog_shell_t {        // mirrors IsoShell
     md_gpu_float4 c;
@@ -26,7 +26,7 @@ typedef struct isog_shell_t {        // mirrors IsoShell
 
 typedef struct isog_field_t {        // mirrors IsoField
     float    iso;
-    float    slack;
+    float    _pad;
     uint32_t term_off;
     uint32_t term_count;
 } isog_field_t;
@@ -292,7 +292,6 @@ struct md_gto_iso_gpu_set_t {
     uint32_t     num_dmat;          // > 0: every field a density, as phi^T D phi: dmat (one per distinct field), fdmat
     bool         factorless;        // more functions than the factored kernels hold: the D form only
     double       d_sraw[MD_GTO_ISO_GPU_MAX_FIELDS];    // per matrix: sum of |D| (without the AO normalization)
-    float        d_slack[MD_GTO_ISO_GPU_MAX_FIELDS];   // its field's slack
     bool         d_psd[MD_GTO_ISO_GPU_MAX_FIELDS];     // positive semidefinite (every term w a^2, w >= 0)
     isog_field_t fields[MD_GTO_ISO_GPU_MAX_FIELDS];    // iso filled in per extraction
     iso_field_t  host[MD_GTO_ISO_GPU_MAX_FIELDS];         // shallow copies for the root box (their tails): the fields outlive the set
@@ -339,7 +338,7 @@ static bool isog_set_dprop(md_gpu_stream_t stream, md_gto_iso_gpu_set_t* set, do
         pr[u].x = isog_f32_up(4.0 * eps * eps * set->d_sraw[u] * (1.0 + 1.0e-6));
         pr[u].y = isog_f32_up(4.0 * eps * (1.0 + 1.0e-6));
         pr[u].z = set->d_psd[u] ? 1.0f : 0.0f;
-        pr[u].w = set->d_slack[u];
+        pr[u].w = 0.0f;
     }
     return md_gpu_upload(stream, set->dprop.gpu, pr, sizeof(md_gpu_float4) * set->num_dmat);
 }
@@ -455,8 +454,8 @@ static bool isog_hint_usable(md_gto_gpu_dmat_t hint, size_t nao, const float* at
 // density given its tiles (md_gto_iso_field_set_gpu_dmat, isog_hint_usable), and any other density's is built on the
 // device from its functions into it; with none given, a pattern of the set's own for the cutoff the extraction's AO
 // lists are for. The given tiles are read where they are when they are the set's only matrix (dm_borrowed: no copy of
-// a density in device memory), and copied into the set's pools beside others. Per field its matrix into fdm, the matrices' properties (d_psd,
-// d_slack; d_sraw with the row sums, isog_dmat_rows), and the cutoff the tiles are for (dm_eps_exp). False, with
+// a density in device memory), and copied into the set's pools beside others. Per field its matrix into fdm, the matrices' properties (d_psd;
+// d_sraw with the row sums, isog_dmat_rows), and the cutoff the tiles are for (dm_eps_exp). False, with
 // nothing kept, where md_gto cannot (md_gto_gpu_initialize not called, out of memory): the set then has no D form.
 static bool isog_dmat_tiles(md_gto_iso_gpu_set_t* set, md_gpu_stream_t stream, const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
                             const md_gto_iso_field_t* const* fields, uint32_t num_fields, const int* first_of, uint32_t* fdm, uint32_t num_dmat) {
@@ -495,7 +494,6 @@ static bool isog_dmat_tiles(md_gto_iso_gpu_set_t* set, md_gpu_stream_t stream, c
         set->dm_map.gpu = vh.map;
         set->dm_borrowed = true;
         set->d_psd[0] = isog_density_psd(fields[k0]->f.dens);
-        set->d_slack[0] = isog_f32_up(fields[k0]->f.dens->slack);
         set->dm_nt = vh.nt;
         set->dm_pool = (uint32_t)pool;
         set->dm_eps_exp = eps_exp;
@@ -533,7 +531,6 @@ static bool isog_dmat_tiles(md_gto_iso_gpu_set_t* set, md_gpu_stream_t stream, c
             ok = ok && md_gpu_copy(stream, set->dmat.gpu + sizeof(float) * pool * u, v.tiles, sizeof(float) * pool);
         }
         set->d_psd[u] = isog_density_psd(d);
-        set->d_slack[u] = isog_f32_up(d->slack);
         fdm[k] = u++;
     }
     if (dm) md_gto_gpu_dmat_destroy(stream, dm);    // stream-ordered: after the copies
@@ -609,7 +606,6 @@ typedef struct isog_comp_build_t {
     iso_term_t* terms;
     uint32_t    num_terms;
     uint32_t    term_off[MD_GTO_ISO_GPU_MAX_FIELDS], term_count[MD_GTO_ISO_GPU_MAX_FIELDS];
-    double      slack[MD_GTO_ISO_GPU_MAX_FIELDS];
 } isog_comp_build_t;
 
 static void isog_comp_free(isog_comp_build_t* cb) {
@@ -633,7 +629,6 @@ static const char* isog_comp_layout(isog_comp_build_t* cb, const iso_composite_t
         const iso_density_t* t = c->tau[s]->dens;
         if ((uint32_t)r->num_ao != nar || (uint32_t)t->num_ao != nat || r->num_ao_shells != r0->num_ao_shells || t->num_ao_shells != t0->num_ao_shells)
             return "the spins' densities are over different bases";
-        if (c->kind == ISO_COMP_ELF && (r->slack != 0.0 || t->slack != 0.0)) return "a density with a factorization's slack (ELF takes products)";
     }
     const uint32_t K = c->kind == ISO_COMP_ELF ? 5u : 2u;
     cb->num_fields = 1u + K * (uint32_t)c->num_spins;
@@ -662,7 +657,7 @@ static const char* isog_comp_layout(isog_comp_build_t* cb, const iso_composite_t
     // column j over the union from function fn of density d, whose AOs start at row ao0
     #define ISOG_COL(j, d, fn, ao0) do { for (int i_ = 0; i_ < (d)->num_ao; ++i_) cb->C[(size_t)((ao0) + i_) * ncol + (j)] = (d)->C[(size_t)i_ * (d)->num_fn + (fn)]; } while (0)
     uint32_t col = 0, nt = 0;
-    cb->term_off[0] = 0; cb->term_count[0] = 0; cb->slack[0] = 0.0;
+    cb->term_off[0] = 0; cb->term_count[0] = 0;
     for (int s = 0; s < c->num_spins; ++s) {
         const iso_density_t* r = c->rho[s]->dens;
         const iso_density_t* t = c->tau[s]->dens;
@@ -687,7 +682,6 @@ static const char* isog_comp_layout(isog_comp_build_t* cb, const iso_composite_t
                     else cb->terms[nt++] = (iso_term_t){2.0 * w, c0 + 2 * (int)(p - 2), c0 + 2 * (int)(p - 2) + 1};
                 }
                 cb->term_count[f + p] = nt - cb->term_off[f + p];
-                cb->slack[f + p] = 0.0;
             }
         } else {
             const iso_density_t* part[2] = {r, t};
@@ -701,7 +695,6 @@ static const char* isog_comp_layout(isog_comp_build_t* cb, const iso_composite_t
                     cb->terms[nt++] = (iso_term_t){tm->w, (int)col + tm->a, tm->b < 0 ? -1 : (int)col + tm->b};
                 }
                 cb->term_count[f + p] = nt - cb->term_off[f + p];
-                cb->slack[f + p] = d->slack;
                 col += (uint32_t)d->num_fn;
             }
         }
@@ -771,7 +764,6 @@ static const char* isog_set_build(md_gto_iso_gpu_set_t* set, md_gpu_stream_t str
                 terms[nt++] = g;
             }
             set->fields[k].term_count = cb->term_count[k];
-            set->fields[k].slack = isog_f32_up(cb->slack[k]);
         }
         f0 = cb->ncol;
     }
@@ -783,7 +775,7 @@ static const char* isog_set_build(md_gto_iso_gpu_set_t* set, md_gpu_stream_t str
         f0 = (f0 + align) & ~align;
         set->fields[k].term_off = (uint32_t)nt;
         if (fk->f.dens && factorless) {
-            set->fields[k].slack = isog_f32_up(fk->f.dens->slack);    // no functions, no terms
+            // no functions, no terms
         } else if (fk->f.dens) {
             const iso_density_t* d = fk->f.dens;
             for (uint32_t i = 0; i < nao; ++i) for (int j = 0; j < d->num_fn; ++j) C[(size_t)i * stride + f0 + j] = (float)d->C[(size_t)i * d->num_fn + j];
@@ -793,7 +785,6 @@ static const char* isog_set_build(md_gto_iso_gpu_set_t* set, md_gpu_stream_t str
                 if (tm->b >= 0 && (g.a / 64u) != (g.b / 64u)) return "a pair term spans two tiles of 64 functions";   // the epilogue sees one tile
                 terms[nt++] = g;
             }
-            set->fields[k].slack = isog_f32_up(d->slack);
             f0 += (uint32_t)d->num_fn;
         } else {
             for (uint32_t i = 0; i < nao; ++i) C[(size_t)i * stride + f0] = (float)fk->coeff[i];
@@ -2435,8 +2426,8 @@ md_gto_iso_gpu_job_t* md_gto_iso_gpu_job_begin(md_gpu_stream_t s, const md_gto_i
     a->lambda     = 0.5f;
     a->tol        = (float)(pow(10.0, -(double)ISOG_NEWTON_TOL_EXP) * h);
     j->cdform = a->dform != 0;      // the corners in the D form with it
-    // the D form's octree bounds the matrix's density, within the factors' slack of what the factored
-    // evaluation gives (the slack is in the bound): either evaluation goes with it
+    // the D form's octree bounds the density its tiles hold, the one the factored evaluation gives (built
+    // from the same products, or given as the same density): either evaluation goes with it
     j->odform = set->num_dmat > 0;
     // APPROXIMATE: seed and flood (GTO_ISO_FLOOD): every field (2), or sets of densities whose maxima are at
     // the atoms (md_gto_iso_field_set_maxima_at_atoms) and whose every weight is >= 0 (1): each piece of their

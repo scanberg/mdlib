@@ -34,7 +34,6 @@
 #include <core/md_allocator.h>
 #include <core/md_format.h>
 #include <core/md_array.h>
-#include <core/md_linalg.h>
 #include <core/md_log.h>
 #include <core/md_os.h>
 
@@ -740,13 +739,9 @@ static void iso_enclose(iso_encl_t* out, const iso_field_t* f, const int* active
 //
 //   * an SCF density is sum_i n_i psi_i^2 over its occupied MOs: no decomposition at all,
 //   * the transition density of an excitation is sum_k s_k h_k p_k over its NTO pairs, and its
-//     attachment / detachment densities are sums of squares of the same NTOs,
-//   * a matrix alone (relaxed or difference densities, densities read from a file) is factored
-//     here: pivoted LDL^T (pivoted Cholesky for a semidefinite D; its factors are localized, which
-//     keeps the per-function bounds tight and lets the octree drop them away from where they live),
-//     falling back to an eigendecomposition when an indefinite D makes 1x1 pivots unstable. The
-//     residual of the factorization is bounded once, sum_ij |R_ij| max|phi_i| max|phi_j|, and added
-//     to every bound, so a factored matrix is enclosed as rigorously as the products are.
+//     attachment / detachment densities are sums of squares of the same NTOs (or the factor sets
+//     md_qm_density_factors reads),
+//   * a matrix alone is not taken: a density arrives as the factors it is made of.
 //
 // Point values come from the AOs (once per point) and the functions' AO coefficients, so the cost
 // per point is the AO evaluation plus num_ao x num_functions multiply-adds.
@@ -763,12 +758,6 @@ typedef struct iso_ao_shell_t {     // one contracted shell of the basis, for po
     double r2_cut;                  // every AO of the shell below ISO_EVAL_EPS beyond this
 } iso_ao_shell_t;
 
-enum {
-    ISO_FACTOR_NONE = 0,            // products given by the caller
-    ISO_FACTOR_LDL,                 // pivoted LDL^T of a matrix
-    ISO_FACTOR_EIGEN,               // eigendecomposition of a matrix
-};
-
 typedef struct iso_density_t {
     int             num_fn, num_terms, num_ao, num_ao_shells;
     iso_term_t*     terms;
@@ -776,8 +765,6 @@ typedef struct iso_density_t {
     double*         Cabs;           // |C|
     iso_ao_shell_t* ao_shells;
     iso_field_t     radial;         // one group per basis shell: its contracted radial function (ncart 1)
-    double          slack;          // added to every bound: the factorization residual, if any
-    int             factor;         // ISO_FACTOR_*
 } iso_density_t;
 
 #define ISO_DENSITY_STACK_FN 256
@@ -947,7 +934,7 @@ static bool iso_density_build_groups = false;
 // A density field from num_fn functions (rows of num_ao AO coefficients) and terms over them.
 // The groups are ordered by site, so a box is set up once per site and shared by its functions.
 static bool iso_field_init_density(iso_field_t* f, const md_gto_basis_t* basis, const float* atom_xyz, size_t num_atoms,
-                                   const double* rows, int num_fn, const iso_term_t* terms, int num_terms, double slack, int factor, const char* name) {
+                                   const double* rows, int num_fn, const iso_term_t* terms, int num_terms, const char* name) {
     memset(f, 0, sizeof(*f));
     md_snprintf(f->name, sizeof(f->name), "%s", name);
     md_allocator_i* heap = md_get_heap_allocator();
@@ -964,8 +951,6 @@ static bool iso_field_init_density(iso_field_t* f, const md_gto_basis_t* basis, 
     f->dens = d;
     d->num_fn = num_fn;
     d->num_terms = num_terms;
-    d->slack = slack;
-    d->factor = factor;
     d->terms = (iso_term_t*)malloc(sizeof(iso_term_t) * (num_terms + 1));
     memcpy(d->terms, terms, sizeof(iso_term_t) * num_terms);
     if (!iso_density_ao_shells(d, basis, atom_xyz, NULL)) return false;
@@ -1129,136 +1114,9 @@ static double iso_density_tail(const iso_field_t* f, double r, iso_tail_t* tl) {
         const double* g = tl->G + (size_t)u * nf;
         for (int fi = 0; fi < nf; ++fi) fn_tail[fi] += g[fi] * tu;
     }
-    double t = d->slack;
+    double t = 0.0;
     for (int k = 0; k < d->num_terms; ++k) t += fabs(d->terms[k].w) * fn_tail[d->terms[k].a] * (d->terms[k].b < 0 ? 1.0 : fn_tail[d->terms[k].b]);
     return t;
-}
-
-// ---------------------------------------------------------------------------------------------
-// Splitting a symmetric matrix into signed squares: S = sum_k l_k c_k c_k^T + R
-// ---------------------------------------------------------------------------------------------
-
-// Pivoted LDL^T with 1x1 pivots, the largest |residual diagonal| first, until every residual diagonal
-// is at rounding level. For a semidefinite S this is pivoted Cholesky. F[i * n + k] = c_k[i].
-// Returns the number of factors, or -1 when the factors grow (an indefinite S that 1x1 pivots
-// cannot handle, such as the symmetric part of a transition density with a zero diagonal block).
-static int iso_factor_ldl(const double* S, int n, double* F, double* lam) {
-    const double u = 0.5 * DBL_EPSILON;
-    double dmax = 0.0, smax = 0.0;
-    for (int i = 0; i < n; ++i) dmax = fmax(dmax, fabs(S[(size_t)i * n + i]));
-    for (size_t i = 0; i < (size_t)n * n; ++i) smax = fmax(smax, fabs(S[i]));
-    if (!(smax > 0.0)) return 0;
-    const double tol = 64.0 * n * u * fmax(dmax, smax);
-    double* d = (double*)malloc(sizeof(double) * n);
-    double* w = (double*)malloc(sizeof(double) * n);
-    bool* used = (bool*)calloc(n, sizeof(bool));
-    for (int i = 0; i < n; ++i) d[i] = S[(size_t)i * n + i];
-    int r = 0;
-    bool grew = false;
-    for (;;) {
-        int p = -1;
-        double best = tol;
-        for (int i = 0; i < n; ++i) if (!used[i] && fabs(d[i]) > best) { best = fabs(d[i]); p = i; }
-        if (p < 0) break;
-        const double* fp = F + (size_t)p * n;
-        for (int k = 0; k < r; ++k) w[k] = lam[k] * fp[k];
-        double dp = S[(size_t)p * n + p];
-        for (int k = 0; k < r; ++k) dp -= w[k] * fp[k];
-        used[p] = true;
-        d[p] = 0.0;
-        if (!(fabs(dp) > tol)) continue;
-        for (int i = 0; i < n; ++i) {
-            double* fi = F + (size_t)i * n;
-            if (i == p) { fi[r] = 1.0; continue; }
-            if (used[i]) { fi[r] = 0.0; continue; }
-            double v = S[(size_t)i * n + p];
-            for (int k = 0; k < r; ++k) v -= w[k] * fi[k];
-            fi[r] = v / dp;
-            if (fabs(fi[r]) > 1.0e3) grew = true;
-            d[i] -= dp * fi[r] * fi[r];
-        }
-        lam[r++] = dp;
-        if (grew) break;
-    }
-    free(used); free(w); free(d);
-    return grew ? -1 : r;
-}
-
-// max |R_ij| and sum_ij |R_ij| max|phi_i| max|phi_j| of R = S - sum_k l_k c_k c_k^T.
-static double iso_factor_residual(const double* S, int n, const double* F, const double* lam, int r, const double* ao_max, double* out_rmax) {
-    double slack = 0.0, rmax = 0.0;
-    double* w = (double*)malloc(sizeof(double) * (r + 1));
-    for (int i = 0; i < n; ++i) {
-        const double* fi = F + (size_t)i * n;
-        for (int k = 0; k < r; ++k) w[k] = lam[k] * fi[k];
-        for (int j = 0; j < n; ++j) {
-            const double* fj = F + (size_t)j * n;
-            double v = S[(size_t)i * n + j];
-            for (int k = 0; k < r; ++k) v -= w[k] * fj[k];
-            rmax = fmax(rmax, fabs(v));
-            slack += fabs(v) * ao_max[i] * ao_max[j];
-        }
-    }
-    free(w);
-    *out_rmax = rmax;
-    return slack;
-}
-
-// Splits D (any n x n; its symmetric part is what a density sees) into r signed squares.
-// rows: r x n factor rows (allocated), weights: r. Returns r (0: D is zero), and the rigorous
-// residual bound sum_ij |R_ij| max|phi_i| max|phi_j| through out_slack.
-static int iso_factor_density(const double* D, int n, const double* ao_max, double** out_rows, double** out_w, double* out_slack, int* out_factor) {
-    double* S = (double*)malloc(sizeof(double) * (size_t)n * n);
-    double smax = 0.0;
-    for (int i = 0; i < n; ++i) for (int j = 0; j < n; ++j) {
-        S[(size_t)i * n + j] = 0.5 * (D[(size_t)i * n + j] + D[(size_t)j * n + i]);
-        smax = fmax(smax, fabs(S[(size_t)i * n + j]));
-    }
-    const double tol = 64.0 * n * 0.5 * DBL_EPSILON * smax;
-    double* F = (double*)calloc((size_t)n * n, sizeof(double));   // F[i * n + k] = c_k[i]
-    double* lam = (double*)calloc(n, sizeof(double));
-    int factor = ISO_FACTOR_LDL;
-    int r = iso_factor_ldl(S, n, F, lam);
-    double rmax = 0.0, slack = 0.0;
-    if (r >= 0) slack = iso_factor_residual(S, n, F, lam, r, ao_max, &rmax);
-    // 1x1 pivots fail on growth, and stop early on a diagonal that is zero while the rest is not
-    // (the symmetric part of a transition density between orbitals of different symmetry)
-    if (r < 0 || rmax > 16.0 * tol) {
-        // eigenvectors: always stable, but delocalized
-        factor = ISO_FACTOR_EIGEN;
-        memcpy(F, S, sizeof(double) * (size_t)n * n);
-        double* ev = (double*)malloc(sizeof(double) * n);
-        if (!md_linalg_sym_eigen(F, ev, (size_t)n)) {
-            memset(ev, 0, sizeof(double) * n);  // no factor rather than a wrong one: r ends up 0
-        }
-        // eigenvector k comes back contiguous, F[k * n + i]; the convention here is F[i * n + k]
-        for (int i = 0; i < n; ++i) for (int k = i + 1; k < n; ++k) {
-            const double t = F[(size_t)i * n + k];
-            F[(size_t)i * n + k] = F[(size_t)k * n + i];
-            F[(size_t)k * n + i] = t;
-        }
-        double emax = 0.0;
-        for (int k = 0; k < n; ++k) emax = fmax(emax, fabs(ev[k]));
-        const double etol = 64.0 * n * 0.5 * DBL_EPSILON * emax;
-        r = 0;
-        for (int k = 0; k < n; ++k) {   // compact the significant columns
-            if (!(fabs(ev[k]) > etol)) continue;
-            for (int i = 0; i < n; ++i) F[(size_t)i * n + r] = F[(size_t)i * n + k];
-            lam[r++] = ev[k];
-        }
-        free(ev);
-        slack = iso_factor_residual(S, n, F, lam, r, ao_max, &rmax);
-    }
-    *out_rows = (double*)malloc(sizeof(double) * (size_t)(r + 1) * n);
-    *out_w = (double*)malloc(sizeof(double) * (r + 1));
-    for (int k = 0; k < r; ++k) {
-        for (int i = 0; i < n; ++i) (*out_rows)[(size_t)k * n + i] = F[(size_t)i * n + k];
-        (*out_w)[k] = lam[k];
-    }
-    *out_slack = slack * (1.0 + 1.0e-6) + DBL_MIN;
-    *out_factor = factor;
-    free(lam); free(F); free(S);
-    return r;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1415,7 +1273,7 @@ static iv_t iso_density_bound(const iso_field_t* f, const int* act, int nact, co
         rmag += aw * iv_mag(q);
     }
     // rounding: the group sums carry a relative error far below 1e-12 of their magnitudes
-    return iv_widen(rho, d->slack + 1.0e-12 * (rmag + iv_width(rho)));
+    return iv_widen(rho, 1.0e-12 * (rmag + iv_width(rho)));
 }
 
 // The AO form of the same bound (TOPO_ANALYTIC's idea of letting the coefficients multiply exact
@@ -1498,7 +1356,7 @@ static iv_t iso_density_bound_ao(const iso_field_t* f, const int* act, int nact,
         rho = iv_add(rho, iv_scale(q, tm->w));
         rmag += aw * iv_mag(q);
     }
-    return iv_widen(rho, d->slack + 1.0e-12 * (rmag + iv_width(rho)));
+    return iv_widen(rho, 1.0e-12 * (rmag + iv_width(rho)));
 }
 
 static void iso_octree_visit_density_ao(iso_octree_t* o, int level, int ix, int iy, int iz, const int* act, int nact, const double* fslack) {
@@ -2641,11 +2499,11 @@ md_gto_iso_field_t* md_gto_iso_field_create(const md_gto_basis_t* basis, const f
 // rows: num_fn x num_ao functions; terms over them.
 static md_gto_iso_field_t* iso_density_create(const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
                                               const double* rows, int num_fn, const iso_term_t* terms, int num_terms,
-                                              double slack, int factor, struct md_allocator_i* alloc, const char* who) {
+                                              struct md_allocator_i* alloc, const char* who) {
     size_t num_atoms;
     float* xyz = iso_pack_atoms(basis, atom_xyz, atom_xyz_stride, &num_atoms);
     iso_field_t f;
-    const bool ok = iso_field_init_density(&f, basis, xyz, num_atoms, rows, num_fn, terms, num_terms, slack, factor, "");
+    const bool ok = iso_field_init_density(&f, basis, xyz, num_atoms, rows, num_fn, terms, num_terms, "");
     free(xyz);
     return iso_field_wrap(&f, ok, alloc, who);
 }
@@ -2677,47 +2535,10 @@ md_gto_iso_field_t* md_gto_iso_field_create_products(const md_gto_basis_t* basis
     if (nt == 0) {
         MD_LOG_ERROR("md_gto_iso_field_create_products: every weight is zero");
     } else {
-        field = iso_density_create(basis, atom_xyz, atom_xyz_stride, rows, n, terms, nt, 0.0, ISO_FACTOR_NONE, alloc, "md_gto_iso_field_create_products");
+        field = iso_density_create(basis, atom_xyz, atom_xyz_stride, rows, n, terms, nt, alloc, "md_gto_iso_field_create_products");
     }
     free(terms);
     free(rows);
-    return field;
-}
-
-md_gto_iso_field_t* md_gto_iso_field_create_density(const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
-                                                    const double* density_matrix, struct md_allocator_i* alloc) {
-    if (!basis || !atom_xyz || !density_matrix || !alloc) {
-        MD_LOG_ERROR("md_gto_iso_field_create_density: missing argument");
-        return NULL;
-    }
-    size_t num_atoms;
-    float* xyz = iso_pack_atoms(basis, atom_xyz, atom_xyz_stride, &num_atoms);
-    iso_density_t tmp = {0};
-    const int nao = (int)md_gto_basis_num_ao(basis);
-    double* ao_max = (double*)malloc(sizeof(double) * (nao + 1));
-    const bool ok = iso_density_ao_shells(&tmp, basis, xyz, ao_max);
-    free(tmp.ao_shells);
-    free(xyz);
-    if (!ok) {
-        free(ao_max);
-        MD_LOG_ERROR("md_gto_iso_field_create_density: unsupported basis (angular momentum or contraction length)");
-        return NULL;
-    }
-    double *rows = NULL, *w = NULL, slack = 0.0;
-    int factor = 0;
-    const int r = iso_factor_density(density_matrix, nao, ao_max, &rows, &w, &slack, &factor);
-    free(ao_max);
-    md_gto_iso_field_t* field = NULL;
-    if (r <= 0) {
-        MD_LOG_ERROR("md_gto_iso_field_create_density: the density matrix is zero");
-    } else {
-        iso_term_t* terms = (iso_term_t*)malloc(sizeof(iso_term_t) * (size_t)r);
-        for (int k = 0; k < r; ++k) terms[k] = (iso_term_t){w[k], k, k};
-        field = iso_density_create(basis, atom_xyz, atom_xyz_stride, rows, r, terms, r, slack, factor, alloc, "md_gto_iso_field_create_density");
-        free(terms);
-    }
-    free(rows);
-    free(w);
     return field;
 }
 
@@ -2830,10 +2651,8 @@ void md_gto_iso_field_info(md_gto_iso_field_info_t* out, const md_gto_iso_field_
         out->num_groups = (uint32_t)d->num_ao_shells;
         out->memory_bytes += md_array_size(d->radial.shells) * sizeof(iso_shell_t) + md_array_size(d->radial.crit) * sizeof(iso_crit_t);
         out->kind = MD_GTO_ISO_FIELD_DENSITY;
-        out->split = d->factor == ISO_FACTOR_LDL ? MD_GTO_ISO_SPLIT_LDL : d->factor == ISO_FACTOR_EIGEN ? MD_GTO_ISO_SPLIT_EIGEN : MD_GTO_ISO_SPLIT_NONE;
         out->num_functions = (uint32_t)d->num_fn;
         out->num_terms = (uint32_t)d->num_terms;
-        out->residual = d->slack;
         out->memory_bytes += sizeof(*d) + sizeof(iso_term_t) * d->num_terms + 2 * sizeof(double) * (size_t)d->num_ao * d->num_fn
                            + sizeof(iso_ao_shell_t) * d->num_ao_shells;
     } else {

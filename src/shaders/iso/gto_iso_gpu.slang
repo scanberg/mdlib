@@ -49,7 +49,7 @@ struct IsoShell {
 
 struct IsoField {
     float iso;      // > 0; the sheets are f = +iso and f = -iso
-    float slack;    // added to every bound (a density matrix's splitting residual)
+    float _pad;
     uint  term_off;
     uint  term_count;
 };
@@ -124,7 +124,7 @@ struct IsoArgs {
     float*    dmat;           // dform: num_dmat symmetric matrices [num_ao][num_ao], with the AO normalization
     uint*     fdmat;          // dform: per field, its matrix
     float*    drs;            // dform: per matrix and AO mu, sum over nu of |D_mu nu| / |nrm_nu| (the octree's tails)
-    float4*   dprop;          // dform: per matrix: (2 eps)^2 sum |D raw|, 4 eps, positive semidefinite (1), slack
+    float4*   dprop;          // dform: per matrix: (2 eps)^2 sum |D raw|, 4 eps, positive semidefinite (1), -
     uint*     scan;           // ordered lists: per brick, its count (iso_points, iso_cells), then its offset (iso_scan)
     uint*     bstate;         // flood: per brick, the round it was evaluated in (1, 2, ...), FLOOD_NONE not (yet)
     uint      group_base;     // a launch in chunks: the first group of this one (node_index adds it)
@@ -554,7 +554,7 @@ void octree_finish(uint4 node, uint ni, uint tid) {
                 rho += wq;
                 rmag += abs(tm.w) * iv_mag(q);
             }
-            float e = fd.slack + float(fd.term_count + 8u) * 2.0 * U * rmag + 1.0e-35;
+            float e = float(fd.term_count + 8u) * 2.0 * U * rmag + 1.0e-35;
             rho += float2(-e, e);
             if (comp) {
                 o_frng[min(tid, 15u)] = rho;
@@ -779,7 +779,7 @@ void iso_octree_small(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
 // list), with pc the AOs' values at the centre and dev bounds of their deviation from them over the
 // box, rho = pc^T D pc + 2 g . delta + delta^T D delta (g = D pc, |delta| <= dev): its range
 // rho_c +- (2 sum |g| dev + sum dev |D| dev), intersected with |rho| <= m^T |D| m (m: the AOs' bounds;
-// rho >= 0 for a positive semidefinite D, less the slack), plus what the dropped AOs (each below eps
+// rho >= 0 for a positive semidefinite D), plus what the dropped AOs (each below eps
 // over the box) can add. No factors, so no limit on the rank. A list that overflows keeps the node.
 // Defined after the dform section (it shares the local list): see iso_octree_dform below.
 
@@ -2740,11 +2740,11 @@ void iso_octree_dform(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
                 for (uint k = 0u; k < nw; ++k) [ForceUnroll] for (int c = 0; c < 7; ++c) t[c] += od_sum[k * 8u + uint(c)];
                 float4 pr = a.dprop[u];
                 float gam = float(A + 8u) * 2.0 * U;
-                float tail = pr.x + pr.y * t[6] * (1.0 + gam) + pr.w;
+                float tail = pr.x + pr.y * t[6] * (1.0 + gam);
                 float W = (2.0 * t[2] + 2.0 * gam * t[3] + t[4]) * (1.0 + gam) + 2.0 * gam * t[1] + tail + 1.0e-35;
                 float2 c = float2(t[0] - W, t[0] + W);
                 float nh = t[5] * (1.0 + gam) + tail + 1.0e-35;
-                float2 nat = float2(pr.z != 0.0 ? -pr.w : -nh, nh);
+                float2 nat = float2(pr.z != 0.0 ? 0.0 : -nh, nh);
                 rho = float2(max(c.x, nat.x), min(c.y, nat.y));
                 if (rho.x > rho.y) rho = float2(min(c.x, nat.x), max(c.y, nat.y));   // only by rounding; keep the hull
             }

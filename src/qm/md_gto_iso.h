@@ -3,7 +3,7 @@
 // md_gto_iso - isosurface meshes of molecular orbitals and densities, built straight from the basis
 //
 // No volume is ever evaluated. The surface f = +iso / f = -iso of an orbital (f = psi) or a
-// density (f = rho: SCF, spin, transition, attachment / detachment, any AO density matrix) is found
+// density (f = rho: SCF, spin, transition, attachment / detachment, as the products it is made of) is found
 // with a lazily built octree whose cells are kept only where a rigorous bound on f admits the iso
 // value, stopped at bricks of 4^3 lattice cells. The bricks' lattice corners are evaluated once;
 // Surface Nets on them gives the topology, Newton steps along the analytic gradient put the
@@ -74,17 +74,6 @@ md_gto_iso_field_t* md_gto_iso_field_create_products(const md_gto_basis_t* basis
                                                      const double* left, const double* right, const double* weight, size_t count,
                                                      struct md_allocator_i* alloc);
 
-// A density from its AO density matrix, f = phi^T D phi (num_ao x num_ao, row major). Only the
-// symmetric part of D contributes, so a non-symmetric (transition) matrix is fine. D is split into
-// signed squares: pivoted LDL^T (pivoted Cholesky for a semidefinite D, whose factors are localized
-// and give tight bounds), or an eigendecomposition where 1x1 pivots are unstable. The splitting's
-// residual is bounded everywhere and carried in every bound (md_gto_iso_field_info: residual).
-// The number of factors is the rank of D: the occupied count for an SCF density. A correlated
-// density is close to full rank and costs accordingly; prefer _create_products where the products
-// are at hand.
-md_gto_iso_field_t* md_gto_iso_field_create_density(const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
-                                                    const double* density_matrix, struct md_allocator_i* alloc);
-
 // The LOCALIZED ORBITAL LOCATOR (md_qm_lol, md_qm.h) as a field of its own, made of each spin's density and
 // kinetic energy density as density fields (md_gto_iso_field_create_products: the density's orbitals over the
 // basis, md_qm_kinetic_orbitals' over the derivative basis); rho_b and tau_b NULL for a closed shell, whose rho_a
@@ -125,19 +114,11 @@ enum {
     MD_GTO_ISO_FIELD_COMPOSITE = 2,   // a function of other fields (md_gto_iso_field_create_lol, _elf)
 };
 
-enum {
-    MD_GTO_ISO_SPLIT_NONE = 0,      // an orbital, or products given by the caller
-    MD_GTO_ISO_SPLIT_LDL  = 1,      // a density matrix, pivoted LDL^T
-    MD_GTO_ISO_SPLIT_EIGEN = 2,     // a density matrix, eigendecomposition
-};
-
 typedef struct md_gto_iso_field_info_t {
     uint32_t kind;                  // MD_GTO_ISO_FIELD_*
-    uint32_t split;                 // MD_GTO_ISO_SPLIT_*
-    uint32_t num_functions;         // orbital-like functions (1 for an orbital, the rank for a matrix)
+    uint32_t num_functions;         // orbital-like functions (1 for an orbital)
     uint32_t num_terms;             // products (0 for an orbital)
     uint32_t num_groups;            // what a bound sums over: (atom, l) groups of an orbital, shells of a density
-    double   residual;              // bound of |phi^T D phi - the split| over all space (matrix input)
     size_t   memory_bytes;
 } md_gto_iso_field_info_t;
 

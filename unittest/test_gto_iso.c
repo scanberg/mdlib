@@ -43,9 +43,8 @@
 //   GTO_ISO_ONLY=a,b    run the pipeline for these orbitals only (e.g. amide_homo)
 //
 // Densities (gto_iso_density.*): SCF, attachment, detachment, difference and transition densities of
-// the test files, each as products of orbitals (MOs, NTOs) and as an AO matrix the field splits
-// itself; checked against the orbital evaluator, fuzzed for containment (both density bounds, with
-// the octree's drop slack), held to dense Surface Nets, and timed per split (GTO_ISO_REPORT=1).
+// the test files, as products of orbitals (MOs, NTOs); checked against the orbital evaluator, fuzzed
+// for containment (both density bounds, with the octree's drop slack) and held to dense Surface Nets.
 
 #include "utest.h"
 #include "vlx_test_util.h"
@@ -1350,13 +1349,10 @@ UTEST(gto_iso_api, display_meshes_are_closed_and_on_the_surface) {
 // Density fields: rho = sum_t w_t a_t b_t
 // =============================================================================================
 //
-// The densities viamd shows, built the two ways the API takes them:
-//   products  what the file already has: occupied MOs with their occupations (SCF), NTO pairs
-//             (transition density), NTOs squared with their weights (attachment, detachment,
-//             difference)
-//   matrix    the AO density matrix md_vlx publishes (orbital/total/density,
-//             vlx/rsp/transition_density/*), split by the field itself
-// and checked against each other and against the orbital evaluator.
+// The densities viamd shows, as products of what the file already has: occupied MOs with their
+// occupations (SCF), NTO pairs (transition density), NTOs squared with their weights (attachment,
+// detachment, difference); checked against what md_vlx publishes for them (iso_dens_matrix sums
+// them into the matrix for that) and against the orbital evaluator.
 
 enum { ISO_D_SCF, ISO_D_ATTACH, ISO_D_DETACH, ISO_D_DIFF, ISO_D_TRANS, ISO_D_COUNT };
 static const char* iso_d_name[ISO_D_COUNT] = {"scf", "attach", "detach", "diff", "trans"};
@@ -1508,12 +1504,8 @@ static double iso_rel_diff(const double* a, const double* b, size_t n) {
     return d / fmax(m, 1e-300);
 }
 
-static md_gto_iso_field_t* iso_dens_field(const iso_dens_src_t* s, const iso_dens_prod_t* p, bool matrix) {
-    if (!matrix) return md_gto_iso_field_create_products(&s->basis, s->xyz, 0, p->left, p->right, p->w, p->count, md_get_heap_allocator());
-    double* D = iso_dens_matrix(p, s->num_ao);
-    md_gto_iso_field_t* f = md_gto_iso_field_create_density(&s->basis, s->xyz, 0, D, md_get_heap_allocator());
-    free(D);
-    return f;
+static md_gto_iso_field_t* iso_dens_field(const iso_dens_src_t* s, const iso_dens_prod_t* p) {
+    return md_gto_iso_field_create_products(&s->basis, s->xyz, 0, p->left, p->right, p->w, p->count, md_get_heap_allocator());
 }
 
 // Random points around the molecule, a third of them near atoms where densities are steep.
@@ -1580,7 +1572,7 @@ UTEST(gto_iso_density, matches_products_of_orbitals) {
             iso_dens_prod_free(&p);
         }
 
-        // point values: products field against the orbital evaluator, matrix field against products
+        // point values: products field against the orbital evaluator
         enum { N = 1500 };
         double* pts = (double*)malloc(sizeof(double) * 3 * N);
         iso_rng_t rng = {99};
@@ -1588,12 +1580,10 @@ UTEST(gto_iso_density, matches_products_of_orbitals) {
         for (int kind = 0; kind < ISO_D_COUNT; ++kind) {
             iso_dens_prod_t p;
             iso_dens_products(&p, &s, kind);
-            md_gto_iso_field_t* fp = iso_dens_field(&s, &p, false);
-            md_gto_iso_field_t* fm = iso_dens_field(&s, &p, true);
-            ASSERT_TRUE(fp != NULL && fm != NULL);
-            md_gto_iso_field_info_t ip, im;
+            md_gto_iso_field_t* fp = iso_dens_field(&s, &p);
+            ASSERT_TRUE(fp != NULL);
+            md_gto_iso_field_info_t ip;
             md_gto_iso_field_info(&ip, fp);
-            md_gto_iso_field_info(&im, fm);
 
             // reference: each function as an orbital field (the grouped evaluator, a separate code path)
             const int nfn = (int)(p.right ? 2 * p.count : p.count);
@@ -1602,7 +1592,7 @@ UTEST(gto_iso_density, matches_products_of_orbitals) {
                 ASSERT_TRUE(iso_field_init(&orb[p.right ? 2 * k : k], &s.basis, s.xyz, s.num_atoms, p.left + k * nao, "a"));
                 if (p.right) ASSERT_TRUE(iso_field_init(&orb[2 * k + 1], &s.basis, s.xyz, s.num_atoms, p.right + k * nao, "b"));
             }
-            double emax_p = 0.0, emax_m = 0.0, egrad = 0.0, vmax = 0.0, gmax = 0.0;
+            double emax_p = 0.0, egrad = 0.0, vmax = 0.0, gmax = 0.0;
             for (int i = 0; i < N; ++i) {
                 const double* x = pts + 3 * i;
                 double ref = 0.0;
@@ -1611,12 +1601,10 @@ UTEST(gto_iso_density, matches_products_of_orbitals) {
                     const double b = p.right ? iso_value(&orb[2 * k + 1], x) : a;
                     ref += p.w[k] * a * b;
                 }
-                double vp, vm, gp[3], gm[3];
+                double vp, gp[3];
                 iso_eval(&fp->f, NULL, 0, x, 1, &vp, gp, NULL);
-                iso_eval(&fm->f, NULL, 0, x, 1, &vm, gm, NULL);
                 vmax = fmax(vmax, fabs(ref));
                 emax_p = fmax(emax_p, fabs(vp - ref));
-                emax_m = fmax(emax_m, fabs(vm - vp));
                 // gradient by central differences
                 const double hh = 1.0e-5;
                 for (int a = 0; a < 3; ++a) {
@@ -1627,23 +1615,13 @@ UTEST(gto_iso_density, matches_products_of_orbitals) {
                     gmax = fmax(gmax, fabs(gp[a]));
                 }
             }
-            printf("    %-7s %3u functions (matrix: %3u, %s, residual %.1e): |products - orbitals| %.1e, |matrix - products| %.1e, |grad - fd| %.1e (of max %.1e, %.1e)\n",
-                iso_d_name[kind], ip.num_functions, im.num_functions,
-                im.split == MD_GTO_ISO_SPLIT_LDL ? "LDL" : im.split == MD_GTO_ISO_SPLIT_EIGEN ? "eigen" : "?", im.residual,
-                emax_p, emax_m, egrad, vmax, gmax);
+            printf("    %-7s %3u functions: |products - orbitals| %.1e, |grad - fd| %.1e (of max %.1e, %.1e)\n",
+                iso_d_name[kind], ip.num_functions, emax_p, egrad, vmax, gmax);
             EXPECT_LT(emax_p, 1.0e-12 * fmax(1.0, vmax) + 1.0e-12);
-            EXPECT_LT(emax_m, 1.0e-10 * fmax(1.0, vmax));
             EXPECT_LT(egrad, 1.0e-5 * fmax(1.0, gmax));
-            EXPECT_LT(im.residual, 1.0e-8);
-            // a semidefinite matrix is split by pivoted Cholesky into exactly its rank
-            if (kind == ISO_D_SCF || kind == ISO_D_ATTACH || kind == ISO_D_DETACH) {
-                EXPECT_EQ(im.split, (uint32_t)MD_GTO_ISO_SPLIT_LDL);
-                EXPECT_EQ(im.num_functions, (uint32_t)p.count);
-            }
             for (int k = 0; k < nfn; ++k) iso_field_free(&orb[k]);
             free(orb);
             md_gto_iso_field_destroy(fp);
-            md_gto_iso_field_destroy(fm);
             iso_dens_prod_free(&p);
         }
         free(pts);
@@ -1661,105 +1639,103 @@ UTEST(gto_iso_density, bounds_contain_samples) {
         iso_dens_src_t s;
         ASSERT_TRUE(iso_dens_src_load(&s, iso_dens_files[fi]));
         for (int kind = 0; kind < ISO_D_COUNT; ++kind) {
-            for (int matrix = 0; matrix < 2; ++matrix) {
-                iso_dens_prod_t p;
-                iso_dens_products(&p, &s, kind);
-                md_gto_iso_field_t* field = iso_dens_field(&s, &p, matrix);
-                ASSERT_TRUE(field != NULL);
-                const iso_field_t* f = &field->f;
-                const int nf = f->dens->num_fn, ng = f->num_shells;
-                iv_t* A = (iv_t*)malloc(sizeof(iv_t) * (nf + 1));
-                iv_t* gint = (iv_t*)malloc(sizeof(iv_t) * (ng + 1));
-                double* S = (double*)malloc(sizeof(double) * (nf + 1));
-                double* slack = (double*)calloc(nf + 1, sizeof(double));
-                int* all = (int*)malloc(sizeof(int) * (ng + 1));
-                int* act = (int*)malloc(sizeof(int) * (ng + 1));
-                for (int i = 0; i < ng; ++i) all[i] = i;
-                iso_rng_t rng = {1234 + kind};
-                const int nsh = f->dens->num_ao_shells;
-                int* sall = (int*)malloc(sizeof(int) * (nsh + 1));
-                int* sact = (int*)malloc(sizeof(int) * (nsh + 1));
-                for (int k = 0; k < nsh; ++k) sall[k] = k;
-                double* aomag = (double*)malloc(sizeof(double) * (f->dens->num_ao + 1));
-                double* acc = (double*)malloc(sizeof(double) * 5 * (nf + 1));
-                double* aslack = (double*)calloc(nf + 1, sizeof(double));
-                long checks = 0, fails = 0;
-                double width_ratio = 0.0, width_ratio_ao = 0.0;
-                int nratio = 0;
-                for (int si = 0; si < ISO_NUM_SIZES; ++si) {
-                    const double size = iso_sizes[si];
-                    for (int bi = 0; bi < boxes_per_size; ++bi) {
-                        double c[3];
-                        iso_dens_points(c, 1, &s, &rng);
-                        if (bi & 1) { const size_t a = iso_rng_u64(&rng) % s.num_atoms; for (int k = 0; k < 3; ++k) c[k] = s.xyz[3 * a + k] + iso_rng_range(&rng, -1.5, 1.5); }
-                        iso_box_t parent, child;
-                        for (int k = 0; k < 3; ++k) { parent.lo[k] = c[k] - size; parent.hi[k] = c[k] + size; }
-                        for (int k = 0; k < 3; ++k) { child.lo[k] = parent.lo[k] + (bi & (2 << k) ? size : 0.0); child.hi[k] = child.lo[k] + size; }
-                        // the parent's pass: drop groups as the octree would at iso 0.01
-                        for (int j = 0; j < nf; ++j) slack[j] = 0.0;
-                        iso_density_bound(f, all, ng, slack, &parent, A, gint, S);
-                        int na = 0;
-                        for (int i = 0; i < ng; ++i) {
-                            const double m = iv_mag(gint[i]);
-                            if (m * S[f->shells[i].fn] < 1.0e-6 * 0.01) slack[f->shells[i].fn] += m; else act[na++] = i;
+            iso_dens_prod_t p;
+            iso_dens_products(&p, &s, kind);
+            md_gto_iso_field_t* field = iso_dens_field(&s, &p);
+            ASSERT_TRUE(field != NULL);
+            const iso_field_t* f = &field->f;
+            const int nf = f->dens->num_fn, ng = f->num_shells;
+            iv_t* A = (iv_t*)malloc(sizeof(iv_t) * (nf + 1));
+            iv_t* gint = (iv_t*)malloc(sizeof(iv_t) * (ng + 1));
+            double* S = (double*)malloc(sizeof(double) * (nf + 1));
+            double* slack = (double*)calloc(nf + 1, sizeof(double));
+            int* all = (int*)malloc(sizeof(int) * (ng + 1));
+            int* act = (int*)malloc(sizeof(int) * (ng + 1));
+            for (int i = 0; i < ng; ++i) all[i] = i;
+            iso_rng_t rng = {1234 + kind};
+            const int nsh = f->dens->num_ao_shells;
+            int* sall = (int*)malloc(sizeof(int) * (nsh + 1));
+            int* sact = (int*)malloc(sizeof(int) * (nsh + 1));
+            for (int k = 0; k < nsh; ++k) sall[k] = k;
+            double* aomag = (double*)malloc(sizeof(double) * (f->dens->num_ao + 1));
+            double* acc = (double*)malloc(sizeof(double) * 5 * (nf + 1));
+            double* aslack = (double*)calloc(nf + 1, sizeof(double));
+            long checks = 0, fails = 0;
+            double width_ratio = 0.0, width_ratio_ao = 0.0;
+            int nratio = 0;
+            for (int si = 0; si < ISO_NUM_SIZES; ++si) {
+                const double size = iso_sizes[si];
+                for (int bi = 0; bi < boxes_per_size; ++bi) {
+                    double c[3];
+                    iso_dens_points(c, 1, &s, &rng);
+                    if (bi & 1) { const size_t a = iso_rng_u64(&rng) % s.num_atoms; for (int k = 0; k < 3; ++k) c[k] = s.xyz[3 * a + k] + iso_rng_range(&rng, -1.5, 1.5); }
+                    iso_box_t parent, child;
+                    for (int k = 0; k < 3; ++k) { parent.lo[k] = c[k] - size; parent.hi[k] = c[k] + size; }
+                    for (int k = 0; k < 3; ++k) { child.lo[k] = parent.lo[k] + (bi & (2 << k) ? size : 0.0); child.hi[k] = child.lo[k] + size; }
+                    // the parent's pass: drop groups as the octree would at iso 0.01
+                    for (int j = 0; j < nf; ++j) slack[j] = 0.0;
+                    iso_density_bound(f, all, ng, slack, &parent, A, gint, S);
+                    int na = 0;
+                    for (int i = 0; i < ng; ++i) {
+                        const double m = iv_mag(gint[i]);
+                        if (m * S[f->shells[i].fn] < 1.0e-6 * 0.01) slack[f->shells[i].fn] += m; else act[na++] = i;
+                    }
+                    double* zero = (double*)calloc(nf + 1, sizeof(double));
+                    const iv_t full = iso_density_bound(f, all, ng, zero, &child, A, gint, S);
+                    const iv_t carried = iso_density_bound(f, act, na, slack, &child, A, gint, S);
+                    // the AO form, with its own drop pass (whole shells) on the parent
+                    const iso_density_t* dd = f->dens;
+                    for (int j = 0; j < nf; ++j) aslack[j] = 0.0;
+                    iso_density_bound_ao(f, sall, nsh, zero, &parent, A, aomag, S, acc);
+                    int nas = 0;
+                    for (int k = 0; k < nsh; ++k) {
+                        const iso_ao_shell_t* a = &dd->ao_shells[k];
+                        double effect = 0.0;
+                        for (int c = 0; c < a->ncart; ++c) {
+                            double e = 0.0;
+                            for (int j = 0; j < nf; ++j) e += dd->Cabs[(size_t)(a->ao + c) * nf + j] * S[j];
+                            effect += e * aomag[a->ao + c];
                         }
-                        double* zero = (double*)calloc(nf + 1, sizeof(double));
-                        const iv_t full = iso_density_bound(f, all, ng, zero, &child, A, gint, S);
-                        const iv_t carried = iso_density_bound(f, act, na, slack, &child, A, gint, S);
-                        // the AO form, with its own drop pass (whole shells) on the parent
-                        const iso_density_t* dd = f->dens;
-                        for (int j = 0; j < nf; ++j) aslack[j] = 0.0;
-                        iso_density_bound_ao(f, sall, nsh, zero, &parent, A, aomag, S, acc);
-                        int nas = 0;
-                        for (int k = 0; k < nsh; ++k) {
-                            const iso_ao_shell_t* a = &dd->ao_shells[k];
-                            double effect = 0.0;
-                            for (int c = 0; c < a->ncart; ++c) {
-                                double e = 0.0;
-                                for (int j = 0; j < nf; ++j) e += dd->Cabs[(size_t)(a->ao + c) * nf + j] * S[j];
-                                effect += e * aomag[a->ao + c];
-                            }
-                            if (effect < 1.0e-6 * 0.01) {
-                                for (int c = 0; c < a->ncart; ++c) for (int j = 0; j < nf; ++j) aslack[j] += dd->Cabs[(size_t)(a->ao + c) * nf + j] * aomag[a->ao + c];
-                            } else {
-                                sact[nas++] = k;
-                            }
-                        }
-                        const iv_t ao_full = iso_density_bound_ao(f, sall, nsh, zero, &child, A, aomag, S, acc);
-                        const iv_t ao_carried = iso_density_bound_ao(f, sact, nas, aslack, &child, A, aomag, S, acc);
-                        free(zero);
-                        double vlo = DBL_MAX, vhi = -DBL_MAX;
-                        for (int k = 0; k < samples; ++k) {
-                            double x[3];
-                            for (int a = 0; a < 3; ++a) {
-                                const double t = (k < 8) ? ((k >> a) & 1) : (k == 8 ? 0.5 : iso_rng_f64(&rng));
-                                x[a] = child.lo[a] + t * (child.hi[a] - child.lo[a]);
-                            }
-                            const double v = iso_value(f, x);
-                            vlo = fmin(vlo, v); vhi = fmax(vhi, v);
-                            checks += 4;
-                            const int bad = !iv_contains(full, v) + !iv_contains(carried, v) + !iv_contains(ao_full, v) + !iv_contains(ao_carried, v);
-                            fails += bad;
-                            if (bad && fails < 4) {
-                                printf("    FAIL %s %s size %g v %.6e group [%.6e %.6e] carried [%.6e %.6e] ao [%.6e %.6e] carried [%.6e %.6e]\n", iso_d_name[kind], matrix ? "matrix" : "products", size, v,
-                                    full.lo, full.hi, carried.lo, carried.hi, ao_full.lo, ao_full.hi, ao_carried.lo, ao_carried.hi);
-                            }
-                        }
-                        if (vhi - vlo > 1e-8) {
-                            width_ratio += log(iv_width(full) / (vhi - vlo));
-                            width_ratio_ao += log(iv_width(ao_full) / (vhi - vlo));
-                            nratio++;
+                        if (effect < 1.0e-6 * 0.01) {
+                            for (int c = 0; c < a->ncart; ++c) for (int j = 0; j < nf; ++j) aslack[j] += dd->Cabs[(size_t)(a->ao + c) * nf + j] * aomag[a->ao + c];
+                        } else {
+                            sact[nas++] = k;
                         }
                     }
+                    const iv_t ao_full = iso_density_bound_ao(f, sall, nsh, zero, &child, A, aomag, S, acc);
+                    const iv_t ao_carried = iso_density_bound_ao(f, sact, nas, aslack, &child, A, aomag, S, acc);
+                    free(zero);
+                    double vlo = DBL_MAX, vhi = -DBL_MAX;
+                    for (int k = 0; k < samples; ++k) {
+                        double x[3];
+                        for (int a = 0; a < 3; ++a) {
+                            const double t = (k < 8) ? ((k >> a) & 1) : (k == 8 ? 0.5 : iso_rng_f64(&rng));
+                            x[a] = child.lo[a] + t * (child.hi[a] - child.lo[a]);
+                        }
+                        const double v = iso_value(f, x);
+                        vlo = fmin(vlo, v); vhi = fmax(vhi, v);
+                        checks += 4;
+                        const int bad = !iv_contains(full, v) + !iv_contains(carried, v) + !iv_contains(ao_full, v) + !iv_contains(ao_carried, v);
+                        fails += bad;
+                        if (bad && fails < 4) {
+                            printf("    FAIL %s %s size %g v %.6e group [%.6e %.6e] carried [%.6e %.6e] ao [%.6e %.6e] carried [%.6e %.6e]\n", iso_d_name[kind], "products", size, v,
+                                full.lo, full.hi, carried.lo, carried.hi, ao_full.lo, ao_full.hi, ao_carried.lo, ao_carried.hi);
+                        }
+                    }
+                    if (vhi - vlo > 1e-8) {
+                        width_ratio += log(iv_width(full) / (vhi - vlo));
+                        width_ratio_ao += log(iv_width(ao_full) / (vhi - vlo));
+                        nratio++;
+                    }
                 }
-                printf("  %-9s %-6s %-8s %3d functions %5d groups: %ld checks, %ld outside; bound width / sampled range, geo. mean: group %.2f, AO %.2f\n",
-                    iso_dens_files[fi], iso_d_name[kind], matrix ? "matrix" : "products", nf, ng, checks, fails, exp(width_ratio / fmax(1, nratio)), exp(width_ratio_ao / fmax(1, nratio)));
-                EXPECT_EQ(fails, 0);
-                free(sall); free(sact); free(aomag); free(acc); free(aslack);
-                free(A); free(gint); free(S); free(slack); free(all); free(act);
-                md_gto_iso_field_destroy(field);
-                iso_dens_prod_free(&p);
             }
+            printf("  %-9s %-6s %-8s %3d functions %5d groups: %ld checks, %ld outside; bound width / sampled range, geo. mean: group %.2f, AO %.2f\n",
+                iso_dens_files[fi], iso_d_name[kind], "products", nf, ng, checks, fails, exp(width_ratio / fmax(1, nratio)), exp(width_ratio_ao / fmax(1, nratio)));
+            EXPECT_EQ(fails, 0);
+            free(sall); free(sact); free(aomag); free(acc); free(aslack);
+            free(A); free(gint); free(S); free(slack); free(all); free(act);
+            md_gto_iso_field_destroy(field);
+            iso_dens_prod_free(&p);
         }
         iso_dens_src_free(&s);
     }
@@ -1768,15 +1744,15 @@ UTEST(gto_iso_density, bounds_contain_samples) {
 
 
 // The cache over a density reproduces dense Surface Nets on its lattice, both sheets, for every iso
-// value of its interval - for products and for a split matrix alike.
+// value of its interval.
 UTEST(gto_iso_density, cache_serves_its_interval_exactly) {
-    typedef struct { int file, kind, matrix; double iso_min, iso_max; } dcase_t;
+    typedef struct { int file, kind; double iso_min, iso_max; } dcase_t;
     static const dcase_t cases[] = {
-        {0, ISO_D_SCF,   0, 0.01,  0.1},
-        {0, ISO_D_TRANS, 1, 0.002, 0.02},
-        {1, ISO_D_SCF,   1, 0.01,  0.1},
-        {1, ISO_D_DIFF,  0, 0.002, 0.02},
-        {1, ISO_D_TRANS, 0, 0.002, 0.02},
+        {0, ISO_D_SCF,   0.01,  0.1},
+        {0, ISO_D_TRANS, 0.002, 0.02},
+        {1, ISO_D_SCF,   0.01,  0.1},
+        {1, ISO_D_DIFF,  0.002, 0.02},
+        {1, ISO_D_TRANS, 0.002, 0.02},
     };
     for (int ci = 0; ci < (int)(sizeof(cases) / sizeof(cases[0])); ++ci) {
         const dcase_t* dc = &cases[ci];
@@ -1784,7 +1760,7 @@ UTEST(gto_iso_density, cache_serves_its_interval_exactly) {
         ASSERT_TRUE(iso_dens_src_load(&s, iso_dens_files[dc->file]));
         iso_dens_prod_t p;
         iso_dens_products(&p, &s, dc->kind);
-        md_gto_iso_field_t* field = iso_dens_field(&s, &p, dc->matrix);
+        md_gto_iso_field_t* field = iso_dens_field(&s, &p);
         ASSERT_TRUE(field != NULL);
 
         md_gto_iso_cache_desc_t cd = {.cell_size = 0.3, .iso_min = dc->iso_min, .iso_max = dc->iso_max};
@@ -1793,7 +1769,7 @@ UTEST(gto_iso_density, cache_serves_its_interval_exactly) {
         md_gto_iso_cache_info_t info;
         md_gto_iso_cache_info(&info, cache);
         printf("  %-9s %-6s %-8s [%.3f, %.3f] h %.2f: %u bricks of %u^3 cells, octree %.3fs, corners %.3fs\n",
-            iso_dens_files[dc->file], iso_d_name[dc->kind], dc->matrix ? "matrix" : "products", info.iso_min, info.iso_max, info.cell_size,
+            iso_dens_files[dc->file], iso_d_name[dc->kind], "products", info.iso_min, info.iso_max, info.cell_size,
             info.num_bricks, info.cells_per_axis, info.seconds_octree, info.seconds_corners);
 
         const double isos[3] = {dc->iso_min, sqrt(dc->iso_min * dc->iso_max), dc->iso_max};
@@ -1836,7 +1812,7 @@ UTEST(gto_iso_density, display_meshes_are_closed_and_on_the_surface) {
         ASSERT_TRUE(iso_dens_src_load(&s, iso_dens_files[dc->file]));
         iso_dens_prod_t p;
         iso_dens_products(&p, &s, dc->kind);
-        md_gto_iso_field_t* field = iso_dens_field(&s, &p, false);
+        md_gto_iso_field_t* field = iso_dens_field(&s, &p);
         ASSERT_TRUE(field != NULL);
         md_tick_t t0 = md_tick_now();
         md_gto_iso_cache_t* cache = md_gto_iso_cache_create(field, &(md_gto_iso_cache_desc_t){.cell_size = h, .iso_min = dc->iso}, md_get_heap_allocator());
@@ -1895,7 +1871,7 @@ UTEST(gto_iso_density, deferred_corners_from_threads) {
     ASSERT_TRUE(iso_dens_src_load(&s, "amide.h5"));
     iso_dens_prod_t p;
     iso_dens_products(&p, &s, ISO_D_SCF);
-    md_gto_iso_field_t* field = iso_dens_field(&s, &p, true);
+    md_gto_iso_field_t* field = iso_dens_field(&s, &p);
     ASSERT_TRUE(field != NULL);
     md_gto_iso_cache_desc_t cd = {.cell_size = 0.2, .iso_min = 0.002, .iso_max = 0.02};
     md_gto_iso_cache_t* ref = md_gto_iso_cache_create(field, &cd, md_get_heap_allocator());
@@ -1946,7 +1922,7 @@ UTEST(gto_iso_density, orbital_as_linear_term) {
         iso_api_case_t c;
         ASSERT_TRUE(iso_api_load(&c, tc));
         const iso_term_t term = {1.0, 0, -1};
-        md_gto_iso_field_t* lin = iso_density_create(&c.basis, c.xyz, 0, c.coeff, 1, &term, 1, 0.0, ISO_FACTOR_NONE, md_get_heap_allocator(), "linear");
+        md_gto_iso_field_t* lin = iso_density_create(&c.basis, c.xyz, 0, c.coeff, 1, &term, 1, md_get_heap_allocator(), "linear");
         ASSERT_TRUE(lin != NULL);
         iso_octree_t og, oa;
         iso_octree_build_range(&og, &c.field->f, tc->iso, tc->iso, 4.0 * h, ISO_BOUND_SHELL, 0, 0.0);
@@ -1969,88 +1945,6 @@ UTEST(gto_iso_density, orbital_as_linear_term) {
         md_gto_iso_field_destroy(lin);
         iso_api_free(&c);
     }
-}
-
-// How the way a density is split changes the cost (GTO_ISO_REPORT=1): the same SCF density as its
-// canonical MOs (the eigenvectors of D in the S metric), as pivoted Cholesky factors, and as the
-// Euclidean eigenvectors of D; difference and transition densities as NTO products and as a matrix.
-static md_gto_iso_field_t* iso_dens_field_eigen(const iso_dens_src_t* s, const iso_dens_prod_t* p) {
-    const int n = (int)s->num_ao;
-    double* D = iso_dens_matrix(p, s->num_ao);
-    double* V = (double*)malloc(sizeof(double) * n * n);
-    for (int i = 0; i < n; ++i) for (int j = 0; j < n; ++j) V[i * n + j] = 0.5 * (D[i * n + j] + D[j * n + i]);
-    double* ev = (double*)malloc(sizeof(double) * n);
-    if (!md_linalg_sym_eigen(V, ev, (size_t)n)) memset(ev, 0, sizeof(double) * n);   // no terms rather than wrong ones
-    double emax = 0.0;
-    for (int k = 0; k < n; ++k) emax = fmax(emax, fabs(ev[k]));
-    double* rows = (double*)malloc(sizeof(double) * n * n);
-    iso_term_t* terms = (iso_term_t*)malloc(sizeof(iso_term_t) * n);
-    int r = 0;
-    for (int k = 0; k < n; ++k) {
-        if (fabs(ev[k]) <= 1.0e-12 * emax) continue;
-        memcpy(rows + (size_t)r * n, V + (size_t)k * n, sizeof(double) * n);   // eigenvector k is contiguous
-        terms[r] = (iso_term_t){ev[k], r, r};
-        r++;
-    }
-    md_gto_iso_field_t* f = iso_density_create(&s->basis, s->xyz, 0, rows, r, terms, r, 0.0, ISO_FACTOR_EIGEN, md_get_heap_allocator(), "eigen");
-    free(terms); free(rows); free(ev); free(V); free(D);
-    return f;
-}
-
-UTEST(gto_iso_density, split_comparison) {
-    if (!iso_report()) { printf("  (GTO_ISO_REPORT=1 to run)\n"); return; }
-    iso_density_build_groups = true;
-    static const char* files[] = {"amide.h5", "mol.h5"};
-    const double h = 0.15;
-    for (int fi = 0; fi < 2; ++fi) {
-        iso_dens_src_t s;
-        ASSERT_TRUE(iso_dens_src_load(&s, files[fi]));
-        printf("  %s: %zu atoms, %zu AOs, %zu NTO pairs\n", files[fi], s.num_atoms, s.num_ao, s.num_nto);
-        typedef struct { int kind; int split; double iso; } row_t;   // split: 0 products, 1 matrix, 2 eigen
-        static const row_t rows[] = {
-            {ISO_D_SCF, 0, 0.002}, {ISO_D_SCF, 1, 0.002}, {ISO_D_SCF, 2, 0.002},
-            {ISO_D_SCF, 0, 0.05},  {ISO_D_SCF, 1, 0.05},
-            {ISO_D_DIFF, 0, 0.002}, {ISO_D_DIFF, 1, 0.002},
-            {ISO_D_TRANS, 0, 0.002}, {ISO_D_TRANS, 1, 0.002},
-        };
-        static const char* split_name[3] = {"products", "LDL", "eigen"};
-        printf("    %-6s %-8s %6s | %4s %6s %6s | %-5s %7s %8s %7s %9s | %7s %7s\n", "", "split", "iso", "fn", "groups", "setup", "bound", "octree", "visited", "bricks", "act/node", "corners", "per cnr");
-        for (int ri = 0; ri < (int)(sizeof(rows) / sizeof(rows[0])); ++ri) {
-            const row_t* r = &rows[ri];
-            iso_dens_prod_t p;
-            iso_dens_products(&p, &s, r->kind);
-            md_tick_t t0 = md_tick_now();
-            md_gto_iso_field_t* field = r->split == 2 ? iso_dens_field_eigen(&s, &p) : iso_dens_field(&s, &p, r->split == 1);
-            const double t_setup = iso_seconds_since(t0);
-            ASSERT_TRUE(field != NULL);
-            md_gto_iso_field_info_t fin;
-            md_gto_iso_field_info(&fin, field);
-
-            for (int mode = 0; mode < 2; ++mode) {
-            iso_dens_bound_default = mode == 0 ? ISO_DENS_BOUND_AO : ISO_DENS_BOUND_GROUP;
-            iso_octree_t o;
-            iso_octree_build_range(&o, &field->f, r->iso, r->iso, 4.0 * h, ISO_BOUND_SHELL, 0, 0.0);
-            long visited = 0;
-            for (int l = 0; l <= o.L; ++l) visited += o.visited[l];
-            const int nb = (int)md_array_size(o.leaves);
-
-            md_gto_iso_cache_t* cache = md_gto_iso_cache_create(field, &(md_gto_iso_cache_desc_t){.cell_size = h, .iso_min = r->iso}, md_get_heap_allocator());
-            md_gto_iso_cache_info_t ci;
-            md_gto_iso_cache_info(&ci, cache);
-            const double corners = (double)nb * 125.0;
-            printf("    %-6s %-8s %6.3f | %4u %6u %5.2fs | %-5s %6.3fs %8ld %7d %9.1f | %6.3fs %5.2fus\n",
-                iso_d_name[r->kind], split_name[r->split], r->iso, fin.num_functions, fin.num_groups, t_setup, mode == 0 ? "AO" : "group",
-                o.seconds, visited, nb, (double)o.group_work / fmax(1, visited), ci.seconds_corners, 1e6 * ci.seconds_corners / fmax(1, corners));
-            md_gto_iso_cache_destroy(cache);
-            iso_octree_free(&o);
-            }
-            iso_dens_bound_default = ISO_DENS_BOUND_AO;
-            md_gto_iso_field_destroy(field);
-            iso_dens_prod_free(&p);
-        }
-        iso_dens_src_free(&s);
-    }
-    iso_density_build_groups = false;
 }
 
 // =============================================================================================
@@ -3419,7 +3313,7 @@ static md_gto_iso_field_t* iso_gl_field(const iso_dens_src_t* s, int kind, iso_d
         return md_gto_iso_field_create(&s->basis, s->xyz, 0, s->C + mo * s->num_ao, md_get_heap_allocator());
     }
     iso_dens_products(p, s, kind);
-    return iso_dens_field(s, p, false);
+    return iso_dens_field(s, p);
 }
 
 // Converts sheet s of an md_gto_iso_mesh_t for the metrics (as iso_api_sheet).
@@ -3773,7 +3667,7 @@ UTEST(gto_iso_gpu_lib, fields_batch_like_alone) {
     for (int k = 0; k < 4; ++k) { fields[k] = md_gto_iso_field_create(&s.basis, s.xyz, 0, s.C + (lumo - 2 + k) * s.num_ao, md_get_heap_allocator()); iso[k] = 0.05; }
     iso_dens_prod_t p;
     iso_dens_products(&p, &s, ISO_D_TRANS);
-    fields[4] = iso_dens_field(&s, &p, false);
+    fields[4] = iso_dens_field(&s, &p);
     iso[4] = 0.004;
     for (int k = 0; k < NF; ++k) ASSERT_TRUE(fields[k] != NULL);
     const double h = 0.25;
@@ -4019,7 +3913,7 @@ UTEST(gto_iso_gpu_lib, repeated_field_shares_functions) {
     ASSERT_TRUE(iso_dens_src_load(&s, "amide.h5"));
     iso_dens_prod_t p;
     iso_dens_products(&p, &s, ISO_D_TRANS);
-    md_gto_iso_field_t* f = iso_dens_field(&s, &p, false);
+    md_gto_iso_field_t* f = iso_dens_field(&s, &p);
     ASSERT_TRUE(f != NULL);
     const double h = 0.25;
     // the smaller iso value decides the root box of both, so the single sets below see the same lattice
@@ -4244,7 +4138,7 @@ UTEST(gto_iso_gpu_lib, benchmark) {
         } else {
             nf = 1;
             iso_dens_products(&p, &s, bc->kind);
-            fields[0] = iso_dens_field(&s, &p, false);
+            fields[0] = iso_dens_field(&s, &p);
             iso[0] = bc->iso;
             D = iso_dens_matrix(&p, s.num_ao);
             for (size_t i = 0; i < s.num_ao; ++i) for (size_t j = i + 1; j < s.num_ao; ++j) {
@@ -5002,8 +4896,8 @@ UTEST(gto_iso_gpu_lib, flood_experiment) {
 }
 
 
-// A large system's total density, as viamd extracts its mesh: the density matrix from the published virtual
-// attribute, the field from it, the GPU set and the extraction, each timed. GTO_ISO_LARGE=<file in test_data/vlx>
+// A large system's total density, as viamd extracts its mesh: the field from the occupied orbitals, the GPU set and
+// the extraction, each timed. GTO_ISO_LARGE=<file in test_data/vlx>
 // (a protein: 1152 atoms, 9072 AOs); GTO_ISO_LARGE_H (default 0.4), GTO_ISO_LARGE_ISO (default 0.0025);
 // GTO_ISO_LARGE_PROFILE=1 the extraction's steps (the profile's host statistics take seconds on such a system: its
 // wall time is not the extraction's); GTO_ISO_LARGE_STAGES=1 the extraction by stage, and two more without the profile;
@@ -5049,9 +4943,9 @@ UTEST(gto_iso_gpu_lib, evaluate_matches_cpu) {
         fields[0] = md_gto_iso_field_create(&s.basis, s.xyz, 0, s.C + (lumo - 1) * s.num_ao, md_get_heap_allocator());
         fields[1] = md_gto_iso_field_create(&s.basis, s.xyz, 0, s.C + lumo * s.num_ao, md_get_heap_allocator());
         iso_dens_products(&p[2], &s, ISO_D_SCF);
-        fields[2] = iso_dens_field(&s, &p[2], false);
+        fields[2] = iso_dens_field(&s, &p[2]);
         iso_dens_products(&p[3], &s, ISO_D_DIFF);
-        fields[3] = p[3].count ? iso_dens_field(&s, &p[3], false) : NULL;
+        fields[3] = p[3].count ? iso_dens_field(&s, &p[3]) : NULL;
         for (int k = 0; k < 3; ++k) ASSERT_TRUE(fields[k] != NULL);
 
         // random points, a third near the atoms, in no particular order
@@ -5189,8 +5083,8 @@ UTEST(gto_iso_gpu_lib, given_tiles_are_taken) {
     iso_dens_products(&ps, &s, ISO_D_SCF);
     iso_dens_products(&pd, &s, ISO_D_DIFF);
     ASSERT_GT(pd.count, 0u);
-    md_gto_iso_field_t* scf = iso_dens_field(&s, &ps, false);
-    md_gto_iso_field_t* diff = iso_dens_field(&s, &pd, false);
+    md_gto_iso_field_t* scf = iso_dens_field(&s, &ps);
+    md_gto_iso_field_t* diff = iso_dens_field(&s, &pd);
     ASSERT_TRUE(scf && diff);
 
     // the SCF density's tiles on the host at the set's cutoff, a tighter one and a looser one; uploaded
@@ -5325,7 +5219,7 @@ UTEST(gto_iso_gpu_lib, evaluate_job_matches_launch) {
     iso_dens_products(&pd, &s, ISO_D_SCF);
     md_gto_iso_field_t* fields[2] = {
         md_gto_iso_field_create(&s.basis, s.xyz, 0, s.C + (lumo - 1) * s.num_ao, md_get_heap_allocator()),
-        iso_dens_field(&s, &pd, false),
+        iso_dens_field(&s, &pd),
     };
     ASSERT_TRUE(fields[0] && fields[1]);
 
@@ -5617,23 +5511,10 @@ UTEST(gto_iso_gpu_lib, large_density) {
     printf("  %s: %zu atoms, %zu AOs; loaded in %.2f s\n", file, num_atoms, nao, md_tick_to_seconds(md_tick_now() - t0));
     printf("  isosurface GEMMs: " MD_GTO_GPU_GEMM_CORE_REVISION "\n");
 
-    // what viamd does: the field from the occupied orbitals (md_qm_density_orbitals), or with
-    // GTO_ISO_LARGE_MATRIX=1 from the matrix (factorized again)
-    const bool from_matrix = getenv("GTO_ISO_LARGE_MATRIX") && atoi(getenv("GTO_ISO_LARGE_MATRIX")) != 0;
-    t0 = md_tick_now();
-    const md_attribute_t* da = qm_test_attr(&t, MD_STR_LIT("orbital/total/density"));
-    ASSERT_TRUE(da != NULL);
-    double* D = (double*)malloc(sizeof(double) * nao * nao);
-    ASSERT_EQ(md_qm_extract_symmetric_f64(D, nao * nao, &t.sys.attributes, da, md_attribute_slice_all(), NULL), nao);
-    double tr = 0.0;
-    for (size_t i = 0; i < nao; ++i) tr += D[i * nao + i];
-    printf("  density matrix (orbital/total/density): %.2f s (trace %.6g)\n", md_tick_to_seconds(md_tick_now() - t0), tr);
-
+    // what viamd does: the field from the occupied orbitals (md_qm_density_orbitals)
     md_gto_iso_field_t* field = NULL;
     t0 = md_tick_now();
-    if (from_matrix) {
-        field = md_gto_iso_field_create_density(&basis, xyz, 3 * sizeof(float), D, md_get_heap_allocator());
-    } else {
+    {
         double *rows = NULL, *w = NULL;
         size_t na = 0;
         const size_t count = md_qm_density_orbitals(&rows, &w, &na, &t.sys, MD_STR_LIT("orbital/total/density"), md_get_heap_allocator());
@@ -5651,8 +5532,7 @@ UTEST(gto_iso_gpu_lib, large_density) {
     md_gto_iso_field_set_maxima_at_atoms(field, true);
     md_gto_iso_field_info_t fi;
     md_gto_iso_field_info(&fi, field);
-    printf("  field (%s): %.2f s, %u functions, split %d, residual %g\n", from_matrix ? "matrix" : "orbitals", md_tick_to_seconds(md_tick_now() - t0), fi.num_functions, (int)fi.split, fi.residual);
-    free(D);
+    printf("  field (orbitals): %.2f s, %u functions\n", md_tick_to_seconds(md_tick_now() - t0), fi.num_functions);
 
     iso_gpu_t g;
     if (!iso_gpu_init(&g)) { iso_gpu_free(&g); UTEST_SKIP(iso_gpu_no_device()); }
