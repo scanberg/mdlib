@@ -879,7 +879,7 @@ if (MD_ENABLE_GPU)
     TARGET    mdlib
     NAMESPACE md_shader
     SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/render/md_post.slang
-    ENTRIES   display resolve present
+    ENTRIES   display resolve present vel_tilemax vel_neighbormax
   )
   compile_gpu_shaders(md_post_overlay_shaders.inl
     TARGET    mdlib

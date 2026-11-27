@@ -5045,6 +5045,119 @@ UTEST(render, post_resolve_unjitters_and_settles) {
     f_close(&fx);
 }
 
+/* The motion blur, by what it must do: a flat (unlit) dark rectangle on the white background, 41 x 16 pixels, its
+   view moved D pixels along x between two rasters (orthographic), resolved with the frame before as the history.
+   The history is as without the blur, to the bit; the image shown is too wherever nothing moves within reach of the
+   tiles (32 pixels past the rectangle and its motion), and everywhere when the motion is slower than 2 pixels.
+   Across its right edge, along the motion, the image shown goes from it to the background over the smear: 11 taps
+   over D times the strength weighted 6 - |i|, so 10 to 90 % over 6 of their 10 spacings and the taps' bilinear
+   pixel (15 px at 24, 7.8 at 12), within a fifth and 2 px (the noise that offsets the taps; 5 rows averaged); the
+   history over a pixel or two. Across its top edge, along which the motion runs, as sharp as the history. */
+UTEST(render, post_motion_blur) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    const uint32_t W = 192, H = 128, P = W * H;
+    cam_t c = { .ortho = true, .half_h = 5.0f, .aspect = (float)W / H, .n = 0.0f, .far_ = 40.0f };
+    const double pw = 2.0 * c.half_h / H;
+    const double hw = 20.5, hh = 8.0;                       /* the rectangle's half extents, pixels */
+    const float z = -10.0f, ex = (float)(hw * pw), ey = (float)(hh * pw);
+    float quad[12] = { -ex, -ey, z,  ex, -ey, z,  ex, ey, z,  -ex, ey, z };
+    const uint32_t tri[6] = { 0, 1, 2, 0, 2, 3 };
+    md_render_batch_t b = {0};
+    b.key = 1; b.kind = MD_RENDER_TRIANGLES; b.count = 2; b.points.count = 4;
+    b.points.position = f_buf(&fx, quad, sizeof(quad)); b.index = f_buf(&fx, tri, sizeof(tri));
+    b.color.mode = MD_RENDER_COLOR_UNIFORM; b.color.uniform = 0xFF202020u;
+    b.color.unlit = true;
+    f_post_t fp = { md_compose_create(fx.dev), md_post_create(fx.dev),
+                    f_tex(&fx, MD_GPU_FORMAT_RGBA16_FLOAT, MD_GPU_TEX_STORAGE | MD_GPU_TEX_SAMPLED, W, H, "scene"),
+                    f_tex(&fx, MD_GPU_FORMAT_RGBA16_FLOAT, MD_GPU_TEX_STORAGE | MD_GPU_TEX_SAMPLED, W, H, "frame") };
+    ASSERT_TRUE(fp.cx && fp.pc);
+    md_gpu_texture_t hist[3], shown = f_tex(&fx, MD_GPU_FORMAT_RGBA16_FLOAT, MD_GPU_TEX_STORAGE | MD_GPU_TEX_SAMPLED, W, H, "shown");
+    for (int i = 0; i < 3; ++i) hist[i] = f_tex(&fx, MD_GPU_FORMAT_RGBA16_FLOAT, MD_GPU_TEX_STORAGE | MD_GPU_TEX_SAMPLED, W, H, "history");
+    uint16_t* h_blur = malloc(P * 8);
+    uint16_t* h_none = malloc(P * 8);
+    uint16_t* s_img  = malloc(P * 8);
+
+    const struct { float D, strength; } runs[] = { { 24.0f, 1.0f }, { 24.0f, 0.5f }, { 1.0f, 1.0f } };
+    for (int run = 0; run < 3; ++run) {
+        const float D = runs[run].D, k = runs[run].strength;
+        md_render_camera_t ca = make_camera(&c), cb = ca;
+        ca.view[12] = (float)(-0.5 * D * pw);       /* the rectangle 0.5 D left of the centre, then 0.5 D right of it */
+        cb.view[12] = (float)( 0.5 * D * pw);
+        md_render_frame_t f = frame_of(W, H, ca, &b, 1);
+        ASSERT_TRUE(f_frame(&fx, &fp, &f, NULL));
+        md_post_resolve_t r = { .view = fx.view, .camera = ca, .frame = fp.frame, .history = hist[0], .feedback_min = 0.8f, .feedback_max = 0.95f };
+        ASSERT_TRUE(md_post_resolve(fx.gfx, fp.pc, &r));
+        f = frame_of(W, H, cb, &b, 1);
+        ASSERT_TRUE(f_frame(&fx, &fp, &f, NULL));
+        r.camera = cb;
+        r.history_prev = hist[0];
+        r.history = hist[1];
+        r.motion_blur = k;
+        r.shown = shown;
+        r.seed = 7;
+        ASSERT_TRUE(md_post_resolve(fx.gfx, fp.pc, &r));
+        r.history = hist[2];
+        r.motion_blur = 0.0f;
+        r.shown = 0;
+        ASSERT_TRUE(md_post_resolve(fx.gfx, fp.pc, &r));
+        ASSERT_TRUE(f_read(&fx, hist[1], h_blur, P * 8) && f_read(&fx, hist[2], h_none, P * 8) && f_read(&fx, shown, s_img, P * 8));
+
+        EXPECT_EQ(0, memcmp(h_blur, h_none, P * 8));           /* the history without the blur */
+        const int cx0 = (int)(0.5 * W + 0.5 * D), cy0 = (int)(0.5 * H);    /* the rectangle's centre on the screen */
+        int far_n = 0, far_off = 0, all_off = 0;
+        for (uint32_t y = 0; y < H; ++y) for (uint32_t x = 0; x < W; ++x) {
+            const size_t p = (size_t)y * W + x;
+            const int same = memcmp(s_img + 4 * p, h_blur + 4 * p, 8) == 0;
+            all_off += !same;
+            const double dx = fabs(x + 0.5 - cx0), dy = fabs(y + 0.5 - cy0);
+            if (dx > hw + D + 32.0 || dy > hh + 32.0) { far_n++; far_off += !same; }
+        }
+        /* across an edge, from the inside: where the image goes 10 and 90 % of the way to the background, the mean of 5
+           lines about the middle */
+        const float in = half_bits_to_float(h_blur[4 * ((size_t)cy0 * W + cx0) + 1]);
+        const float bg = half_bits_to_float(h_blur[4 * ((size_t)cy0 * W + W - 1) + 1]);
+        double w_shown[2], w_hist[2];
+        for (int e = 0; e < 2; ++e) {          /* 0: the right edge, along the motion; 1: the top edge, across it */
+            for (int img = 0; img < 2; ++img) {
+                const uint16_t* im = img ? h_blur : s_img;
+                double x10 = -1, x90 = -1;
+                for (int t = 0; t < 60; ++t) {
+                    double v = 0.0;
+                    for (int l = -2; l <= 2; ++l) {
+                        const int x = e ? cx0 + l : cx0 + t, y = e ? cy0 - t : cy0 + l;
+                        if (x >= (int)W || y < 0) { v = 1.0; break; }
+                        v += 0.2 * (half_bits_to_float(im[4 * ((size_t)y * W + x) + 1]) - in) / (bg - in);
+                    }
+                    if (x10 < 0 && v >= 0.1) x10 = t;
+                    if (x90 < 0 && v >= 0.9) x90 = t;
+                }
+                (img ? w_hist : w_shown)[e] = x90 - x10;
+            }
+        }
+        const double want = 0.6 * D * k + 0.6;
+        printf("    moved %.0f px, strength %.1f: the image shown off the history at %d px, at %d of %d far from the motion; edge 10-90 %%: along the motion %.0f px (the history %.0f; the smear's %.1f), across it %.0f (%.0f)\n",
+               D, k, all_off, far_off, far_n, w_shown[0], w_hist[0], want, w_shown[1], w_hist[1]);
+        EXPECT_GT(far_n, 5000);
+        EXPECT_EQ(0, far_off);
+        if (D < 2.0f) {
+            EXPECT_EQ(0, all_off);
+        } else {
+            EXPECT_LE(w_hist[0], 2.0);
+            EXPECT_GT(w_shown[0], 0.8 * want - 2.0);
+            EXPECT_LT(w_shown[0], 1.2 * want + 2.0);
+            EXPECT_LE(w_shown[1], w_hist[1] + 1.0);
+        }
+    }
+
+    for (int i = 0; i < 3; ++i) md_gpu_texture_destroy(hist[i]);
+    md_gpu_texture_destroy(shown);
+    md_gpu_texture_destroy(fp.scene); md_gpu_texture_destroy(fp.frame);
+    md_post_destroy(fp.pc); md_compose_destroy(fp.cx);
+    free(h_blur); free(h_none); free(s_img);
+    f_close(&fx);
+}
+
 /* The marks over an image: a selected sphere in front of a highlighted one
    of tag 3 (its group's colour): the selection's tint where it is, the
    highlight's in its group's colour where it shows, its fill where it is

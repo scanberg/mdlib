@@ -1,6 +1,7 @@
 // md_post.slang -- the kernels of md_post.c: the display transform (viamd's
-// tonemap/display.frag), the temporal resolve (its temporal.frag, without the
-// motion blur) and the present with the marks (its marks pass).
+// tonemap/display.frag), the temporal resolve with the motion blur (its
+// temporal.frag, velocity/blit_tilemax.frag and blit_neighbormax.frag) and
+// the present with the marks (its marks pass).
 //
 // Pixels are x right, y down, their centres at + 0.5 (md_render's). Layout
 // rules of md_gpu.slang: no 3-vectors, 4-vectors at 16-byte offsets,
@@ -32,6 +33,11 @@ struct Args {
     DescriptorHandle<Texture2D<float4>>   mask;     // present: md_render's masks
     DescriptorHandle<SamplerState>        bilinear; // clamp to edge
     DescriptorHandle<RWTexture2D<float4>> dst;
+    uint   _p1, _p2;
+    float4 mb;          // the motion blur: x its scale (0: none), y the noise's seed, z, w the tiles across, down
+    float2* tmax;       // vel_tilemax's: a tile's fastest motion (frame pixels)
+    float2* tiles;      // vel_neighbormax's: the fastest about a tile, which the resolve blurs along
+    DescriptorHandle<RWTexture2D<float4>> dst2;     // resolve: the image shown, with the motion blur
 };
 MD_SHADER_ARGS(Args);
 
@@ -169,6 +175,121 @@ float4 weighted_3x3(float4 c[9], float3 wx, float3 wy) {
 
 static const float PREFILTER_K = 1.2;   // exp(-K d^2), d in the frame's pixels
 
+// ---- Motion blur ------------------------------------------------------------------
+// viamd's (temporal.frag's USE_MOTION_BLUR, after McGuire et al. 2012, "A
+// Reconstruction Filter for Plausible Motion Blur"): the frame's motion
+// reduced to tiles of VEL_TILE pixels, each the fastest of its nearest
+// surface (vel_tilemax), then to the fastest about each tile, VEL_EXTENT tiles
+// a side, of what is not behind it (vel_neighbormax): so a moving surface
+// smears over what is behind it, not the other way. The resolve samples the
+// frame along that motion, scaled, and blends it with the temporal result by
+// how fast it is (2 to 15 output pixels) into the image shown; the history
+// stays without it.
+
+static const int   VEL_TILE   = 8;
+static const int   VEL_EXTENT = 3;
+static const int   BLUR_TAPS  = 5;      // a side
+static const float TRUST_FULL = 2.0;    // output pixels of motion below which there is no blur
+static const float TRUST_NONE = 15.0;   // and above which it is all blur
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void vel_tilemax(uint3 tid : SV_DispatchThreadID) {
+    Args a  = MD_ARGS;
+    uint tw = uint(a.mb.z), th = uint(a.mb.w);
+    if (tid.x >= tw || tid.y >= th) return;
+    int2  base = int2(tid.xy) * VEL_TILE;
+    int2  hi   = min(base + VEL_TILE, int2(int(a.in_w), int(a.in_h)));
+    float zmin = 1e30;
+    for (int y = base.y; y < hi.y; ++y)
+        for (int x = base.x; x < hi.x; ++x) zmin = min(zmin, linear_depth(a, a.depth.Load(int3(x, y, 0))));
+    float  eps = 0.01 * zmin;     // a thickness, so the surface is not dropped for its quantisation
+    float2 mv  = float2(0.0);
+    float  mv2 = 0.0;
+    for (int y = base.y; y < hi.y; ++y) {
+        for (int x = base.x; x < hi.x; ++x) {
+            if (linear_depth(a, a.depth.Load(int3(x, y, 0))) > zmin + eps) continue;
+            float2 v = a.motion.Load(int3(x, y, 0));
+            if (dot(v, v) > mv2) { mv = v; mv2 = dot(v, v); }
+        }
+    }
+    a.tmax[tid.y * tw + tid.x] = mv;
+}
+
+// The linear depth at a tile's centre pixel
+float tile_depth(Args a, int2 t) {
+    return linear_depth(a, a.depth.Load(int3(clamp_in(a, t * VEL_TILE + VEL_TILE / 2), 0)));
+}
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void vel_neighbormax(uint3 tid : SV_DispatchThreadID) {
+    Args a  = MD_ARGS;
+    int  tw = int(a.mb.z), th = int(a.mb.w);
+    if (int(tid.x) >= tw || int(tid.y) >= th) return;
+    int2   t  = int2(tid.xy);
+    float  zc = tile_depth(a, t);
+    float2 mv = float2(0.0);
+    float  mv2 = 0.0;
+    for (int j = -VEL_EXTENT; j <= VEL_EXTENT; ++j) {
+        for (int i = -VEL_EXTENT; i <= VEL_EXTENT; ++i) {
+            int2 n = clamp(t + int2(i, j), int2(0), int2(tw - 1, th - 1));
+            if (tile_depth(a, n) > zc) continue;
+            float2 v = a.tmax[n.y * tw + n.x];
+            if (dot(v, v) > mv2) { mv = v; mv2 = dot(v, v); }
+        }
+    }
+    a.tiles[t.y * tw + t.x] = mv;
+}
+
+// The tiles' motion at a point of the frame (pixels), bilinear between the
+// tiles' centres
+float2 tiles_at(Args a, float2 px) {
+    int    tw = int(a.mb.z), th = int(a.mb.w);
+    float2 tp = px / float(VEL_TILE) - 0.5;
+    float2 b  = floor(tp);
+    float2 f  = tp - b;
+    int2   t0 = clamp(int2(b), int2(0), int2(tw - 1, th - 1));
+    int2   t1 = clamp(int2(b) + 1, int2(0), int2(tw - 1, th - 1));
+    float2 v00 = a.tiles[t0.y * tw + t0.x], v10 = a.tiles[t0.y * tw + t1.x];
+    float2 v01 = a.tiles[t1.y * tw + t0.x], v11 = a.tiles[t1.y * tw + t1.x];
+    return lerp(lerp(v00, v10, f.x), lerp(v01, v11, f.x), f.y);
+}
+
+// in [-1, 1] (Playdead's PDsrand)
+float pd_srand(float2 n) { return frac(sin(dot(n, float2(12.9898, 78.233))) * 43758.5453) * 2.0 - 1.0; }
+
+// The frame along vt (uv) about uv: 2 BLUR_TAPS + 1 samples over half of it
+// each way, weighted by a triangle, offset by a noise that breaks up the
+// trailing shells into grain
+float4 sample_motion(Args a, float2 uv, float2 vt) {
+    float2 v    = 0.5 * vt;
+    float  sr   = pd_srand(uv + float2(a.mb.y, a.mb.y));
+    float2 vtap = v / float(BLUR_TAPS);
+    float2 pos0 = uv + sr * vtap * 0.5;
+    float4 acc  = float4(0.0);
+    float  wsum = 0.0;
+    for (int i = -BLUR_TAPS; i <= BLUR_TAPS; ++i) {
+        float w = float(BLUR_TAPS - abs(i) + 1);
+        acc  += w * a.src.SampleLevel(a.bilinear, pos0 + float(i) * vtap, 0.0);
+        wsum += w;
+    }
+    return acc / wsum;
+}
+
+// The image shown at the output pixel tid from the temporal result c: c, or
+// blended with the frame along the motion
+void write_shown(Args a, uint3 tid, float2 g_px, float2 j, float4 c) {
+    if (a.mb.x <= 0.0) return;
+    float2 in_size  = float2(float(a.in_w), float(a.in_h));
+    float2 out_size = float2(float(a.out_w), float(a.out_h));
+    float2 sv    = a.mb.x * tiles_at(a, g_px);                 // frame pixels
+    float  speed = length(sv * out_size / in_size);            // output pixels
+    float  trust = 1.0 - clamp(speed - TRUST_FULL, 0.0, TRUST_NONE - TRUST_FULL) / (TRUST_NONE - TRUST_FULL);
+    float4 cm    = trust < 1.0 ? sample_motion(a, (g_px - j) / in_size, sv / in_size) : c;
+    a.dst2[int2(tid.xy)] = lerp(cm, c, trust);
+}
+
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void resolve(uint3 tid : SV_DispatchThreadID) {
@@ -231,6 +352,7 @@ void resolve(uint3 tid : SV_DispatchThreadID) {
     }
     if (a.has_prev == 0u) {
         a.dst[int2(tid.xy)] = texel0;
+        write_shown(a, tid, g_px, j, texel0);
         return;
     }
     float4 texel1 = a.prev.SampleLevel(a.bilinear, tc - vel, 0.0);
@@ -250,7 +372,9 @@ void resolve(uint3 tid : SV_DispatchThreadID) {
     float lum0 = luminance(texel0.rgb), lum1 = luminance(texel1.rgb);
     float unbiased = 1.0 - abs(lum0 - lum1) / max(lum0, max(lum1, 0.2));
     float fb = lerp(a.tm.z, a.tm.w, unbiased * unbiased);
-    a.dst[int2(tid.xy)] = upscale ? lerp(texel1, texel0, (1.0 - fb) * confidence) : lerp(texel0, texel1, fb);
+    float4 res = upscale ? lerp(texel1, texel0, (1.0 - fb) * confidence) : lerp(texel0, texel1, fb);
+    a.dst[int2(tid.xy)] = res;
+    write_shown(a, tid, g_px, j, res);
 }
 
 // ---- Present ------------------------------------------------------------------------

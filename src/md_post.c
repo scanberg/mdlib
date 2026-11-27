@@ -21,8 +21,14 @@ typedef struct gpu_post_args_t {
     md_gpu_sampled_tex_t src, prev, depth, motion, mask;
     md_gpu_sampler_t     bilinear;
     md_gpu_storage_tex_t dst;
+    uint32_t             _p1, _p2;
+    md_gpu_float4        mb;            /* the motion blur: scale, the noise's seed, the tiles across, down */
+    md_gpu_addr_t        tmax, tiles;
+    md_gpu_storage_tex_t dst2;
 } gpu_post_args_t;
-_Static_assert(sizeof(gpu_post_args_t) == 416, "Args mirror");
+_Static_assert(sizeof(gpu_post_args_t) == 464, "Args mirror");
+
+enum { VEL_TILE = 8 };  /* md_post.slang's */
 
 /* md_post_overlay.slang's Args and Item */
 typedef struct gpu_overlay_args_t {
@@ -51,7 +57,7 @@ static const md_gpu_format_t ui_formats[2] = { MD_GPU_FORMAT_RGBA8_UNORM, MD_GPU
 
 struct md_post {
     md_gpu_device_t   dev;
-    md_gpu_kernel_t   k_display, k_resolve, k_present;
+    md_gpu_kernel_t   k_display, k_resolve, k_present, k_tilemax, k_neighbormax;
     md_gpu_pipeline_t overlay;
     md_gpu_pipeline_t ui[2][2];    /* ui_formats', straight and premultiplied */
     md_gpu_sampler_t  bilinear;
@@ -71,6 +77,8 @@ md_post_ctx_t md_post_create(md_gpu_device_t device) {
     kd = md_shader_md_post_display_kernel(); p->k_display = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_post_resolve_kernel(); p->k_resolve = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_post_present_kernel(); p->k_present = md_gpu_kernel_create(device, &kd);
+    kd = md_shader_md_post_vel_tilemax_kernel();     p->k_tilemax     = md_gpu_kernel_create(device, &kd);
+    kd = md_shader_md_post_vel_neighbormax_kernel(); p->k_neighbormax = md_gpu_kernel_create(device, &kd);
     md_gpu_sampler_desc_t sd = {0};
     sd.min_filter = sd.mag_filter = MD_GPU_FILTER_LINEAR;
     p->bilinear = md_gpu_sampler(device, &sd);
@@ -108,7 +116,7 @@ md_post_ctx_t md_post_create(md_gpu_device_t device) {
             ui_ok = ui_ok && p->ui[i][m];
         }
     }
-    if (!p->k_display || !p->k_resolve || !p->k_present || !p->overlay || !ui_ok || !p->bilinear.handle) {
+    if (!p->k_display || !p->k_resolve || !p->k_present || !p->k_tilemax || !p->k_neighbormax || !p->overlay || !ui_ok || !p->bilinear.handle) {
         MD_LOG_ERROR("md_post: kernel creation failed: %s", md_gpu_last_error());
         md_post_destroy(p);
         return NULL;
@@ -121,6 +129,8 @@ void md_post_destroy(md_post_ctx_t p) {
     if (p->k_display) md_gpu_kernel_destroy(p->k_display);
     if (p->k_resolve) md_gpu_kernel_destroy(p->k_resolve);
     if (p->k_present) md_gpu_kernel_destroy(p->k_present);
+    if (p->k_tilemax) md_gpu_kernel_destroy(p->k_tilemax);
+    if (p->k_neighbormax) md_gpu_kernel_destroy(p->k_neighbormax);
     if (p->overlay)   md_gpu_pipeline_destroy(p->overlay);
     for (int i = 0; i < 2; ++i) {
         for (int m = 0; m < 2; ++m) {
@@ -217,6 +227,11 @@ bool md_post_resolve(md_gpu_stream_t s, md_post_ctx_t p, const md_post_resolve_t
         MD_LOG_ERROR("md_post_resolve: the history is to be another texture than the previous one");
         return false;
     }
+    const bool blur = d->motion_blur > 0.0f;
+    if (blur && (!tex_ok(d->shown, MD_GPU_FORMAT_RGBA16_FLOAT, MD_GPU_TEX_STORAGE, hd->width, hd->height) || d->shown == d->history)) {
+        MD_LOG_ERROR("md_post_resolve: with the motion blur, the image shown is to be another STORAGE 2D texture of RGBA16_FLOAT, of the history's size");
+        return false;
+    }
     const float* P = d->camera.proj;
     const bool ortho = P[3] == 0.0f && P[7] == 0.0f && P[11] == 0.0f && P[15] == 1.0f;
     gpu_post_args_t a;
@@ -237,7 +252,20 @@ bool md_post_resolve(md_gpu_stream_t s, md_post_ctx_t p, const md_post_resolve_t
     a.motion   = md_gpu_texture_sampled(t.motion);
     a.bilinear = p->bilinear;
     a.dst      = md_gpu_texture_storage(d->history, 0);
-    return launch(s, p->k_resolve, a.out_w, a.out_h, &a);
+    a.dst2     = md_gpu_texture_storage(blur ? d->shown : d->history, 0);
+    if (!blur) return launch(s, p->k_resolve, a.out_w, a.out_h, &a);
+
+    /* the motion reduced to tiles, then to the fastest about each, for the
+       resolve to blur along */
+    const uint32_t tw = (vd->width + VEL_TILE - 1) / VEL_TILE, th = (vd->height + VEL_TILE - 1) / VEL_TILE;
+    a.mb = f4(d->motion_blur, (float)(d->seed % 1000u) * 0.01f, (float)tw, (float)th);
+    md_gpu_temp_t scope = md_gpu_temp_begin(s);
+    a.tmax  = md_gpu_temp_alloc(scope, MD_GPU_MEM_DEVICE, (size_t)tw * th * 8u).gpu;
+    a.tiles = md_gpu_temp_alloc(scope, MD_GPU_MEM_DEVICE, (size_t)tw * th * 8u).gpu;
+    bool ok = a.tmax && a.tiles && launch(s, p->k_tilemax, tw, th, &a) && launch(s, p->k_neighbormax, tw, th, &a) &&
+              launch(s, p->k_resolve, a.out_w, a.out_h, &a);
+    md_gpu_temp_end(scope);
+    return ok;
 }
 
 bool md_post_present(md_gpu_stream_t s, md_post_ctx_t p, const md_post_present_t* d) {

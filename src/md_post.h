@@ -16,8 +16,8 @@ the caller passes back (the history).
          |  md_post_ui         a UI's draw lists over that, or over a swapchain
     the caller's present (a swapchain, or an OpenGL blit)
 
-Ported from viamd's post-processing (tonemap/display.frag, temporal.frag,
-its marks pass), without the motion blur. The resolve runs on display
+Ported from viamd's post-processing (tonemap/display.frag, temporal.frag
+with its motion blur, its marks pass). The resolve runs on display
 referred, encoded values (after the curve), as viamd's did: no HDR
 fireflies in the history.
 */
@@ -72,7 +72,14 @@ bool md_post_display(md_gpu_stream_t stream, md_post_ctx_t post, const md_post_d
    luminance; where the 3x3 holds detail finer than a pixel the frame is taken
    from all nine samples (the prefilter). Upscaling (the history larger than the
    frame) blends each output pixel by how near a sample came to it, so a still
-   image converges to the output's resolution. */
+   image converges to the output's resolution.
+   With the motion blur (viamd's, after McGuire et al. 2012): md_render's motion
+   reduced to the fastest of the nearest surface in tiles of 8 pixels, then to
+   the fastest about each tile, 3 tiles a side, of what is not behind it; this
+   frame sampled along that motion times motion_blur (11 samples over it, a
+   triangle, offset by a noise) and blended with the temporal result by its
+   speed, none below 2 output pixels and all of it from 15, into `shown`. The
+   history stays without it. */
 typedef struct md_post_resolve_t {
     md_render_view_t view;         /* the frame's depth and motion (its targets)   */
     md_render_camera_t camera;     /* as the view was drawn: the depths' distances */
@@ -85,6 +92,12 @@ typedef struct md_post_resolve_t {
                                       the output's size (the frame's or larger)    */
     float            feedback_min; /* 0.80 */
     float            feedback_max; /* 0.95 */
+    float            motion_blur;  /* of the frame's motion, how much is smeared:
+                                      viamd's strength (1) times 1/60 s over the
+                                      frame's time; 0: none                       */
+    md_gpu_texture_t shown;        /* with the motion blur: the image to show,
+                                      RGBA16_FLOAT, STORAGE, of the history's size */
+    uint32_t         seed;         /* the motion blur's noise: another each frame  */
 } md_post_resolve_t;
 
 bool md_post_resolve(md_gpu_stream_t stream, md_post_ctx_t post, const md_post_resolve_t* desc);
