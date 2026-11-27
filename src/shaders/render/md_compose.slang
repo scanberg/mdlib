@@ -59,8 +59,9 @@ struct Args {
     DescriptorHandle<Texture2D<float>>    shadow;   // the light view's depth: reverse Z, orthographic
     float2 jit;                 // the raster's subpixel offset, pixels: the rays through it
     uint*  blocks;              // the volumes' blocks: 1 where one may hold a crossing or emit (vol_blocks)
-    uint   block_vol;           // vol_blocks': the volume
+    uint   block_vol;           // vol_blocks' and vol_transfer_prep's: the volume
     uint   _bp;
+    float4* tf;                 // the volumes' transfer functions, linear: colour, extinction (vol_transfer_prep)
 };
 MD_SHADER_ARGS(Args);
 
@@ -550,7 +551,7 @@ Lit shade(Args a, float3 color, float3 V, float3 N, float ao, float sh) {
 //   32..34 world to view (columns), for the normals
 //   35     the colour field's voxels per axis
 //   36     its blocks (vol_blocks) per axis, w: the first one's index in blocks
-//   7.z    the transfer function's texels
+//   7.z    the transfer function's texels, w: the first one's index in tf
 
 static const uint  VOL_STRIDE       = 37u;
 static const uint  BLOCK            = 8u;      // voxels per block side (vol_blocks)
@@ -569,16 +570,6 @@ float vol_field(Args a, uint v, float3 p) {
     case 1u: return a.vf1.SampleLevel(a.trilinear, p, 0.0);
     case 2u: return a.vf2.SampleLevel(a.trilinear, p, 0.0);
     default: return a.vf3.SampleLevel(a.trilinear, p, 0.0);
-    }
-}
-
-float4 vol_transfer(Args a, uint v, float t) {
-    float2 uv = float2(t, 0.5);
-    switch (v) {
-    case 0u: return a.vt0.SampleLevel(a.trilinear, uv, 0.0);
-    case 1u: return a.vt1.SampleLevel(a.trilinear, uv, 0.0);
-    case 2u: return a.vt2.SampleLevel(a.trilinear, uv, 0.0);
-    default: return a.vt3.SampleLevel(a.trilinear, uv, 0.0);
     }
 }
 
@@ -794,6 +785,49 @@ void vol_blocks(uint3 tid : SV_DispatchThreadID) {
         for (int k = k0; k <= k1 && flag == 0u; ++k) if (transfer_alpha(a, v, k) > 0.0) flag = 1u;
     }
     a.blocks[uint(g.w) + i] = flag;
+}
+
+// A volume's transfer function as the march reads it, a texel a thread: its colour linear, its opacity (that of a
+// slab 1/REF_SAMPLING of the box) as the extinction -ln(1 - a), which a sample's opacity over w such slabs is
+// 1 - exp(-w that) of (the same as 1 - (1 - a)^w, one exp in place of a pow and the colour's three).
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void vol_transfer_prep(uint3 tid : SV_DispatchThreadID) {
+    Args a = MD_ARGS;
+    uint v = a.block_vol;
+    int  k = int(tid.x);
+    if (k >= int(vrec(a, v, 7u).z)) return;
+    float4 c;
+    switch (v) {
+    case 0u: c = a.vt0.Load(int3(k, 0, 0)); break;
+    case 1u: c = a.vt1.Load(int3(k, 0, 0)); break;
+    case 2u: c = a.vt2.Load(int3(k, 0, 0)); break;
+    default: c = a.vt3.Load(int3(k, 0, 0)); break;
+    }
+    a.tf[uint(vrec(a, v, 7u).w) + uint(k)] = float4(srgb_to_linear(c.rgb), -log(max(1.0 - c.a, 1e-6)));
+}
+
+// vol_transfer_prep's at t in [0, 1], filtered as the sampler would (linear, clamped at the ends)
+float4 transfer_lin(Args a, uint v, float t) {
+    float4 r  = vrec(a, v, 7u);
+    int    W  = int(r.z);
+    uint   o  = uint(r.w);
+    float  x  = t * float(W) - 0.5, fx = floor(x);
+    int    i0 = clamp(int(fx), 0, W - 1), i1 = clamp(int(fx) + 1, 0, W - 1);
+    return lerp(a.tf[o + uint(i0)], a.tf[o + uint(i1)], x - fx);
+}
+
+// The step's sample of each volume emitting there (its value fprev, fetched for the crossings) through its transfer
+// function, with the opacity of the step's length in texture space
+void emit(Args a, inout float3 C, inout float T, uint nv, float tb, float dt, float2 vr[MAX_VOL], float3 vd[MAX_VOL], float fprev[MAX_VOL]) {
+    for (uint v = 0u; v < nv; ++v) {
+        if (vrec(a, v, 6u).w < 0.5 || tb < vr[v].x || tb > vr[v].y) continue;
+        float  u  = saturate((fprev[v] - vrec(a, v, 4u).w) * vrec(a, v, 5u).w);
+        float4 tf = transfer_lin(a, v, u);
+        float  al = 1.0 - exp(-tf.a * dt * length(vd[v]) * REF_SAMPLING);
+        C += T * al * tf.rgb;
+        T *= 1.0 - al;
+    }
 }
 
 // Along o + t d (texture space) from t: on to where the ray leaves the block it is in there when that block is
@@ -1250,9 +1284,18 @@ void compose(uint3 tid : SV_DispatchThreadID) {
                 fprev[v] = fb;
                 if (ub >= vr[v].y) { float et = vr[v].y; uint ee = v | (EV_END << 8); if (nh < MAX_HITS) { uint j = nh++; while (j > 0u && ht[j - 1u] > et) { ht[j] = ht[j - 1u]; he[j] = he[j - 1u]; --j; } ht[j] = et; he[j] = ee; } }    // it ends here: no more of its density
             }
-            // the events in order: crossings, layers, the emission's sample
+            // the events in order: crossings, layers, the emission's sample; the emission alone (the most steps
+            // where a volume emits) without the events' loop
             uint ih = 0u;
             bool emitted = !emits || tb >= t_end;
+            if (nh == 0u && !(kl < nl && tl[kl] <= tb)) {
+                if (!emitted) {
+                    if (tau > 0.0) T *= exp(-tau * max(tb - t_abs, 0.0));
+                    t_abs = max(t_abs, tb);
+                    emit(a, C, T, nv, tb, dt, vr, vd, fprev);
+                }
+                continue;
+            }
             for (uint guard = 0u; guard < 32u; ++guard) {
                 float th = ih < nh ? ht[ih] : T_FAR;
                 float tk = kl < nl && tl[kl] <= tb ? tl[kl] : T_FAR;
@@ -1287,19 +1330,7 @@ void compose(uint3 tid : SV_DispatchThreadID) {
                     }
                 } else {
                     emitted = true;
-                    // each volume there through its transfer function, the
-                    // opacity for the step's length in texture space: the
-                    // step's sample, fetched for the crossings (fprev)
-                    for (uint v = 0u; v < nv; ++v) {
-                        if (vrec(a, v, 6u).w < 0.5 || tb < vr[v].x || tb > vr[v].y) continue;
-                        float  f  = fprev[v];
-                        float  u  = saturate((f - vrec(a, v, 4u).w) * vrec(a, v, 5u).w);
-                        float4 tf = vol_transfer(a, v, u);
-                        float  w  = dt * length(vd[v]) * REF_SAMPLING;
-                        float  al = 1.0 - pow(max(1.0 - tf.a, 1e-6), w);
-                        C += T * al * srgb_to_linear(tf.rgb);
-                        T *= 1.0 - al;
-                    }
+                    emit(a, C, T, nv, tb, dt, vr, vd, fprev);
                 }
             }
         }
