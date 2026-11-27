@@ -574,7 +574,7 @@ struct md_render_view {
     float               jitter[2];
 
     /* GPU */
-    md_gpu_addr_t       view_buf;
+    md_gpu_addr_t       view_buf;          /* ViewData, then the masks' (unjittered) */
     md_gpu_addr_t       batch_buf;
     uint32_t            batch_buf_cap;
     md_gpu_addr_t       xform_buf;         /* current then previous per batch  */
@@ -1741,11 +1741,16 @@ static const char* run_resolve(md_gpu_stream_t s, md_render_view_t v, const md_r
 
 /* The visible part from the ids; the hidden part by rasterising the state
    lists of the cull without a depth test, so it costs as much as the
-   selection and not the system. */
+   selection and not the system. That raster is of the view unjittered (the
+   second ViewData): where the marks are at all, and so their outline, holds
+   still while the raster's jitter moves the image (the cull's lists are of
+   the jittered frustum, padded by the jitter: they hold the unjittered
+   one's). The visible part is the raster's own, jittered with the image. */
 static bool run_masks(md_gpu_stream_t s, md_render_view_t v, const md_render_frame_t* f) {
     gpu_args_t a = base_args(v);
     md_gpu_grid_t g = md_gpu_grid_for(v->r->k_mask_visible, v->width, v->height, 1);
     if (!md_gpu_launch(s, v->r->k_mask_visible, g, &a, sizeof(a))) return false;
+    a.view = v->view_buf + sizeof(gpu_view_t);
 
     bool has[HW_KINDS] = { false, false, false, false, false };
     bool any = false;
@@ -2031,7 +2036,7 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
         gv.jitter_px       = fabsf(jx) > fabsf(jy) ? fabsf(jx) : fabsf(jy);
         gv.occl_margin     = g_occl_margin;
         gv.occl_min_px     = g_occl_min_px;
-        if (!v->view_buf) v->view_buf = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(gpu_view_t)).gpu;
+        if (!v->view_buf) v->view_buf = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, 2 * sizeof(gpu_view_t)).gpu;
         if (!v->view_buf) return false;
         md_gpu_upload(s, v->view_buf, &gv, sizeof(gv));
 
@@ -2048,6 +2053,20 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
         gv.spl_group  = spline_group_for(v->r->vendor_id);
         gv.spl_order  = g_spline_order;
         md_gpu_upload(s, v->view_buf, &gv, sizeof(gv));
+        /* The masks' raster (run_masks): the same view unjittered, so the marks,
+           and the outline drawn from them, hold still under the jitter */
+        {
+            gpu_view_t gm = gv;
+            float inv_cur[16];
+            if (!mat_inverse(inv_cur, f->camera.proj)) {
+                MD_LOG_ERROR("md_render: singular camera matrix");
+                return false;
+            }
+            put_mat(gm.m[M_PROJ],     f->camera.proj);
+            put_mat(gm.m[M_INV_PROJ], inv_cur);
+            gm.jitter_px = 0.0f;
+            md_gpu_upload(s, v->view_buf + sizeof(gpu_view_t), &gm, sizeof(gm));
+        }
 
         uint64_t work[HW_KINDS] = { 0, 0, 0, 0, 0 };
         bool has_kind[HW_KINDS] = { false, false, false, false, false };

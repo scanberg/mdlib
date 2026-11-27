@@ -694,7 +694,9 @@ typedef struct md_render_targets_t {
     md_gpu_texture_t mask;     /* RGBA8_UNORM: state 0 visible, state 0 anywhere
                                   (also hidden), state 1 visible, state 1 anywhere;
                                   0 where not, else (8 + tag) / 15: the visible
-                                  surface's tag, of anywhere the largest            */
+                                  surface's tag, of anywhere the largest. Visible:
+                                  of the raster, jittered as the image; anywhere:
+                                  of the view unjittered, still under the jitter  */
     /* The transparent layers (TRANSPARENCY), while the frame last drawn has
        transparent batches (else 0): three planes of layer_count x
        layer_stride words, layer i of pixel p (y * width + x) at

@@ -6371,6 +6371,70 @@ UTEST(render, masks_visible_and_hidden) {
     f_close(&fx);
 }
 
+/* Where the marks are at all (the anywhere channels, which the outline is drawn from) is of the view unjittered: the
+   same, to the bit, whatever the raster's jitter, for spheres, capsules and triangles, in front and behind, in
+   perspective and orthographic; the visible channels, of the raster's ids, move with the jitter. */
+UTEST(render, masks_anywhere_hold_still_under_the_jitter) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    const uint32_t W = 96, H = 64, P = W * H;
+    /* spheres: 0 selected, 1 in front of its right half, 2 highlighted */
+    float sp[9] = { -1.5f, 0.5f, -20,   -0.5f, 0.5f, -14,   2.5f, 1.0f, -16 };
+    uint32_t s_sel = 1u << 0, s_hl = 1u << 2;
+    /* capsules: 0 selected (both its points), 1 across in front of it */
+    float cp[12] = { -3.0f, -1.5f, -18,   1.0f, -1.0f, -18,   -1.0f, -2.5f, -12,   -0.5f, 0.0f, -12 };
+    uint32_t c_sel = 3u, c_hl = 0u;
+    /* a quad highlighted, behind sphere 2 */
+    float q[12] = { 1.5f, -2.0f, -24,   4.0f, -2.0f, -24,   4.0f, 0.5f, -24,   1.5f, 0.5f, -24 };
+    const uint32_t tri[6] = { 0, 1, 2, 0, 2, 3 };
+    uint32_t t_sel = 0u, t_hl = 15u;
+    md_render_batch_t b[3];
+    memset(b, 0, sizeof(b));
+    b[0].key = 1; b[0].kind = MD_RENDER_SPHERES; b[0].count = 3; b[0].points.count = 3;
+    b[0].points.position = f_buf(&fx, sp, sizeof(sp)); b[0].points.marks = f_marks(&fx, &s_sel, &s_hl, 32);
+    b[0].style.spheres.radius_add = 1.0f;
+    b[1].key = 2; b[1].kind = MD_RENDER_CAPSULES; b[1].count = 2; b[1].points.count = 4;
+    b[1].points.position = f_buf(&fx, cp, sizeof(cp)); b[1].points.marks = f_marks(&fx, &c_sel, &c_hl, 32);
+    b[1].style.capsules.radius = 0.3f;
+    b[2].key = 3; b[2].kind = MD_RENDER_TRIANGLES; b[2].count = 2; b[2].points.count = 4;
+    b[2].points.position = f_buf(&fx, q, sizeof(q)); b[2].index = f_buf(&fx, tri, sizeof(tri));
+    b[2].points.marks = f_marks(&fx, &t_sel, &t_hl, 32);
+    uint8_t* m0 = malloc(P * 4);
+    uint8_t* mj = malloc(P * 4);
+    const float jit[4][2] = { { 0.3f, -0.2f }, { -0.45f, 0.1f }, { 0.25f, 0.45f }, { -0.1f, -0.4f } };
+    for (int ortho = 0; ortho < 2; ++ortho) {
+        cam_t c = ortho ? (cam_t){ .ortho = true, .half_h = 3.5f, .aspect = (float)W / H, .n = 0.0f, .far_ = 100.0f }
+                        : (cam_t){ .tan_half = 0.2f, .aspect = (float)W / H, .n = 0.1f };
+        md_render_frame_t f = frame_of(W, H, make_camera(&c), b, 3);
+        ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+        ASSERT_TRUE(f_read(&fx, md_render_view_targets(fx.view).mask, m0, P * 4));
+        int marked = 0, hidden = 0;
+        for (uint32_t p = 0; p < P; ++p) {
+            marked += m0[4 * p + 1] != 0 || m0[4 * p + 3] != 0;
+            hidden += (m0[4 * p + 1] != 0 && m0[4 * p + 0] == 0) || (m0[4 * p + 3] != 0 && m0[4 * p + 2] == 0);
+        }
+        int anywhere_off = 0, visible_off = 0;
+        f.jitter = MD_RENDER_JITTER_GIVEN;
+        for (int k = 0; k < 4; ++k) {
+            f.jitter_offset[0] = jit[k][0]; f.jitter_offset[1] = jit[k][1];
+            ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+            ASSERT_TRUE(f_read(&fx, md_render_view_targets(fx.view).mask, mj, P * 4));
+            for (uint32_t p = 0; p < P; ++p) {
+                anywhere_off += mj[4 * p + 1] != m0[4 * p + 1] || mj[4 * p + 3] != m0[4 * p + 3];
+                visible_off  += mj[4 * p + 0] != m0[4 * p + 0] || mj[4 * p + 2] != m0[4 * p + 2];
+            }
+        }
+        printf("    %s: %d pixels marked (%d hidden); over 4 jitters, the anywhere channels off the unjittered at %d, the visible at %d\n",
+               ortho ? "orthographic" : "perspective", marked, hidden, anywhere_off, visible_off);
+        EXPECT_GT(marked, 600);
+        EXPECT_GT(hidden, 50);
+        EXPECT_EQ(0, anywhere_off);
+        EXPECT_GT(visible_off, 20);
+    }
+    free(m0); free(mj);
+    f_close(&fx);
+}
+
 /* The export copies the targets into the caller's textures, bit for bit:
    depth, the colour with the mask's channels as bits in its alpha, the normal
    and the motion together */
