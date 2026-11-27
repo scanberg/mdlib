@@ -4964,8 +4964,6 @@ UTEST(gto_iso_gpu_lib, evaluate_matches_cpu) {
             {"scf density",       {2},          1, 0},
             {"mixed",             {0, 2, 3, 1}, 4, 0},
             {"densities, D form", {2, 3},       2, 1},
-            {"densities, D form n8", {2, 3},    2, 3},     // the variants' kernels (GTO_ISO_DFORM)
-            {"densities, D form n4", {2, 3},    2, 2},
         };
         for (int ci = 0; ci < (int)(sizeof(cases) / sizeof(cases[0])); ++ci) {
             const ev_case_t* c = &cases[ci];

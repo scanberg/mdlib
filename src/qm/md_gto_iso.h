@@ -508,8 +508,7 @@ size_t md_gto_iso_gpu_profile_print(const md_gto_iso_gpu_profile_t* profile, cha
 // The switches (also read from GTO_ISO_* in the environment at initialization)
 typedef struct md_gto_iso_gpu_switches_t {
     int  eval_eps_exp;      // the AO cutoff 1e-N of the evaluations and the octree's culling (4..12, default 6)
-    int  dform;             // sets of densities: corners and vertices as phi^T D phi, 1..3 the kernels' variant (GTO_ISO_DFORM in
-                            // md_gto_iso_gpu.inl); 0 off (default; on regardless past 1024 functions, 1's kernels unless 2 or 3)
+    bool dform;             // sets of densities: corners and vertices as phi^T D phi (default off; on regardless past 1024 functions)
     int  flood;             // APPROXIMATE corners from seeds and a flood: 0 off, 1 densities whose maxima are at the atoms (default), 2 every field
 } md_gto_iso_gpu_switches_t;
 
