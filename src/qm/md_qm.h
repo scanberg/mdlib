@@ -33,6 +33,7 @@
 
 struct md_gto_basis_t;
 struct md_allocator_i;
+struct md_gto_dmat_t;
 
 #ifdef __cplusplus
 extern "C" {
@@ -220,6 +221,16 @@ size_t md_qm_density_orbitals(double** out_rows, double** out_weights, size_t* o
 // a density with nothing to read, or zero.
 size_t md_qm_density_factors(double** out_rows, double** out_weights, size_t* out_num_ao, const struct md_system_t* sys,
                              md_str_t density_path, const struct md_attribute_slice_t* slice, struct md_allocator_i* alloc);
+
+// The density at density_path into the tiles dm (md_gto_dmat_init'ed for the system's basis, AO for AO), D = sum_k w_k
+// f_k f_k^T over its factors, as md_gto_dmat_build of md_qm_density_factors' would make them - bit for bit - without
+// holding them all: an SCF density's orbitals are read max_rows at a time (0: 256 MB of them; runs of the orbital
+// attribute, md_attribute_slice_rows) and added in turn (md_gto_dmat_add), so a system of 100k AOs never holds its
+// occupied fifth (16 GB); another density's factors (an excited state's: slice its state) are read as
+// md_qm_density_factors reads them. Over executor (NULL: the calling thread). Returns how many factors made it; 0 when
+// there are none (no such density, or a zero one: the tiles then not touched) or on failure (logged).
+size_t md_qm_density_dmat_build(struct md_gto_dmat_t* dm, const struct md_system_t* sys, md_str_t density_path,
+                                const struct md_attribute_slice_t* slice, size_t max_rows, const struct md_executor_t* executor);
 
 // Whether md_qm_density_factors has the density at density_path: an SCF density's orbitals (orbital/alpha/density: the
 // alpha orbitals and occupations; beta: the beta ones, which a restricted calculation publishes as a second name for

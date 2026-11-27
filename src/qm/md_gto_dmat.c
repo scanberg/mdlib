@@ -264,20 +264,37 @@ static void dmat_build_rows(void* arg, uint32_t beg, uint32_t end, uint32_t thre
     }
 }
 
+bool md_gto_dmat_clear(md_gto_dmat_t* dm) {
+    if (!dm || !dm->perm) {
+        MD_LOG_ERROR("md_gto_dmat_clear: invalid arguments");
+        return false;
+    }
+    if (!dm->tiles) {
+        dm->tiles = dmat_alloc(dm->alloc, sizeof(double) * 256 * dm->num_tiles);
+        if (!dm->tiles) {
+            MD_LOG_ERROR("md_gto_dmat_clear: out of memory (%llu tiles)", (unsigned long long)dm->num_tiles);
+            return false;
+        }
+    }
+    md_memset(dm->tiles, 0, sizeof(double) * 256 * dm->num_tiles);
+    return true;
+}
+
 bool md_gto_dmat_build(md_gto_dmat_t* dm, const double* coeff, size_t mo_stride, size_t ao_stride, const double* weight, size_t num_mo,
                        const md_executor_t* executor) {
     if (!dm || !dm->perm || !coeff || !weight) {
         MD_LOG_ERROR("md_gto_dmat_build: invalid arguments");
         return false;
     }
-    if (!dm->tiles) {
-        dm->tiles = dmat_alloc(dm->alloc, sizeof(double) * 256 * dm->num_tiles);
-        if (!dm->tiles) {
-            MD_LOG_ERROR("md_gto_dmat_build: out of memory (%llu tiles)", (unsigned long long)dm->num_tiles);
-            return false;
-        }
+    return md_gto_dmat_clear(dm) && md_gto_dmat_add(dm, coeff, mo_stride, ao_stride, weight, num_mo, executor);
+}
+
+bool md_gto_dmat_add(md_gto_dmat_t* dm, const double* coeff, size_t mo_stride, size_t ao_stride, const double* weight, size_t num_mo,
+                     const md_executor_t* executor) {
+    if (!dm || !dm->perm || !dm->tiles || !coeff || !weight) {
+        MD_LOG_ERROR("md_gto_dmat_add: invalid arguments (or no md_gto_dmat_clear first)");
+        return false;
     }
-    md_memset(dm->tiles, 0, sizeof(double) * 256 * dm->num_tiles);
     md_allocator_i* heap = md_get_heap_allocator();
     const size_t ntao = (size_t)DMAT_T * dm->nt;
     double*   P    = dmat_alloc(heap, sizeof(double) * ntao * DMAT_CHUNK);
@@ -303,10 +320,11 @@ bool md_gto_dmat_build(md_gto_dmat_t* dm, const double* coeff, size_t mo_stride,
     dmat_free_array(heap, w, sizeof(double) * DMAT_CHUNK);
     dmat_free_array(heap, kept, sizeof(uint32_t) * DMAT_CHUNK);
     if (!ok) {
-        MD_LOG_ERROR("md_gto_dmat_build: out of memory or cancelled");
+        MD_LOG_ERROR("md_gto_dmat_add: out of memory or cancelled");
         return false;
     }
-    // A diagonal tile exactly symmetric, as D is: its upper triangle mirrored
+    // A diagonal tile exactly symmetric, as D is: its upper triangle mirrored (the next add's lower triangle is
+    // overwritten again, so the upper one alone decides)
     for (uint32_t I = 0; I < dm->nt; ++I) {
         if (dm->row_ptr[I] == dm->row_ptr[I + 1] || dm->cols[dm->row_ptr[I]] != I) continue;
         double* tile = dm->tiles + 256 * dm->row_ptr[I];

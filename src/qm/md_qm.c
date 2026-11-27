@@ -3,6 +3,7 @@
 #include <md_system.h>
 #include <md_gto.h>
 #include <md_gto_iso.h>
+#include <md_gto_dmat.h>
 
 #include <core/md_allocator.h>
 #include <core/md_format.h>
@@ -654,33 +655,57 @@ static bool qm_spin_orbital_energies(double* dst, size_t num_mo, const md_system
     return true;
 }
 
-// The rows of 'coeff' ({M,A}) whose weight is nonzero, in order, into rows (na each): a run of consecutive ones at a
-// time (md_attribute_slice_rows), one read of a block where the attribute is read from a file. False on a failed read.
-static bool qm_read_weighted_rows(double* rows, const md_attributes_t* table, const md_attribute_t* coeff, const double* weight,
-                                  size_t num_mo, size_t na) {
-    size_t n = 0;
-    for (size_t k = 0; k < num_mo;) {
+// The next at most cap rows of 'coeff' ({M,A}) whose weight is nonzero, from orbital *io_k on, in order: into rows
+// (na each), their weights into w (when not NULL), a run of consecutive ones at a time (md_attribute_slice_rows: one
+// read of a block where the attribute is read from a file). *out_n the rows read, *io_k where the next look starts.
+// False on a failed read.
+static bool qm_read_weighted_block(double* rows, double* w, size_t* out_n, size_t* io_k, const md_attributes_t* table,
+                                   const md_attribute_t* coeff, const double* weight, size_t num_mo, size_t na, size_t cap) {
+    size_t n = 0, k = *io_k;
+    while (k < num_mo && n < cap) {
         if (weight[k] == 0.0) {
             ++k;
             continue;
         }
         size_t e = k + 1;
-        while (e < num_mo && weight[e] != 0.0) ++e;
+        while (e < num_mo && weight[e] != 0.0 && e - k < cap - n) ++e;
         const size_t len = (e - k) * na;
         if (md_attribute_extract_f64(rows + n * na, len, table, coeff, md_attribute_slice_rows((uint32_t)k, (uint32_t)(e - k)), md_unit_none()) != len) {
             return false;
         }
+        if (w) md_memcpy(w + n, weight + k, sizeof(double) * (e - k));
         n += e - k;
         k = e;
     }
+    *io_k = k;
+    *out_n = n;
     return true;
 }
 
-// The orbitals of the density sa alpha + sb beta: rows {count, A}, weights {count} (the occupations times
-// sa, sb), and with out_energy_weights the same with each occupation times |its orbital's energy|. Every
-// array from 'alloc'. canonical: every occupation 0, 1 or 2 (within 1e-3), else nothing.
-static size_t qm_orbital_products(double** out_rows, double** out_weights, double** out_energy_weights, size_t* out_num_ao,
-                                  const md_system_t* sys, double sa, double sb, bool canonical, md_allocator_i* alloc) {
+// Every row of nonzero weight, as qm_read_weighted_block
+static bool qm_read_weighted_rows(double* rows, const md_attributes_t* table, const md_attribute_t* coeff, const double* weight,
+                                  size_t num_mo, size_t na) {
+    size_t k = 0, n = 0;
+    return qm_read_weighted_block(rows, NULL, &n, &k, table, coeff, weight, num_mo, na, SIZE_MAX);
+}
+
+// The orbitals of the density sa alpha + sb beta, without their rows: each channel's coefficients and each orbital's
+// weight in the density - alpha's (with beta's where the spins share orbitals: restricted, restricted open shell),
+// then beta's (wb NULL when shared) - with the occupations and, with energy, the orbital energies beside them.
+typedef struct qm_density_channels_t {
+    const md_attribute_t* ca;           // alpha's coefficients {nma, na}, NULL without alpha
+    const md_attribute_t* cb;           // beta's {nmb, na}, NULL without beta or where shared
+    double *wa, *wb;                    // the weights
+    double *oa, *ob, *ea, *eb;          // occupations, energies (NULL without energy)
+    size_t nma, nmb, na;
+    bool   shared;
+} qm_density_channels_t;
+
+// From temp. canonical: every occupation 0, 1 or 2 (within 1e-3), else false. False when the orbitals are absent or
+// inconsistent.
+static bool qm_density_channels(qm_density_channels_t* ch, const md_system_t* sys, double sa, double sb, bool canonical, bool energy,
+                                md_temp_scope_t temp) {
+    md_memset(ch, 0, sizeof(*ch));
     const md_attribute_t *caa = NULL, *oaa = NULL, *cab = NULL, *oab = NULL;
     size_t nma = 0, nmb = 0, naa = 0, nab = 0;
     bool have_a = false, have_b = false, beta_is_alpha = false;
@@ -694,15 +719,11 @@ static size_t qm_orbital_products(double** out_rows, double** out_weights, doubl
         }
     }
     if (ok && have_a && have_b && naa != nab) ok = false;
-    if (!ok) return 0;
-    // one set of orbitals for both spins (restricted, restricted open shell): each orbital once, with its two
-    // weights summed
+    if (!ok) return false;
+    // one set of orbitals for both spins: each orbital once, with its two weights summed
     const bool shared = have_a && have_b && nma == nmb && md_attribute_same_data(caa, cab);
-    const size_t na = have_a ? naa : nab;
-    const bool energy = out_energy_weights != NULL;
 
-    // the occupations and energies (small), then the rows of exactly the orbitals of nonzero weight, read one by one
-    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+    // the occupations and energies (small)
     double* oa = have_a ? (double*)md_temp_alloc(temp, sizeof(double) * nma) : NULL;
     double* ob = have_b ? (double*)md_temp_alloc(temp, sizeof(double) * nmb) : NULL;
     double* ea = have_a && energy ? (double*)md_temp_alloc(temp, sizeof(double) * nma) : NULL;
@@ -711,43 +732,69 @@ static size_t qm_orbital_products(double** out_rows, double** out_weights, doubl
         (have_b && (!ob || md_attribute_extract_f64(ob, nmb, &sys->attributes, oab, md_attribute_slice_all(), md_unit_none()) != nmb)) ||
         (have_a && energy && (!ea || !qm_spin_orbital_energies(ea, nma, sys, false))) ||
         (have_b && energy && (!eb || !qm_spin_orbital_energies(eb, nmb, sys, !beta_is_alpha)))) {
-        md_temp_end(temp);
-        return 0;
+        return false;
     }
     if (canonical) {
-        for (size_t k = 0; have_a && k < nma; ++k) if (fabs(oa[k] - round(oa[k])) > 1.0e-3 || oa[k] < -1.0e-3 || oa[k] > 2.001) { md_temp_end(temp); return 0; }
-        for (size_t k = 0; have_b && k < nmb; ++k) if (fabs(ob[k] - round(ob[k])) > 1.0e-3 || ob[k] < -1.0e-3 || ob[k] > 2.001) { md_temp_end(temp); return 0; }
+        for (size_t k = 0; have_a && k < nma; ++k) if (fabs(oa[k] - round(oa[k])) > 1.0e-3 || oa[k] < -1.0e-3 || oa[k] > 2.001) return false;
+        for (size_t k = 0; have_b && k < nmb; ++k) if (fabs(ob[k] - round(ob[k])) > 1.0e-3 || ob[k] < -1.0e-3 || ob[k] > 2.001) return false;
     }
-    // each orbital's weight in the density: alpha's (with beta's where the spins share orbitals), then beta's
     double* wa = have_a ? (double*)md_temp_alloc(temp, sizeof(double) * nma) : NULL;
     double* wb = have_b && !shared ? (double*)md_temp_alloc(temp, sizeof(double) * nmb) : NULL;
-    if ((have_a && !wa) || (have_b && !shared && !wb)) {
+    if ((have_a && !wa) || (have_b && !shared && !wb)) return false;
+    for (size_t k = 0; have_a && k < nma; ++k) wa[k] = sa * oa[k] + (shared ? sb * ob[k] : 0.0);
+    for (size_t k = 0; wb && k < nmb; ++k) wb[k] = sb * ob[k];
+
+    ch->ca = have_a ? caa : NULL;
+    ch->cb = wb ? cab : NULL;
+    ch->wa = wa;
+    ch->wb = wb;
+    ch->oa = oa;
+    ch->ob = ob;
+    ch->ea = ea;
+    ch->eb = eb;
+    ch->nma = have_a ? nma : 0;
+    ch->nmb = wb ? nmb : 0;
+    ch->na = have_a ? naa : nab;
+    ch->shared = shared;
+    return true;
+}
+
+// The orbitals of the density sa alpha + sb beta: rows {count, A}, weights {count} (the occupations times
+// sa, sb), and with out_energy_weights the same with each occupation times |its orbital's energy|. Every
+// array from 'alloc'. canonical: every occupation 0, 1 or 2 (within 1e-3), else nothing.
+static size_t qm_orbital_products(double** out_rows, double** out_weights, double** out_energy_weights, size_t* out_num_ao,
+                                  const md_system_t* sys, double sa, double sb, bool canonical, md_allocator_i* alloc) {
+    const bool energy = out_energy_weights != NULL;
+    md_temp_scope_t temp = md_temp_begin_avoid(alloc);
+    qm_density_channels_t ch;
+    if (!qm_density_channels(&ch, sys, sa, sb, canonical, energy, temp)) {
         md_temp_end(temp);
         return 0;
     }
+    const size_t na = ch.na;
     size_t count = 0;
-    for (size_t k = 0; have_a && k < nma; ++k) count += (wa[k] = sa * oa[k] + (shared ? sb * ob[k] : 0.0)) != 0.0;
-    for (size_t k = 0; wb && k < nmb; ++k) count += (wb[k] = sb * ob[k]) != 0.0;
+    for (size_t k = 0; k < ch.nma; ++k) count += ch.wa[k] != 0.0;
+    for (size_t k = 0; k < ch.nmb; ++k) count += ch.wb[k] != 0.0;
     double* rows = count ? (double*)md_alloc(alloc, sizeof(double) * count * na) : NULL;
     double* w    = count ? (double*)md_alloc(alloc, sizeof(double) * count) : NULL;
     double* we   = count && energy ? (double*)md_alloc(alloc, sizeof(double) * count) : NULL;
-    ok = rows && w && (!energy || we);
+    bool ok = rows && w && (!energy || we);
     size_t n = 0;
-    for (size_t k = 0; ok && have_a && k < nma; ++k) {
-        if (wa[k] == 0.0) continue;
+    for (size_t k = 0; ok && k < ch.nma; ++k) {
+        if (ch.wa[k] == 0.0) continue;
         // a shared orbital's two spins may differ in energy (restricted open shell): each its own
-        if (energy) we[n] = sa * oa[k] * fabs(ea[k]) + (shared ? sb * ob[k] * fabs(eb[k]) : 0.0);
-        w[n++] = wa[k];
+        if (energy) we[n] = sa * ch.oa[k] * fabs(ch.ea[k]) + (ch.shared ? sb * ch.ob[k] * fabs(ch.eb[k]) : 0.0);
+        w[n++] = ch.wa[k];
     }
     const size_t na_rows = n;
-    for (size_t k = 0; ok && wb && k < nmb; ++k) {
-        if (wb[k] == 0.0) continue;
-        if (energy) we[n] = wb[k] * fabs(eb[k]);
-        w[n++] = wb[k];
+    for (size_t k = 0; ok && k < ch.nmb; ++k) {
+        if (ch.wb[k] == 0.0) continue;
+        if (energy) we[n] = ch.wb[k] * fabs(ch.eb[k]);
+        w[n++] = ch.wb[k];
     }
     // the rows of exactly the orbitals of nonzero weight, a run of consecutive ones at a time
-    ok = ok && (!have_a || qm_read_weighted_rows(rows, &sys->attributes, caa, wa, nma, na)) &&
-               (!wb || qm_read_weighted_rows(rows + na_rows * na, &sys->attributes, cab, wb, nmb, na));
+    ok = ok && (!ch.ca || qm_read_weighted_rows(rows, &sys->attributes, ch.ca, ch.wa, ch.nma, na)) &&
+               (!ch.cb || qm_read_weighted_rows(rows + na_rows * na, &sys->attributes, ch.cb, ch.wb, ch.nmb, na));
     md_temp_end(temp);
     if (!ok) {
         if (rows) md_free(alloc, rows, sizeof(double) * count * na);
@@ -762,19 +809,25 @@ static size_t qm_orbital_products(double** out_rows, double** out_weights, doubl
     return count;
 }
 
+// The weights of alpha's and beta's occupations in an SCF density, by its name; false for any other path
+static bool qm_scf_density_spins(double* sa, double* sb, md_str_t density_path) {
+    *sa = *sb = 0.0;
+    if      (md_str_eq(density_path, MD_STR_LIT("orbital/alpha/density")))      { *sa = 1.0; }
+    else if (md_str_eq(density_path, MD_STR_LIT("orbital/beta/density")))       { *sb = 1.0; }
+    else if (md_str_eq(density_path, MD_STR_LIT("orbital/total/density")))      { *sa = 1.0; *sb = 1.0; }
+    else if (md_str_eq(density_path, MD_STR_LIT("orbital/difference/density"))) { *sa = 1.0; *sb = -1.0; }
+    else return false;
+    return true;
+}
+
 size_t md_qm_density_orbitals(double** out_rows, double** out_weights, size_t* out_num_ao, const md_system_t* sys,
                               md_str_t density_path, md_allocator_i* alloc) {
     if (!out_rows || !out_weights || !out_num_ao || !sys || !alloc) return 0;
     *out_rows = NULL;
     *out_weights = NULL;
     *out_num_ao = 0;
-    // the weights of alpha's and beta's occupations in the density asked for
     double sa = 0.0, sb = 0.0;
-    if      (md_str_eq(density_path, MD_STR_LIT("orbital/alpha/density")))      { sa = 1.0; }
-    else if (md_str_eq(density_path, MD_STR_LIT("orbital/beta/density")))       { sb = 1.0; }
-    else if (md_str_eq(density_path, MD_STR_LIT("orbital/total/density")))      { sa = 1.0; sb = 1.0; }
-    else if (md_str_eq(density_path, MD_STR_LIT("orbital/difference/density"))) { sa = 1.0; sb = -1.0; }
-    else return 0;
+    if (!qm_scf_density_spins(&sa, &sb, density_path)) return 0;
     return qm_orbital_products(out_rows, out_weights, NULL, out_num_ao, sys, sa, sb, false, alloc);
 }
 
@@ -843,6 +896,66 @@ size_t md_qm_density_factors(double** out_rows, double** out_weights, size_t* ou
     }
     md_temp_end(temp);
     return count;
+}
+
+// Orbital rows held at once by md_qm_density_dmat_build by default: a block of them is read, added to the tiles, and the
+// next read into the same place (256 MB: 320 orbitals at 100k AOs, all of a protein's occupied ones at 9.6k)
+#define QM_DMAT_BLOCK_BYTES ((size_t)256 << 20)
+
+size_t md_qm_density_dmat_build(struct md_gto_dmat_t* dm, const md_system_t* sys, md_str_t density_path, const md_attribute_slice_t* slice,
+                                size_t max_rows, const struct md_executor_t* executor) {
+    if (!dm || !sys) return 0;
+    md_allocator_i* heap = md_get_heap_allocator();
+    double sa = 0.0, sb = 0.0;
+    if (!qm_scf_density_spins(&sa, &sb, density_path)) {
+        // a density published as its factors: a state's of them at once, as md_qm_density_factors reads them
+        double *rows = NULL, *w = NULL;
+        size_t na = 0;
+        const size_t count = md_qm_density_factors(&rows, &w, &na, sys, density_path, slice, heap);
+        const bool ok = count > 0 && na == dm->num_ao && md_gto_dmat_build(dm, rows, na, 1, w, count, executor);
+        if (count && na != dm->num_ao) {
+            MD_LOG_ERROR("md_qm_density_dmat_build: '" MD_STR_FMT "' is over %zu AOs, the tiles %u", MD_STR_ARG(density_path), na, dm->num_ao);
+        }
+        if (rows) md_free(heap, rows, sizeof(double) * count * na);
+        if (w)    md_free(heap, w, sizeof(double) * count);
+        return ok ? count : 0;
+    }
+
+    // an SCF density: its orbitals a block at a time, alpha's then beta's, in the order md_qm_density_orbitals gives them
+    md_temp_scope_t temp = md_temp_begin();
+    qm_density_channels_t ch;
+    if (!qm_density_channels(&ch, sys, sa, sb, false, false, temp)) {
+        md_temp_end(temp);
+        return 0;
+    }
+    if (ch.na != dm->num_ao) {
+        MD_LOG_ERROR("md_qm_density_dmat_build: the orbitals are over %zu AOs, the tiles %u", ch.na, dm->num_ao);
+        md_temp_end(temp);
+        return 0;
+    }
+    size_t count = 0;
+    for (size_t k = 0; k < ch.nma; ++k) count += ch.wa[k] != 0.0;
+    for (size_t k = 0; k < ch.nmb; ++k) count += ch.wb[k] != 0.0;
+    const size_t rows_max = max_rows ? max_rows : MD_MAX(QM_DMAT_BLOCK_BYTES / (sizeof(double) * ch.na), (size_t)128);
+    const size_t cap = MD_MIN(rows_max, MD_MAX(count, (size_t)1));
+    double* rows = count ? (double*)md_alloc(heap, sizeof(double) * cap * ch.na) : NULL;
+    double* w    = count ? (double*)md_alloc(heap, sizeof(double) * cap) : NULL;
+    bool ok = rows && w && md_gto_dmat_clear(dm);
+    for (int spin = 0; ok && spin < 2; ++spin) {
+        const md_attribute_t* c = spin == 0 ? ch.ca : ch.cb;
+        const double* weight    = spin == 0 ? ch.wa : ch.wb;
+        const size_t  nm        = spin == 0 ? ch.nma : ch.nmb;
+        for (size_t k = 0; ok && c && k < nm;) {
+            size_t n = 0;
+            ok = qm_read_weighted_block(rows, w, &n, &k, &sys->attributes, c, weight, nm, ch.na, cap);
+            if (ok && n) ok = md_gto_dmat_add(dm, rows, ch.na, 1, w, n, executor);
+        }
+    }
+    if (rows) md_free(heap, rows, sizeof(double) * cap * ch.na);
+    if (w)    md_free(heap, w, sizeof(double) * cap);
+    md_temp_end(temp);
+    if (!ok && count) MD_LOG_ERROR("md_qm_density_dmat_build: '" MD_STR_FMT "': out of memory, a failed read or cancelled", MD_STR_ARG(density_path));
+    return ok ? count : 0;
 }
 
 bool md_qm_density_factors_available(const md_system_t* sys, md_str_t density_path) {

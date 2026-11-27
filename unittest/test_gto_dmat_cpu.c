@@ -223,6 +223,67 @@ UTEST(gto_dmat_cpu, executor_bitwise) {
     dc_free(&s);
 }
 
+// The tiles of a density built from its orbitals read a block at a time (md_qm_density_dmat_build: blocks of 7 and 64
+// orbitals, and the default, one) are those of md_gto_dmat_build over all of them at once, bit for bit, for the total
+// and alpha densities; and of an excited state's factors (amide's first state, attachment). A zero density (a closed
+// shell's difference) builds nothing.
+UTEST(gto_dmat_cpu, density_build_in_blocks_is_the_whole_build) {
+    static const char* files[] = { "h2o.h5", "amide.h5", "mol.h5" };
+    test_executor_t ex = test_executor_threads(3);
+    for (int fi = 0; fi < 3; ++fi) {
+        dc_src_t s;
+        ASSERT_TRUE(dc_load(&s, files[fi]));
+        static const md_str_t paths[2] = { MD_STR_INIT("orbital/total/density"), MD_STR_INIT("orbital/alpha/density") };
+        for (int p = 0; p < 2; ++p) {
+            double *rows = NULL, *w = NULL;
+            size_t na = 0;
+            const size_t count = md_qm_density_orbitals(&rows, &w, &na, &s.t.sys, paths[p], md_get_heap_allocator());
+            ASSERT_TRUE(count > 0);
+            md_gto_dmat_t ref;
+            ASSERT_TRUE(dc_init(&ref, &s, 1.0e-7, 1.0));
+            ASSERT_TRUE(md_gto_dmat_build(&ref, rows, na, 1, w, count, NULL));
+            static const size_t blocks[3] = { 7, 64, 0 };
+            for (int b = 0; b < 3; ++b) {
+                md_gto_dmat_t dm;
+                ASSERT_TRUE(dc_init(&dm, &s, 1.0e-7, 1.0));
+                EXPECT_EQ(count, md_qm_density_dmat_build(&dm, &s.t.sys, paths[p], NULL, blocks[b], b == 1 ? test_executor(&ex) : NULL));
+                EXPECT_EQ(0, memcmp(dm.tiles, ref.tiles, sizeof(double) * 256 * ref.num_tiles));
+                md_gto_dmat_free(&dm);
+            }
+            md_gto_dmat_free(&ref);
+            md_free(md_get_heap_allocator(), rows, sizeof(double) * count * na);
+            md_free(md_get_heap_allocator(), w, sizeof(double) * count);
+        }
+        // the difference of a restricted calculation: nothing
+        md_gto_dmat_t dm;
+        ASSERT_TRUE(dc_init(&dm, &s, 1.0e-7, 1.0));
+        EXPECT_EQ(0u, md_qm_density_dmat_build(&dm, &s.t.sys, MD_STR_LIT("orbital/difference/density"), NULL, 0, NULL));
+        md_gto_dmat_free(&dm);
+
+        // an excited state's factors
+        const md_str_t att = MD_STR_LIT("vlx/rsp/transition_density/attachment");
+        if (md_qm_density_factors_available(&s.t.sys, att)) {
+            const md_attribute_slice_t first = md_attribute_slice_1(0);
+            double *rows = NULL, *w = NULL;
+            size_t na = 0;
+            const size_t count = md_qm_density_factors(&rows, &w, &na, &s.t.sys, att, &first, md_get_heap_allocator());
+            ASSERT_TRUE(count > 0);
+            md_gto_dmat_t ref, got;
+            ASSERT_TRUE(dc_init(&ref, &s, 1.0e-7, 1.0));
+            ASSERT_TRUE(dc_init(&got, &s, 1.0e-7, 1.0));
+            ASSERT_TRUE(md_gto_dmat_build(&ref, rows, na, 1, w, count, NULL));
+            EXPECT_EQ(count, md_qm_density_dmat_build(&got, &s.t.sys, att, &first, 0, NULL));
+            EXPECT_EQ(0, memcmp(got.tiles, ref.tiles, sizeof(double) * 256 * ref.num_tiles));
+            printf("  %s: the attachment density of state 1, %zu factors\n", files[fi], count);
+            md_gto_dmat_free(&ref);
+            md_gto_dmat_free(&got);
+            md_free(md_get_heap_allocator(), rows, sizeof(double) * count * na);
+            md_free(md_get_heap_allocator(), w, sizeof(double) * count);
+        }
+        dc_free(&s);
+    }
+}
+
 UTEST(gto_dmat_cpu, evaluate_matches_matrix) {
     dc_src_t s;
     ASSERT_TRUE(dc_load(&s, "mol.h5"));

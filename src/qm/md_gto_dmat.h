@@ -76,6 +76,14 @@ bool md_gto_dmat_pattern_valid(const md_gto_dmat_t* dm, const float* atom_xyz, s
 bool md_gto_dmat_build(md_gto_dmat_t* dm, const double* coeff, size_t mo_stride, size_t ao_stride, const double* weight, size_t num_mo,
                        const struct md_executor_t* executor);
 
+// The same in parts, for orbitals that are not all at hand at once (read from a file a block at a time): clear, then
+// add each block in turn. D += sum_k w_k c_k c_k^T, the arguments as md_gto_dmat_build's; the blocks of a build in its
+// order give it bit for bit (every tile entry sums its orbitals in order, whatever the blocks). clear allocates the
+// tiles where there are none yet and zeroes them. False (logged) as md_gto_dmat_build.
+bool md_gto_dmat_clear(md_gto_dmat_t* dm);
+bool md_gto_dmat_add(md_gto_dmat_t* dm, const double* coeff, size_t mo_stride, size_t ao_stride, const double* weight, size_t num_mo,
+                     const struct md_executor_t* executor);
+
 // D(i, j) in the basis' AO order: 0 for a pair that is not kept (or before a build).
 double md_gto_dmat_at(const md_gto_dmat_t* dm, uint32_t i, uint32_t j);
 
