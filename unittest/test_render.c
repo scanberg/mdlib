@@ -5158,6 +5158,72 @@ UTEST(render, post_motion_blur) {
     f_close(&fx);
 }
 
+/* The sharpening, by its formula: each pixel (1 + w) of itself less w / 4 of its four neighbours (clamped at the
+   borders), within the dither (a triangle of +-1/255) and the 8 bits; w 0 leaves the image as it is, to the bit; an
+   image smaller than the output is not sharpened. */
+UTEST(render, post_present_sharpens) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    const uint32_t W = 64, H = 48, P = W * H;
+    uint16_t* img = malloc(P * 8);
+    float* val = malloc(P * 3 * sizeof(float));
+    uint32_t seed = 99u;
+    for (uint32_t p = 0; p < P; ++p) {
+        for (int k = 0; k < 3; ++k) {
+            seed = seed * 1664525u + 1013904223u;
+            const float v = 0.2f + 0.6f * (float)(seed >> 8) / 16777216.0f;
+            img[4 * p + k] = float_to_half(v);
+            val[3 * p + k] = half_bits_to_float(img[4 * p + k]);
+        }
+        img[4 * p + 3] = float_to_half(1.0f);
+    }
+    md_gpu_texture_t image  = f_tex(&fx, MD_GPU_FORMAT_RGBA16_FLOAT, MD_GPU_TEX_SAMPLED, W, H, "image");
+    md_gpu_texture_t small  = f_tex(&fx, MD_GPU_FORMAT_RGBA16_FLOAT, MD_GPU_TEX_SAMPLED, W / 2, H / 2, "small");
+    md_gpu_texture_t target = f_tex(&fx, MD_GPU_FORMAT_RGBA8_UNORM, MD_GPU_TEX_STORAGE, W, H, "shown");
+    ASSERT_TRUE(f_upload_tex(&fx, image, img, P * 8) && f_upload_tex(&fx, small, img, P * 2));
+    md_post_ctx_t pc = md_post_create(fx.dev);
+    ASSERT_TRUE(pc != NULL);
+    uint32_t* plain = malloc(P * 4);
+    uint32_t* sharp = malloc(P * 4);
+    md_post_present_t pr = { .image = image, .target = target, .frame = 3 };
+    ASSERT_TRUE(md_post_present(fx.gfx, pc, &pr) && f_read(&fx, target, plain, P * 4));
+    const float w = 0.5f;
+    pr.sharpen = w;
+    ASSERT_TRUE(md_post_present(fx.gfx, pc, &pr) && f_read(&fx, target, sharp, P * 4));
+    double worst = 0.0, worst_plain = 0.0;
+    int changed = 0;
+    for (uint32_t y = 0; y < H; ++y) for (uint32_t x = 0; x < W; ++x) {
+        const uint32_t p = y * W + x;
+        const uint32_t nb[4] = { y * W + (x ? x - 1 : 0), y * W + (x + 1 < W ? x + 1 : W - 1), (y ? y - 1 : 0) * W + x, (y + 1 < H ? y + 1 : H - 1) * W + x };
+        for (int k = 0; k < 3; ++k) {
+            double want = (1.0 + w) * val[3 * p + k];
+            for (int i = 0; i < 4; ++i) want -= 0.25 * w * val[3 * nb[i] + k];
+            want = want < 0.0 ? 0.0 : want > 1.0 ? 1.0 : want;
+            const double got = ((sharp[p] >> (8 * k)) & 0xFFu) / 255.0, unsharp = ((plain[p] >> (8 * k)) & 0xFFu) / 255.0;
+            worst = fmax(worst, fabs(got - want));
+            worst_plain = fmax(worst_plain, fabs(unsharp - val[3 * p + k]));
+            changed += ((sharp[p] >> (8 * k)) & 0xFFu) != ((plain[p] >> (8 * k)) & 0xFFu);
+        }
+    }
+    printf("    w %.1f: %.4f off the formula at most (unsharpened: %.4f off the image), %d channels changed\n", w, worst, worst_plain, changed);
+    EXPECT_LT(worst, 1.6 / 255.0);
+    EXPECT_LT(worst_plain, 1.6 / 255.0);
+    EXPECT_GT(changed, (int)P);
+    /* w 0: as without; a smaller image: not sharpened */
+    pr.sharpen = 0.0f;
+    ASSERT_TRUE(md_post_present(fx.gfx, pc, &pr) && f_read(&fx, target, sharp, P * 4));
+    EXPECT_EQ(0, memcmp(sharp, plain, P * 4));
+    pr.image = small;
+    ASSERT_TRUE(md_post_present(fx.gfx, pc, &pr) && f_read(&fx, target, plain, P * 4));
+    pr.sharpen = w;
+    ASSERT_TRUE(md_post_present(fx.gfx, pc, &pr) && f_read(&fx, target, sharp, P * 4));
+    EXPECT_EQ(0, memcmp(sharp, plain, P * 4));
+    md_gpu_texture_destroy(image); md_gpu_texture_destroy(small); md_gpu_texture_destroy(target);
+    md_post_destroy(pc);
+    free(img); free(val); free(plain); free(sharp);
+    f_close(&fx);
+}
+
 /* The marks over an image: a selected sphere in front of a highlighted one
    of tag 3 (its group's colour): the selection's tint where it is, the
    highlight's in its group's colour where it shows, its fill where it is

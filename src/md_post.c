@@ -21,7 +21,8 @@ typedef struct gpu_post_args_t {
     md_gpu_sampled_tex_t src, prev, depth, motion, mask;
     md_gpu_sampler_t     bilinear;
     md_gpu_storage_tex_t dst;
-    uint32_t             _p1, _p2;
+    float                sharpen;       /* present: the unsharp mask's weight */
+    uint32_t             _p2;
     md_gpu_float4        mb;            /* the motion blur: scale, the noise's seed, the tiles across, down */
     md_gpu_addr_t        tmax, tiles;
     md_gpu_storage_tex_t dst2;
@@ -290,6 +291,7 @@ bool md_post_present(md_gpu_stream_t s, md_post_ctx_t p, const md_post_present_t
     a.bilinear = p->bilinear;
     a.dst      = md_gpu_texture_storage(d->target, 0);
     a.mk       = f4(0.0f, 1.0f, (float)(d->frame % 1000u) * 0.01f, 0.0f);
+    a.sharpen  = d->sharpen > 0.0f ? d->sharpen : 0.0f;
     const md_render_targets_t t = d->marks_view && d->marks ? md_render_view_targets(d->marks_view) : (md_render_targets_t){0};
     const md_gpu_texture_desc_t* md = t.mask ? md_gpu_texture_desc(t.mask) : NULL;
     a.mask = md_gpu_texture_sampled(md ? t.mask : d->image);

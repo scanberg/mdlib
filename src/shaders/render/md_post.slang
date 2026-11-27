@@ -1,7 +1,8 @@
 // md_post.slang -- the kernels of md_post.c: the display transform (viamd's
 // tonemap/display.frag), the temporal resolve with the motion blur (its
 // temporal.frag, velocity/blit_tilemax.frag and blit_neighbormax.frag) and
-// the present with the marks (its marks pass).
+// the present with the sharpening and the marks (its sharpen and marks
+// passes).
 //
 // Pixels are x right, y down, their centres at + 0.5 (md_render's). Layout
 // rules of md_gpu.slang: no 3-vectors, 4-vectors at 16-byte offsets,
@@ -33,7 +34,8 @@ struct Args {
     DescriptorHandle<Texture2D<float4>>   mask;     // present: md_render's masks
     DescriptorHandle<SamplerState>        bilinear; // clamp to edge
     DescriptorHandle<RWTexture2D<float4>> dst;
-    uint   _p1, _p2;
+    float  sharpen;     // present: the unsharp mask's weight (0: none)
+    uint   _p2;
     float4 mb;          // the motion blur: x its scale (0: none), y the noise's seed, z, w the tiles across, down
     float2* tmax;       // vel_tilemax's: a tile's fastest motion (frame pixels)
     float2* tiles;      // vel_neighbormax's: the fastest about a tile, which the resolve blurs along
@@ -449,8 +451,17 @@ void present(uint3 tid : SV_DispatchThreadID) {
     if (tid.x >= a.out_w || tid.y >= a.out_h) return;
     float2 px = float2(tid.xy) + 0.5;
     float2 out_size = float2(float(a.out_w), float(a.out_h));
-    float4 c = (a.img_w == a.out_w && a.img_h == a.out_h) ? a.src.Load(int3(int2(tid.xy), 0))
-                                                     : a.src.SampleLevel(a.bilinear, px / out_size, 0.0);
+    bool   same = a.img_w == a.out_w && a.img_h == a.out_h;
+    float4 c = same ? a.src.Load(int3(int2(tid.xy), 0)) : a.src.SampleLevel(a.bilinear, px / out_size, 0.0);
+    // the sharpening (viamd's sharpen pass): an unsharp mask of the four
+    // neighbours, (1 + w) c - w / 4 (l + r + t + b), at the output's size
+    if (a.sharpen > 0.0 && same) {
+        int2   q  = int2(tid.xy);
+        int2   hi = int2(int(a.img_w), int(a.img_h)) - 1;
+        float3 n  = a.src.Load(int3(clamp(q + int2(-1, 0), int2(0), hi), 0)).rgb + a.src.Load(int3(clamp(q + int2(1, 0), int2(0), hi), 0)).rgb +
+                    a.src.Load(int3(clamp(q + int2(0, -1), int2(0), hi), 0)).rgb + a.src.Load(int3(clamp(q + int2(0, 1), int2(0), hi), 0)).rgb;
+        c.rgb = (1.0 + a.sharpen) * c.rgb - 0.25 * a.sharpen * n;
+    }
     if (a.mk.w > 0.5) {
         float2 to_mask = float2(float(a.in_w), float(a.in_h)) / out_size;
         float4 m    = marks_about(a, px, 0.5, to_mask);

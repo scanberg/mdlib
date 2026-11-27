@@ -11,14 +11,15 @@ the caller passes back (the history).
          |  md_post_display    exposure, curve, over the background, encoded
          |  md_post_resolve    TAA: this frame into the history, reprojected by
          |                     md_render's motion; at the output's size
-         |  md_post_present    the marks over it, dithered: the image shown
+         |  md_post_present    sharpened, the marks over it, dithered: the
+         |                     image shown
          |  md_post_overlay    discs, segments, triangles over that
          |  md_post_ui         a UI's draw lists over that, or over a swapchain
     the caller's present (a swapchain, or an OpenGL blit)
 
 Ported from viamd's post-processing (tonemap/display.frag, temporal.frag
-with its motion blur, its marks pass). The resolve runs on display
-referred, encoded values (after the curve), as viamd's did: no HDR
+with its motion blur, its sharpen and marks passes). The resolve runs on
+display referred, encoded values (after the curve), as viamd's did: no HDR
 fireflies in the history.
 */
 #ifndef MD_POST_H
@@ -126,6 +127,10 @@ typedef struct md_post_present_t {
     md_gpu_texture_t       target; /* RGBA8_UNORM, STORAGE (and SHARED for a GL
                                       present): sRGB-encoded as the image is       */
     uint32_t               frame;  /* seeds the dither                             */
+    float                  sharpen;/* viamd's sharpening, before the marks: each
+                                      pixel (1 + w) of itself less w / 4 of its
+                                      four neighbours, w this; 0: none. Of an image
+                                      of the output's size (a history) only       */
 } md_post_present_t;
 
 bool md_post_present(md_gpu_stream_t stream, md_post_ctx_t post, const md_post_present_t* desc);
