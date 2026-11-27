@@ -56,7 +56,10 @@ moving a pixel a frame and more), reprojected by md_render's motion and taken
 where it lies on the surface's tangent plane (no colour clamp); then a
 separable bilateral blur over one period of the pattern. Without a history,
 the pattern fixed and the blur over two periods. Then a joint bilateral
-upsample.
+upsample. The blur and the upsample take a sample by its depth and its
+normal: where atoms meet, their surfaces share the depth along the crease,
+and depth alone carried the lit side of one into the shadowed crevice
+beside it (a light seam along every contact).
 
 THE SHADOWS of the key light are viamd's screen-space estimate
 (shadows/screen_space.frag), from the same depth at half resolution and

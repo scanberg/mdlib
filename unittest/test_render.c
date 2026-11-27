@@ -8,6 +8,7 @@
 
 #include <md_system.h>
 #include <md_system_state.h>
+#include <md_element.h>
 #include <md_pdb.h>
 #include <md_gro.h>
 #include <md_mmcif.h>
@@ -4823,6 +4824,221 @@ UTEST(render, compose_shadows) {
     md_gpu_texture_destroy(out);
     md_compose_destroy(cx);
     free(px0); free(px1);
+    f_close(&fx);
+}
+
+/* Shadows against traced ones, on a protein: 1K4R in space fill (van der Waals radii), seen from 90 and 200 A along
+   z under viamd's key light (1, 1, 1) of 10 degrees, settled over 32 frames with a history. Each pixel's visibility
+   of the light is traced against every atom (32 rays over the disk); over the pixels facing the light, the mean
+   difference from it, and over those within 2 pixels of another atom (the creases, where the blur and the upsample
+   once carried the lit side of one atom into the crevice beside it: a light seam along every contact). Depth-only
+   filters made 0.063 overall and 0.077 at the creases from 90 A, 0.101 and 0.104 from 200 A; with the normal test
+   0.048 and 0.058, 0.064 and 0.067; the bounds lie between. A screen-space estimate cannot see what lies behind the
+   nearest atoms or outside the view, so not near 0. */
+typedef struct { int nx, ny, nz; double lo[3], cs; int* start; int* list; } atom_grid_t;
+
+static int grid_cell(const atom_grid_t* g, int x, int y, int z) { return (z * g->ny + y) * g->nx + x; }
+
+static void grid_build(atom_grid_t* g, const double (*C)[3], const double* R, int n, double cs) {
+    double lo[3] = { 1e30, 1e30, 1e30 }, hi[3] = { -1e30, -1e30, -1e30 };
+    for (int i = 0; i < n; ++i) for (int k = 0; k < 3; ++k) { lo[k] = fmin(lo[k], C[i][k] - R[i]); hi[k] = fmax(hi[k], C[i][k] + R[i]); }
+    g->cs = cs;
+    for (int k = 0; k < 3; ++k) g->lo[k] = lo[k] - 1e-3;
+    g->nx = (int)((hi[0] - g->lo[0]) / cs) + 1; g->ny = (int)((hi[1] - g->lo[1]) / cs) + 1; g->nz = (int)((hi[2] - g->lo[2]) / cs) + 1;
+    const int nc = g->nx * g->ny * g->nz;
+    int* cnt = calloc(nc + 1, sizeof(int));
+    for (int pass = 0; pass < 2; ++pass) {
+        for (int i = 0; i < n; ++i) {
+            int a[3], b[3];
+            for (int k = 0; k < 3; ++k) { a[k] = (int)((C[i][k] - R[i] - g->lo[k]) / cs); b[k] = (int)((C[i][k] + R[i] - g->lo[k]) / cs); }
+            for (int z = a[2]; z <= b[2]; ++z) for (int y = a[1]; y <= b[1]; ++y) for (int x = a[0]; x <= b[0]; ++x) {
+                const int c = grid_cell(g, x, y, z);
+                if (pass == 0) cnt[c + 1]++; else g->list[cnt[c]++] = i;
+            }
+        }
+        if (pass == 0) {
+            for (int c = 0; c < nc; ++c) cnt[c + 1] += cnt[c];
+            g->start = malloc((nc + 1) * sizeof(int));
+            memcpy(g->start, cnt, (nc + 1) * sizeof(int));
+            g->list = malloc((cnt[nc] + 1) * sizeof(int));
+        }
+    }
+    free(cnt);
+}
+
+/* The nearest hit along o + t d, t in (tmin, tmax), past atom skip; any: the first found */
+static double grid_trace(const atom_grid_t* g, const double (*C)[3], const double* R, const double o[3], const double d[3], double tmin, double tmax,
+                         int skip, bool any, int* who) {
+    double t0 = tmin, t1 = tmax;
+    const int nn[3] = { g->nx, g->ny, g->nz };
+    for (int k = 0; k < 3; ++k) {
+        const double lo = g->lo[k], hi = g->lo[k] + nn[k] * g->cs;
+        if (fabs(d[k]) < 1e-12) { if (o[k] < lo || o[k] > hi) return -1; continue; }
+        double ta = (lo - o[k]) / d[k], tb = (hi - o[k]) / d[k];
+        if (ta > tb) { const double s = ta; ta = tb; tb = s; }
+        t0 = fmax(t0, ta); t1 = fmin(t1, tb);
+    }
+    *who = -1;
+    if (t0 > t1) return -1;
+    int ci[3], step[3];
+    double tnext[3], tdel[3];
+    for (int k = 0; k < 3; ++k) {
+        ci[k] = (int)((o[k] + d[k] * t0 - g->lo[k]) / g->cs);
+        ci[k] = ci[k] < 0 ? 0 : ci[k] >= nn[k] ? nn[k] - 1 : ci[k];
+        if (d[k] > 0)      { step[k] =  1; tnext[k] = (g->lo[k] + (ci[k] + 1) * g->cs - o[k]) / d[k]; tdel[k] =  g->cs / d[k]; }
+        else if (d[k] < 0) { step[k] = -1; tnext[k] = (g->lo[k] + ci[k] * g->cs - o[k]) / d[k];       tdel[k] = -g->cs / d[k]; }
+        else               { step[k] =  0; tnext[k] = 1e300; tdel[k] = 1e300; }
+    }
+    double best = 1e300;
+    for (;;) {
+        const int c = grid_cell(g, ci[0], ci[1], ci[2]);
+        for (int e = g->start[c]; e < g->start[c + 1]; ++e) {
+            const int i = g->list[e];
+            if (i == skip) continue;
+            const double oc[3] = { o[0] - C[i][0], o[1] - C[i][1], o[2] - C[i][2] };
+            const double b = dot3(oc, d), h = b * b - (dot3(oc, oc) - R[i] * R[i]);
+            if (h < 0) continue;
+            const double t = -b - sqrt(h);
+            if (t <= tmin || t >= tmax) continue;
+            if (any) { *who = i; return t; }
+            if (t < best) { best = t; *who = i; }
+        }
+        const int k = tnext[0] < tnext[1] ? (tnext[0] < tnext[2] ? 0 : 2) : (tnext[1] < tnext[2] ? 1 : 2);
+        if (best <= tnext[k] || tnext[k] > t1) break;
+        ci[k] += step[k];
+        if (ci[k] < 0 || ci[k] >= nn[k]) break;
+        tnext[k] += tdel[k];
+    }
+    return best < 1e299 ? best : -1;
+}
+
+static bool load_system(md_system_t* sys, md_system_state_t* state, const char* file);
+
+UTEST(render, compose_shadows_match_traced_ones) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    md_allocator_i* alloc = md_vm_arena_create(MD_GIGABYTES(1));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t state = { .alloc = alloc };
+    ASSERT_TRUE(load_system(&sys, &state, MD_UNITTEST_DATA_DIR "/1k4r.pdb"));
+    int n = 0;
+    double (*A)[3] = malloc(sys.atom.count * sizeof(*A));
+    double (*C)[3] = malloc(sys.atom.count * sizeof(*C));
+    double* R = malloc(sys.atom.count * sizeof(double));
+    float* pos = malloc(sys.atom.count * 12);
+    float* rad = malloc(sys.atom.count * 4);
+    double ctr[3] = { 0, 0, 0 };
+    for (size_t i = 0; i < sys.atom.count; ++i) {
+        const md_atomic_number_t z = md_atom_atomic_number(&sys.atom, i);
+        if (!z) continue;
+        for (int k = 0; k < 3; ++k) { A[n][k] = state.xyz[i].elem[k]; ctr[k] += A[n][k]; }
+        R[n] = md_atomic_number_vdw_radius(z);
+        n++;
+    }
+    ASSERT_GT(n, 9000);
+    for (int k = 0; k < 3; ++k) ctr[k] /= n;
+    double L[3] = { 1, 1, 1 }, u[3], v[3];
+    { const double l = sqrt(dot3(L, L)); for (int k = 0; k < 3; ++k) L[k] /= l; }
+    { const double a[3] = { 1, 0, 0 };
+      u[0] = a[1] * L[2] - a[2] * L[1]; u[1] = a[2] * L[0] - a[0] * L[2]; u[2] = a[0] * L[1] - a[1] * L[0];
+      const double lu = sqrt(dot3(u, u)); for (int k = 0; k < 3; ++k) u[k] /= lu;
+      v[0] = L[1] * u[2] - L[2] * u[1]; v[1] = L[2] * u[0] - L[0] * u[2]; v[2] = L[0] * u[1] - L[1] * u[0]; }
+    const double theta = 10.0 * 3.14159265358979 / 180.0;
+    enum { NL = 32 };
+    double Ld[NL][3];   /* the disk: a sunflower of 32 directions */
+    for (int s = 0; s < NL; ++s) {
+        const double rr = sqrt((s + 0.5) / NL) * tan(theta), ph = s * 2.39996323;
+        for (int k = 0; k < 3; ++k) Ld[s][k] = L[k] + rr * (cos(ph) * u[k] + sin(ph) * v[k]);
+        const double l = sqrt(dot3(Ld[s], Ld[s])); for (int k = 0; k < 3; ++k) Ld[s][k] /= l;
+    }
+    const uint32_t W = 640, H = 400, P = W * H;
+    cam_t c = { .tan_half = 0.41421356f, .aspect = (float)W / H, .n = 0.1f };
+    md_render_camera_t cam = make_camera(&c);
+    md_compose_ctx_t cx = md_compose_create(fx.dev);
+    ASSERT_TRUE(cx != NULL);
+    md_gpu_texture_desc_t td = {0};
+    td.type = MD_GPU_TEX_2D; td.usage = MD_GPU_TEX_STORAGE; td.width = W; td.height = H;
+    td.format = MD_GPU_FORMAT_RGBA16_FLOAT; td.label = "compose";
+    md_gpu_texture_t out = md_gpu_texture_create(fx.gfx, &td);
+    uint16_t* px0 = malloc(P * 8);
+    uint16_t* px1 = malloc(P * 8);
+    int* shows = malloc(P * sizeof(int));
+    double* ht = malloc(P * sizeof(double));
+    const double dist[2] = { 90.0, 200.0 }, bound[2][2] = { { 0.055, 0.067 }, { 0.082, 0.085 } };
+    for (int run = 0; run < 2; ++run) {
+        /* the camera along z, dist from the centre: the atoms in its view space */
+        for (int i = 0; i < n; ++i) {
+            for (int k = 0; k < 3; ++k) C[i][k] = A[i][k] - ctr[k] - (k == 2 ? dist[run] : 0.0);
+            for (int k = 0; k < 3; ++k) pos[3 * i + k] = (float)C[i][k];
+            rad[i] = (float)R[i];
+        }
+        md_render_batch_t b = {0};
+        b.key = 1; b.kind = MD_RENDER_SPHERES; b.count = (uint32_t)n; b.points.count = (uint32_t)n;
+        b.points.position = f_buf(&fx, pos, n * 12); b.points.radius = f_buf(&fx, rad, n * 4);
+        b.style.spheres.radius_scale = 1.0f;
+        b.color.mode = MD_RENDER_COLOR_UNIFORM; b.color.uniform = 0xFFFFFFFFu;
+        md_render_frame_t f = frame_of(W, H, cam, &b, 1);
+        ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+        md_compose_desc_t d = {0};
+        d.camera = cam; d.target = out;
+        d.shading.mode = MD_COMPOSE_SHADING_PBR; d.shading.linear_colors = true;
+        for (int i = 0; i < 3; ++i) { d.shading.light_dir[i] = (float)L[i]; d.shading.dir_radiance[i] = 1.0f; }
+        d.shading.light_strength = 1.0f; d.shading.roughness = 0.5f; d.shading.f0 = 0.04f;
+        ASSERT_TRUE(md_compose(fx.gfx, cx, fx.view, &d) && f_read(&fx, out, px0, P * 8));
+        d.shadows = true;
+        d.light_radius = (float)theta;
+        md_compose_history_t hy = md_compose_history_create();
+        d.history = hy;
+        for (int i = 0; i < 32; ++i) ASSERT_TRUE(md_compose(fx.gfx, cx, fx.view, &d));
+        ASSERT_TRUE(f_read(&fx, out, px1, P * 8));
+        md_compose_history_destroy(fx.gfx, hy);
+
+        atom_grid_t g;
+        grid_build(&g, (const double (*)[3])C, R, n, 3.0);
+        for (uint32_t y = 0; y < H; ++y) for (uint32_t x = 0; x < W; ++x) {
+            ray_t r = pixel_ray(&c, W, H, x + 0.5, y + 0.5);
+            int who;
+            ht[y * W + x] = grid_trace(&g, (const double (*)[3])C, R, r.o, r.d, 0.0, 1e4, -1, false, &who);
+            shows[y * W + x] = who;
+        }
+        double sum[2] = { 0, 0 };
+        int cnt[2] = { 0, 0 };
+        for (uint32_t y = 0; y < H; ++y) for (uint32_t x = 0; x < W; ++x) {
+            const size_t p = (size_t)y * W + x;
+            const int j = shows[p];
+            if (j < 0) continue;
+            ray_t r = pixel_ray(&c, W, H, x + 0.5, y + 0.5);
+            double q[3], nrm[3];
+            for (int k = 0; k < 3; ++k) { q[k] = r.o[k] + r.d[k] * ht[p]; nrm[k] = (q[k] - C[j][k]) / R[j]; }
+            const double ref = half_bits_to_float(px0[4 * p + 1]);
+            if (dot3(nrm, L) < 0.25 || ref < 1e-3) continue;
+            int lit = 0, who;
+            for (int s = 0; s < NL; ++s) {
+                if (dot3(nrm, Ld[s]) > 0.0 && grid_trace(&g, (const double (*)[3])C, R, q, Ld[s], 1e-4, 1e4, j, true, &who) < 0) lit++;
+            }
+            const double err = fabs(half_bits_to_float(px1[4 * p + 1]) / ref - (double)lit / NL);
+            bool crease = false;
+            for (int oy = -2; oy <= 2 && !crease; ++oy) for (int ox = -2; ox <= 2 && !crease; ++ox) {
+                const int sx = (int)x + ox, sy = (int)y + oy;
+                crease = sx >= 0 && sy >= 0 && sx < (int)W && sy < (int)H && shows[(size_t)sy * W + sx] >= 0 && shows[(size_t)sy * W + sx] != j;
+            }
+            sum[0] += err; cnt[0]++;
+            if (crease) { sum[1] += err; cnt[1]++; }
+        }
+        free(g.start); free(g.list);
+        const double all = sum[0] / fmax(cnt[0], 1), at = sum[1] / fmax(cnt[1], 1);
+        printf("    from %.0f A: %d pixels facing the light, %d of them at creases; the mean difference from the traced %.3f, at the creases %.3f\n",
+               dist[run], cnt[0], cnt[1], all, at);
+        EXPECT_GT(cnt[0], 30000);
+        EXPECT_GT(cnt[1], 5000);
+        EXPECT_LT(all, bound[run][0]);
+        EXPECT_LT(at, bound[run][1]);
+    }
+    md_gpu_texture_destroy(out);
+    md_compose_destroy(cx);
+    free(px0); free(px1); free(shows); free(ht); free(A); free(C); free(R); free(pos); free(rad);
+    md_system_free(&sys);
+    md_vm_arena_destroy(alloc);
     f_close(&fx);
 }
 

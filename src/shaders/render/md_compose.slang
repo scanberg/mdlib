@@ -523,11 +523,25 @@ void vis_temporal(uint3 tid : SV_DispatchThreadID) {
     a.ao[o]       = float2(vis, c.y);
 }
 
+// How much a filter tap of normal b counts for a point of normal a: the
+// blur's and the upsample's edge test besides their depth. Where two atoms
+// meet, their surfaces are at the same depth along the crease, so depth alone
+// takes the one's visibility into the other: the side of an atom facing the
+// light, lit, into the crevice beside it, in shadow (a light seam along every
+// contact). Their normals differ there by the crease's angle: cos^32 counts a
+// tap 10 degrees off at 0.6, 30 degrees off at 0.01. The power is the one
+// closest to traced shadows over 1K4R and tubulin in space fill at three
+// distances (32 and 16 alike, 64 worse from afar, 8 and less near); against
+// traced visibility within its reach, the QUALITY occlusion gains too.
+static const float FILTER_NORMAL_POWER = 32.0;
+
+float normal_weight(float3 na, float3 nb) { return pow(saturate(dot(na, nb)), FILTER_NORMAL_POWER); }
+
 // A separable bilateral blur at half resolution: a box with half-weight end
 // taps, a.radius a side (4: two periods of the pattern; 2, one, after
 // vis_temporal, which already averages each texel over the whole pattern),
 // stopped by the distance of a tap from the centre's tangent plane in pixel
-// footprints (scale free)
+// footprints (scale free) and by its normal (normal_weight)
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void ao_blur(uint3 tid : SV_DispatchThreadID) {
@@ -553,7 +567,7 @@ void ao_blur(uint3 tid : SV_DispatchThreadID) {
         float2 s = sp[uint(q.y) * hs.x + uint(q.x)];
         float3 S = view_at(a, float2(pick(q)) + 0.5, s.y);
         float  d = abs(dot(S - P, N)) * inv_tol;
-        float  w = (abs(i) == rad ? 0.5 : 1.0) * saturate(1.0 - d);
+        float  w = (abs(i) == rad ? 0.5 : 1.0) * saturate(1.0 - d) * normal_weight(N, normal_at(a, pick(q)));
         sum  += s.x * w;
         wsum += w;
     }
@@ -711,26 +725,38 @@ void shadow_estimate(uint3 tid : SV_DispatchThreadID) {
     a.ao[o] = float2(1.0 - float(countbits(bits)) / 32.0, z);
 }
 
-// A visibility (the occlusion's, the shadows') at a full resolution pixel of
-// linear depth z: a joint bilateral upsample of the 2 x 2 of plane 0 about it
-float vis_at(Args a, float2* planes, int2 q, float z) {
+// The visibilities (the occlusion's, the shadows') at a full resolution pixel
+// q of linear depth z and normal n: a joint bilateral upsample of the 2 x 2
+// of plane 0 of each about it, by depth and normal (normal_weight)
+float2 vis_at(Args a, int2 q, float z, float3 n) {
     uint2  hs   = level_size(a, 1u);
     float2 hq   = (float2(q) + 0.5) * 0.5 - 0.5;
     float2 base = floor(hq);
     float2 f    = hq - base;
     float  fpw  = px_world(a, z);
-    float  num = 0.0, den = 0.0;
+    float2 num = float2(0.0), den = float2(0.0);
     [ForceUnroll] for (int j = 0; j < 4; ++j) {
         int2   o  = int2(j & 1, j >> 1);
         int2   t  = clamp(int2(base) + o, int2(0), int2(hs) - 1);
-        float2 s  = planes[uint(t.y) * hs.x + uint(t.x)];
+        uint   ti = uint(t.y) * hs.x + uint(t.x);
         float  wb = (o.x == 1 ? f.x : 1.0 - f.x) * (o.y == 1 ? f.y : 1.0 - f.y);
-        float  wz = 1.0 / (1.0 + abs(s.y - z) / (2.0 * fpw));
-        float  w  = wb * wz * wz + 1e-5;
-        num += s.x * w;
-        den += w;
+        float  wn = normal_weight(n, normal_at(a, pick(t)));
+        if (a.use_ao != 0u) {
+            float2 s  = a.ao[ti];
+            float  wz = 1.0 / (1.0 + abs(s.y - z) / (2.0 * fpw));
+            float  w  = wb * wz * wz * wn + 1e-5;
+            num.x += s.x * w;
+            den.x += w;
+        }
+        if (a.use_sh != 0u) {
+            float2 s  = a.sh[ti];
+            float  wz = 1.0 / (1.0 + abs(s.y - z) / (2.0 * fpw));
+            float  w  = wb * wz * wz * wn + 1e-5;
+            num.y += s.x * w;
+            den.y += w;
+        }
     }
-    return num / den;
+    return float2(a.use_ao != 0u ? num.x / den.x : 1.0, a.use_sh != 0u ? num.y / den.y : 1.0);
 }
 
 // ---- Shading ------------------------------------------------------------------
@@ -1340,8 +1366,9 @@ void compose(uint3 tid : SV_DispatchThreadID) {
     } else if (cov > 0.0) {
         float3 N  = normal_at(a, q);
         float  zl = (a.use_ao | a.use_sh) != 0u ? a.lin[tid.y * a.width + tid.x] : 0.0;
-        float  ao = a.use_ao != 0u ? vis_at(a, a.ao, q, zl) : 1.0;
-        float  sh = a.use_sh != 0u ? vis_at(a, a.sh, q, zl) : 1.0;
+        float2 vs = (a.use_ao | a.use_sh) != 0u ? vis_at(a, q, zl, N) : float2(1.0);
+        float  ao = vs.x;
+        float  sh = vs.y;
         float3 P  = unproject(a, ndc, dop);
         Lit l = shade(a, col.rgb, V, N, ao, sh);
         S   = l.diffuse + l.specular;
