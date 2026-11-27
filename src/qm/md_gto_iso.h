@@ -74,6 +74,24 @@ md_gto_iso_field_t* md_gto_iso_field_create_products(const md_gto_basis_t* basis
                                                      const double* left, const double* right, const double* weight, size_t count,
                                                      struct md_allocator_i* alloc);
 
+// A density as its tiles, f = phi^T D phi (md_gto_dmat_t, md_gto_dmat.h), with no functions: for a density of more
+// products than are worth holding (a protein's occupied orbitals, which the tiles are built from a block at a time:
+// md_qm_density_dmat_build), where the products' field would hold them all. The tiles must be built, of this basis,
+// their pattern holding at these atom positions; they stay the caller's and must outlive the field, their values
+// unchanged. psd: D is positive semidefinite (an SCF density of one spin or both, an attachment or detachment
+// density, any sum of squares with weights >= 0), which tightens the GPU's bounds; false is always safe.
+// What it is for:
+//   md_gto_iso_field_evaluate   from the tiles (md_gto_dmat_evaluate), with the AOs above their cutoff: an error of
+//                               about that cutoff, where a field of products is exact to 1e-12
+//   md_gto_iso_gpu_set_create   in the D form only, from the field's tiles on the device, which it needs
+//                               (md_gto_iso_field_set_gpu_dmat: of the same density, md_gto_gpu_dmat_upload of these
+//                               tiles or of others, in a pattern of their own); a set's other densities given as tiles
+//                               must have theirs in the same pattern on the device (md_gto_gpu_dmat_same_pattern)
+// Not for the CPU's cache and meshes (md_gto_iso_cache_create declines it: those are the reference, of products) nor
+// for md_gto_iso_field_create_lol and _elf.
+md_gto_iso_field_t* md_gto_iso_field_create_dmat(const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
+                                                 const struct md_gto_dmat_t* tiles, bool psd, struct md_allocator_i* alloc);
+
 // The LOCALIZED ORBITAL LOCATOR (md_qm_lol, md_qm.h) as a field of its own, made of each spin's density and
 // kinetic energy density as density fields (md_gto_iso_field_create_products: the density's orbitals over the
 // basis, md_qm_kinetic_orbitals' over the derivative basis); rho_b and tau_b NULL for a closed shell, whose rho_a
@@ -251,6 +269,8 @@ typedef struct md_gto_iso_gpu_set_t md_gto_iso_gpu_set_t;
 // the set's cutoff or a tighter one; else the set builds its own, as without. The dmat stays the caller's, and must
 // outlive every set made with it, its values unchanged (the set's bounds are made of them); complete on the set's stream
 // when the set is made (made on it, or the stream it was made on waited for or destroyed). NULL takes the hint back.
+// For a density given as its tiles (md_gto_iso_field_create_dmat) not a hint but what its sets read: tiles of that
+// density on the device, without which no set of it is made.
 void md_gto_iso_field_set_gpu_dmat(md_gto_iso_field_t* field, md_gto_gpu_dmat_t dmat);
 
 md_gto_iso_gpu_set_t* md_gto_iso_gpu_set_create(md_gpu_stream_t stream, const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,

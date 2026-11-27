@@ -1428,6 +1428,10 @@ bool md_gto_gpu_dmat_pattern_valid(md_gto_gpu_dmat_t dm, const float* atom_xyz, 
     return dm && md_gto_dmat_pattern_valid(&dm->pat, atom_xyz, atom_xyz_stride);
 }
 
+bool md_gto_gpu_dmat_same_pattern(md_gto_gpu_dmat_t a, md_gto_gpu_dmat_t b) {
+    return a && b && md_gto_dmat_same_pattern(&a->pat, &b->pat);
+}
+
 static bool gto_dmat_grow(md_gpu_stream_t stream, md_gpu_addr_t* buf, size_t* cap, size_t floats) {
     if (*buf && *cap >= floats) return true;
     md_gpu_free(stream, *buf);

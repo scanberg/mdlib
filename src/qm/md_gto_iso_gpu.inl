@@ -16,7 +16,7 @@
 #include <gto_iso_gpu_shaders.inl>
 
 // BENCHMARK (temporary, branch gto-iso-gpu-opt): which round of changes this is, in every profile report
-#define ISOG_REVISION "r53 (the D form one kernel pair: eight waves, the lookups staged (r51's 3); r52: the octree D form's row AO clamped; r50: no factorization slack, densities as products only; r49: a density's tiles given with its field: read where they are as the set's only matrix, else copied; r47: the D form in tiles only)"
+#define ISOG_REVISION "r54 (densities given as their tiles alone, md_gto_iso_field_create_dmat: the D form only, from their tiles on the device; r53: the D form one kernel pair: eight waves, the lookups staged (r51's 3); r52: the octree D form's row AO clamped; r50: no factorization slack, densities as products only; r49: a density's tiles given with its field: read where they are as the set's only matrix, else copied; r47: the D form in tiles only)"
 
 typedef struct isog_shell_t {        // mirrors IsoShell
     md_gpu_float4 c;
@@ -387,8 +387,9 @@ static bool isog_density_squares(const iso_density_t* d) {
     return true;
 }
 
-// Positive semidefinite: every term a square with w >= 0
+// Positive semidefinite: every term a square with w >= 0 (a density given as its tiles: as its maker said)
 static bool isog_density_psd(const iso_density_t* d) {
+    if (d->dmat) return d->psd;
     for (int t = 0; t < d->num_terms; ++t) if (d->terms[t].a != d->terms[t].b || d->terms[t].w < 0.0) return false;
     return true;
 }
@@ -454,7 +455,9 @@ static bool isog_hint_usable(md_gto_gpu_dmat_t hint, size_t nao, const float* at
 // density given its tiles (md_gto_iso_field_set_gpu_dmat, isog_hint_usable), and any other density's is built on the
 // device from its functions into it; with none given, a pattern of the set's own for the cutoff the extraction's AO
 // lists are for. The given tiles are read where they are when they are the set's only matrix (dm_borrowed: no copy of
-// a density in device memory), and copied into the set's pools beside others. Per field its matrix into fdm, the matrices' properties (d_psd;
+// a density in device memory), and copied into the set's pools beside others. A density given as its tiles
+// (md_gto_iso_field_create_dmat) has no functions to build from: its tiles on the device are the set's pattern (they
+// are taken first), or copied where they are in that same pattern (md_gto_gpu_dmat_same_pattern); else false (logged). Per field its matrix into fdm, the matrices' properties (d_psd;
 // d_sraw with the row sums, isog_dmat_rows), and the cutoff the tiles are for (dm_eps_exp). False, with
 // nothing kept, where md_gto cannot (md_gto_gpu_initialize not called, out of memory): the set then has no D form.
 static bool isog_dmat_tiles(md_gto_iso_gpu_set_t* set, md_gpu_stream_t stream, const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
@@ -463,6 +466,26 @@ static bool isog_dmat_tiles(md_gto_iso_gpu_set_t* set, md_gpu_stream_t stream, c
     const size_t num_ao = md_gto_basis_num_ao(basis);
     md_gto_gpu_dmat_t hint = NULL;
     int eps_exp = isog_eval_eps_exp;
+    // the densities given as tiles first: theirs are on the device or nowhere
+    uint32_t hint_k = 0;
+    for (uint32_t k = 0; k < num_fields; ++k) {
+        const iso_density_t* d = fields[k]->f.dens;
+        if (first_of[k] != (int)k || !d || !d->dmat) continue;
+        int e = isog_eval_eps_exp;
+        if (!isog_hint_usable(fields[k]->gpu_dmat, num_ao, atom_xyz, atom_xyz_stride, &e)) {
+            MD_LOG_ERROR("md_gto_iso_gpu_set_create: field %u, a density given as its tiles, has no tiles on the device for these atom positions and "
+                         "the AO cutoff 1e-%d (md_gto_iso_field_set_gpu_dmat)", k, isog_eval_eps_exp);
+            return false;
+        }
+        if (!hint) {
+            hint = fields[k]->gpu_dmat;
+            hint_k = k;
+            eps_exp = e;
+        } else if (!md_gto_gpu_dmat_same_pattern(fields[k]->gpu_dmat, hint)) {
+            MD_LOG_ERROR("md_gto_iso_gpu_set_create: field %u, a density given as its tiles, is in another pattern than field %u's", k, hint_k);
+            return false;
+        }
+    }
     for (uint32_t k = 0; k < num_fields && !hint; ++k) {
         if (first_of[k] == (int)k && isog_hint_usable(fields[k]->gpu_dmat, num_ao, atom_xyz, atom_xyz_stride, &eps_exp)) hint = fields[k]->gpu_dmat;
     }
@@ -472,8 +495,10 @@ static bool isog_dmat_tiles(md_gto_iso_gpu_set_t* set, md_gpu_stream_t stream, c
         .basis = basis, .atom_xyz = atom_xyz, .atom_xyz_stride = atom_xyz_stride,
         .cutoff = pow(10.0, -(double)isog_eval_eps_exp), .margin = ISOG_DMAT_MARGIN,
     };
-    uint32_t num_built = 0;
-    for (uint32_t k = 0; k < num_fields; ++k) num_built += first_of[k] == (int)k && (!hint || fields[k]->gpu_dmat != hint);
+    uint32_t num_built = 0;     // what is built from its functions (a tiles field's are copied)
+    for (uint32_t k = 0; k < num_fields; ++k) {
+        num_built += first_of[k] == (int)k && (!hint || fields[k]->gpu_dmat != hint) && !(fields[k]->f.dens && fields[k]->f.dens->dmat);
+    }
     md_gto_gpu_dmat_t dm = NULL;
     if (num_built) {
         dm = hint ? md_gto_gpu_dmat_create_like(stream, hint) : md_gto_gpu_dmat_create(stream, &desc);
@@ -517,6 +542,11 @@ static bool isog_dmat_tiles(md_gto_iso_gpu_set_t* set, md_gpu_stream_t stream, c
         const iso_density_t* d = fk->f.dens;
         if (hint && fk->gpu_dmat == hint) {
             ok = md_gpu_copy(stream, set->dmat.gpu + sizeof(float) * pool * u, vh.tiles, sizeof(float) * pool);
+        } else if (d && d->dmat) {
+            // given as tiles in the hint's pattern (checked above): theirs as they are
+            md_gto_gpu_dmat_view_t vk;
+            md_gto_gpu_dmat_view(&vk, fk->gpu_dmat);
+            ok = vk.num_tiles == vh.num_tiles && md_gpu_copy(stream, set->dmat.gpu + sizeof(float) * pool * u, vk.tiles, sizeof(float) * pool);
         } else {
             md_temp_scope_t temp = md_temp_begin();     // the build's inputs: md_gto_gpu_dmat_build* consumes them before returning
             if (isog_density_squares(d)) {
@@ -858,7 +888,7 @@ static const char* isog_set_build(md_gto_iso_gpu_set_t* set, md_gpu_stream_t str
     if (dform && !isog_dmat_tiles(set, stream, basis, atom_xyz, atom_xyz_stride, fields, num_fields, first_of, fdm, num_dmat)) dform = false;
     if (!dform) num_dmat = 0;
     if (!num_dmat) set->dm_eps_exp = 0;
-    if (factorless && !num_dmat) return "more functions than the factored kernels hold, and the D form's matrices could not be made";
+    if (factorless && !num_dmat) return "the D form's matrices could not be made, which a set of more functions than the factored kernels hold, or with a density given as its tiles, needs";
 
     // per function column: the sum of |C| (the tails for the shells a box drops: isog_set_eps), and the
     // first tails, for the radii above (1e-10)
@@ -1032,10 +1062,17 @@ md_gto_iso_gpu_set_t* md_gto_iso_gpu_set_create(md_gpu_stream_t stream, const md
         if (!d) { dform_ok = false; break; }
         for (int t = 0; t < d->num_terms; ++t) if (d->terms[t].b < 0) dform_ok = false;
     }
+    // a density given as its tiles (md_gto_iso_field_create_dmat) has no functions: its set runs the D form only
+    bool any_tiles = false;
+    for (uint32_t k = 0; k < num_fields; ++k) any_tiles |= fields[k]->f.dens && fields[k]->f.dens->dmat;
     const uint32_t fn_cap = isog_fn_cap;
-    const bool factorless = nf > fn_cap && dform_ok;
-    if (nf > fn_cap && !factorless) {
-        MD_LOG_ERROR("md_gto_iso_gpu_set_create: %u functions in all, more than %u, and not every field a density of products (the D form)", nf, fn_cap);
+    const bool factorless = (nf > fn_cap || any_tiles) && dform_ok;
+    if ((nf > fn_cap || any_tiles) && !factorless) {
+        if (any_tiles) {
+            MD_LOG_ERROR("md_gto_iso_gpu_set_create: a density given as its tiles, and not every field a density of products, or more than 65535 AOs or shells (the D form)");
+        } else {
+            MD_LOG_ERROR("md_gto_iso_gpu_set_create: %u functions in all, more than %u, and not every field a density of products (the D form)", nf, fn_cap);
+        }
         isog_basis_free(&B);
         return NULL;
     }
@@ -2439,7 +2476,7 @@ md_gto_iso_gpu_job_t* md_gto_iso_gpu_job_begin(md_gpu_stream_t s, const md_gto_i
             const md_gto_iso_field_t* fk = set->src[k];
             const iso_density_t* dk = fk ? fk->f.dens : NULL;
             if (!dk || !fk->maxima_at_atoms) { flood = false; break; }
-            for (int t = 0; t < dk->num_terms && flood; ++t) flood = dk->terms[t].a == dk->terms[t].b && dk->terms[t].w >= 0.0;
+            flood = isog_density_psd(dk);
         }
     }
     if (comp) flood = false;

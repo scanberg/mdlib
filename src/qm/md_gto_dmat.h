@@ -67,6 +67,9 @@ bool md_gto_dmat_init_like(md_gto_dmat_t* dm, const md_gto_dmat_t* src, struct m
 // the pattern was made.
 bool md_gto_dmat_pattern_valid(const md_gto_dmat_t* dm, const float* atom_xyz, size_t atom_xyz_stride);
 
+// Whether two are in one pattern: the same AOs in the same tiles, the same tile pairs kept (wherever each was made)
+bool md_gto_dmat_same_pattern(const md_gto_dmat_t* a, const md_gto_dmat_t* b);
+
 // D = sum_k w_k c_k c_k^T on the kept tiles, in double, over num_mo orbitals: orbital k's coefficient of AO i (the
 // basis order) at coeff[k * mo_stride + i * ao_stride] (rows: mo_stride num_ao, ao_stride 1; columns, [num_ao][ld]:
 // mo_stride 1, ao_stride ld). Weights of either sign (0 skips the orbital), so that a difference of densities is one

@@ -5207,6 +5207,231 @@ UTEST(gto_iso_gpu_lib, given_tiles_are_taken) {
     iso_gpu_free(&g);
 }
 
+// A density given as its tiles alone (md_gto_iso_field_create_dmat): no functions, so neither the host nor the device
+// holds its products. On the CPU it evaluates from the tiles (to their cutoff: at 1e-10 the products' field's values,
+// at 1e-6 within what the GPU's evaluation cutoff costs); the CPU's cache declines it. On the GPU only in the D form,
+// from its tiles on the device, which it needs: read where they are alone; beside a density of products, which is built
+// into their pattern; beside another density given as tiles in the same pattern, both copied; one in another pattern
+// declined. Its values those of the products' field, and its meshes theirs but for the lattice: its surface box is
+// bounded from |D| rather than from the functions, so the root differs.
+UTEST(gto_iso_gpu_lib, density_as_tiles) {
+    iso_dens_src_t s;
+    ASSERT_TRUE(iso_dens_src_load(&s, "amide.h5"));
+    iso_dens_prod_t ps, pd;
+    iso_dens_products(&ps, &s, ISO_D_SCF);
+    iso_dens_products(&pd, &s, ISO_D_DIFF);
+    ASSERT_GT(pd.count, 0u);
+    ASSERT_TRUE(ps.right == NULL && pd.right == NULL);
+    md_gto_iso_field_t* scf = iso_dens_field(&s, &ps);
+    md_gto_iso_field_t* diff = iso_dens_field(&s, &pd);
+    ASSERT_TRUE(scf && diff);
+
+    // tiles: the SCF density at 1e-6 and 1e-10, the difference density in the first's pattern, the SCF density at 1e-8
+    // (another pattern)
+    md_gto_dmat_t t6, t10, d6, t8;
+    const md_gto_dmat_desc_t desc6 = { .basis = &s.basis, .atom_xyz = s.xyz, .cutoff = 1.0e-6, .margin = 1.0 };
+    ASSERT_TRUE(md_gto_dmat_init(&t6, &desc6, md_get_heap_allocator()));
+    ASSERT_TRUE(md_gto_dmat_init(&t10, &(md_gto_dmat_desc_t){ .basis = &s.basis, .atom_xyz = s.xyz, .cutoff = 1.0e-10, .margin = 1.0 }, md_get_heap_allocator()));
+    ASSERT_TRUE(md_gto_dmat_init(&t8, &(md_gto_dmat_desc_t){ .basis = &s.basis, .atom_xyz = s.xyz, .cutoff = 1.0e-8, .margin = 1.0 }, md_get_heap_allocator()));
+    ASSERT_TRUE(md_gto_dmat_init_like(&d6, &t6, md_get_heap_allocator()));
+    ASSERT_TRUE(md_gto_dmat_build(&t6, ps.left, s.num_ao, 1, ps.w, ps.count, NULL));
+    ASSERT_TRUE(md_gto_dmat_build(&t10, ps.left, s.num_ao, 1, ps.w, ps.count, NULL));
+    ASSERT_TRUE(md_gto_dmat_build(&t8, ps.left, s.num_ao, 1, ps.w, ps.count, NULL));
+    ASSERT_TRUE(md_gto_dmat_build(&d6, pd.left, s.num_ao, 1, pd.w, pd.count, NULL));
+    // patterns: of a like init the same, of the same cutoff made again the same, of another cutoff not
+    EXPECT_TRUE(md_gto_dmat_same_pattern(&t6, &d6));
+    EXPECT_FALSE(md_gto_dmat_same_pattern(&t6, &t8));
+    {
+        md_gto_dmat_t again;
+        ASSERT_TRUE(md_gto_dmat_init(&again, &desc6, md_get_heap_allocator()));
+        EXPECT_TRUE(md_gto_dmat_same_pattern(&t6, &again));
+        md_gto_dmat_free(&again);
+    }
+    md_gto_iso_field_t* f6  = md_gto_iso_field_create_dmat(&s.basis, s.xyz, 0, &t6, true, md_get_heap_allocator());
+    md_gto_iso_field_t* f10 = md_gto_iso_field_create_dmat(&s.basis, s.xyz, 0, &t10, true, md_get_heap_allocator());
+    md_gto_iso_field_t* f8  = md_gto_iso_field_create_dmat(&s.basis, s.xyz, 0, &t8, true, md_get_heap_allocator());
+    md_gto_iso_field_t* fd  = md_gto_iso_field_create_dmat(&s.basis, s.xyz, 0, &d6, false, md_get_heap_allocator());
+    ASSERT_TRUE(f6 && f10 && f8 && fd);
+    md_gto_iso_field_info_t fi;
+    md_gto_iso_field_info(&fi, f6);
+    EXPECT_EQ((uint32_t)MD_GTO_ISO_FIELD_DENSITY, fi.kind);
+    EXPECT_EQ(0u, fi.num_functions);
+    EXPECT_EQ(0u, fi.num_terms);
+    // of another basis's tiles, or where their pattern does not hold: none
+    float* far = (float*)malloc(sizeof(float) * 3 * s.num_atoms);
+    for (size_t i = 0; i < 3 * s.num_atoms; ++i) far[i] = s.xyz[i] + (i == 0 ? 2.0f : 0.0f);
+    EXPECT_TRUE(md_gto_iso_field_create_dmat(&s.basis, far, 0, &t6, true, md_get_heap_allocator()) == NULL);
+    free(far);
+    // not the CPU's cache, nor a part of LOL
+    const md_gto_iso_cache_desc_t cd = { .cell_size = 0.25, .iso_min = 0.02 };
+    EXPECT_TRUE(md_gto_iso_cache_create(f6, &cd, md_get_heap_allocator()) == NULL);
+    EXPECT_TRUE(md_gto_iso_field_create_lol(f6, f6, NULL, NULL, 1.0e-6, md_get_heap_allocator()) == NULL);
+
+    enum { N = 2000 };
+    iso_rng_t rng = {0x7d6a7};
+    double* pd3 = (double*)malloc(sizeof(double) * 3 * N);
+    float* pts = (float*)malloc(sizeof(float) * 3 * N);
+    float* val = (float*)malloc(sizeof(float) * 2 * N);
+    float* grad = (float*)malloc(sizeof(float) * 6 * N);
+    double* rv = (double*)malloc(sizeof(double) * N);
+    double* rg = (double*)malloc(sizeof(double) * 3 * N);
+    iso_dens_points(pd3, N, &s, &rng);
+    for (int i = 0; i < 3 * N; ++i) pts[i] = (float)pd3[i];
+
+    // on the CPU: the products' values from the tiles, to their cutoff
+    {
+        const md_gto_iso_field_t* tf[3] = { f10, f6, fd };
+        const md_gto_iso_field_t* pf[3] = { scf, scf, diff };
+        const double tol[3] = { 1.0e-9, 1.0e-5, 1.0e-5 };
+        for (int k = 0; k < 3; ++k) {
+            md_gto_iso_field_evaluate(tf[k], pts, N, 0, rv, rg);
+            for (int i = 0; i < N; ++i) { val[i] = (float)rv[i]; for (int c = 0; c < 3; ++c) grad[3 * i + c] = (float)rg[3 * i + c]; }
+            // in double, against the products' field in double
+            double vmax = 0.0, gmax = 0.0, dv = 0.0, dg = 0.0;
+            double* pv = (double*)malloc(sizeof(double) * N);
+            double* pg = (double*)malloc(sizeof(double) * 3 * N);
+            md_gto_iso_field_evaluate(pf[k], pts, N, 0, pv, pg);
+            for (int i = 0; i < N; ++i) {
+                vmax = fmax(vmax, fabs(pv[i]));
+                dv = fmax(dv, fabs(pv[i] - rv[i]));
+                for (int c = 0; c < 3; ++c) { gmax = fmax(gmax, fabs(pg[3 * i + c])); dg = fmax(dg, fabs(pg[3 * i + c] - rg[3 * i + c])); }
+            }
+            printf("  amide, %s from its tiles (1e-%d) on the CPU: max |f| %.2e, |df| %.1e (%.1e rel), |dgrad| %.1e (%.1e rel)\n",
+                   k == 2 ? "difference density" : "SCF density", k == 0 ? 10 : 6, vmax, dv, dv / vmax, dg, dg / gmax);
+            EXPECT_LT(dv, tol[k] * vmax + tol[k]);
+            EXPECT_LT(dg, tol[k] * gmax + tol[k]);
+            free(pv); free(pg);
+        }
+    }
+
+    iso_gpu_t g;
+    if (!iso_gpu_init(&g)) {
+        iso_gpu_free(&g);
+    } else {
+        md_gto_iso_gpu_initialize(g.dev);
+        md_gto_gpu_dmat_t u6 = md_gto_gpu_dmat_upload(g.s, &t6);
+        md_gto_gpu_dmat_t ud = md_gto_gpu_dmat_upload(g.s, &d6);
+        md_gto_gpu_dmat_t u8 = md_gto_gpu_dmat_upload(g.s, &t8);
+        ASSERT_TRUE(u6 && ud && u8);
+        md_gpu_stream_sync(g.s);
+
+        // without its tiles on the device: no set
+        {
+            const md_gto_iso_field_t* fl[1] = { f6 };
+            EXPECT_TRUE(md_gto_iso_gpu_set_create(g.s, &s.basis, s.xyz, 0, fl, 1, md_get_heap_allocator()) == NULL);
+        }
+        md_gto_iso_field_set_gpu_dmat(f6, u6);
+        md_gto_iso_field_set_gpu_dmat(fd, ud);
+        md_gto_iso_field_set_gpu_dmat(f8, u8);
+        md_gto_iso_field_set_gpu_dmat(scf, u6);     // the products' set reads the same tiles, so the two differ only in their root
+        md_gto_iso_field_set_maxima_at_atoms(f6, true);
+        md_gto_iso_field_set_maxima_at_atoms(scf, true);
+        const int saved_dform = isog_dform;
+        isog_dform = 1;     // the products' set in the D form too
+
+        // alone, at two iso values: read where they are, no functions
+        {
+            const md_gto_iso_field_t* fl[2] = { f6, f6 };
+            md_gto_iso_gpu_set_t* set = md_gto_iso_gpu_set_create(g.s, &s.basis, s.xyz, 0, fl, 2, md_get_heap_allocator());
+            ASSERT_TRUE(set != NULL);
+            md_gto_gpu_dmat_view_t v;
+            md_gto_gpu_dmat_view(&v, u6);
+            EXPECT_TRUE(set->factorless);
+            EXPECT_EQ(0u, set->num_fn);
+            EXPECT_TRUE(set->dm_borrowed);
+            EXPECT_TRUE(set->dmat.gpu == v.tiles);
+            ASSERT_TRUE(md_gto_iso_gpu_evaluate(g.s, set, (const uint32_t[]){0}, 1, pts, 0, N, val, grad));
+            const iso_ev_err_t e = iso_ev_compare(scf, pts, 0, N, val, grad, 3);
+            printf("  amide, the SCF density as its tiles alone (device): |df| %.1e rel, |dgrad| %.1e rel\n", e.val / e.fmax, e.grad / e.gmax);
+            EXPECT_LT(e.val, 1.0e-5 * e.fmax + 1.0e-5);
+            EXPECT_LT(e.grad, 1.0e-5 * e.gmax + 1.0e-5);
+            // its meshes against the products' (the same tiles on the device): the same surfaces, on another lattice
+            const md_gto_iso_field_t* pl[2] = { scf, scf };
+            md_gto_iso_gpu_set_t* ps_set = md_gto_iso_gpu_set_create(g.s, &s.basis, s.xyz, 0, pl, 2, md_get_heap_allocator());
+            ASSERT_TRUE(ps_set != NULL);
+            md_gto_iso_gpu_desc_t gd = {.cell_size = 0.25, .project_iterations = 4};
+            gd.iso[0] = 0.002;
+            gd.iso[1] = 0.2;
+            md_gto_iso_gpu_mesh_t m0, m1;
+            ASSERT_TRUE(md_gto_iso_gpu_extract(g.s, set, &gd, &m0));
+            ASSERT_TRUE(md_gto_iso_gpu_extract(g.s, ps_set, &gd, &m1));
+            for (int f = 0; f < 2; ++f) {
+                const double a0 = m0.vertex_count_of[f][0], a1 = m1.vertex_count_of[f][0];
+                printf("  amide, SCF density at %g: %.0f vertices from its tiles, %.0f from its products\n", gd.iso[f], a0, a1);
+                EXPECT_GT(a0, 100.0);
+                EXPECT_LT(fabs(a0 - a1), 0.01 * a1 + 2.0);
+                EXPECT_EQ(0u, m0.vertex_count_of[f][1]);    // no negative sheet
+            }
+            // the vertices on the surface
+            float* pos = (float*)malloc(sizeof(float) * 4 * m0.vertex_count);
+            ASSERT_TRUE(md_gto_iso_gpu_mesh_read_all(g.s, &m0, pos, NULL, NULL));
+            for (int f = 0; f < 2; ++f) {
+                const uint32_t v0 = m0.vertex_offset[f][0], nv = m0.vertex_count_of[f][0];
+                double worst = 0.0;
+                for (uint32_t i = 0; i < nv; i += 7) {
+                    double r;
+                    md_gto_iso_field_evaluate(scf, pos + 4 * (size_t)(v0 + i), 1, 0, &r, NULL);
+                    worst = fmax(worst, fabs(r - gd.iso[f]) / gd.iso[f]);
+                }
+                EXPECT_LT(worst, 1.0e-2);
+            }
+            free(pos);
+            md_gto_iso_gpu_mesh_free(g.s, &m0);
+            md_gto_iso_gpu_mesh_free(g.s, &m1);
+            md_gto_iso_gpu_set_destroy(g.s, ps_set);
+            md_gto_iso_gpu_set_destroy(g.s, set);
+        }
+        // beside a density of products: that one built into their pattern; beside another given as tiles in the same
+        // pattern: both copied
+        {
+            const md_gto_iso_field_t* sets[2][2] = { { f6, diff }, { f6, fd } };
+            for (int k = 0; k < 2; ++k) {
+                md_gto_iso_gpu_set_t* set = md_gto_iso_gpu_set_create(g.s, &s.basis, s.xyz, 0, sets[k], 2, md_get_heap_allocator());
+                ASSERT_TRUE(set != NULL);
+                EXPECT_EQ(2u, set->num_dmat);
+                EXPECT_EQ(0u, set->num_fn);
+                EXPECT_FALSE(set->dm_borrowed);
+                ASSERT_TRUE(md_gto_iso_gpu_evaluate(g.s, set, (const uint32_t[]){0, 1}, 2, pts, 0, N, val, grad));
+                for (int f = 0; f < 2; ++f) {
+                    const iso_ev_err_t e = iso_ev_compare(f == 0 ? scf : diff, pts, 0, N, val + (size_t)f * N, grad + 3 * (size_t)f * N, 3);
+                    printf("  amide, the SCF density as tiles beside the difference density %s, field %d: |df| %.1e rel, |dgrad| %.1e rel\n",
+                           k == 0 ? "of products" : "as tiles", f, e.val / e.fmax, e.grad / e.gmax);
+                    EXPECT_LT(e.val, 1.0e-5 * e.fmax + 1.0e-5);
+                    EXPECT_LT(e.grad, 1.0e-5 * e.gmax + 1.0e-5);
+                }
+                md_gto_iso_gpu_set_destroy(g.s, set);
+            }
+        }
+        // beside one given as tiles in another pattern: no set
+        {
+            const md_gto_iso_field_t* fl[2] = { f6, f8 };
+            EXPECT_TRUE(md_gto_iso_gpu_set_create(g.s, &s.basis, s.xyz, 0, fl, 2, md_get_heap_allocator()) == NULL);
+        }
+        isog_dform = saved_dform;
+        md_gto_iso_field_set_gpu_dmat(scf, NULL);
+        md_gto_gpu_dmat_destroy(g.s, u6);
+        md_gto_gpu_dmat_destroy(g.s, ud);
+        md_gto_gpu_dmat_destroy(g.s, u8);
+        md_gto_iso_gpu_shutdown();
+        iso_gpu_free(&g);
+    }
+
+    free(pd3); free(pts); free(val); free(grad); free(rv); free(rg);
+    md_gto_iso_field_destroy(f6);
+    md_gto_iso_field_destroy(f10);
+    md_gto_iso_field_destroy(f8);
+    md_gto_iso_field_destroy(fd);
+    md_gto_iso_field_destroy(scf);
+    md_gto_iso_field_destroy(diff);
+    md_gto_dmat_free(&t6);
+    md_gto_dmat_free(&t10);
+    md_gto_dmat_free(&t8);
+    md_gto_dmat_free(&d6);
+    iso_dens_prod_free(&ps);
+    iso_dens_prod_free(&pd);
+    iso_dens_src_free(&s);
+}
+
 UTEST(gto_iso_gpu_lib, evaluate_job_matches_launch) {
     iso_gpu_t g;
     if (!iso_gpu_init(&g)) { iso_gpu_free(&g); UTEST_SKIP(iso_gpu_no_device()); }

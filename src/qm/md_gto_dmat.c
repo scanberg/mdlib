@@ -227,6 +227,15 @@ bool md_gto_dmat_pattern_valid(const md_gto_dmat_t* dm, const float* atom_xyz, s
     return true;
 }
 
+bool md_gto_dmat_same_pattern(const md_gto_dmat_t* a, const md_gto_dmat_t* b) {
+    if (!a || !b || !a->perm || !b->perm) return false;
+    if (a == b) return true;
+    return a->num_ao == b->num_ao && a->nt == b->nt && a->num_tiles == b->num_tiles &&
+           md_memcmp(a->perm, b->perm, sizeof(int32_t) * 16 * (size_t)a->nt) == 0 &&
+           md_memcmp(a->row_ptr, b->row_ptr, sizeof(uint64_t) * ((size_t)a->nt + 1)) == 0 &&
+           md_memcmp(a->cols, b->cols, sizeof(uint32_t) * a->num_tiles) == 0;
+}
+
 // ---------------------------------------------------------------------------------------------------- the build
 
 // Orbitals a chunk at a time: P[(J kc + k) 16 + c] = orbital k's coefficient of tiled AO 16 J + c, so that a tile's

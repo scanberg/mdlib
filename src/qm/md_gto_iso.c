@@ -31,6 +31,7 @@
 #include <md_gto_iso.h>
 
 #include <md_gto.h>
+#include <md_gto_dmat.h>
 #include <core/md_allocator.h>
 #include <core/md_format.h>
 #include <core/md_array.h>
@@ -765,6 +766,14 @@ typedef struct iso_density_t {
     double*         Cabs;           // |C|
     iso_ao_shell_t* ao_shells;
     iso_field_t     radial;         // one group per basis shell: its contracted radial function (ncart 1)
+    // A density given as its tiles (md_gto_iso_field_create_dmat), no functions nor terms: f = phi^T D phi
+    const md_gto_dmat_t* dmat;      // the caller's; NULL for a density of products
+    bool            psd;            // D positive semidefinite, as the caller says
+    md_gto_basis_t  dbasis;         // the basis, copied: what md_gto_dmat_evaluate reads
+    float*          dxyz;           // the atoms (bohr, packed)
+    int             tnum;           // the distinct radial functions (iso_radial_same)
+    int*            tradial;        // [tnum]: a shell of each (an index into radial.shells)
+    double*         tG;             // [tnum][tnum]: sum over the AO pairs of those radial functions of |D| |nrm| |nrm|
 } iso_density_t;
 
 #define ISO_DENSITY_STACK_FN 256
@@ -774,6 +783,12 @@ static void iso_density_free(iso_density_t* d) {
     free(d->C);
     free(d->Cabs);
     free(d->ao_shells);
+    free(d->dbasis.shells);
+    free(d->dbasis.alpha);
+    free(d->dbasis.coeff);
+    free(d->dxyz);
+    free(d->tradial);
+    free(d->tG);
     md_array_free(d->radial.shells, md_get_heap_allocator());
     md_array_free(d->radial.crit, md_get_heap_allocator());
     free(d);
@@ -1097,6 +1112,60 @@ static bool iso_tail_init(iso_tail_t* t, const iso_density_t* d) {
     return true;
 }
 
+// A density given as its tiles: its radial functions grouped as iso_tail_init groups them, and per pair of groups
+// G_uv = sum over AO pairs (i in u, j in v) of |D_ij| |nrm_i| |nrm_j|, both orders: then |phi^T D phi| <= sum_uv G_uv
+// t_u t_v at a distance r from every atom, t_u the tail of group u (iso_shell_tail), and for r past every r0 that
+// only decreases. Over the kept tiles: the density as it is evaluated, every pair the pattern holds.
+static bool iso_dmat_tail_init(iso_density_t* d) {
+    const md_gto_dmat_t* dm = d->dmat;
+    const int ns = d->num_ao_shells, nao = d->num_ao;
+    int* group = (int*)malloc(sizeof(int) * (ns + 1));
+    int* ao_group = (int*)malloc(sizeof(int) * (nao + 1));
+    double* ao_nrm = (double*)malloc(sizeof(double) * (nao + 1));
+    d->tradial = (int*)malloc(sizeof(int) * (ns + 1));
+    bool ok = group && ao_group && ao_nrm && d->tradial;
+    d->tnum = 0;
+    for (int si = 0; si < ns && ok; ++si) {
+        const iso_shell_t* r = &d->radial.shells[si];
+        int u = 0;
+        while (u < d->tnum && !iso_radial_same(&d->radial.shells[d->tradial[u]], r)) ++u;
+        if (u == d->tnum) d->tradial[d->tnum++] = si;
+        group[si] = u;
+        const iso_ao_shell_t* a = &d->ao_shells[si];
+        for (int n = 0; n < a->ncart; ++n) {
+            ao_group[a->ao + n] = u;
+            ao_nrm[a->ao + n] = fabs(a->nrm[n]);
+        }
+    }
+    const int T = d->tnum;
+    d->tG = ok ? (double*)calloc((size_t)T * T + 1, sizeof(double)) : NULL;
+    ok = ok && d->tG;
+    for (uint32_t I = 0; ok && I < dm->nt; ++I) {
+        for (uint64_t e = dm->row_ptr[I]; e < dm->row_ptr[I + 1]; ++e) {
+            const uint32_t J = dm->cols[e];
+            const double* tile = dm->tiles + 256 * e;
+            for (uint32_t a = 0; a < 16; ++a) {
+                const int32_t i = dm->perm[16 * I + a];
+                if (i < 0) continue;
+                const int gi = ao_group[i];
+                const double ni = ao_nrm[i];
+                for (uint32_t c = 0; c < 16; ++c) {
+                    const int32_t j = dm->perm[16 * J + c];
+                    const double v = tile[16 * a + c];
+                    if (j < 0 || v == 0.0) continue;
+                    const double x = fabs(v) * ni * ao_nrm[j];
+                    d->tG[(size_t)gi * T + ao_group[j]] += x;
+                    if (J != I) d->tG[(size_t)ao_group[j] * T + gi] += x;   // the tile (J, I), not kept
+                }
+            }
+        }
+    }
+    free(group);
+    free(ao_group);
+    free(ao_nrm);
+    return ok;
+}
+
 static void iso_tail_free(iso_tail_t* t) {
     free(t->radial);
     free(t->G);
@@ -1106,6 +1175,21 @@ static void iso_tail_free(iso_tail_t* t) {
 
 static double iso_density_tail(const iso_field_t* f, double r, iso_tail_t* tl) {
     const iso_density_t* d = f->dens;
+    if (d->dmat) {
+        // |phi^T D phi| <= sum_uv G_uv t_u t_v, t_u the tail of radial function u (iso_dmat_tail_init); tl->fn_tail
+        // holds the t_u
+        double* tu = tl->fn_tail;
+        for (int u = 0; u < d->tnum; ++u) tu[u] = iso_shell_tail(&d->radial.shells[d->tradial[u]], r);
+        double t = 0.0;
+        for (int u = 0; u < d->tnum; ++u) {
+            if (tu[u] == 0.0) continue;
+            const double* g = d->tG + (size_t)u * d->tnum;
+            double s = 0.0;
+            for (int v = 0; v < d->tnum; ++v) s += g[v] * tu[v];
+            t += tu[u] * s;
+        }
+        return t;
+    }
     const int nf = tl->nf;
     double* fn_tail = tl->fn_tail;
     for (int fi = 0; fi < nf; ++fi) fn_tail[fi] = 0.0;
@@ -1475,7 +1559,8 @@ static void iso_surface_box(const iso_field_t* f, double iso, double lo[3], doub
     // the first pad = r0 + 0.05 k (k >= 0) with the tails below iso/2. Beyond r0 every tail decreases
     // (r^l exp(-a r^2) does for r^2 >= l / 2a), so k is found by doubling and bisection.
     iso_tail_t tl = {0};
-    if (f->dens && !iso_tail_init(&tl, f->dens)) {
+    if (f->dens && f->dens->dmat) tl.fn_tail = (double*)malloc(sizeof(double) * (f->dens->tnum + 1));   // the t_u
+    if (f->dens && (f->dens->dmat ? !tl.fn_tail : !iso_tail_init(&tl, f->dens))) {
         // no memory for it: padded by what no Gaussian tail of a basis reaches past (exp(-0.05 * 20^2) = 2e-9)
         MD_LOG_ERROR("md_gto_iso: out of memory for the surface box");
         for (int a = 0; a < 3; ++a) { lo[a] = f->atom_min[a] - (r0 + 20.0); hi[a] = f->atom_max[a] + (r0 + 20.0); }
@@ -2542,6 +2627,49 @@ md_gto_iso_field_t* md_gto_iso_field_create_products(const md_gto_basis_t* basis
     return field;
 }
 
+md_gto_iso_field_t* md_gto_iso_field_create_dmat(const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride,
+                                                 const md_gto_dmat_t* tiles, bool psd, struct md_allocator_i* alloc) {
+    static const char* who = "md_gto_iso_field_create_dmat";
+    if (!basis || !atom_xyz || !tiles || !alloc) {
+        MD_LOG_ERROR("%s: missing argument", who);
+        return NULL;
+    }
+    if (!tiles->tiles || tiles->num_ao != md_gto_basis_num_ao(basis) || tiles->num_shells != basis->num_shells) {
+        MD_LOG_ERROR("%s: the tiles are not built, or not of this basis (%u AOs, %u shells; the basis %zu, %u)", who, tiles->num_ao,
+                     tiles->num_shells, md_gto_basis_num_ao(basis), basis->num_shells);
+        return NULL;
+    }
+    if (!md_gto_dmat_pattern_valid(tiles, atom_xyz, atom_xyz_stride)) {
+        MD_LOG_ERROR("%s: the tiles' pattern does not hold at these atom positions", who);
+        return NULL;
+    }
+    const iso_term_t none = {0};
+    md_gto_iso_field_t* field = iso_density_create(basis, atom_xyz, atom_xyz_stride, NULL, 0, &none, 0, alloc, who);
+    if (!field) return NULL;
+    iso_density_t* d = field->f.dens;
+    d->dmat = tiles;
+    d->psd = psd;
+    size_t num_atoms = 0;
+    d->dxyz = iso_pack_atoms(basis, atom_xyz, atom_xyz_stride, &num_atoms);
+    d->dbasis.num_shells = basis->num_shells;
+    d->dbasis.num_primitives = basis->num_primitives;
+    d->dbasis.shells = (md_gto_shell_t*)malloc(sizeof(md_gto_shell_t) * (basis->num_shells + 1));
+    d->dbasis.alpha = (float*)malloc(sizeof(float) * (basis->num_primitives + 1));
+    d->dbasis.coeff = (float*)malloc(sizeof(float) * (basis->num_primitives + 1));
+    bool ok = d->dxyz && d->dbasis.shells && d->dbasis.alpha && d->dbasis.coeff;
+    if (ok) {
+        memcpy(d->dbasis.shells, basis->shells, sizeof(md_gto_shell_t) * basis->num_shells);
+        memcpy(d->dbasis.alpha, basis->alpha, sizeof(float) * basis->num_primitives);
+        memcpy(d->dbasis.coeff, basis->coeff, sizeof(float) * basis->num_primitives);
+    }
+    if (!ok || !iso_dmat_tail_init(d)) {
+        MD_LOG_ERROR("%s: out of memory", who);
+        md_gto_iso_field_destroy(field);
+        return NULL;
+    }
+    return field;
+}
+
 md_gto_iso_field_t* md_gto_iso_field_create_lol(const md_gto_iso_field_t* rho_a, const md_gto_iso_field_t* tau_a,
                                                 const md_gto_iso_field_t* rho_b, const md_gto_iso_field_t* tau_b,
                                                 double rho_min, struct md_allocator_i* alloc) {
@@ -2555,8 +2683,8 @@ md_gto_iso_field_t* md_gto_iso_field_create_lol(const md_gto_iso_field_t* rho_a,
     }
     const md_gto_iso_field_t* in[4] = { rho_a, tau_a, rho_b, tau_b };
     for (int k = 0; k < 4; ++k) {
-        if (in[k] && (!in[k]->f.dens || in[k]->f.comp || in[k]->f.dens->num_ao_shells == 0)) {
-            MD_LOG_ERROR("md_gto_iso_field_create_lol: the densities and kinetic energy densities must be density fields (md_gto_iso_field_create_products)");
+        if (in[k] && (!in[k]->f.dens || in[k]->f.comp || in[k]->f.dens->num_ao_shells == 0 || in[k]->f.dens->dmat)) {
+            MD_LOG_ERROR("md_gto_iso_field_create_lol: the densities and kinetic energy densities must be density fields of products (md_gto_iso_field_create_products)");
             return NULL;
         }
     }
@@ -2655,6 +2783,11 @@ void md_gto_iso_field_info(md_gto_iso_field_info_t* out, const md_gto_iso_field_
         out->num_terms = (uint32_t)d->num_terms;
         out->memory_bytes += sizeof(*d) + sizeof(iso_term_t) * d->num_terms + 2 * sizeof(double) * (size_t)d->num_ao * d->num_fn
                            + sizeof(iso_ao_shell_t) * d->num_ao_shells;
+        if (d->dmat) {      // what it keeps besides the caller's tiles
+            out->memory_bytes += sizeof(md_gto_shell_t) * d->dbasis.num_shells + 2 * sizeof(float) * d->dbasis.num_primitives +
+                                 sizeof(float) * 3 * md_gto_basis_num_atoms(&d->dbasis) + sizeof(int) * d->num_ao_shells +
+                                 sizeof(double) * (size_t)d->tnum * d->tnum;
+        }
     } else {
         out->kind = MD_GTO_ISO_FIELD_ORBITAL;
         out->num_functions = 1;
@@ -2663,6 +2796,17 @@ void md_gto_iso_field_info(md_gto_iso_field_info_t* out, const md_gto_iso_field_
 
 void md_gto_iso_field_evaluate(const md_gto_iso_field_t* field, const float* xyz, size_t count, size_t stride, double* out_psi, double* out_grad) {
     if (!field || !xyz) return;
+    const iso_density_t* d = field->f.dens;
+    if (d && d->dmat) {
+        // from the tiles, with the AOs above their cutoff; NaN where that fails (it logs why)
+        if (count && !md_gto_dmat_evaluate(out_psi, out_grad, NULL, d->dmat, &d->dbasis, d->dxyz, 0, xyz, count, stride, NULL)) {
+            for (size_t i = 0; i < count; ++i) {
+                if (out_psi) out_psi[i] = NAN;
+                if (out_grad) out_grad[3 * i] = out_grad[3 * i + 1] = out_grad[3 * i + 2] = NAN;
+            }
+        }
+        return;
+    }
     const size_t st = stride ? stride : sizeof(float) * 3;
     for (size_t i = 0; i < count; ++i) {
         const float* q = (const float*)((const uint8_t*)xyz + i * st);
@@ -2694,6 +2838,10 @@ md_gto_iso_cache_t* md_gto_iso_cache_create(const md_gto_iso_field_t* field, con
     const double iso_max = desc->iso_max > iso_min ? desc->iso_max : iso_min;
     if (!(h > 0.0) || !(iso_min > 0.0)) {
         MD_LOG_ERROR("md_gto_iso_cache_create: cell_size and iso_min must be positive");
+        return NULL;
+    }
+    if (field->f.dens && field->f.dens->dmat) {
+        MD_LOG_ERROR("md_gto_iso_cache_create: a density given as its tiles is extracted on the GPU only (md_gto_iso_gpu_set_create)");
         return NULL;
     }
 

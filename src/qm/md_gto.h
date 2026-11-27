@@ -399,6 +399,9 @@ void md_gto_gpu_dmat_destroy(md_gpu_stream_t stream, md_gto_gpu_dmat_t dmat);
 // from where the pattern was made.
 bool md_gto_gpu_dmat_pattern_valid(md_gto_gpu_dmat_t dmat, const float* atom_xyz, size_t atom_xyz_stride);
 
+// Whether two are in one pattern (md_gto_dmat_same_pattern): the tiles of either may be copied over the other's.
+bool md_gto_gpu_dmat_same_pattern(md_gto_gpu_dmat_t a, md_gto_gpu_dmat_t b);
+
 // D = sum_k w_k c_k c_k^T over num_mo orbitals: coeff holds num_mo rows of num_ao coefficients (the basis's
 // AO order), weight num_mo weights (0 skips the orbital). The orbitals are packed to float on the host,
 // uploaded, and the tiles built on the device in float (stream-ordered). Returns false when out of memory.
