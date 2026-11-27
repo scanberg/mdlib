@@ -2745,13 +2745,16 @@ void iso_octree_dform(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
                     // D symmetric: row nu, the threads' columns mu. Four rows' loads issued before any is
                     // used (one load per 4 multiply-adds: the loop waits on memory otherwise). Every lane
                     // loads: a thread past A has AO 0 and its sums go unused. Summed in the order of v.
+                    // The row's AO clamped into range: llvmpipe runs these loops' bodies once with no lane
+                    // active where A = 0 (no shell reaches the node) and loads uniform values regardless,
+                    // so od_q[0], unwritten by this group, indexed dm_tao (an intermittent segfault)
                     uint v = 0u;
                     for (; v + 4u <= qn; v += 4u) {
                         float4 q[4];
                         float d0[4], d1[4];
                         [ForceUnroll] for (int j = 0; j < 4; ++j) {
                             q[j] = od_q[v + uint(j)];
-                            uint qa = asuint(q[j].w);
+                            uint qa = min(asuint(q[j].w), n - 1u);
                             d0[j] = dform_at(D, a.dm_tao, a.dm_map, a.dm_nt, a.ao_nrm, qa, a0);
                             d1[j] = dform_at(D, a.dm_tao, a.dm_map, a.dm_nt, a.ao_nrm, qa, a1);
                         }
@@ -2763,7 +2766,7 @@ void iso_octree_dform(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) {
                     }
                     for (; v < qn; ++v) {
                         float4 q = od_q[v];
-                        uint qa = asuint(q.w);
+                        uint qa = min(asuint(q.w), n - 1u);
                         float apc = abs(q.x);
                         float d = dform_at(D, a.dm_tao, a.dm_map, a.dm_nt, a.ao_nrm, qa, a0), e = abs(d);
                         g0 += d * q.x; ga0 += e * apc; h0 += e * q.y; k0 += e * q.z;

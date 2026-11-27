@@ -16,7 +16,7 @@
 #include <gto_iso_gpu_shaders.inl>
 
 // BENCHMARK (temporary, branch gto-iso-gpu-opt): which round of changes this is, in every profile report
-#define ISOG_REVISION "r51 (the D form's kernel variants: GTO_ISO_DFORM=2 four waves, =3 eight, the lookups staged; r50: no factorization slack, densities as products only; r49: a density's tiles given with its field: read where they are as the set's only matrix, else copied; r47: the D form in tiles only)"
+#define ISOG_REVISION "r52 (the octree D form's row AO clamped: llvmpipe ran its empty loops' loads; r51: the D form's kernel variants: GTO_ISO_DFORM=2 four waves, =3 eight, the lookups staged; r50: no factorization slack, densities as products only; r49: a density's tiles given with its field: read where they are as the set's only matrix, else copied; r47: the D form in tiles only)"
 
 typedef struct isog_shell_t {        // mirrors IsoShell
     md_gpu_float4 c;
