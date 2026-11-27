@@ -16,7 +16,7 @@
 #include <gto_iso_gpu_shaders.inl>
 
 // BENCHMARK (temporary, branch gto-iso-gpu-opt): which round of changes this is, in every profile report
-#define ISOG_REVISION "r50 (no factorization slack: densities as products only; r49: a density's tiles given with its field: read where they are as the set's only matrix, else copied; r47: the D form in tiles only)"
+#define ISOG_REVISION "r51 (the D form's kernel variants: GTO_ISO_DFORM=2 four waves, =3 eight, the lookups staged; r50: no factorization slack, densities as products only; r49: a density's tiles given with its field: read where they are as the set's only matrix, else copied; r47: the D form in tiles only)"
 
 typedef struct isog_shell_t {        // mirrors IsoShell
     md_gpu_float4 c;
@@ -74,6 +74,8 @@ enum {
     // the wide GEMM for canonical sets of more than 64 functions, by width: 128, 192, 256 columns
     ISOG_K_GCORN_W128, ISOG_K_GCORN_W192, ISOG_K_GCORN_Y256, ISOG_K_GEVAL_W128, ISOG_K_GEVAL_W192, ISOG_K_GEVAL_Y256,
     ISOG_K_DCORN, ISOG_K_DEVAL,
+    // the D form's variants (GTO_ISO_DFORM=3, 2): eight waves, then four, the lookups staged
+    ISOG_K_DCORN_N8, ISOG_K_DEVAL_N8, ISOG_K_DCORN_N4, ISOG_K_DEVAL_N4,
     ISOG_K_FSEED, ISOG_K_FFACE, ISOG_K_FFINISH, ISOG_K_FATOMS,
     ISOG_K_CELLS, ISOG_K_QUADS, ISOG_K_RELAX, ISOG_K_NEWTON, ISOG_K_EVAL1, ISOG_K_PROJ1,
     ISOG_K_BCOUNT, ISOG_K_BSCAN, ISOG_K_BVERTS, ISOG_K_BTRIS,
@@ -111,10 +113,19 @@ static bool             isog_kernel_mutex_ok;
 //   GTO_ISO_EVAL_EPS=10|8|6   the AO cutoff 1e-N of the evaluation (and of the octree's culling, whose
 //                             bound adds the dropped part): the volume path uses 1e-6 (default 6)
 static int isog_eval_eps_exp = 6;
-//   GTO_ISO_DFORM=1           sets of densities: corners and vertices as phi^T D phi over the AOs reaching each
-//                             group, D from the fields' terms (iso_dcorners, iso_deval). Sets of more functions
-//                             than the factored kernels hold (1024) use it regardless; else it is slower than the
-//                             factored GEMM (C60 density) (default 0)
+//   GTO_ISO_DFORM=1|2|3       sets of densities: corners and vertices as phi^T D phi over the AOs reaching each
+//                             group, D from the fields' terms. Sets of more functions than the factored kernels hold
+//                             (1024) use it regardless (the kernels of 1 unless 2 or 3 is set); else it is slower than
+//                             the factored GEMM (C60 density; at 110-269 AOs 3x on a GTX 1060, r50) (default 0).
+//                             The kernels, to be measured against each other:
+//                               1  iso_dcorners, iso_deval: 8 waves, tiles of 128 columns, the D elements looked up
+//                                  through both AOs' places in the tiles and held in registers over the AO values
+//                               2  iso_dcorners_n4, iso_deval_n4: 4 waves (128 threads), tiles of 64 columns: no wave
+//                                  without columns where 64 AOs or fewer reach a group, and about half the registers
+//                                  per row; the lookups as in 3
+//                               3  iso_dcorners_n8, iso_deval_n8: 8 waves as 1, the rows' places in the tiles and
+//                                  normalizations staged with the chunk and the column's read once a tile (an element:
+//                                  the map entry and the tile's float), stored as read
 static int isog_dform = 0;
 //   GTO_ISO_FLOOD=0|1|2       APPROXIMATE: the corners from seeds and a flood instead of every brick the octree
 //                             keeps. The bricks' corners are evaluated first; one whose corners straddle an iso
@@ -233,6 +244,10 @@ static bool isog_kernels_make(void) {
         md_shader_gto_iso_gpu_iso_geval_y256_kernel(),
         md_shader_gto_iso_gpu_iso_dcorners_kernel(),
         md_shader_gto_iso_gpu_iso_deval_kernel(),
+        md_shader_gto_iso_gpu_iso_dcorners_n8_kernel(),
+        md_shader_gto_iso_gpu_iso_deval_n8_kernel(),
+        md_shader_gto_iso_gpu_iso_dcorners_n4_kernel(),
+        md_shader_gto_iso_gpu_iso_deval_n4_kernel(),
         md_shader_gto_iso_gpu_iso_flood_seed_kernel(),
         md_shader_gto_iso_gpu_iso_flood_face_kernel(),
         md_shader_gto_iso_gpu_iso_flood_finish_kernel(),
@@ -1250,10 +1265,19 @@ static uint32_t isog_corner_cols(const md_gto_iso_gpu_set_t* set, uint32_t F, bo
     return fc * ((nfn + fc - 1) / fc);
 }
 
+// The D form's corner (vert false) or vertex kernel of the variant GTO_ISO_DFORM names: 1's where it names none (a set
+// past the factored kernels') or this device could not make that one
+static int isog_dform_kernel(bool vert) {
+    const int k = isog_dform == 2 ? (vert ? ISOG_K_DEVAL_N4 : ISOG_K_DCORN_N4)
+                : isog_dform == 3 ? (vert ? ISOG_K_DEVAL_N8 : ISOG_K_DCORN_N8)
+                : (vert ? ISOG_K_DEVAL : ISOG_K_DCORN);
+    return isog_k[k] ? k : (vert ? ISOG_K_DEVAL : ISOG_K_DCORN);
+}
+
 static isog_vkernel_t isog_vertex_kernel(const md_gto_iso_gpu_set_t* set, bool dform, bool project) {
     if (project && set->orbitals_only && set->num_fn == 1 && set->num_fields == 1) return (isog_vkernel_t){ISOG_K_PROJ1, 128u};
     if (set->orbitals_only) return (isog_vkernel_t){ISOG_K_EVAL1, 0u};
-    if (dform) return (isog_vkernel_t){ISOG_K_DEVAL, 32u};
+    if (dform) return (isog_vkernel_t){isog_dform_kernel(true), 32u};
     const uint32_t nf = set->num_fn;
     const int kw = isog_wide_corners(set, nf);
     if (kw >= 0 && isog_k[kw + (ISOG_K_GEVAL_W128 - ISOG_K_GCORN_W128)]) return (isog_vkernel_t){kw + (ISOG_K_GEVAL_W128 - ISOG_K_GCORN_W128), 16u};
@@ -1280,14 +1304,14 @@ void md_gto_iso_gpu_profile_set(md_gto_iso_gpu_profile_t* profile) { isog_prof =
 void md_gto_iso_gpu_switches(md_gto_iso_gpu_switches_t* out) {
     if (!out) return;
     out->eval_eps_exp = isog_eval_eps_exp;
-    out->dform = isog_dform != 0;
+    out->dform = isog_dform;
     out->flood = isog_flood;
 }
 
 void md_gto_iso_gpu_switches_set(const md_gto_iso_gpu_switches_t* in) {
     if (!in) return;
     if (in->eval_eps_exp >= 4 && in->eval_eps_exp <= 12) isog_eval_eps_exp = in->eval_eps_exp;
-    isog_dform = in->dform;
+    if (in->dform >= 0 && in->dform <= 3) isog_dform = in->dform;
     if (in->flood >= 0 && in->flood <= 2) isog_flood = in->flood;
 }
 
@@ -1945,7 +1969,7 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
             const int kw = isog_wide_corners(set, nfn);
             const bool wide = !one && !cdform && kw >= 0;
             const bool gemm = !one;
-            const int kc = one ? ISOG_K_CLIST_F1V4 : cdform ? ISOG_K_DCORN : wide ? kw : isog_tiled_corners(nfn);
+            const int kc = one ? ISOG_K_CLIST_F1V4 : cdform ? isog_dform_kernel(false) : wide ? kw : isog_tiled_corners(nfn);
             if (!isog_have(kc)) { isog_job_fail(j, "md_gto_iso_gpu_extract: a corner kernel is missing"); break; }
             isog_args_t ac = a;
             ac.count_in = a.counters + sizeof(uint32_t) * 5;
@@ -1969,6 +1993,8 @@ static void isog_job_step(md_gto_iso_gpu_job_t* j) {
                 case ISOG_K_GCORN_F16:  fc = 16; kn = "corners (gemm f16)"; break;
                 case ISOG_K_GCORN_F32:  fc = 32; kn = "corners (gemm f32)"; break;
                 case ISOG_K_DCORN:     fc = 0;  kn = "corners (dform)"; break;
+                case ISOG_K_DCORN_N8:  fc = 0;  kn = "corners (dform n8)"; break;
+                case ISOG_K_DCORN_N4:  fc = 0;  kn = "corners (dform n4)"; break;
                 case ISOG_K_GCORN_W128: fc = 128; kn = "corners (gemm w128)"; break;
                 case ISOG_K_GCORN_W192: fc = 192; kn = "corners (gemm w192)"; break;
                 case ISOG_K_GCORN_Y256: fc = 256; kn = "corners (gemm y256)"; break;

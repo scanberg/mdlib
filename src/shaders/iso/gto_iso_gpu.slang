@@ -2244,6 +2244,9 @@ groupshared uint   dq_pg[2 * D_CH];      // its first primitive (global)
 groupshared float2 dq_pr[2 * D_CH * DQ_PMAX];
 groupshared uint   dq_rao[2 * D_CH];     // [buffer][chunk row]: global AO (INVALID past A)
 groupshared uint   dq_jao[2 * 128];      // [tile parity][column]: global AO (INVALID past A)
+// variant 1 (DV): the chunk rows' place in the tiles' AO order (dm_tao) and normalization, staged with the chunk
+groupshared uint   dq_rtao[2 * D_CH];
+groupshared float  dq_rnrm[2 * D_CH];
 
 uint dq_first(uint q) { return (dq_tab[q >> 1] >> ((q & 1u) * 16u)) & 0xFFFFu; }
 
@@ -2270,8 +2273,9 @@ void dq_table(uint tid, uint gs, uint nq) {
     GroupMemoryBarrierWithGroupSync();
 }
 
-// Stages chunk q's shells into buffer buf (threads 0 .. 31; no barriers)
-void dq_stage(uint q, uint nq, uint buf, uint tid) {
+// Stages chunk q's shells into buffer buf (threads 0 .. 31; no barriers). DV 1: with each row's place in the tiles' AO
+// order and its normalization (dq_rtao, dq_rnrm)
+void dq_stage<let DV : int>(uint q, uint nq, uint buf, uint tid) {
     IsoArgs a = MD_ARGS;
     uint la0 = q * uint(D_CH);
     if (tid < uint(D_CH)) {
@@ -2289,7 +2293,13 @@ void dq_stage(uint q, uint nq, uint buf, uint tid) {
             dq_pg[s] = sh.info.w;
             for (uint k = 0u; k < nc; ++k) {
                 int row = rb + int(k);
-                if (row >= 0 && row < D_CH) dq_rao[buf * uint(D_CH) + uint(row)] = sh.info2.x + k;
+                if (row >= 0 && row < D_CH) {
+                    dq_rao[buf * uint(D_CH) + uint(row)] = sh.info2.x + k;
+                    if (DV != 0) {
+                        dq_rtao[buf * uint(D_CH) + uint(row)] = a.dm_tao[sh.info2.x + k];
+                        dq_rnrm[buf * uint(D_CH) + uint(row)] = a.ao_nrm[sh.info2.x + k];
+                    }
+                }
             }
             if (fits) for (uint k = 0u; k < np; ++k) dq_pr[s * uint(DQ_PMAX) + k] = a.prims[sh.info.w + k];
         }
@@ -2314,9 +2324,11 @@ void dq_cols(uint J, uint par, uint tid, uint nc) {
     dq_jao[par * 128u + t] = ao;
 }
 
-#define NW 8                             // waves per group
-
+// The kernels' shapes: NW waves per group (tiles of 16 NW columns): 8 (iso_dcorners, iso_deval, and DV 1's
+// iso_dcorners_n8, iso_deval_n8) or 4 (iso_dcorners_n4, iso_deval_n4: 128 threads, tiles of 64 columns, all waves
+// at work where 64 AOs or fewer reach the group, three groups to a Pascal SM where 8 waves have one)
 GC_MEM4(IsoGd, 128, 128)
+GC_MEM4(IsoGd4, 128, 64)
 
 // This row's values of the chunk in buffer buf (or channel ch of their gradient) into the core's A chunk (row r at
 // float4 r * 32 + pg, component ce): the chunk's shells j0, j0 + js, ..., zero where beyond their cutoff; the rows
@@ -2386,50 +2398,88 @@ void dq_phi<Mem : IGcMem>(uint buf, uint ns, uint j0, uint js, uint nvalid, floa
 // column are zero in D'). Each: this thread's D' elements loaded first (rows tid / 128 + 2 i, column tid % 128), the
 // next chunk's shells (or the next tile's first and its columns) staged into the other buffers, the AO values made,
 // the D' rows stored
-struct IsoDformStager<let VERT : int, Mem : IGcMem> : IGemmStager {
+// DV 0 (iso_dcorners, iso_deval): the tile's D' elements held in registers over the AO values, looked up through the
+// AOs' places (dform_at: the rows' and the column's dm_tao, the tile pair's map entry, the element, both
+// normalizations), the lookups' arguments held by the stager. DV 1: the rows' places and normalizations staged with
+// the chunk (dq_rtao, dq_rnrm), the column's read once a tile (cta, cnrm): an element is the map entry and the tile's
+// float; stored as soon as read, and the matrix and the map read from MD_ARGS a chunk at a time (fewer registers)
+struct IsoDformStager<let VERT : int, let NW : int, let DV : int, Mem : IGcMem> : IGemmStager {
     static const int kFull = 0;
     float* D;
     uint   A, nq;
     uint   dm_nt;                                          // dform_at's arguments, the kernel's (not read from MD_ARGS
-    uint*  dm_tao;                                         // again per chunk)
+    uint*  dm_tao;                                         // again per chunk; DV 0)
     uint*  dm_map;
     float* ao_nrm;
+    uint   u;                                              // DV 1: the matrix
     float3 p;
     uint   pg, cg, ce, col;
     uint   J, q, qe, jb, ca;
+    uint   cta;                                            // DV 1: the column's place in the tiles' AO order
+    float  cnrm;                                           //       and its normalization
     [mutating] void begin(uint m0, uint tid) {
         J  = m0 / (16u * uint(NW));
         q  = 0u;
         qe = min(uint(NW) * (J + 1u), nq);
         jb = (J & 1u) * 128u;
         if (J == 0u) {                                     // the first tile's first chunk and columns (later: staged ahead)
-            dq_stage(0u, nq, 0u, tid);
+            dq_stage<DV>(0u, nq, 0u, tid);
             dq_cols(0u, 0u, tid, 16u * uint(NW));
         }
     }
     [mutating] uint stage(uint m0, uint tid) {
         if (q >= qe) return GC_END;
         const uint TC = 16u * uint(NW);
-        if (q == 0u) ca = dq_jao[jb + col];                // after the barrier: the tile's columns staged
         uint buf = q & 1u;
         uint ccol = uint(NW) * J + col / uint(D_CH);
         float fac = q < ccol ? 2.0 : (q == ccol ? 1.0 : 0.0);
-        float dv[8];
-        [ForceUnroll] for (int i = 0; i < 8; ++i) {
-            uint ra = dq_rao[buf * uint(D_CH) + tid / TC + 2u * uint(i)];
-            bool ok = fac != 0.0 && ra != INVALID && ca != INVALID;
-            float v = ok ? dform_at(D, dm_tao, dm_map, dm_nt, ao_nrm, ra, ca) : 0.0;
-            dv[i] = ok ? fac * v : 0.0;
+        if (DV == 0) {
+            if (q == 0u) ca = dq_jao[jb + col];            // after the barrier: the tile's columns staged
+            float dv[8];
+            [ForceUnroll] for (int i = 0; i < 8; ++i) {
+                uint ra = dq_rao[buf * uint(D_CH) + tid / TC + 2u * uint(i)];
+                bool ok = fac != 0.0 && ra != INVALID && ca != INVALID;
+                float v = ok ? dform_at(D, dm_tao, dm_map, dm_nt, ao_nrm, ra, ca) : 0.0;
+                dv[i] = ok ? fac * v : 0.0;
+            }
+            if (q + 1u < qe) {
+                dq_stage<DV>(q + 1u, nq, buf ^ 1u, tid);
+            } else if ((J + 1u) * TC < A) {
+                dq_stage<DV>(0u, nq, 0u, tid);
+                dq_cols(J + 1u, (J + 1u) & 1u, tid, TC);
+            }
+            uint la0 = q * uint(D_CH);
+            dq_phi<Mem>(buf, dq_span(q, nq).y, cg >> 2, uint(NW) / 4u, min(A - la0, uint(D_CH)), p, pg, ce, VERT != 0, ce);
+            [ForceUnroll] for (int i = 0; i < 8; ++i) Mem::st4c(uint(GK * 32) + (tid >> 2) + 64u * uint(i), tid & 3u, dv[i]);
+        } else {
+            IsoArgs a = MD_ARGS;
+            if (q == 0u) {                                 // after the barrier: the tile's columns staged
+                ca = dq_jao[jb + col];
+                cta = ca != INVALID ? a.dm_tao[ca] : 0u;
+                cnrm = ca != INVALID ? a.ao_nrm[ca] : 0.0;
+            }
+            float* Du = a.dmat + u * a.dm_pool;
+            [ForceUnroll] for (int i = 0; i < 8; ++i) {
+                uint r = buf * uint(D_CH) + tid / TC + 2u * uint(i);
+                bool ok = fac != 0.0 && dq_rao[r] != INVALID && ca != INVALID;
+                float v = 0.0;
+                if (ok) {
+                    uint ti = dq_rtao[r];
+                    uint lo = min(ti, cta), hi = max(ti, cta);
+                    uint e = a.dm_map[(lo >> 4) * a.dm_nt + (hi >> 4)];
+                    if (e != 0xFFFFFFFFu) v = fac * Du[e * 256u + (lo & 15u) * 16u + (hi & 15u)] * dq_rnrm[r] * cnrm;
+                }
+                Mem::st4c(uint(GK * 32) + (tid >> 2) + (TC / 2u) * uint(i), tid & 3u, v);
+            }
+            if (q + 1u < qe) {
+                dq_stage<DV>(q + 1u, nq, buf ^ 1u, tid);
+            } else if ((J + 1u) * TC < A) {
+                dq_stage<DV>(0u, nq, 0u, tid);
+                dq_cols(J + 1u, (J + 1u) & 1u, tid, TC);
+            }
+            uint la0 = q * uint(D_CH);
+            dq_phi<Mem>(buf, dq_span(q, nq).y, cg >> 2, uint(NW) / 4u, min(A - la0, uint(D_CH)), p, pg, ce, VERT != 0, ce);
         }
-        if (q + 1u < qe) {
-            dq_stage(q + 1u, nq, buf ^ 1u, tid);
-        } else if ((J + 1u) * TC < A) {
-            dq_stage(0u, nq, 0u, tid);
-            dq_cols(J + 1u, (J + 1u) & 1u, tid, TC);
-        }
-        uint la0 = q * uint(D_CH);
-        dq_phi<Mem>(buf, dq_span(q, nq).y, cg >> 2, uint(NW) / 4u, min(A - la0, uint(D_CH)), p, pg, ce, VERT != 0, ce);
-        [ForceUnroll] for (int i = 0; i < 8; ++i) Mem::st4c(uint(GK * 32) + (tid >> 2) + 64u * uint(i), tid & 3u, dv[i]);
         q += 1u;
         return uint(GK);
     }
@@ -2454,7 +2504,7 @@ struct IsoDformEpilogue<let VERT : int, Mem : IGcMem> : IGemmTriEpilogue {
     }
 };
 
-void gemm_dform<let VERT : int>(uint3 gid, uint tid) {
+void gemm_dform<let VERT : int, let NW : int, let DV : int, Mem : IGcMem>(uint3 gid, uint tid) {
     IsoArgs a = MD_ARGS;
     const uint GS = 32u * uint(NW);                        // threads
     const uint TC = 16u * uint(NW);                        // columns per tile
@@ -2582,22 +2632,26 @@ void gemm_dform<let VERT : int>(uint3 gid, uint tid) {
             float* D = a.dmat + u * a.dm_pool;
             float part[4] = {0.0, 0.0, 0.0, 0.0};          // rows 4 pg + v: Phi . T over this wave's column chunks
 
-            IsoDformStager<VERT, IsoGd> st;
-            st.D = D; st.A = A; st.nq = nq; st.p = p; st.pg = pg; st.cg = cg; st.ce = ce; st.col = tid % TC;
-            st.dm_nt = a.dm_nt; st.dm_tao = a.dm_tao; st.dm_map = a.dm_map; st.ao_nrm = a.ao_nrm;
+            IsoDformStager<VERT, NW, DV, Mem> st;
+            st.A = A; st.nq = nq; st.p = p; st.pg = pg; st.cg = cg; st.ce = ce; st.col = tid % TC;
+            if (DV == 0) {
+                st.D = D; st.dm_nt = a.dm_nt; st.dm_tao = a.dm_tao; st.dm_map = a.dm_map; st.ao_nrm = a.ao_nrm;
+            } else {
+                st.u = u;
+            }
             st.J = 0u; st.q = 0u; st.qe = 0u; st.jb = 0u; st.ca = INVALID;
-            IsoDformEpilogue<VERT, IsoGd> epi;
+            IsoDformEpilogue<VERT, Mem> epi;
             epi.pg = pg;
             [ForceUnroll] for (int v = 0; v < 4; ++v) epi.part[v] = 0.0;
-            gemm_core_tri<128, 128, 8, 32, IsoGd, IsoDformStager<VERT, IsoGd>, IsoDformEpilogue<VERT, IsoGd> >(st, epi, A, tid, cg, pg);
+            gemm_core_tri<128, 16 * NW, NW, 32, Mem, IsoDformStager<VERT, NW, DV, Mem>, IsoDformEpilogue<VERT, Mem> >(st, epi, A, tid, cg, pg);
             [ForceUnroll] for (int v = 0; v < 4; ++v) part[v] = epi.part[v];
             // rows 4 pg + v summed over the waves; row tid's sum
             GroupMemoryBarrierWithGroupSync();             // the memory free
-            [ForceUnroll] for (int v = 0; v < 4; ++v) IsoGd::st4c(cg * 32u + pg, uint(v), part[v]);
+            [ForceUnroll] for (int v = 0; v < 4; ++v) Mem::st4c(cg * 32u + pg, uint(v), part[v]);
             GroupMemoryBarrierWithGroupSync();
             float r = 0.0;
             if (tid < uint(G_GROUP)) {
-                [ForceUnroll] for (int c = 0; c < NW; ++c) r += IsoGd::ld((uint(c) * 32u + (tid >> 2)) * 4u + (tid & 3u));
+                [ForceUnroll] for (int c = 0; c < NW; ++c) r += Mem::ld((uint(c) * 32u + (tid >> 2)) * 4u + (tid & 3u));
             }
             if (VERT == 0) {
                 if (out_in) {
@@ -2612,10 +2666,10 @@ void gemm_dform<let VERT : int>(uint3 gid, uint tid) {
         }
         if (VERT != 0) {
             GroupMemoryBarrierWithGroupSync();
-            if (tid < uint(G_GROUP)) IsoGd::st(tid, res);
+            if (tid < uint(G_GROUP)) Mem::st(tid, res);
             GroupMemoryBarrierWithGroupSync();
             if (tid < 32u && v0 + tid < a.count && tid >= rs && tid < re) {
-                float4 t = float4(IsoGd::ld(4u * tid), IsoGd::ld(4u * tid + 1u), IsoGd::ld(4u * tid + 2u), IsoGd::ld(4u * tid + 3u));
+                float4 t = float4(Mem::ld(4u * tid), Mem::ld(4u * tid + 1u), Mem::ld(4u * tid + 2u), Mem::ld(4u * tid + 3u));
                 a.vval[v0 + tid] = float4(t.y, t.z, t.w, t.x);
             }
         }
@@ -2623,9 +2677,12 @@ void gemm_dform<let VERT : int>(uint3 gid, uint tid) {
     }
 }
 
-[shader("compute")] [numthreads(256, 1, 1)] void iso_dcorners(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_dform<0>(gid, tid); }
-[shader("compute")] [numthreads(256, 1, 1)] void iso_deval(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_dform<1>(gid, tid); }
-#undef NW
+[shader("compute")] [numthreads(256, 1, 1)] void iso_dcorners(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_dform<0, 8, 0, IsoGd>(gid, tid); }
+[shader("compute")] [numthreads(256, 1, 1)] void iso_deval(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_dform<1, 8, 0, IsoGd>(gid, tid); }
+[shader("compute")] [numthreads(256, 1, 1)] void iso_dcorners_n8(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_dform<0, 8, 1, IsoGd>(gid, tid); }
+[shader("compute")] [numthreads(256, 1, 1)] void iso_deval_n8(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_dform<1, 8, 1, IsoGd>(gid, tid); }
+[shader("compute")] [numthreads(128, 1, 1)] void iso_dcorners_n4(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_dform<0, 4, 1, IsoGd4>(gid, tid); }
+[shader("compute")] [numthreads(128, 1, 1)] void iso_deval_n4(uint3 gid : SV_GroupID, uint tid : SV_GroupIndex) { gemm_dform<1, 4, 1, IsoGd4>(gid, tid); }
 
 #define OD_BLK 256                       // local AOs per block (two per thread)
 groupshared float4 od_q[OD_BLK];         // a block of local AOs: value at the centre, deviation bound, magnitude bound, AO
