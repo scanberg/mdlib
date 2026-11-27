@@ -96,11 +96,15 @@ typedef struct md_attribute_format_t {
 } md_attribute_format_t;
 
 // A contiguous window of an attribute: the first num_idx axes are fixed, every later axis is taken
-// whole. num_idx 0 selects the whole attribute. It carries nothing about any attribute, so one slice
-// applies across a group (clamp num_idx to each member's rank). Passed by value.
+// whole. num_idx 0 selects the whole attribute. A RUN takes count consecutive indices along the last
+// fixed axis instead of one (rows idx .. idx + count - 1 of an {M,A} matrix), still one contiguous
+// block, with that axis kept at extent count; count 0 or 1 is the single index. It carries nothing
+// about any attribute, so one slice applies across a group (clamp num_idx to each member's rank).
+// Passed by value.
 typedef struct md_attribute_slice_t {
     uint32_t idx[MD_ATTRIBUTE_MAX_RANK];  // index along each fixed leading axis
     uint32_t num_idx;                     // how many leading axes are fixed
+    uint32_t count;                       // a run along the last fixed axis: that many indices from its idx (0, 1: one)
 } md_attribute_slice_t;
 
 static inline md_attribute_slice_t md_attribute_slice_all(void) {
@@ -123,6 +127,20 @@ static inline md_attribute_slice_t md_attribute_slice_2(uint32_t i, uint32_t j) 
     return s;
 }
 
+// The run of count rows from 'first' along the outermost axis
+static inline md_attribute_slice_t md_attribute_slice_rows(uint32_t first, uint32_t count) {
+    md_attribute_slice_t s = {0};
+    s.idx[0]  = first;
+    s.num_idx = 1;
+    s.count   = count;
+    return s;
+}
+
+// How many indices the slice takes along its last fixed axis: 1 but for a run
+static inline uint32_t md_attribute_slice_run(md_attribute_slice_t s) {
+    return s.num_idx > 0 && s.count > 1 ? s.count : 1;
+}
+
 typedef struct md_attribute_t md_attribute_t;
 typedef struct md_attributes_t md_attributes_t;
 
@@ -138,7 +156,9 @@ typedef struct md_attribute_io_t md_attribute_io_t;
 //
 // The provider is handed the slice the caller asked for (NULL for the whole attribute, otherwise
 // num_idx >= 1) and writes cap elements of the STORED type in the STORED unit into dst; conversion
-// happens centrally afterwards. It returns cap on success and 0 on failure.
+// happens centrally afterwards. It returns cap on success and 0 on failure. A run (slice count > 1) reaches
+// it in one call only where it says it takes them (runs); otherwise the table calls it once per index of
+// the run, so a provider written for single indices never sees one.
 //
 // table is the one attr is read from, handed in on every call: what a provider reads besides attr (the
 // source of a run, the orbitals a density is made of) it finds there, and never through a system or a
@@ -159,6 +179,10 @@ typedef struct md_attribute_virtual_t {
     // but the table.
     void*  user_data;
     size_t user_data_size;
+
+    // The provider takes a run (md_attribute_slice_t count > 1) in one call: a source read faster as a block than
+    // index by index (the rows of a matrix in a file)
+    bool   runs;
 } md_attribute_virtual_t;
 
 // Reading: path, label, description, format, unit, flags and version are for anyone. data and virt

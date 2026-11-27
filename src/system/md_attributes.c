@@ -104,6 +104,28 @@ static bool attr_of_table(const md_attributes_t* table, const md_attribute_t* at
     return n > 0 && attr >= table->attr && attr < table->attr + n;
 }
 
+// A virtual attribute's values for the slice: its provider in one call, where it takes runs (virt.runs) or the
+// slice is no run; otherwise once per index of the run, into consecutive stretches of dst. count values of the
+// stored type; returns how many were written.
+static size_t attr_provide(void* dst, size_t count, const md_attributes_t* table, const md_attribute_t* attr, const md_attribute_slice_t* slice,
+                           md_attribute_io_t* io) {
+    const uint32_t run = slice ? md_attribute_slice_run(*slice) : 1;
+    if (run <= 1 || attr->virt.runs) {
+        return attr->virt.provider(dst, count, table, attr, slice, attr->virt.user_data, io);
+    }
+    const size_t each  = count / run;
+    const size_t bytes = each * md_attribute_type_size(attr->format.type);
+    md_attribute_slice_t one = *slice;
+    one.count = 0;
+    for (uint32_t r = 0; r < run; ++r) {
+        one.idx[one.num_idx - 1] = slice->idx[slice->num_idx - 1] + r;
+        if (attr->virt.provider((uint8_t*)dst + r * bytes, each, table, attr, &one, attr->virt.user_data, io) != each) {
+            return 0;
+        }
+    }
+    return count;
+}
+
 // The shared core, generated once per destination type: the one place where a stored type becomes a
 // number and a unit becomes a factor. first and count are the window in ELEMENTS (components folded
 // in); slice is the selection that produced them, forwarded to a provider as asked (NULL for the
@@ -147,7 +169,7 @@ static size_t attr_extract_range_##SUFFIX(DST_T dst[], size_t cap, const md_attr
     /* extra copy was 5-8% of decoding the frame.                                                 */ \
     const bool as_stored = (attr->format.type == MD_ATTRIBUTE_TYPE_##SUFFIX && factor == 1.0);      \
     if (md_attribute_is_virtual(attr) && as_stored) {                                               \
-        size_t written = attr->virt.provider(dst, count, table, attr, slice, attr->virt.user_data, io); \
+        size_t written = attr_provide(dst, count, table, attr, slice, io);                           \
         if (written != count) {                                                                     \
             MD_LOG_ERROR("Attribute '" MD_STR_FMT "' provider wrote %zu of %zu requested values", MD_STR_ARG(attr->path), written, count); \
             return 0;                                                                               \
@@ -166,7 +188,7 @@ static size_t attr_extract_range_##SUFFIX(DST_T dst[], size_t cap, const md_attr
             md_temp_end(temp);                                                                      \
             return 0;                                                                               \
         }                                                                                           \
-        size_t written = attr->virt.provider(buf, count, table, attr, slice, attr->virt.user_data, io); \
+        size_t written = attr_provide(buf, count, table, attr, slice, io);                           \
         if (written != count) {                                                                     \
             MD_LOG_ERROR("Attribute '" MD_STR_FMT "' provider wrote %zu of %zu requested values", MD_STR_ARG(attr->path), written, count); \
             md_temp_end(temp);                                                                      \
@@ -253,9 +275,16 @@ bool md_attribute_slice_window(size_t* out_first, size_t* out_count, const md_at
         }
         ordinal = ordinal * (size_t)fmt->shape[i] + (size_t)slice.idx[i];
     }
+    // a run: consecutive blocks along the last fixed axis, which has to hold them
+    const uint32_t run = md_attribute_slice_run(slice);
+    if (run > 1 && (size_t)slice.idx[slice.num_idx - 1] + run > fmt->shape[slice.num_idx - 1]) {
+        MD_LOG_ERROR("Attribute '" MD_STR_FMT "': a run of %u from index %u past axis %u of extent %u",
+            MD_STR_ARG(attr->path), run, slice.idx[slice.num_idx - 1], slice.num_idx - 1, fmt->shape[slice.num_idx - 1]);
+        return false;
+    }
 
     *out_first = ordinal * block;
-    *out_count = block;
+    *out_count = block * run;
     return true;
 }
 
@@ -274,14 +303,20 @@ bool md_attribute_slice_format(md_attribute_format_t* out, const md_attribute_t*
         return false;
     }
 
-    // Slicing picks values and never splits one, so only the index axes change.
+    // Slicing picks values and never splits one, so only the index axes change: a run keeps its axis, at the
+    // run's extent.
     const md_attribute_format_t* fmt = &attr->format;
+    const uint32_t run = md_attribute_slice_run(slice);
+    const uint32_t kept = run > 1 ? 1u : 0u;
     md_memset(out, 0, sizeof(*out));
     out->type       = fmt->type;
     out->components = fmt->components;
-    out->rank       = fmt->rank - slice.num_idx;
-    for (uint32_t i = 0; i < out->rank; ++i) {
-        out->shape[i] = fmt->shape[slice.num_idx + i];
+    out->rank       = fmt->rank - slice.num_idx + kept;
+    if (kept) {
+        out->shape[0] = run;
+    }
+    for (uint32_t i = kept; i < out->rank; ++i) {
+        out->shape[i] = fmt->shape[slice.num_idx - kept + i];
     }
     return true;
 }
@@ -354,7 +389,7 @@ bool md_attribute_read_stored(void* dst, const md_attributes_t* table, const md_
         return false;
     }
     if (md_attribute_is_virtual(attr)) {
-        return attr->virt.provider(dst, count, table, attr, slice.num_idx ? &slice : NULL, attr->virt.user_data, io) == count;
+        return attr_provide(dst, count, table, attr, slice.num_idx ? &slice : NULL, io) == count;
     }
     if (!attr->data) {
         return false;

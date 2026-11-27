@@ -1054,6 +1054,70 @@ UTEST(attributes, virtual_extract_whole_and_slice_agree) {
     md_attributes_free(&t);
 }
 
+// A RUN of rows (md_attribute_slice_rows): consecutive indices along the last fixed axis, one contiguous block, the
+// axis kept at the run's extent. Resident: a window like any other. Virtual: a provider that does not take runs is
+// called once per row of the run (and never sees one); one that does, once.
+static uint32_t ramp_calls, ramp_runs_seen;
+static size_t provider_state_ramp_counting_f32(void* dst, size_t cap, const md_attributes_t* table, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+    (void)io;
+    ++ramp_calls;
+    if (slice && md_attribute_slice_run(*slice) > 1) ++ramp_runs_seen;
+    const size_t num_atoms = attr->format.shape[1];
+    const uint32_t first = slice && slice->num_idx > 0 ? slice->idx[0] : 0;
+    float* out = (float*)dst;
+    for (size_t i = 0; i < cap; ++i) out[i] = (float)(first + i / num_atoms) + (float)(i % num_atoms) * 0.1f;
+    (void)table;
+    (void)user_data;
+    return cap;
+}
+
+UTEST(attributes, slice_rows_is_a_run_of_whole_rows) {
+    md_attributes_t t = {.alloc = md_get_heap_allocator()};
+    const float charges[12] = {
+        0.0f, 0.1f, 0.2f, 0.3f,
+        1.0f, 1.1f, 1.2f, 1.3f,
+        2.0f, 2.1f, 2.2f, 2.3f,
+    };
+    const md_attribute_format_t fmt = {.type = MD_ATTRIBUTE_TYPE_F32, .components = 1, .rank = 2, .shape = {3, 4}};
+    const md_attribute_id_t rid = md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = MD_STR_INIT("probe/resident"), .format = fmt, .unit = md_unit_none(), .data = charges, .byte_size = sizeof(charges)});
+    md_attribute_virtual_t single = {.provider = provider_state_ramp_counting_f32};
+    md_attribute_virtual_t runs   = {.provider = provider_state_ramp_counting_f32, .runs = true};
+    const md_attribute_id_t sid = md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = MD_STR_INIT("probe/single"), .format = fmt, .unit = md_unit_none(), .virt = &single});
+    const md_attribute_id_t vid = md_attributes_create(&t, &(md_attribute_desc_t){
+        .path = MD_STR_INIT("probe/runs"), .format = fmt, .unit = md_unit_none(), .virt = &runs});
+    ASSERT_NE(rid, MD_ATTRIBUTE_INVALID);
+    ASSERT_NE(sid, MD_ATTRIBUTE_INVALID);
+    ASSERT_NE(vid, MD_ATTRIBUTE_INVALID);
+
+    const md_attribute_slice_t rows12 = md_attribute_slice_rows(1, 2);
+    const md_attribute_t* attrs[3] = { md_attributes_get(&t, rid), md_attributes_get(&t, sid), md_attributes_get(&t, vid) };
+    for (int k = 0; k < 3; ++k) {
+        const md_attribute_t* a = attrs[k];
+        md_attribute_format_t f = {0};
+        ASSERT_TRUE(md_attribute_slice_format(&f, a, rows12));
+        EXPECT_EQ(2u, f.rank);
+        EXPECT_EQ(2u, f.shape[0]);
+        EXPECT_EQ(4u, f.shape[1]);
+        EXPECT_EQ(8u, md_attribute_slice_count(a, rows12));
+
+        ramp_calls = ramp_runs_seen = 0;
+        float dst[12] = {0};
+        EXPECT_EQ(8u, md_attribute_extract_f32(dst, MD_COUNTOF(dst), &t, a, rows12, md_unit_none()));
+        for (int i = 0; i < 8; ++i) EXPECT_NEAR(charges[4 + i], dst[i], 1.0e-6f);
+        if (k == 1) { EXPECT_EQ(2u, ramp_calls); EXPECT_EQ(0u, ramp_runs_seen); }   // a row at a time
+        if (k == 2) { EXPECT_EQ(1u, ramp_calls); EXPECT_EQ(1u, ramp_runs_seen); }   // the run at once
+
+        // a run of 1 is the row; past the end is refused
+        EXPECT_EQ(4u, md_attribute_extract_f32(dst, MD_COUNTOF(dst), &t, a, md_attribute_slice_rows(2, 1), md_unit_none()));
+        EXPECT_NEAR(2.3f, dst[3], 1.0e-6f);
+        EXPECT_EQ(0u, md_attribute_slice_count(a, md_attribute_slice_rows(2, 2)));
+        EXPECT_EQ(0u, md_attribute_extract_f32(dst, MD_COUNTOF(dst), &t, a, md_attribute_slice_rows(2, 2), md_unit_none()));
+    }
+    md_attributes_free(&t);
+}
+
 // Unit conversion happens centrally regardless of where the values came from, so a virtual
 // attribute refuses and rescales exactly like a resident one.
 UTEST(attributes, virtual_extract_converts_unit) {
