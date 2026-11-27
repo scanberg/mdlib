@@ -1412,8 +1412,9 @@ static double* vlx_test_h5_solution(size_t* out_len, const char* path, uint32_t 
 	return out;
 }
 
-// A copy of 'src' with rsp/full_solutions_matrix rewritten chunked by row, and deflated where HDF5 has it
-static bool vlx_test_write_chunked_solutions_h5(md_str_t src, md_str_t dst) {
+// A copy of 'src' with the 2D dataset 'name' rewritten chunked by row, and deflated where HDF5 has it: not one run of
+// bytes, so read through HDF5
+static bool vlx_test_write_chunked_h5(md_str_t src, md_str_t dst, const char* name) {
 	md_file_t in = {0};
 	if (!md_file_open(&in, src, MD_FILE_READ)) return false;
 	const size_t size = (size_t)md_file_size(in);
@@ -1429,7 +1430,7 @@ static bool vlx_test_write_chunked_solutions_h5(md_str_t src, md_str_t dst) {
 	hid_t file = H5Fopen(path, H5F_ACC_RDWR, H5P_DEFAULT);
 	if (file < 0) return false;
 	bool ok = false;
-	hid_t dset = H5Dopen2(file, "rsp/full_solutions_matrix", H5P_DEFAULT);
+	hid_t dset = H5Dopen2(file, name, H5P_DEFAULT);
 	if (dset >= 0) {
 		hid_t space = H5Dget_space(dset);
 		hsize_t dims[2] = {0};
@@ -1438,12 +1439,12 @@ static bool vlx_test_write_chunked_solutions_h5(md_str_t src, md_str_t dst) {
 			ok = H5Dread(dset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, data) >= 0;
 			H5Dclose(dset);
 			dset = -1;
-			ok = ok && H5Ldelete(file, "rsp/full_solutions_matrix", H5P_DEFAULT) >= 0;
+			ok = ok && H5Ldelete(file, name, H5P_DEFAULT) >= 0;
 			hid_t dcpl = H5Pcreate(H5P_DATASET_CREATE);
 			const hsize_t chunk[2] = { 1, dims[1] };
 			H5Pset_chunk(dcpl, 2, chunk);
 			if (H5Zfilter_avail(H5Z_FILTER_DEFLATE) > 0) H5Pset_deflate(dcpl, 6);
-			hid_t out = ok ? H5Dcreate2(file, "rsp/full_solutions_matrix", H5T_NATIVE_DOUBLE, space, H5P_DEFAULT, dcpl, H5P_DEFAULT) : -1;
+			hid_t out = ok ? H5Dcreate2(file, name, H5T_NATIVE_DOUBLE, space, H5P_DEFAULT, dcpl, H5P_DEFAULT) : -1;
 			ok = out >= 0 && H5Dwrite(out, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, data) >= 0;
 			if (out >= 0) H5Dclose(out);
 			H5Pclose(dcpl);
@@ -1498,7 +1499,7 @@ UTEST(vlx, response_vectors_are_read_on_demand) {
 UTEST(vlx, response_vectors_chunked_are_read_through_hdf5) {
 	const md_str_t plain_path = MD_STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/pe_induced_dipoles.h5");
 	const md_str_t chunk_path = MD_STR_LIT(VLX_PE_DIR "unittest_rsp_chunked.h5");
-	ASSERT_TRUE(vlx_test_write_chunked_solutions_h5(plain_path, chunk_path));
+	ASSERT_TRUE(vlx_test_write_chunked_h5(plain_path, chunk_path, "rsp/full_solutions_matrix"));
 
 	vlx_test_t plain = {0}, chunked = {0};
 	const bool loaded = vlx_test_load(&plain, plain_path, MD_MEGABYTES(64)) && vlx_test_load(&chunked, chunk_path, MD_MEGABYTES(64));
@@ -1524,6 +1525,106 @@ UTEST(vlx, response_vectors_chunked_are_read_through_hdf5) {
 	free(b);
 	qm_test_free(&plain);
 	qm_test_free(&chunked);
+}
+
+// ---------------------------------------------------------------------------
+// ORBITALS, ON DEMAND
+//
+// orbital/{alpha,beta}/coefficient are read from C_alpha / C_beta when asked for and converted as they are read; none
+// is held. Every way of asking - all of them, one, a run (md_attribute_slice_rows), one element - gives the same
+// values, and a file whose C_alpha is chunked (read through HDF5) or that was rewritten since it was loaded gives
+// them too.
+// ---------------------------------------------------------------------------
+
+// The orbitals as read every way against 'ref', the whole matrix (num_mo x num_ao), when given; the whole read
+// otherwise. Returns the whole matrix (heap), for a caller to compare files with.
+static double* vlx_test_check_orbitals(int32_t* utest_result, const vlx_test_t* t, const double* ref) {
+	const md_attribute_t* c = qm_test_attr(t, MD_STR_LIT("orbital/alpha/coefficient"));
+	if (!c || c->data != NULL || c->format.rank != 2) {
+		EXPECT_TRUE(c != NULL && c->data == NULL && c->format.rank == 2);
+		return NULL;
+	}
+	const uint32_t nm = c->format.shape[0], na = c->format.shape[1];
+	const md_attributes_t* table = &t->sys.attributes;
+	double* whole = (double*)malloc(sizeof(double) * nm * na);
+	EXPECT_EQ(md_attribute_extract_f64(whole, (size_t)nm * na, table, c, md_attribute_slice_all(), md_unit_none()), (size_t)nm * na);
+	if (ref) {
+		EXPECT_EQ(0, memcmp(whole, ref, sizeof(double) * nm * na));
+	}
+	double* row = (double*)malloc(sizeof(double) * nm * na);
+	for (uint32_t k = 0; k < nm; k += 3) {
+		EXPECT_EQ(md_attribute_extract_f64(row, na, table, c, md_attribute_slice_1(k), md_unit_none()), (size_t)na);
+		EXPECT_EQ(0, memcmp(row, whole + (size_t)k * na, sizeof(double) * na));
+		double e = 0.0;
+		EXPECT_EQ(md_attribute_extract_f64(&e, 1, table, c, md_attribute_slice_2(k, na / 2), md_unit_none()), 1u);
+		EXPECT_EQ(whole[(size_t)k * na + na / 2], e);
+	}
+	// runs: the first five, one from the middle to the end, all of them
+	const uint32_t runs[3][2] = { {0, MD_MIN(5u, nm)}, {nm / 2, nm - nm / 2}, {0, nm} };
+	for (int r = 0; r < 3; ++r) {
+		const md_attribute_slice_t sl = md_attribute_slice_rows(runs[r][0], runs[r][1]);
+		md_attribute_format_t f = {0};
+		EXPECT_TRUE(md_attribute_slice_format(&f, c, sl));
+		EXPECT_EQ(2u, f.rank);
+		EXPECT_EQ(runs[r][1], f.shape[0]);
+		EXPECT_EQ(na, f.shape[1]);
+		const size_t len = (size_t)runs[r][1] * na;
+		EXPECT_EQ(md_attribute_extract_f64(row, len, table, c, sl, md_unit_none()), len);
+		EXPECT_EQ(0, memcmp(row, whole + (size_t)runs[r][0] * na, sizeof(double) * len));
+	}
+	// past the end: refused
+	EXPECT_EQ(0u, md_attribute_extract_f64(row, (size_t)2 * na, table, c, md_attribute_slice_rows(nm - 1, 2), md_unit_none()));
+	free(row);
+	return whole;
+}
+
+UTEST(vlx, orbitals_are_read_on_demand) {
+	static const char* files[] = { MD_UNITTEST_DATA_DIR "/vlx/h2o.h5", MD_UNITTEST_DATA_DIR "/vlx/amide.h5", MD_UNITTEST_DATA_DIR "/vlx/mol.h5" };
+	for (int f = 0; f < 3; ++f) {
+		vlx_test_t t = {0};
+		ASSERT_TRUE(vlx_test_load(&t, md_str_from_cstr(files[f]), MD_MEGABYTES(64)));
+		double* whole = vlx_test_check_orbitals(utest_result, &t, NULL);
+		EXPECT_TRUE(whole != NULL);
+		// a restricted calculation's beta orbitals are alpha's, by a second name
+		const md_attribute_t* b = qm_test_attr(&t, MD_STR_LIT("orbital/beta/coefficient"));
+		EXPECT_TRUE(b != NULL && md_attribute_same_data(b, qm_test_attr(&t, MD_STR_LIT("orbital/alpha/coefficient"))));
+		free(whole);
+		qm_test_free(&t);
+	}
+}
+
+UTEST(vlx, orbitals_chunked_are_read_through_hdf5) {
+	const md_str_t plain_path = MD_STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5");
+	const md_str_t chunk_path = MD_STR_LIT(VLX_PE_DIR "unittest_orbitals_chunked.h5");
+	ASSERT_TRUE(vlx_test_write_chunked_h5(plain_path, chunk_path, "scf/C_alpha"));
+	vlx_test_t plain = {0}, chunked = {0};
+	const bool loaded = vlx_test_load(&plain, plain_path, MD_MEGABYTES(16)) && vlx_test_load(&chunked, chunk_path, MD_MEGABYTES(16));
+	double* ref = loaded ? vlx_test_check_orbitals(utest_result, &plain, NULL) : NULL;
+	double* got = ref ? vlx_test_check_orbitals(utest_result, &chunked, ref) : NULL;
+	remove(chunk_path.ptr);
+	EXPECT_TRUE(loaded && ref && got);
+	free(ref);
+	free(got);
+	qm_test_free(&plain);
+	qm_test_free(&chunked);
+}
+
+// The file rewritten in place after it was loaded, holding the same calculation laid out anew (C_alpha chunked): the
+// provider takes the dataset's place again and reads the same orbitals
+UTEST(vlx, orbitals_follow_a_rewritten_file) {
+	const md_str_t plain_path = MD_STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5");
+	const md_str_t copy_path  = MD_STR_LIT(VLX_PE_DIR "unittest_orbitals_rewritten.h5");
+	ASSERT_TRUE(vlx_test_write_chunked_h5(plain_path, copy_path, "scf/S"));   // a copy, its orbitals as they were
+	vlx_test_t t = {0};
+	const bool loaded = vlx_test_load(&t, copy_path, MD_MEGABYTES(16));
+	double* before = loaded ? vlx_test_check_orbitals(utest_result, &t, NULL) : NULL;
+	const bool rewritten = loaded && vlx_test_write_chunked_h5(plain_path, copy_path, "scf/C_alpha");
+	double* after = rewritten && before ? vlx_test_check_orbitals(utest_result, &t, before) : NULL;
+	remove(copy_path.ptr);
+	EXPECT_TRUE(loaded && rewritten && before && after);
+	free(before);
+	free(after);
+	qm_test_free(&t);
 }
 
 // The NTOs are the singular value decomposition of the transition X = Z - Y, so with every pair kept

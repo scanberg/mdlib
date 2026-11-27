@@ -136,7 +136,10 @@ struct md_executor_t;
 //                                                            atoms of the system
 //   orbital/{alpha,beta}/coefficient                         {M,A} MO coefficients, Cartesian AO
 //                                                            order - see the AO CONVENTION block in
-//                                                            md_gto.h
+//                                                            md_gto.h. Virtual: the orbitals asked
+//                                                            for are read from the file (a run of
+//                                                            them at once: md_attribute_slice_rows),
+//                                                            so the file has to stay where it was
 //   basis/shell/*, basis/primitive/*                         the GTO basis, in the format neutral
 //                                                            layout md_gto_basis_extract_attributes
 //                                                            reads

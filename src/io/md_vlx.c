@@ -384,7 +384,6 @@ static size_t vlx_scf_number_of_molecular_orbitals(const vlx_t* vlx);
 static const double* vlx_scf_mo_occupancy(const vlx_t* vlx, vlx_spin_t spin);
 static const double* vlx_scf_mo_energy(const vlx_t* vlx, vlx_spin_t spin);
 static bool vlx_gto_basis_extract(md_gto_basis_t* out, const vlx_t* vlx, struct md_allocator_i* alloc);
-static const double* vlx_scf_mo_coefficients(const vlx_t* vlx, size_t mo_idx, vlx_spin_t spin);
 static size_t vlx_rsp_number_of_excited_states(const vlx_t* vlx);
 static const md_double3_t* vlx_rsp_electric_transition_dipole_moments(const vlx_t* vlx);
 static const md_double3_t* vlx_rsp_magnetic_transition_dipole_moments(const vlx_t* vlx);
@@ -1810,87 +1809,56 @@ static bool h5_read_atomic_properties(vlx_t* vlx, hid_t group_handle) {
 }
 
 // ---------------------------------------------------------------------------
-// The MO coefficients: read, reordered, converted and published in one pass
+// The MO coefficients: published, read when asked for
 // ---------------------------------------------------------------------------
 // VeloxChem stores an orbital set [AO][MO] (older files [MO][AO]) over its spherical AOs, in its own
 // AO order (angl -> isph -> atom -> func). Everything downstream wants [MO][AO] over the Cartesian
 // AOs that md_gto_basis_t is in, in shell order (angl -> atom -> func -> isph) - see the AO
 // CONVENTION block in md_gto.h. md_gto_sph_to_cart_orbitals does all of it at once: it reads the
 // file's layout through ao_remap and writes Cartesian rows, so there is no permuted, transposed or
-// spherical copy in between, and it writes them straight into the attribute the orbitals are
-// published as. The values as read live in a buffer freed on return; the table's copy is the only one.
+// spherical copy in between. Nothing is read here: the orbitals are a virtual attribute whose provider
+// converts the ones asked for as it reads them (vlx_coeff_provide, READ FROM THE FILE ON DEMAND below).
 //
 // The orbitals are linear in the AOs, so converting them as they are read is exact for everything
 // later done with them here (the NTOs and transition densities are built from them, and are linear
 // in them as well). A matrix of AO PAIRS is a different matter; see md_gto_sph_to_cart_matrix.
 //
-// 'out' is pointed at the table's storage, which outlives the vlx object. Without a basis set nothing
-// AO-indexed can be interpreted: the values are kept as read, in the arena, and are not published.
+// 'out' gets the published shape, [num_mo][Cartesian AOs], and no values. Without a basis set nothing
+// AO-indexed can be interpreted, and nothing is published: [num_mo][0].
+static md_attribute_id_t vlx_coeff_publish(vlx_t* vlx, hid_t handle, const char* dataset, size_t num_sph, size_t num_mo, bool ao_major,
+                                           size_t n_cart, md_str_t path, md_str_t label);
+
 static bool vlx_read_orbitals(vlx_2d_data_t* out, md_attribute_id_t* out_id, vlx_t* vlx, hid_t handle, const char* dataset,
 							  const size_t dim[2], size_t num_ao, size_t num_mo, md_str_t path, md_str_t label) {
 	MD_ASSERT(out && out_id && vlx && dataset);
 	*out_id = MD_ATTRIBUTE_INVALID;
-	const size_t count = dim[0] * dim[1];
-
+	out->data    = NULL;
+	out->size[0] = num_mo;
+	out->size[1] = 0;
 	if (!vlx->ao_remap) {
-		out->data = NULL;
-		md_array_resize(out->data, count, vlx->arena);
-		md_memcpy(out->size, dim, sizeof(out->size));
-		return h5_read_dataset_data(out->data, count, handle, H5T_NATIVE_DOUBLE, dataset);
+		return true;
 	}
 
 	md_temp_scope_t temp = md_temp_begin();
-	md_allocator_i* heap = md_get_heap_allocator();
-	double* raw = NULL;
-	bool result = false;
-
 	md_gto_basis_t basis = {0};
-	if (!vlx_gto_basis_extract(&basis, vlx, md_temp_allocator(temp)) || md_gto_basis_num_sph_ao(&basis) != num_ao) {
+	const bool fits = vlx_gto_basis_extract(&basis, vlx, md_temp_allocator(temp)) && md_gto_basis_num_sph_ao(&basis) == num_ao;
+	const size_t n_cart = fits ? md_gto_basis_num_ao(&basis) : 0;
+	md_temp_end(temp);
+	if (!fits) {
 		MD_LOG_ERROR("%s: the basis set does not span the %zu atomic orbitals the orbitals are over", dataset, num_ao);
-		goto done;
-	}
-	const size_t n_cart = md_gto_basis_num_ao(&basis);
-
-	raw = (double*)md_alloc(heap, sizeof(double) * count);
-	if (!raw) {
-		MD_LOG_ERROR("%s: failed to allocate %zu bytes to read the orbitals into", dataset, sizeof(double) * count);
-		goto done;
-	}
-	if (!h5_read_dataset_data(raw, count, handle, H5T_NATIVE_DOUBLE, dataset)) {
-		goto done;
-	}
-
-	// f64 and not f32: md_gto takes AO coefficients as double to keep the QM code's precision at the
-	// boundary, and there is no point publishing them already narrowed.
-	const md_attribute_format_t format = {
-		.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 2, .shape = { (uint32_t)num_mo, (uint32_t)n_cart },
-	};
-	const md_attribute_id_t id = md_qm_publish(vlx->sys, path, label, md_unit_none(), format, NULL, 0);
-	double* dst = id != MD_ATTRIBUTE_INVALID ? (double*)md_attributes_data(&vlx->sys->attributes, id, MD_ATTRIBUTE_TYPE_F64) : NULL;
-	if (!dst) {
-		MD_LOG_ERROR("%s: failed to publish the orbitals as '" MD_STR_FMT "'", dataset, MD_STR_ARG(path));
-		goto done;
+		return false;
 	}
 
 	// [AO][MO] when the first dimension is the AO one - also for a square matrix, as VeloxChem writes it
 	const bool ao_major = dim[0] == num_ao;
-	const size_t mo_stride = ao_major ? 1 : num_ao;
-	const size_t ao_stride = ao_major ? num_mo : 1;
-	if (md_gto_sph_to_cart_orbitals(dst, raw, mo_stride, ao_stride, vlx->ao_remap, num_mo, &basis, vlx->executor) != num_mo) {
-		MD_LOG_ERROR("%s: spherical to Cartesian conversion failed", dataset);
-		md_attributes_remove(&vlx->sys->attributes, id);
-		goto done;
+	const md_attribute_id_t id = vlx_coeff_publish(vlx, handle, dataset, num_ao, num_mo, ao_major, n_cart, path, label);
+	if (id == MD_ATTRIBUTE_INVALID) {
+		MD_LOG_ERROR("%s: failed to publish the orbitals as '" MD_STR_FMT "'", dataset, MD_STR_ARG(path));
+		return false;
 	}
-
-	out->data    = dst;
-	out->size[0] = num_mo;
 	out->size[1] = n_cart;
 	*out_id = id;
-	result = true;
-done:
-	if (raw) md_free(heap, raw, sizeof(double) * count);
-	md_temp_end(temp);
-	return result;
+	return true;
 }
 
 static bool validate_square_matrix_dims(const vlx_2d_data_t* data, const char* label) {
@@ -1935,7 +1903,7 @@ static bool validate_orbital_canonical_layout(const vlx_orbital_t* orb, size_t n
 	MD_ASSERT(orb);
 	MD_ASSERT(label);
 
-	if (orb->coefficients.data) {
+	if (orb->coefficients.size[1] > 0) {
 		const size_t num_mo = orb->coefficients.size[0];
 		if (num_mo == 0 || orb->coefficients.size[1] != num_ao) {
 			MD_LOG_ERROR("%s coefficient matrix is not in canonical [MO x AO] layout, got [%zu x %zu], expected [num_mo x %zu]", label, orb->coefficients.size[0], orb->coefficients.size[1], num_ao);
@@ -1964,7 +1932,7 @@ static bool validate_scf_canonical_layout(const vlx_t* vlx) {
 	if (!validate_orbital_canonical_layout(&vlx->scf.alpha, num_ao, "Alpha orbital")) {
 		return false;
 	}
-	if (vlx->scf.beta.coefficients.data != vlx->scf.alpha.coefficients.data && !validate_orbital_canonical_layout(&vlx->scf.beta, num_ao, "Beta orbital")) {
+	if (vlx->scf.type == VLX_SCF_UNRESTRICTED && !validate_orbital_canonical_layout(&vlx->scf.beta, num_ao, "Beta orbital")) {
 		return false;
 	}
 	return true;
@@ -3828,6 +3796,16 @@ done:
 // Defined beside vlx_parse_file. Both readers call it straight after the core block.
 static bool vlx_resolve_basis_set(vlx_t* vlx, md_str_t filename);
 
+// The file as it is being read: the orbitals and the response vectors are read from it again later, on demand, and
+// have to be able to tell whether it is still this file holding this calculation (READ FROM THE FILE ON DEMAND).
+static void vlx_note_file(vlx_t* vlx, md_str_t filename, hid_t file_id) {
+	vlx->filename = md_alloc_str(vlx->arena, filename);
+	md_file_info_extract_from_path(filename, &vlx->file_info);
+	if (!vlx_h5_identity(&vlx->identity, file_id)) {
+		MD_LOG_DEBUG("VeloxChem: '" MD_STR_FMT "' does not state its nuclear charges, coordinates and basis set at its root", MD_STR_ARG(filename));
+	}
+}
+
 static bool vlx_read_scf_results(vlx_t* vlx, md_str_t filename, md_system_state_t* state) {
 	MD_ASSERT(vlx);
 
@@ -3856,6 +3834,8 @@ static bool vlx_read_scf_results(vlx_t* vlx, md_str_t filename, md_system_state_
 	if (!vlx_resolve_basis_set(vlx, filename)) {
 		goto done;
 	}
+
+	vlx_note_file(vlx, filename, file_id);
 
 	// Before the system is built: the embedding's sites become atoms of it. The SCF settings of this
 	// layout are at the root.
@@ -3912,13 +3892,7 @@ static bool vlx_read_h5_file(vlx_t* vlx, md_str_t filename, md_system_state_t* s
 		goto done;
 	}
 
-	// The file as it is being read: the density properties are read from it again later, on demand,
-	// and have to be able to tell whether it is still this file holding this calculation.
-	vlx->filename = md_alloc_str(vlx->arena, filename);
-	md_file_info_extract_from_path(filename, &vlx->file_info);
-	if (!vlx_h5_identity(&vlx->identity, file_id)) {
-		MD_LOG_DEBUG("VeloxChem: '" MD_STR_FMT "' does not state its nuclear charges, coordinates and basis set at its root", MD_STR_ARG(filename));
-	}
+	vlx_note_file(vlx, filename, file_id);
 
 	// The embedding environment ahead of the system, as its sites become atoms of it. It is named in
 	// the SCF settings, which the SCF block below reads for everything else.
@@ -4636,6 +4610,257 @@ static bool vlx_read_raw(double* out, size_t count, const char* path, int64_t of
 	}
 	md_temp_end(temp);
 	return ok;
+}
+
+// ---- The MO coefficients, read as they are asked for
+//
+// orbital/{alpha,beta}/coefficient {M,A}: virtual. The orbitals asked for are read from C_alpha / C_beta and
+// converted to md_gto's Cartesian AOs as they are read (md_gto_sph_to_cart_orbitals, through the AO permutation), so
+// no orbital is held: a protein's 9.6k AOs make all of them 740 MB, 100k AOs 80 GB, where a density takes the
+// occupied fifth and a viewer a few. VeloxChem writes [AO][MO], so an orbital is a column of the file: one orbital is a
+// read per AO, a run of them (md_attribute_slice_rows: this provider takes runs) the same reads of the run's stretch
+// of each row - the occupied block of a density in one pass over the file - and all of them one read. An [MO][AO]
+// dataset is one read for any run.
+
+// The coefficients' provider state, owned by the attribute. Variable length: the AO permutation, the file and the
+// dataset follow the struct.
+typedef struct vlx_coeff_source_t {
+	uint64_t       identity;    // vlx_h5_identity of the file as it was loaded
+	md_file_time_t mtime;       // the file as it was when 'offset' was taken
+	int64_t        size;
+	int64_t        offset;      // first byte of the values, -1 to read through HDF5
+	uint32_t       raw;         // vlx_raw_t: how the values at 'offset' are stored
+	uint32_t       ao_major;    // the dataset is [num_sph][num_mo] (VeloxChem's), else [num_mo][num_sph]
+	uint32_t       num_sph;     // the file's AOs: spherical, in VeloxChem's order
+	uint32_t       num_mo;
+	uint32_t       num_cart;    // published over md_gto's Cartesian AOs
+	uint32_t       path_len;
+	uint32_t       dataset_len;
+	uint32_t       pad;
+	// int remap[num_sph], then char path[path_len + 1], then char dataset[dataset_len + 1]
+} vlx_coeff_source_t;
+
+static inline size_t vlx_coeff_source_bytes(size_t num_sph, size_t path_len, size_t dataset_len) {
+	return sizeof(vlx_coeff_source_t) + sizeof(int) * num_sph + path_len + 1 + dataset_len + 1;
+}
+static inline int* vlx_coeff_source_remap(vlx_coeff_source_t* src) {
+	return (int*)(src + 1);
+}
+static inline char* vlx_coeff_source_path(vlx_coeff_source_t* src) {
+	return (char*)(vlx_coeff_source_remap(src) + src->num_sph);
+}
+static inline char* vlx_coeff_source_dataset(vlx_coeff_source_t* src) {
+	return vlx_coeff_source_path(src) + src->path_len + 1;
+}
+
+// The dataset is the orbitals the source describes: [num_sph][num_mo], or [num_mo][num_sph]. Called holding the HDF5 lock.
+static bool vlx_coeff_dataset_fits(hid_t dset, const vlx_coeff_source_t* src) {
+	hid_t space = H5Dget_space(dset);
+	if (space == H5I_INVALID_HID) {
+		return false;
+	}
+	hsize_t dims[2] = {0};
+	const bool ok = H5Sget_simple_extent_ndims(space) == 2 && H5Sget_simple_extent_dims(space, dims, NULL) == 2 &&
+		dims[0] == (src->ao_major ? src->num_sph : src->num_mo) && dims[1] == (src->ao_major ? src->num_mo : src->num_sph);
+	H5Sclose(space);
+	return ok;
+}
+
+// Takes the dataset's place in the file again, as the file is now. Called holding the HDF5 lock.
+static bool vlx_coeff_source_rebuild(vlx_coeff_source_t* src, const md_file_info_t* info) {
+	const char* path    = vlx_coeff_source_path(src);
+	const char* dataset = vlx_coeff_source_dataset(src);
+	hid_t file = H5Fopen(path, H5F_ACC_RDONLY, H5P_DEFAULT);
+	if (file == H5I_INVALID_HID) {
+		MD_LOG_ERROR("VeloxChem: '%s' has changed since it was loaded and can no longer be read as HDF5; reload it", path);
+		return false;
+	}
+	bool ok = false;
+	uint64_t identity = 0;
+	if (!vlx_h5_identity(&identity, file) || identity != src->identity) {
+		MD_LOG_ERROR("VeloxChem: '%s' has changed since it was loaded and no longer holds the same molecule and basis set; reload it to see its orbitals", path);
+	} else {
+		hid_t dset = h5_link_exists(file, dataset) ? H5Dopen(file, dataset, H5P_DEFAULT) : H5I_INVALID_HID;
+		if (dset != H5I_INVALID_HID && vlx_coeff_dataset_fits(dset, src)) {
+			int64_t offset = -1;
+			src->raw    = (uint32_t)vlx_h5_raw_location(&offset, dset);
+			src->offset = offset;
+			src->mtime  = info->modified_time;
+			src->size   = (int64_t)info->size;
+			ok = true;
+			MD_LOG_INFO("VeloxChem: '%s' has changed since it was loaded; '%s' is read from it as it is now, while the rest of what was loaded is not until it is reloaded", path, dataset);
+		} else {
+			MD_LOG_ERROR("VeloxChem: '%s' has changed since it was loaded and no longer holds '%s' as %u orbitals over %u AOs; reload it", path, dataset, src->num_mo, src->num_sph);
+		}
+		if (dset != H5I_INVALID_HID) H5Dclose(dset);
+	}
+	H5Fclose(file);
+	return ok;
+}
+
+// Orbitals m0 .. m0 + n - 1 through HDF5, for a dataset that is not one run of bytes: into 'out' in the file's layout
+// of the block, [num_sph][n] or [n][num_sph]
+static bool vlx_coeff_source_read_hdf5(double* out, vlx_coeff_source_t* src, uint32_t m0, uint32_t n) {
+	md_hdf5_lock_t lock = md_hdf5_lock();
+	hid_t file  = H5Fopen(vlx_coeff_source_path(src), H5F_ACC_RDONLY, H5P_DEFAULT);
+	hid_t dset  = (file != H5I_INVALID_HID && h5_link_exists(file, vlx_coeff_source_dataset(src))) ? H5Dopen(file, vlx_coeff_source_dataset(src), H5P_DEFAULT) : H5I_INVALID_HID;
+	hid_t space = (dset != H5I_INVALID_HID && vlx_coeff_dataset_fits(dset, src)) ? H5Dget_space(dset) : H5I_INVALID_HID;
+	bool ok = false;
+	if (space != H5I_INVALID_HID) {
+		const hsize_t start[2] = { src->ao_major ? 0 : m0, src->ao_major ? m0 : 0 };
+		const hsize_t count[2] = { src->ao_major ? src->num_sph : n, src->ao_major ? n : src->num_sph };
+		hid_t mem = H5Screate_simple(2, count, NULL);
+		ok = mem != H5I_INVALID_HID && H5Sselect_hyperslab(space, H5S_SELECT_SET, start, NULL, count, NULL) >= 0 &&
+			H5Dread(dset, H5T_NATIVE_DOUBLE, mem, space, H5P_DEFAULT, out) >= 0;
+		if (mem != H5I_INVALID_HID) H5Sclose(mem);
+		H5Sclose(space);
+	}
+	if (dset != H5I_INVALID_HID) H5Dclose(dset);
+	if (file != H5I_INVALID_HID) H5Fclose(file);
+	md_hdf5_unlock(lock);
+	return ok;
+}
+
+// Orbitals of the coefficient matrix {M,A}: all of them, one, a run of them (slice count), or one element
+static size_t vlx_coeff_provide(void* dst, size_t cap, const md_attributes_t* table, const md_attribute_t* attr, const md_attribute_slice_t* slice, void* user_data, md_attribute_io_t* io) {
+	vlx_coeff_source_t* src = (vlx_coeff_source_t*)user_data;
+	if (!src || !dst) {
+		return 0;
+	}
+	const uint32_t nfix = slice ? slice->num_idx : 0;
+	const uint32_t m0   = nfix > 0 ? slice->idx[0] : 0;
+	const uint32_t n    = nfix == 0 ? src->num_mo : nfix == 1 ? md_attribute_slice_run(*slice) : 1;
+	if (nfix > 2 || (size_t)m0 + n > src->num_mo || (nfix == 2 && slice->idx[1] >= src->num_cart)) {
+		MD_LOG_ERROR("'" MD_STR_FMT "': slice out of range", MD_STR_ARG(attr->path));
+		return 0;
+	}
+	const size_t expected = nfix == 2 ? 1 : (size_t)n * src->num_cart;
+	if (cap != expected) {
+		MD_LOG_ERROR("'" MD_STR_FMT "': asked for %zu values, the slice has %zu", MD_STR_ARG(attr->path), cap, expected);
+		return 0;
+	}
+
+	const char* path = vlx_coeff_source_path(src);
+	md_file_info_t info = {0};
+	if (!md_file_info_extract_from_path(md_str_from_cstr(path), &info)) {
+		MD_LOG_ERROR("VeloxChem: '%s', which '" MD_STR_FMT "' is read from, can no longer be found; reload it", path, MD_STR_ARG(attr->path));
+		return 0;
+	}
+	// The offset is shared by every thread reading this attribute and a rebuild rewrites it, so it is taken - and
+	// rebuilt when stale - holding the lock.
+	md_hdf5_lock_t lock = md_hdf5_lock();
+	const bool current = (info.modified_time == src->mtime && (int64_t)info.size == src->size) || vlx_coeff_source_rebuild(src, &info);
+	const vlx_raw_t raw   = (vlx_raw_t)src->raw;
+	const int64_t offset  = src->offset;
+	md_hdf5_unlock(lock);
+	if (!current) {
+		return 0;
+	}
+
+	md_temp_scope_t temp = md_temp_begin();
+	md_allocator_i* heap = md_get_heap_allocator();
+	const size_t ns = src->num_sph;
+	double* sph  = (double*)md_alloc(heap, sizeof(double) * ns * n);
+	double* cart = nfix == 2 ? md_temp_alloc_array(temp, double, src->num_cart) : (double*)dst;
+	md_gto_basis_t basis = {0};
+	bool ok = sph && cart && md_gto_basis_extract_attributes(&basis, table, md_temp_allocator(temp)) &&
+		md_gto_basis_num_sph_ao(&basis) == ns && md_gto_basis_num_ao(&basis) == src->num_cart;
+	if (!ok) {
+		MD_LOG_ERROR("'" MD_STR_FMT "': no room to read %u orbitals into, or no basis of %zu spherical AOs to convert them with",
+			MD_STR_ARG(attr->path), n, ns);
+	}
+	if (ok && raw != VLX_RAW_NONE && offset >= 0) {
+		// a plain read at a byte offset; through a context of the call's own where the caller gave none, so the file is
+		// opened once for the reads of an orbital column, not once per AO
+		md_attribute_io_t* own = io ? NULL : md_attribute_io_create(NULL, heap);
+		md_attribute_io_t* rio = io ? io : own;
+		const size_t elem = (raw == VLX_RAW_F64LE || raw == VLX_RAW_F64BE) ? 8 : 4;
+		if (!src->ao_major) {
+			ok = vlx_read_raw(sph, ns * n, path, offset + (int64_t)((size_t)m0 * ns * elem), raw, rio);
+		} else if (n == src->num_mo) {
+			ok = vlx_read_raw(sph, ns * n, path, offset, raw, rio);
+		} else {
+			for (size_t a = 0; ok && a < ns; ++a) {
+				ok = vlx_read_raw(sph + a * n, n, path, offset + (int64_t)((a * src->num_mo + m0) * elem), raw, rio);
+			}
+		}
+		if (own) md_attribute_io_destroy(own);
+	} else if (ok) {
+		ok = vlx_coeff_source_read_hdf5(sph, src, m0, n);
+	}
+	if (!ok) {
+		MD_LOG_ERROR("VeloxChem: failed to read orbitals %u..%u from '%s' in '%s'", m0 + 1, m0 + n, vlx_coeff_source_dataset(src), path);
+	} else {
+		// the block in the file's layout: [num_sph][n] (AO major) or [n][num_sph]
+		const size_t mo_stride = src->ao_major ? 1 : ns;
+		const size_t ao_stride = src->ao_major ? n : 1;
+		ok = md_gto_sph_to_cart_orbitals(cart, sph, mo_stride, ao_stride, vlx_coeff_source_remap(src), n, &basis, md_attribute_io_executor(io)) == n;
+		if (!ok) MD_LOG_ERROR("'" MD_STR_FMT "': spherical to Cartesian conversion failed", MD_STR_ARG(attr->path));
+	}
+	if (ok && nfix == 2) {
+		*(double*)dst = cart[slice->idx[1]];
+	}
+	if (sph) md_free(heap, sph, sizeof(double) * ns * n);
+	md_temp_end(temp);
+	return ok ? cap : 0;
+}
+
+// orbital/{alpha,beta}/coefficient as a virtual attribute over 'dataset' of the SCF group 'handle': [num_sph][num_mo]
+// (ao_major) or [num_mo][num_sph] in the file, published {num_mo, n_cart}. MD_ATTRIBUTE_INVALID, with nothing
+// published, when the file is not one the provider can read again.
+static md_attribute_id_t vlx_coeff_publish(vlx_t* vlx, hid_t handle, const char* dataset, size_t num_sph, size_t num_mo, bool ao_major,
+                                           size_t n_cart, md_str_t path, md_str_t label) {
+	md_system_t* sys = vlx->sys;
+	if (md_str_empty(vlx->filename) || !vlx->ao_remap || num_sph > UINT32_MAX || num_mo > UINT32_MAX || n_cart > UINT32_MAX) {
+		return MD_ATTRIBUTE_INVALID;
+	}
+	hid_t dset = h5_link_exists(handle, dataset) ? H5Dopen(handle, dataset, H5P_DEFAULT) : H5I_INVALID_HID;
+	if (dset == H5I_INVALID_HID) {
+		return MD_ATTRIBUTE_INVALID;
+	}
+	char full[512];
+	const ssize_t len = H5Iget_name(dset, full, sizeof(full));
+	int64_t offset = -1;
+	const vlx_raw_t raw = vlx_h5_raw_location(&offset, dset);
+	H5Dclose(dset);
+	if (len <= 0 || (size_t)len >= sizeof(full)) {
+		return MD_ATTRIBUTE_INVALID;
+	}
+
+	const size_t bytes = vlx_coeff_source_bytes(num_sph, vlx->filename.len, (size_t)len);
+	vlx_coeff_source_t* src = (vlx_coeff_source_t*)md_attributes_alloc_user_data(&sys->attributes, bytes);
+	if (!src) {
+		return MD_ATTRIBUTE_INVALID;
+	}
+	*src = (vlx_coeff_source_t){
+		.identity    = vlx->identity,
+		.mtime       = vlx->file_info.modified_time,
+		.size        = (int64_t)vlx->file_info.size,
+		.offset      = offset,
+		.raw         = (uint32_t)raw,
+		.ao_major    = ao_major ? 1u : 0u,
+		.num_sph     = (uint32_t)num_sph,
+		.num_mo      = (uint32_t)num_mo,
+		.num_cart    = (uint32_t)n_cart,
+		.path_len    = (uint32_t)vlx->filename.len,
+		.dataset_len = (uint32_t)len,
+	};
+	md_memcpy(vlx_coeff_source_remap(src), vlx->ao_remap, sizeof(int) * num_sph);
+	char* src_path = vlx_coeff_source_path(src);
+	md_memcpy(src_path, vlx->filename.ptr, vlx->filename.len);
+	src_path[vlx->filename.len] = '\0';
+	md_memcpy(vlx_coeff_source_dataset(src), full, (size_t)len + 1);
+
+	// f64 and not f32: md_gto takes AO coefficients as double to keep the QM code's precision at the boundary
+	const md_attribute_format_t format = {
+		.type = MD_ATTRIBUTE_TYPE_F64, .components = 1, .rank = 2, .shape = { (uint32_t)num_mo, (uint32_t)n_cart },
+	};
+	const md_attribute_virtual_t virt = { .provider = vlx_coeff_provide, .user_data = src, .user_data_size = bytes, .runs = true };
+	const md_attribute_id_t id = md_qm_publish_virtual(sys, path, label, md_unit_none(), format, &virt);
+	if (id == MD_ATTRIBUTE_INVALID) {
+		md_free(sys->attributes.alloc, src, bytes);   // only a published attribute releases its user_data
+	}
+	return id;
 }
 
 // ---------------------------------------------------------------------------
@@ -5896,17 +6121,4 @@ bool vlx_gto_basis_extract(md_gto_basis_t* out, const vlx_t* vlx, md_allocator_i
 	return out->num_shells > 0;
 }
 
-// Returns a direct pointer to the AO coefficient vector for MO mo_idx.
-// The matrix is stored [num_mo][num_ao] after permutation and transpose at load time,
-// so each MO's coefficients are contiguous and in shell order.
-const double* vlx_scf_mo_coefficients(const vlx_t* vlx, size_t mo_idx, vlx_spin_t spin) {
-	if (!vlx) return NULL;
-	const vlx_orbital_t* orb = (spin == VLX_SPIN_ALPHA) ? &vlx->scf.alpha :
-								  (spin == VLX_SPIN_BETA)  ? &vlx->scf.beta  : NULL;
-	if (!orb || !orb->coefficients.data) return NULL;
-	size_t num_mo = orb->coefficients.size[0];
-	size_t num_ao = orb->coefficients.size[1];
-	if (mo_idx >= num_mo || num_ao == 0) return NULL;
-	return orb->coefficients.data + mo_idx * num_ao;
-}
 

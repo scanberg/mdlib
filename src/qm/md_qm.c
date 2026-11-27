@@ -654,6 +654,28 @@ static bool qm_spin_orbital_energies(double* dst, size_t num_mo, const md_system
     return true;
 }
 
+// The rows of 'coeff' ({M,A}) whose weight is nonzero, in order, into rows (na each): a run of consecutive ones at a
+// time (md_attribute_slice_rows), one read of a block where the attribute is read from a file. False on a failed read.
+static bool qm_read_weighted_rows(double* rows, const md_attributes_t* table, const md_attribute_t* coeff, const double* weight,
+                                  size_t num_mo, size_t na) {
+    size_t n = 0;
+    for (size_t k = 0; k < num_mo;) {
+        if (weight[k] == 0.0) {
+            ++k;
+            continue;
+        }
+        size_t e = k + 1;
+        while (e < num_mo && weight[e] != 0.0) ++e;
+        const size_t len = (e - k) * na;
+        if (md_attribute_extract_f64(rows + n * na, len, table, coeff, md_attribute_slice_rows((uint32_t)k, (uint32_t)(e - k)), md_unit_none()) != len) {
+            return false;
+        }
+        n += e - k;
+        k = e;
+    }
+    return true;
+}
+
 // The orbitals of the density sa alpha + sb beta: rows {count, A}, weights {count} (the occupations times
 // sa, sb), and with out_energy_weights the same with each occupation times |its orbital's energy|. Every
 // array from 'alloc'. canonical: every occupation 0, 1 or 2 (within 1e-3), else nothing.
@@ -696,29 +718,36 @@ static size_t qm_orbital_products(double** out_rows, double** out_weights, doubl
         for (size_t k = 0; have_a && k < nma; ++k) if (fabs(oa[k] - round(oa[k])) > 1.0e-3 || oa[k] < -1.0e-3 || oa[k] > 2.001) { md_temp_end(temp); return 0; }
         for (size_t k = 0; have_b && k < nmb; ++k) if (fabs(ob[k] - round(ob[k])) > 1.0e-3 || ob[k] < -1.0e-3 || ob[k] > 2.001) { md_temp_end(temp); return 0; }
     }
+    // each orbital's weight in the density: alpha's (with beta's where the spins share orbitals), then beta's
+    double* wa = have_a ? (double*)md_temp_alloc(temp, sizeof(double) * nma) : NULL;
+    double* wb = have_b && !shared ? (double*)md_temp_alloc(temp, sizeof(double) * nmb) : NULL;
+    if ((have_a && !wa) || (have_b && !shared && !wb)) {
+        md_temp_end(temp);
+        return 0;
+    }
     size_t count = 0;
-    for (size_t k = 0; have_a && k < nma; ++k) count += (sa * oa[k] + (shared ? sb * ob[k] : 0.0)) != 0.0;
-    for (size_t k = 0; have_b && !shared && k < nmb; ++k) count += (sb * ob[k]) != 0.0;
+    for (size_t k = 0; have_a && k < nma; ++k) count += (wa[k] = sa * oa[k] + (shared ? sb * ob[k] : 0.0)) != 0.0;
+    for (size_t k = 0; wb && k < nmb; ++k) count += (wb[k] = sb * ob[k]) != 0.0;
     double* rows = count ? (double*)md_alloc(alloc, sizeof(double) * count * na) : NULL;
     double* w    = count ? (double*)md_alloc(alloc, sizeof(double) * count) : NULL;
     double* we   = count && energy ? (double*)md_alloc(alloc, sizeof(double) * count) : NULL;
     ok = rows && w && (!energy || we);
     size_t n = 0;
     for (size_t k = 0; ok && have_a && k < nma; ++k) {
-        const double wk = sa * oa[k] + (shared ? sb * ob[k] : 0.0);
-        if (wk == 0.0) continue;
-        ok = md_attribute_extract_f64(rows + n * na, na, &sys->attributes, caa, md_attribute_slice_1((uint32_t)k), md_unit_none()) == na;
+        if (wa[k] == 0.0) continue;
         // a shared orbital's two spins may differ in energy (restricted open shell): each its own
         if (energy) we[n] = sa * oa[k] * fabs(ea[k]) + (shared ? sb * ob[k] * fabs(eb[k]) : 0.0);
-        w[n++] = wk;
+        w[n++] = wa[k];
     }
-    for (size_t k = 0; ok && have_b && !shared && k < nmb; ++k) {
-        const double wk = sb * ob[k];
-        if (wk == 0.0) continue;
-        ok = md_attribute_extract_f64(rows + n * na, na, &sys->attributes, cab, md_attribute_slice_1((uint32_t)k), md_unit_none()) == na;
-        if (energy) we[n] = wk * fabs(eb[k]);
-        w[n++] = wk;
+    const size_t na_rows = n;
+    for (size_t k = 0; ok && wb && k < nmb; ++k) {
+        if (wb[k] == 0.0) continue;
+        if (energy) we[n] = wb[k] * fabs(eb[k]);
+        w[n++] = wb[k];
     }
+    // the rows of exactly the orbitals of nonzero weight, a run of consecutive ones at a time
+    ok = ok && (!have_a || qm_read_weighted_rows(rows, &sys->attributes, caa, wa, nma, na)) &&
+               (!wb || qm_read_weighted_rows(rows + na_rows * na, &sys->attributes, cab, wb, nmb, na));
     md_temp_end(temp);
     if (!ok) {
         if (rows) md_free(alloc, rows, sizeof(double) * count * na);
@@ -915,20 +944,22 @@ size_t md_qm_attachment_orbitals(double** out_rows, double** out_weights, size_t
     const size_t nao = aa;
     double* rows = (double*)md_alloc(alloc, sizeof(double) * count * nao);
     double* w    = (double*)md_alloc(alloc, sizeof(double) * count);
-    bool ok = rows && w;
+    double* wa   = (double*)md_temp_alloc(temp, sizeof(double) * ma);
+    double* wb   = shared ? NULL : (double*)md_temp_alloc(temp, sizeof(double) * mb);
+    bool ok = rows && w && wa && (shared || wb);
     size_t n = 0;
     for (size_t k = 0; ok && k < ma; ++k) {
-        const double wk = qm_attachment_weight(na[k], ea[k]) + (shared ? qm_attachment_weight(nb[k], eb[k]) : 0.0);
-        if (wk == 0.0) continue;
-        ok = md_attribute_extract_f64(rows + n * nao, nao, &sys->attributes, ca, md_attribute_slice_1((uint32_t)k), md_unit_none()) == nao;
-        w[n++] = wk;
+        wa[k] = qm_attachment_weight(na[k], ea[k]) + (shared ? qm_attachment_weight(nb[k], eb[k]) : 0.0);
+        if (wa[k] != 0.0) w[n++] = wa[k];
     }
-    for (size_t k = 0; ok && !shared && k < mb; ++k) {
-        const double wk = qm_attachment_weight(nb[k], eb[k]);
-        if (wk == 0.0) continue;
-        ok = md_attribute_extract_f64(rows + n * nao, nao, &sys->attributes, cb, md_attribute_slice_1((uint32_t)k), md_unit_none()) == nao;
-        w[n++] = wk;
+    const size_t na_rows = n;
+    for (size_t k = 0; ok && wb && k < mb; ++k) {
+        wb[k] = qm_attachment_weight(nb[k], eb[k]);
+        if (wb[k] != 0.0) w[n++] = wb[k];
     }
+    // the rows of exactly the orbitals of nonzero weight, a run of consecutive ones at a time
+    ok = ok && qm_read_weighted_rows(rows, &sys->attributes, ca, wa, ma, nao) &&
+               (!wb || qm_read_weighted_rows(rows + na_rows * nao, &sys->attributes, cb, wb, mb, nao));
     md_temp_end(temp);
     if (!ok) {
         if (rows) md_free(alloc, rows, sizeof(double) * count * nao);
