@@ -72,7 +72,8 @@ struct Args {
     uint   pattern;             // the estimators: the offset added to the 4 x 4 pattern's indices (the frame's)
     uint   radius;              // ao_blur: taps a side
     uint   still;               // vis_temporal: the raster of the previous frame's (its motion is stale: none)
-    uint   _tp0, _tp1;
+    uint   seed;                // the estimators: the offsets within the pattern's strata (stratum_jitter)
+    uint   _tp1;
 };
 MD_SHADER_ARGS(Args);
 
@@ -193,6 +194,23 @@ uint bit_reverse4(uint k) { return reversebits(k) >> 28u; }
 // which a 3 x 3 TAA neighbourhood cannot tell from content.
 uint pattern_k(Args a, int2 hp) { return (BAYER[(hp.y & 3) * 4 + (hp.x & 3)] + a.pattern) & 15u; }
 
+uint hash_u(uint x) {
+    x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16;
+    return x;
+}
+
+// Two offsets in [0, 1) within the strata of the texel hp's pattern index
+// (its angle or chord, its steps' phase): each estimate is of a point drawn
+// within its stratum rather than of its centre, so the 16 strata do not make
+// 16 fixed copies of an edge (bands where they are wider than the blur) but
+// fill between them. Another each frame with a history (a.seed: its frame),
+// which averages them; fixed without, a grain the blur takes up. The strata
+// stay the pattern's: every 4 x 4 block holds all 16 each frame.
+float2 stratum_jitter(Args a, int2 hp) {
+    uint h = hash_u(uint(hp.x) * 0x9E3779B9u ^ hash_u(uint(hp.y) * 0x85EBCA6Bu ^ hash_u(a.seed + 0x5bd1e995u)));
+    return float2(float(h >> 8), float(hash_u(h) >> 8)) / 16777216.0;
+}
+
 // At half resolution: plane 0
 [shader("compute")]
 [numthreads(8, 8, 1)]
@@ -215,8 +233,9 @@ void ao_estimate(uint3 tid : SV_DispatchThreadID) {
     // a 4 x 4 interleaved pattern: 16 (rotation, radial phase) pairs; the
     // blur integrates its periods, vis_temporal its frames
     uint   k   = pattern_k(a, hp);
-    float  rk  = float(bit_reverse4(k)) / 16.0;
-    float  rot = 6.2831853 * (float(k) + 0.5) / 16.0;
+    float2 u   = stratum_jitter(a, hp);
+    float  rk  = (float(bit_reverse4(k)) + u.y) / 16.0;
+    float  rot = 6.2831853 * (float(k) + u.x) / 16.0;
     float  jr  = frac(rk + 1.0 / 32.0);
     float2 cs  = float2(cos(rot), sin(rot));
     float  log_ratio = log2(r_max / AO_R_MIN);
@@ -306,8 +325,9 @@ void ao_estimate_quality(uint3 tid : SV_DispatchThreadID) {
 
     // the 4 x 4 interleaved (rotation, radial phase) pattern of ao_estimate
     uint   k    = pattern_k(a, hp);
-    float  rk   = float(bit_reverse4(k)) / 16.0;
-    float  phi0 = PI * (float(k) + 0.5) / (16.0 * float(AO_NUM_SLICES));
+    float2 u    = stratum_jitter(a, hp);
+    float  rk   = (float(bit_reverse4(k)) + u.y) / 16.0;
+    float  phi0 = PI * (float(k) + u.x) / (16.0 * float(AO_NUM_SLICES));
     float2 d    = float2(cos(phi0), sin(phi0));
     const float  SLICE_STEP = PI / float(AO_NUM_SLICES);
     const float2 slice_rot  = float2(cos(SLICE_STEP), sin(SLICE_STEP));
@@ -543,9 +563,10 @@ void ao_blur(uint3 tid : SV_DispatchThreadID) {
 // 32-sector bitmask (Therrien et al. 2023), here over the chord: a thin
 // occluder shadows only the part of the light it covers, and how much of the
 // chord is covered makes the penumbra. The chord is at an offset from the
-// disk's centre across the slice, one of 16 by the 4 x 4 pattern, with the
-// density of the disk's chord lengths: the sectors are uniform along each
-// chord, and the blur averages the chords into the disk.
+// disk's centre across the slice, drawn within one of 16 strata of the
+// density of the disk's chord lengths by the 4 x 4 pattern (and
+// stratum_jitter): the sectors are uniform along each chord, and the blur and
+// the history average the chords into the disk.
 //
 // Scale free: the steps log-uniform on screen between SH_R_MIN pixels and
 // SH_R_MAX of the view's height (shadows reach further than the occlusion),
@@ -572,11 +593,12 @@ static const float SH_R_MIN     = 1.0;    // pixels
 static const float SH_R_MAX     = 0.3;    // of the view's height
 
 // The chord's offsets from the disk's centre, in its radius: the quantiles
-// (k + 0.5) / 16 of the semicircle distribution, the density of the chords'
-// lengths
-static const float CHORD_OFFSET[16] = {
-    -0.85853, -0.70068, -0.57309, -0.45839, -0.35096, -0.24800, -0.14780, -0.04911,
-     0.04911,  0.14780,  0.24800,  0.35096,  0.45839,  0.57309,  0.70068,  0.85853 };
+// k / 16 of the semicircle distribution, the density of the chords' lengths,
+// the bounds of the 16 strata (viamd's table held their centres, the
+// quantiles (k + 0.5) / 16); within a stratum, linear
+static const float CHORD_BOUND[17] = {
+    -1.00000, -0.77339, -0.63470, -0.51458, -0.40397, -0.29904, -0.19764, -0.09833, 0.0,
+     0.09833,  0.19764,  0.29904,  0.40397,  0.51458,  0.63470,  0.77339,  1.00000 };
 
 // The angle in a slice of the in-plane direction e = (along V, along o), from
 // V toward o
@@ -605,10 +627,11 @@ void shadow_estimate(uint3 tid : SV_DispatchThreadID) {
     float2 full = float2(float(a.width), float(a.height));
     float  r_max = max(SH_R_MAX * full.y, 2.0 * SH_R_MIN);
 
-    // the 4 x 4 pattern of the occlusion: k picks the chord, its bit reversal
-    // the steps' phase
-    uint  k  = pattern_k(a, hp);
-    float rk = float(bit_reverse4(k)) / 16.0;
+    // the 4 x 4 pattern of the occlusion: k picks the chord's stratum, its bit
+    // reversal the steps' phase's; stratum_jitter where within them
+    uint   k  = pattern_k(a, hp);
+    float2 u  = stratum_jitter(a, hp);
+    float  rk = (float(bit_reverse4(k)) + u.y) / 16.0;
 
     // the chord: the light's direction turned across the plane of V and the
     // light, and the disk's half width there
@@ -618,7 +641,7 @@ void shadow_estimate(uint3 tid : SV_DispatchThreadID) {
     if (bl < 1e-3) { a.ao[o] = float2(1.0, z); return; }   // the light along the view: what it shadows is hidden
     b /= bl;
     float  rad = a.light_radius;
-    float  y   = CHORD_OFFSET[k] * rad;
+    float  y   = lerp(CHORD_BOUND[k], CHORD_BOUND[k + 1u], u.x) * rad;
     float3 Lk  = L * cos(y) + b * sin(y);
     float  half_chord = sqrt(max(rad * rad - y * y, 1e-8));
 
@@ -1126,11 +1149,6 @@ float empty_until(Args a, uint v, float3 o, float3 d, float t) {
     float3 ta = (float3(bi) / sc - o) * inv, tb = (float3(bi + 1) / sc - o) * inv;
     float3 tf = max(ta, tb);
     return max(t, min(tf.x, min(tf.y, tf.z)));
-}
-
-uint hash_u(uint x) {
-    x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16;
-    return x;
 }
 
 // ---- The compose --------------------------------------------------------------

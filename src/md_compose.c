@@ -43,7 +43,7 @@ typedef struct gpu_compose_args_t {
     md_gpu_float4        qa, qb, qc;    /* the previous frame's projection, as pa, pb, pc */
     md_gpu_sampled_tex_t motion;
     float                jit_delta[2];
-    uint32_t             hist_valid, pattern, radius, still, _tp[2];
+    uint32_t             hist_valid, pattern, radius, still, seed, _tp1;
 } gpu_compose_args_t;
 _Static_assert(sizeof(gpu_compose_args_t) == 864, "Args mirror");
 
@@ -447,6 +447,7 @@ bool md_compose(md_gpu_stream_t s, md_compose_ctx_t c, md_render_view_t view, co
         a.still = (hi->valid[VIS_AO] || hi->valid[VIS_SH]) && hi->raster == t.raster ? 1u : 0u;
         const uint32_t f = hi->frame & 15u;     /* bit reversed: any aligned run of 2^n frames spreads evenly */
         a.pattern = ((f & 1u) << 3) | ((f & 2u) << 1) | ((f & 4u) >> 1) | ((f & 8u) >> 3);
+        a.seed    = hi->frame;
         a.radius  = 2;
     }
 

@@ -44,8 +44,11 @@ log-uniformly between 2 pixels and a tenth of the view's height:
   PERFORMANCE  obscurance (ssao.frag): 16 point samples, each judged at its
                own scale (its falloff radius 2.5 times its distance).
                1 - ao x the obscurance
-Then, with a history (md_compose_history_t), viamd's temporal filter
-(ssao_temporal.frag): the 4 x 4 pattern of the samples permuted every frame,
+The pattern's 16 strata (the samples' turn and phase) are each drawn within,
+not taken at their centres, so that they do not show as 16 fixed copies of an
+edge where those are wider than the blur. Then, with a history
+(md_compose_history_t), viamd's temporal filter (ssao_temporal.frag): the
+4 x 4 pattern permuted and the draws within its strata new every frame,
 and each texel averaged over it in its history (32 frames still, down to 4
 moving a pixel a frame and more), reprojected by md_render's motion and taken
 where it lies on the surface's tangent plane (no colour clamp); then a
@@ -61,10 +64,11 @@ light_radius: each pixel walks the line toward it on screen (20 steps,
 log-uniform between a pixel and 0.3 of the view's height), a slice along the
 light, where each depth sample occludes the arc from its front to its front
 pushed back by its distance beside the point, and the union of the arcs is a
-32-sector bitmask over a chord of the disk (16 chords by the 4 x 4 pattern,
-averaged by the blur and the history): a thin occluder shadows the part of
-the light it covers, which makes the penumbra. Only what is on screen casts
-them, and of what lies behind the nearest surface its thickness is a guess.
+32-sector bitmask over a chord of the disk (drawn within 16 strata by the
+4 x 4 pattern, averaged by the blur and the history): a thin occluder
+shadows the part of the light it covers, which makes the penumbra. Only
+what is on screen casts them, and of what lies behind the nearest surface
+its thickness is a guess.
 The opaque surface takes them; the transparent layers and the volumes
 neither cast nor take them.
 

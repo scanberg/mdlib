@@ -4826,6 +4826,95 @@ UTEST(render, compose_shadows) {
     f_close(&fx);
 }
 
+/* A soft shadow settles smooth: a thin rod (a capsule, radius 0.15) high over a floor, lying along the light, seen from
+   above (orthographic) under a light of 0.35 rad (20 degrees) from aside, settled over 32 frames of one raster with a
+   history (and once without). The light's chord is taken across the slice, so each chord moves the rod's narrow
+   shadow sideways: fixed chords make as many copies of it, stripes along the light (the bands of a soft shadow seen
+   close). Across the shadow, the occlusion's ripple about its own 9-pixel mean (5 columns averaged), over where it is
+   above a tenth of its peak, settled over 32 frames: below 0.017 of the peak. */
+UTEST(render, compose_soft_shadow_settles_smooth) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    const uint32_t W = 768, H = 576, P = W * H;
+    const double z0 = -20.0, hr = 5.0;
+    const double L[3] = { 0.6, 0.0, 0.8 };
+    float quad[12] = { -40, -40, (float)z0,  40, -40, (float)z0,  40, 40, (float)z0,  -40, 40, (float)z0 };
+    const uint32_t tri[6] = { 0, 1, 2, 0, 2, 3 };
+    float rod[6] = { -4.0f, 0.0f, (float)(z0 + hr),  4.0f, 0.0f, (float)(z0 + hr) };
+    md_render_batch_t b[2];
+    memset(b, 0, sizeof(b));
+    b[0].key = 1; b[0].kind = MD_RENDER_TRIANGLES; b[0].count = 2; b[0].points.count = 4;
+    b[0].points.position = f_buf(&fx, quad, sizeof(quad)); b[0].index = f_buf(&fx, tri, sizeof(tri));
+    b[1].key = 2; b[1].kind = MD_RENDER_CAPSULES; b[1].count = 1; b[1].points.count = 2;
+    b[1].points.position = f_buf(&fx, rod, sizeof(rod)); b[1].style.capsules.radius = 0.15f;
+    for (int i = 0; i < 2; ++i) { b[i].color.mode = MD_RENDER_COLOR_UNIFORM; b[i].color.uniform = 0xFFFFFFFFu; }
+    md_compose_ctx_t cx = md_compose_create(fx.dev);
+    ASSERT_TRUE(cx != NULL);
+    md_gpu_texture_desc_t td = {0};
+    td.type = MD_GPU_TEX_2D; td.usage = MD_GPU_TEX_STORAGE; td.width = W; td.height = H;
+    td.format = MD_GPU_FORMAT_RGBA16_FLOAT; td.label = "compose";
+    md_gpu_texture_t out = md_gpu_texture_create(fx.gfx, &td);
+    uint16_t* px0 = malloc(P * 8);
+    uint16_t* px1 = malloc(P * 8);
+    cam_t c = { .ortho = true, .half_h = 8.0f, .aspect = (float)W / H, .n = 0.0f, .far_ = 40.0f };
+    const double pw = 2.0 * c.half_h / H;
+    md_render_camera_t cam = make_camera(&c);
+    md_render_frame_t f = frame_of(W, H, cam, b, 2);
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+    md_compose_desc_t d = {0};
+    d.camera = cam;
+    d.target = out;
+    d.shading.mode = MD_COMPOSE_SHADING_PBR;
+    d.shading.linear_colors = true;
+    for (int i = 0; i < 3; ++i) { d.shading.light_dir[i] = (float)L[i]; d.shading.dir_radiance[i] = 1.0f; }
+    d.shading.light_strength = 1.0f;
+    d.shading.roughness = 0.5f; d.shading.f0 = 0.04f;
+    ASSERT_TRUE(md_compose(fx.gfx, cx, fx.view, &d) && f_read(&fx, out, px0, P * 8));
+    d.shadows = true;
+    d.light_radius = 0.35f;
+    /* a column through the rod's shadow on the floor, past the rod's own end on the screen */
+    const int col = (int)(0.5 * W + (-4.0 - 2.0) / pw);
+    double ripple[2], peak[2];
+    for (int hist = 0; hist < 2; ++hist) {
+        md_compose_history_t hy = hist ? md_compose_history_create() : NULL;
+        d.history = hy;
+        for (int i = 0; i < (hist ? 32 : 1); ++i) ASSERT_TRUE(md_compose(fx.gfx, cx, fx.view, &d));
+        ASSERT_TRUE(f_read(&fx, out, px1, P * 8));
+        /* the occlusion down the column: the mean of 5 columns */
+        double o[576];
+        peak[hist] = 0.0;
+        for (uint32_t y = 0; y < H; ++y) {
+            o[y] = 0.0;
+            for (int l = -2; l <= 2; ++l) {
+                const size_t p = (size_t)y * W + (size_t)(col + l);
+                o[y] += 0.2 * (1.0 - half_bits_to_float(px1[4 * p + 1]) / half_bits_to_float(px0[4 * p + 1]));
+            }
+            peak[hist] = fmax(peak[hist], o[y]);
+        }
+        double sum = 0.0;
+        int m = 0;
+        for (uint32_t y = 4; y + 4 < H; ++y) {
+            if (o[y] < 0.1 * peak[hist]) continue;
+            double avg = 0.0;
+            for (int k = -4; k <= 4; ++k) avg += o[y + k] / 9.0;
+            sum += (o[y] - avg) * (o[y] - avg);
+            m++;
+        }
+        ripple[hist] = m ? sqrt(sum / m) / peak[hist] : 0.0;
+        printf("    %s: the shadow across %d pixels, its peak occlusion %.3f, its ripple %.4f of it\n", hist ? "32 frames with a history" : "no history", m, peak[hist], ripple[hist]);
+        if (getenv("MD_DUMP_PROFILE")) { for (uint32_t y = 0; y < H; ++y) if (o[y] >= 0.1 * peak[hist]) printf("%.3f ", o[y]); printf("\n"); }
+        if (hy) md_compose_history_destroy(fx.gfx, hy);
+    }
+    /* the strata's centres alone (as viamd had them) make 0.025 after 32 frames, a staircase of bumps; drawn within
+       them, 0.012. Without a history the stripes become a grain of the same size, which this does not tell apart */
+    EXPECT_LT(ripple[1], 0.017);
+    EXPECT_GT(peak[1], 0.10);
+    md_gpu_texture_destroy(out);
+    md_compose_destroy(cx);
+    free(px0); free(px1);
+    f_close(&fx);
+}
+
 /* ---- Post ----------------------------------------------------------------------------- */
 
 /* md_post.slang's display transform, in C: the reference */
