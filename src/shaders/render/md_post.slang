@@ -194,28 +194,35 @@ static const int   BLUR_TAPS  = 5;      // a side
 static const float TRUST_FULL = 2.0;    // output pixels of motion below which there is no blur
 static const float TRUST_NONE = 15.0;   // and above which it is all blur
 
+// A workgroup a tile (VEL_TILE = 8: a thread a pixel): the nearest depth
+// over the tile, then over the pixels within 1 % of it the fastest motion,
+// each a reduction in groupshared memory
+groupshared float  vt_z[64];
+groupshared float4 vt_v[64];        // xy: a motion, z: its length squared
+
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void vel_tilemax(uint3 tid : SV_DispatchThreadID) {
+void vel_tilemax(uint3 tid : SV_DispatchThreadID, uint3 gid : SV_GroupID, uint gi : SV_GroupIndex) {
     Args a  = MD_ARGS;
     uint tw = uint(a.mb.z), th = uint(a.mb.w);
-    if (tid.x >= tw || tid.y >= th) return;
-    int2  base = int2(tid.xy) * VEL_TILE;
-    int2  hi   = min(base + VEL_TILE, int2(int(a.in_w), int(a.in_h)));
-    float zmin = 1e30;
-    for (int y = base.y; y < hi.y; ++y)
-        for (int x = base.x; x < hi.x; ++x) zmin = min(zmin, linear_depth(a, a.depth.Load(int3(x, y, 0))));
-    float  eps = 0.01 * zmin;     // a thickness, so the surface is not dropped for its quantisation
-    float2 mv  = float2(0.0);
-    float  mv2 = 0.0;
-    for (int y = base.y; y < hi.y; ++y) {
-        for (int x = base.x; x < hi.x; ++x) {
-            if (linear_depth(a, a.depth.Load(int3(x, y, 0))) > zmin + eps) continue;
-            float2 v = a.motion.Load(int3(x, y, 0));
-            if (dot(v, v) > mv2) { mv = v; mv2 = dot(v, v); }
-        }
+    bool inside = tid.x < a.in_w && tid.y < a.in_h;
+    float z = inside ? linear_depth(a, a.depth.Load(int3(int2(tid.xy), 0))) : 1e30;
+    vt_z[gi] = z;
+    GroupMemoryBarrierWithGroupSync();
+    [ForceUnroll] for (uint r = 32u; r > 0u; r >>= 1u) {
+        if (gi < r) vt_z[gi] = min(vt_z[gi], vt_z[gi + r]);
+        GroupMemoryBarrierWithGroupSync();
     }
-    a.tmax[tid.y * tw + tid.x] = mv;
+    float zmin = vt_z[0];
+    float eps  = 0.01 * zmin;       // a thickness, so the surface is not dropped for its quantisation
+    float2 v   = inside && z <= zmin + eps ? a.motion.Load(int3(int2(tid.xy), 0)) : float2(0.0);
+    vt_v[gi] = float4(v, dot(v, v), 0.0);
+    GroupMemoryBarrierWithGroupSync();
+    [ForceUnroll] for (uint r = 32u; r > 0u; r >>= 1u) {
+        if (gi < r && vt_v[gi + r].z > vt_v[gi].z) vt_v[gi] = vt_v[gi + r];
+        GroupMemoryBarrierWithGroupSync();
+    }
+    if (gi == 0u && gid.x < tw && gid.y < th) a.tmax[gid.y * tw + gid.x] = vt_v[0].xy;
 }
 
 // The linear depth at a tile's centre pixel

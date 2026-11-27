@@ -263,7 +263,8 @@ bool md_post_resolve(md_gpu_stream_t s, md_post_ctx_t p, const md_post_resolve_t
     md_gpu_temp_t scope = md_gpu_temp_begin(s);
     a.tmax  = md_gpu_temp_alloc(scope, MD_GPU_MEM_DEVICE, (size_t)tw * th * 8u).gpu;
     a.tiles = md_gpu_temp_alloc(scope, MD_GPU_MEM_DEVICE, (size_t)tw * th * 8u).gpu;
-    bool ok = a.tmax && a.tiles && launch(s, p->k_tilemax, tw, th, &a) && launch(s, p->k_neighbormax, tw, th, &a) &&
+    /* a workgroup of VEL_TILE x VEL_TILE threads a tile */
+    bool ok = a.tmax && a.tiles && launch(s, p->k_tilemax, tw * VEL_TILE, th * VEL_TILE, &a) && launch(s, p->k_neighbormax, tw, th, &a) &&
               launch(s, p->k_resolve, a.out_w, a.out_h, &a);
     md_gpu_temp_end(scope);
     return ok;
