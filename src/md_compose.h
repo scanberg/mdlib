@@ -26,10 +26,10 @@ an opaque surface of one colour under one light look alike:
          themselves along a wrapped Lambert, (0.5 + 0.5 N.L)^2, with a
          Blinn-Phong highlight blended toward white; the occlusion darkens
          all of it (the depth cue it is there)
-No occlusion on transparent surfaces; the shadows are the opaque surface's
-(below). An unlit surface (md_render_color_t's unlit) is not shaded: its
-colour is its radiance, as a white Lambertian surface's under the reference
-irradiance, without light, occlusion or shadow.
+No occlusion or shadow on transparent surfaces (below). An unlit surface
+(md_render_color_t's unlit) is not shaded: its colour is its radiance, as a
+white Lambertian surface's under the reference irradiance, without light,
+occlusion or shadow.
 
 THE AMBIENT OCCLUSION is one of viamd's two scale-free screen-space
 estimators, at half resolution, from a mip chain of the linear depth that
@@ -47,6 +47,21 @@ log-uniformly between 2 pixels and a tenth of the view's height:
 Then a separable bilateral blur over two periods of their 4 x 4 pattern and
 a joint bilateral upsample. The pattern is fixed: no history (a temporal
 resolve after it accumulates what it would).
+
+THE SHADOWS of the key light are viamd's screen-space estimate
+(shadows/screen_space.frag), from the same depth at half resolution and
+through the same blur and upsample, applied to the key light as the
+occlusion is to the environment's. The light is a disk of angular radius
+light_radius: each pixel walks the line toward it on screen (20 steps,
+log-uniform between a pixel and 0.3 of the view's height), a slice along the
+light, where each depth sample occludes the arc from its front to its front
+pushed back by its distance beside the point, and the union of the arcs is a
+32-sector bitmask over a chord of the disk (16 chords by the 4 x 4 pattern,
+averaged by the blur): a thin occluder shadows the part of the light it
+covers, which makes the penumbra. Only what is on screen casts them, and of
+what lies behind the nearest surface its thickness is a guess. The opaque
+surface takes them; the transparent layers and the volumes neither cast nor
+take them.
 
 A transparent surface is a dielectric film of coverage a (its layer's
 opacity), as viamd's isosurfaces were (isosurface.frag, isomesh.frag): of
@@ -205,25 +220,6 @@ typedef struct md_compose_slice_t {
     float            edge_px;          /* half the line's width, pixels              */
 } md_compose_slice_t;
 
-/* ---- Shadows -------------------------------------------------------------------
-   The key light's, on the opaque surface: from a shadow map, the depth of a view
-   of the scene from the light (a depth-only md_render view, md_render_frame_t's
-   depth_only, with an orthographic camera, reverse Z, whose +z is toward the
-   light: the shading's light_dir, in this frame's view space), softened by the
-   light's size (percentage-closer soft shadows: the blockers' mean distance
-   from a search around the point, and the penumbra the light's angular radius
-   makes over it, filtered with a disc of samples turned by each pixel and
-   frame, which a temporal resolve averages), and refined in the frame's own
-   depth by a short ray toward the light, `contact` of the map's texels long:
-   what the map is too coarse for, where surfaces touch (within its biases,
-   about two texels). The layers and the volumes are not shadowed. */
-typedef struct md_compose_shadow_t {
-    md_gpu_texture_t   depth;          /* that view's depth (md_render_targets_t)   */
-    md_render_camera_t light;          /* its camera: orthographic                  */
-    float              angular_radius; /* of the light, radians; 0: hard            */
-    float              contact;        /* the ray's reach, texels; 0: none          */
-} md_compose_shadow_t;
-
 typedef enum md_compose_ao_mode_t {
     MD_COMPOSE_AO_QUALITY = 0,
     MD_COMPOSE_AO_PERFORMANCE,
@@ -237,12 +233,16 @@ typedef struct md_compose_desc_t {
     float                ao;       /* the occlusion's intensity (viamd's: 5); 0:
                                       none, not estimated                           */
     md_compose_ao_mode_t ao_mode;
+    bool                 shadows;  /* the key light's (THE SHADOWS); none without
+                                      a light (shading.light_strength 0)            */
+    float                light_radius;     /* the key light's angular radius,
+                                              radians: the shadows' softness (at
+                                              least 1e-3)                           */
     const md_compose_volume_t* volumes;    /* read at the call                      */
     uint32_t             volume_count;     /* at most MD_COMPOSE_MAX_VOLUMES        */
     const md_compose_slice_t*  slices;     /* read at the call                      */
     uint32_t             slice_count;      /* at most MD_COMPOSE_MAX_SLICES         */
-    uint32_t             frame;            /* seeds the emission's jitter, and the
-                                              shadows' samples                      */
+    uint32_t             frame;            /* seeds the emission's jitter           */
     float                jitter[2];        /* the raster's subpixel offset, pixels,
                                               x right and y down (md_render_status_t.
                                               jitter): each pixel's ray is through
@@ -250,7 +250,6 @@ typedef struct md_compose_desc_t {
                                               volumes are jittered as the raster is
                                               and a temporal resolve smooths their
                                               edges too; 0: the pixels' centres     */
-    const md_compose_shadow_t* shadow;     /* null: none (read at the call)         */
     md_gpu_texture_t     target;   /* RGBA16_FLOAT, STORAGE, of the view's size:
                                       the scene's radiance premultiplied by its
                                       coverage (alpha), 0 where nothing was drawn   */

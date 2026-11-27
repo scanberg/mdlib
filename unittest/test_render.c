@@ -4468,58 +4468,42 @@ UTEST(render, compose_unlit) {
     f_close(&fx);
 }
 
-/* Shadows, by what they must do: a ball over a floor in an orthographic view looking straight down on it, lit from
-   aside with no sky and no ground, so a pixel's value over its value unshadowed is the key light's visibility there.
-   From the ball's shadow cylinder (its silhouette along the light), the penumbra's reach out of it from the light's
-   angular radius at most and the map's texels: the floor beyond and the ball's lit face are as unshadowed (the
-   receiver plane and the biases shadow nothing by themselves), the floor within is black, and the penumbra between
-   is soft (a hard light's: about a texel wide). With the contact ray too: the same. Then a pebble finer than the
-   map's texels just over the floor: the map misses it, the contact ray toward the light in the frame's depth does
-   not. A perspective light is refused. */
-static md_render_camera_t sh_light(const float L[3], const float c[3], float S, float D) {
-    md_render_camera_t m;
-    memset(&m, 0, sizeof(m));
-    float xl[3] = { L[2], 0.0f, -L[0] };                 /* (0, 1, 0) x L */
-    const float n = sqrtf(xl[0] * xl[0] + xl[2] * xl[2]);
-    xl[0] /= n; xl[2] /= n;
-    const float yl[3] = { L[1] * xl[2] - L[2] * xl[1], L[2] * xl[0] - L[0] * xl[2], L[0] * xl[1] - L[1] * xl[0] };
-    const float* r[3] = { xl, yl, L };
-    for (int i = 0; i < 3; ++i) {
-        for (int k = 0; k < 3; ++k) m.view[k * 4 + i] = r[i][k];
-        m.view[12 + i] = -(r[i][0] * c[0] + r[i][1] * c[1] + r[i][2] * c[2]);
-    }
-    m.view[14] -= D;
-    m.view[15] = 1.0f;
-    m.proj[0] = m.proj[5] = 1.0f / S;
-    m.proj[10] = 1.0f / (2.0f * D);                      /* near 0, far 2 D, reverse Z */
-    m.proj[14] = 1.0f;
-    m.proj[15] = 1.0f;
-    return m;
+/* Shadows, by what they must do: a ball over a floor, seen from above (orthographic, then perspective), lit from aside
+   with no sky and no ground, so a pixel's value over its value unshadowed is the key light's visibility there. From
+   the distance of the floor point's ray toward the light to the ball's centre, against the ball's radius, with the
+   penumbra's reach from the light's angular radius and the reach of the blur and the upsample (a box of 8 pixels
+   along x and y, and 2: 15 pixels across): the floor beyond is unshadowed (the floor and the receiver's tangent plane
+   shadow nothing by themselves), and so is the ball's lit face; under a light of 0.01 rad the floor within is black;
+   under one of 0.2 rad the penumbra between is wider. Then a pebble just over
+   the floor, seen close: the same estimate at a 50th of the scale finds its shadow (scale free). And a light along
+   the view shadows nothing that is seen. */
+static void shadow_scene(fix_t* fx, md_render_batch_t b[3], float quad[12], float ball[3], float pebble[3]) {
+    static const uint32_t tri[6] = { 0, 1, 2, 0, 2, 3 };
+    memset(b, 0, 3 * sizeof(*b));
+    b[0].key = 1; b[0].kind = MD_RENDER_TRIANGLES; b[0].count = 2; b[0].points.count = 4;
+    b[0].points.position = f_buf(fx, quad, 12 * sizeof(float)); b[0].index = f_buf(fx, tri, sizeof(tri));
+    b[1].key = 2; b[1].kind = MD_RENDER_SPHERES; b[1].count = 1; b[1].points.count = 1;
+    b[1].points.position = f_buf(fx, ball, 3 * sizeof(float));
+    b[2].key = 3; b[2].kind = MD_RENDER_SPHERES; b[2].count = 1; b[2].points.count = 1;
+    b[2].points.position = f_buf(fx, pebble, 3 * sizeof(float));
+    for (int i = 0; i < 3; ++i) { b[i].color.mode = MD_RENDER_COLOR_UNIFORM; b[i].color.uniform = 0xFFFFFFFFu; }
 }
 
 UTEST(render, compose_shadows) {
     fix_t fx;
     if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
-    const uint32_t W = 128, H = 96, P = W * H;
-    const float z0 = -20.0f;
-    const float L[3] = { 0.6f, 0.0f, 0.8f };
-    const float lc[3] = { -2.0f, 0.0f, -18.0f };
-    const float S = 12.0f, D = 20.0f;
-    float quad[12] = { -30, -30, z0,  30, -30, z0,  30, 30, z0,  -30, 30, z0 };
-    const uint32_t tri[6] = { 0, 1, 2, 0, 2, 3 };
-    const double bc[3] = { 0.0, 0.0, -15.0 }, br = 1.5;
+    const uint32_t W = 384, H = 288, P = W * H;
+    const double z0 = -20.0;
+    const double L[3] = { 0.6, 0.0, 0.8 };
+    const double bc[3] = { 0.0, 0.0, z0 + 3.0 }, br = 2.0;
     const double pc[3] = { 2.0, 1.0, z0 + 0.17 }, pr = 0.1;
+    float quad[12] = { -40, -40, (float)z0,  40, -40, (float)z0,  40, 40, (float)z0,  -40, 40, (float)z0 };
     float ball[3] = { (float)bc[0], (float)bc[1], (float)bc[2] };
     float pebble[3] = { (float)pc[0], (float)pc[1], (float)pc[2] };
     md_render_batch_t b[3];
-    memset(b, 0, sizeof(b));
-    b[0].key = 1; b[0].kind = MD_RENDER_TRIANGLES; b[0].count = 2; b[0].points.count = 4;
-    b[0].points.position = f_buf(&fx, quad, sizeof(quad)); b[0].index = f_buf(&fx, tri, sizeof(tri));
-    b[1].key = 2; b[1].kind = MD_RENDER_SPHERES; b[1].count = 1; b[1].points.count = 1;
-    b[1].points.position = f_buf(&fx, ball, sizeof(ball)); b[1].style.spheres.radius_add = (float)br;
-    b[2].key = 3; b[2].kind = MD_RENDER_SPHERES; b[2].count = 1; b[2].points.count = 1;
-    b[2].points.position = f_buf(&fx, pebble, sizeof(pebble)); b[2].style.spheres.radius_add = (float)pr;
-    for (int i = 0; i < 3; ++i) { b[i].color.mode = MD_RENDER_COLOR_UNIFORM; b[i].color.uniform = 0xFFFFFFFFu; }
+    shadow_scene(&fx, b, quad, ball, pebble);
+    b[1].style.spheres.radius_add = (float)br;
+    b[2].style.spheres.radius_add = (float)pr;
 
     md_compose_ctx_t cx = md_compose_create(fx.dev);
     ASSERT_TRUE(cx != NULL);
@@ -4527,8 +4511,7 @@ UTEST(render, compose_shadows) {
     td.type = MD_GPU_TEX_2D; td.usage = MD_GPU_TEX_STORAGE; td.width = W; td.height = H;
     td.format = MD_GPU_FORMAT_RGBA16_FLOAT; td.label = "compose";
     md_gpu_texture_t out = md_gpu_texture_create(fx.gfx, &td);
-    md_render_view_t lv = md_render_view_create(fx.r, "light");
-    ASSERT_TRUE(out != NULL && lv != NULL);
+    ASSERT_TRUE(out != NULL);
     uint16_t* px0 = malloc(P * 8);
     uint16_t* px1 = malloc(P * 8);
 
@@ -4536,76 +4519,101 @@ UTEST(render, compose_shadows) {
     d.target = out;
     d.shading.mode = MD_COMPOSE_SHADING_PBR;
     d.shading.linear_colors = true;
-    for (int i = 0; i < 3; ++i) { d.shading.light_dir[i] = L[i]; d.shading.dir_radiance[i] = 1.0f; }
+    for (int i = 0; i < 3; ++i) { d.shading.light_dir[i] = (float)L[i]; d.shading.dir_radiance[i] = 1.0f; }
     d.shading.light_strength = 1.0f;
     d.shading.roughness = 0.5f; d.shading.f0 = 0.04f;
 
-    /* ---- the ball: the light's radius 0 and 0.05 rad, the contact ray off and on ---- */
-    {
-        cam_t c = { .ortho = true, .half_h = 6.0f, .aspect = (float)W / H, .n = 0.0f, .far_ = 40.0f };
+    /* ---- the ball: orthographic and perspective, a light of 0.01 and 0.2 rad ---- */
+    for (int persp = 0; persp < 2; ++persp) {
+        /* 8 over half the view's height at the floor: the shadows' reach (0.3 of the height) past the ball's penumbra */
+        cam_t c = persp ? (cam_t){ .tan_half = 0.4f, .aspect = (float)W / H, .n = 0.1f }
+                        : (cam_t){ .ortho = true, .half_h = 8.0f, .aspect = (float)W / H, .n = 0.0f, .far_ = 40.0f };
         md_render_camera_t cam = make_camera(&c);
         md_render_frame_t f = frame_of(W, H, cam, b, 2);
         ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
-        const uint32_t MS = 512;
-        md_render_frame_t fl = frame_of(MS, MS, sh_light(L, lc, S, D), b, 2);
-        fl.depth_only = true;
-        ASSERT_TRUE(md_render_view_draw(fx.gfx, lv, &fl, NULL));
-        const double texel = 2.0 * S / MS;
         d.camera = cam;
-        d.shadow = NULL;
+        d.shadows = false;
         ASSERT_TRUE(md_compose(fx.gfx, cx, fx.view, &d) && f_read(&fx, out, px0, P * 8));
-        int soft[2] = { 0, 0 };
-        for (int run = 0; run < 4; ++run) {
-            const float theta = (run & 1) ? 0.05f : 0.0f;
-            md_compose_shadow_t sd = { md_render_view_targets(lv).depth, fl.camera, theta, (run & 2) ? 4.0f : 0.0f };
-            d.shadow = &sd;
-            d.frame = (uint32_t)run;
+        int width[2] = { 0, 0 };
+        double pred[2] = { 0.0, 0.0 };
+        for (int run = 0; run < 2; ++run) {
+            const double theta = run ? 0.2 : 0.01;
+            d.shadows = true;
+            d.light_radius = (float)theta;
             ASSERT_TRUE(md_compose(fx.gfx, cx, fx.view, &d) && f_read(&fx, out, px1, P * 8));
-            int lit = 0, dark = 0, face = 0, bad = 0, band = 0;
+            int lit = 0, dark = 0, face = 0, bad = 0;
+            double dark_sum = 0.0;
             for (uint32_t y = 0; y < H; ++y) {
                 for (uint32_t x = 0; x < W; ++x) {
                     ray_t r = pixel_ray(&c, W, H, x + 0.5, y + 0.5);
-                    const double ox = r.o[0] - bc[0], oy = r.o[1] - bc[1], rr = sqrt(ox * ox + oy * oy);
                     const size_t p = (size_t)y * W + x;
                     const double ref = half_bits_to_float(px0[4 * p + 1]), got = half_bits_to_float(px1[4 * p + 1]);
                     const double vis = ref > 1e-3 ? got / ref : 1.0;
-                    if (rr < br - 0.05) {                                   /* the ball: its lit face */
-                        const double nz = sqrt(br * br - rr * rr) / br, NdotL = (ox * L[0] + oy * L[1]) / br + nz * L[2];
-                        if (NdotL < 0.3) continue;
+                    double dist;
+                    const double tb = sphere_t(r, bc, br, &dist);
+                    if (tb > 0.0 && dist < br - 0.2) {                          /* the ball: its lit face */
+                        const double n[3] = { (r.o[0] + tb * r.d[0] - bc[0]) / br, (r.o[1] + tb * r.d[1] - bc[1]) / br, (r.o[2] + tb * r.d[2] - bc[2]) / br };
+                        if (dot3(n, L) < 0.3) continue;
                         face++;
-                        if (fabs(vis - 1.0) > 3e-3) { bad++; if (bad < 6) printf("    run %d: the ball's face (%u, %u) at %g\n", run, x, y, vis); }
+                        if (fabs(vis - 1.0) > 3e-3) { bad++; if (bad < 6) printf("    %s, run %d: the ball's face (%u, %u) at %g\n", persp ? "perspective" : "orthographic", run, x, y, vis); }
                         continue;
                     }
-                    if (rr < br + 0.2) continue;                            /* its silhouette */
-                    const double w[3] = { r.o[0] - bc[0], r.o[1] - bc[1], z0 - bc[2] };
-                    const double wl = w[0] * L[0] + w[1] * L[1] + w[2] * L[2];
+                    if (dist < br + 0.2) continue;                              /* its silhouette */
+                    const double tf = (z0 - r.o[2]) / r.d[2];
+                    const double w[3] = { r.o[0] + tf * r.d[0] - bc[0], r.o[1] + tf * r.d[1] - bc[1], z0 - bc[2] };
+                    const double wl = dot3(w, L);
                     const double e[3] = { w[0] - wl * L[0], w[1] - wl * L[1], w[2] - wl * L[2] };
-                    const double dl = sqrt(dot3(e, e)), h = -wl;
-                    const double reach = (h + br) * tan(theta) + 4.0 * texel;
+                    const double dl = sqrt(dot3(e, e));
+                    const double pw = persp ? 2.0 * c.tan_half / H * (r.o[2] - z0) : 2.0 * c.half_h / H;
+                    const double reach = (br - wl) * tan(theta) + 15.0 * pw;
                     if (dl > br + reach) {
                         lit++;
-                        if (fabs(vis - 1.0) > 3e-3) { bad++; if (bad < 6) printf("    run %d: the floor lit (%u, %u) at %g\n", run, x, y, vis); }
+                        if (fabs(vis - 1.0) > 3e-3) { bad++; if (bad < 6) printf("    %s, run %d: the floor lit (%u, %u) at %g\n", persp ? "perspective" : "orthographic", run, x, y, vis); }
                     } else if (dl < br - reach) {
                         dark++;
-                        if (got > 1e-3) { bad++; if (bad < 6) printf("    run %d: the umbra (%u, %u) at %g\n", run, x, y, vis); }
-                    } else if (vis > 0.1 && vis < 0.9) {
-                        band++;
+                        dark_sum += vis;
+                        if (vis > 0.1) { bad++; if (bad < 6) printf("    %s, run %d: the umbra (%u, %u) at %g\n", persp ? "perspective" : "orthographic", run, x, y, vis); }
                     }
                 }
             }
-            printf("    radius %.2f, contact %s: %d pixels lit, %d in the umbra, %d of the ball's face, %d soft\n",
-                   theta, (run & 2) ? "on" : "off", lit, dark, face, band);
+            /* the penumbra across the shadow's far edge on the middle row: from the left, where the visibility
+               falls below 0.9 and below 0.1 */
+            int x90 = -1, x10 = -1;
+            for (uint32_t x = 0; x < W / 2 && x10 < 0; ++x) {
+                const size_t p = (size_t)(H / 2) * W + x;
+                const double vis = half_bits_to_float(px1[4 * p + 1]) / half_bits_to_float(px0[4 * p + 1]);
+                if (x90 < 0 && vis < 0.9) x90 = (int)x;
+                if (vis < 0.1) x10 = (int)x;
+            }
+            if (x90 >= 0 && x10 >= 0) {
+                /* a disk light past a straight edge: 10 to 90 % over 0.687 of the penumbra's width, 2 D tan(theta)
+                   across the light, D the distance along it to the edge, over Lz along the floor */
+                ray_t r = pixel_ray(&c, W, H, 0.5 * (x90 + x10) + 0.5, H / 2 + 0.5);
+                const double tf = (z0 - r.o[2]) / r.d[2];
+                const double w[3] = { r.o[0] + tf * r.d[0] - bc[0], r.o[1] + tf * r.d[1] - bc[1], z0 - bc[2] };
+                const double pw = persp ? 2.0 * c.tan_half / H * (r.o[2] - z0) : 2.0 * c.half_h / H;
+                pred[run] = 0.687 * 2.0 * -dot3(w, L) * tan(theta) / L[2] / pw;
+                width[run] = x10 - x90;
+            }
+            printf("    %s, radius %.2f: %d pixels lit, %d in the umbra (mean %.4f), %d of the ball's face; the far edge 10-90 %% over %d pixels (a disk light's alone: %.1f)\n",
+                   persp ? "perspective" : "orthographic", theta, lit, dark, dark ? dark_sum / dark : 0.0, face, width[run], pred[run]);
             EXPECT_EQ(0, bad);
-            EXPECT_GT(lit, 4000);
-            EXPECT_GT(dark, 150);
-            EXPECT_GT(face, 300);
-            soft[run & 1] += band;
+            EXPECT_GT(lit, 20000);
+            if (run == 0) EXPECT_GT(dark, 300);
+            EXPECT_LE(dark_sum, 0.01 * dark);
+            EXPECT_GT(face, 2000);
         }
-        EXPECT_GT(soft[1], 3 * soft[0]);
-        EXPECT_GT(soft[1], 400);
+        /* the hard light's edge: the blur's and the upsample's ramp (an 8 texel box: 13 pixels from 10 to 90 %); the
+           soft light's: the disk's penumbra through that ramp, about their widths' root sum of squares */
+        const double want = sqrt(pred[1] * pred[1] + (double)width[0] * width[0]);
+        EXPECT_GE(width[0], 10);
+        EXPECT_LE(width[0], 16);
+        EXPECT_GT(width[1], 0.85 * want);
+        EXPECT_LT(width[1], 1.15 * want);
     }
 
-    /* ---- the pebble, under a map of texels larger than it, seen close ---- */
+    /* ---- the pebble, seen close: its shadow's core, where the ray toward the light passes within half its radius
+       of its centre ---- */
     {
         cam_t c = { .ortho = true, .half_h = 0.6f, .aspect = (float)W / H, .n = 0.0f, .far_ = 40.0f };
         md_render_camera_t cam = make_camera(&c);
@@ -4614,49 +4622,48 @@ UTEST(render, compose_shadows) {
         md_render_batch_t bp[2] = { b[0], b[2] };
         md_render_frame_t f = frame_of(W, H, cam, bp, 2);
         ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
-        const uint32_t MS = 64;
-        md_render_frame_t fl = frame_of(MS, MS, sh_light(L, lc, S, D), bp, 2);
-        fl.depth_only = true;
-        ASSERT_TRUE(md_render_view_draw(fx.gfx, lv, &fl, NULL));
         d.camera = cam;
-        d.shadow = NULL;
+        d.shadows = false;
         ASSERT_TRUE(md_compose(fx.gfx, cx, fx.view, &d) && f_read(&fx, out, px0, P * 8));
-        int n_core = 0, shaded[2] = { 0, 0 };
-        for (int run = 0; run < 2; ++run) {
-            md_compose_shadow_t sd = { md_render_view_targets(lv).depth, fl.camera, 0.02f, run ? 1.0f : 0.0f };
-            d.shadow = &sd;
-            ASSERT_TRUE(md_compose(fx.gfx, cx, fx.view, &d) && f_read(&fx, out, px1, P * 8));
-            n_core = 0;
-            for (uint32_t y = 0; y < H; ++y) {
-                for (uint32_t x = 0; x < W; ++x) {
-                    ray_t r = pixel_ray(&c, W, H, x + 0.5, y + 0.5);
-                    const double q[3] = { r.o[0] + sx, r.o[1] + sy, z0 };
-                    if ((q[0] - pc[0]) * (q[0] - pc[0]) + (q[1] - pc[1]) * (q[1] - pc[1]) < (pr + 0.02) * (pr + 0.02)) continue;
-                    const double w[3] = { q[0] - pc[0], q[1] - pc[1], q[2] - pc[2] };
-                    const double wl = w[0] * L[0] + w[1] * L[1] + w[2] * L[2];
-                    const double e[3] = { w[0] - wl * L[0], w[1] - wl * L[1], w[2] - wl * L[2] };
-                    if (sqrt(dot3(e, e)) > 0.5 * pr) continue;
-                    const size_t p = (size_t)y * W + x;
-                    const double vis = half_bits_to_float(px1[4 * p + 1]) / half_bits_to_float(px0[4 * p + 1]);
-                    n_core++;
-                    shaded[run] += vis < 0.7;
-                }
+        d.shadows = true;
+        d.light_radius = 0.02f;
+        ASSERT_TRUE(md_compose(fx.gfx, cx, fx.view, &d) && f_read(&fx, out, px1, P * 8));
+        int n_core = 0, shaded = 0;
+        for (uint32_t y = 0; y < H; ++y) {
+            for (uint32_t x = 0; x < W; ++x) {
+                ray_t r = pixel_ray(&c, W, H, x + 0.5, y + 0.5);
+                const double q[3] = { r.o[0] + sx, r.o[1] + sy, z0 };
+                if ((q[0] - pc[0]) * (q[0] - pc[0]) + (q[1] - pc[1]) * (q[1] - pc[1]) < (pr + 0.02) * (pr + 0.02)) continue;
+                const double w[3] = { q[0] - pc[0], q[1] - pc[1], q[2] - pc[2] };
+                const double wl = dot3(w, L);
+                const double e[3] = { w[0] - wl * L[0], w[1] - wl * L[1], w[2] - wl * L[2] };
+                if (sqrt(dot3(e, e)) > 0.5 * pr) continue;
+                const size_t p = (size_t)y * W + x;
+                const double vis = half_bits_to_float(px1[4 * p + 1]) / half_bits_to_float(px0[4 * p + 1]);
+                n_core++;
+                shaded += vis < 0.1;
             }
         }
-        printf("    the pebble: %d pixels in its shadow's core, %d shaded by the map alone, %d with the contact ray\n", n_core, shaded[0], shaded[1]);
-        EXPECT_GT(n_core, 20);
-        EXPECT_EQ(0, shaded[0]);
-        EXPECT_GE(shaded[1] * 10, n_core * 8);
+        printf("    the pebble: %d pixels in its shadow's core, %d of them below 0.1\n", n_core, shaded);
+        EXPECT_GT(n_core, 100);
+        EXPECT_EQ(n_core, shaded);
     }
 
-    /* a perspective light: refused */
+    /* ---- a light along the view: what it shadows is hidden ---- */
     {
-        md_compose_shadow_t sd = { md_render_view_targets(lv).depth, make_camera(&(cam_t){ .tan_half = 0.5f, .aspect = 1.0f, .n = 0.1f }), 0.0f, 0.0f };
-        d.shadow = &sd;
-        EXPECT_FALSE(md_compose(fx.gfx, cx, fx.view, &d));
+        cam_t c = { .ortho = true, .half_h = 6.0f, .aspect = (float)W / H, .n = 0.0f, .far_ = 40.0f };
+        md_render_camera_t cam = make_camera(&c);
+        md_render_frame_t f = frame_of(W, H, cam, b, 2);
+        ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+        d.camera = cam;
+        d.shading.light_dir[0] = 0.0f; d.shading.light_dir[1] = 0.0f; d.shading.light_dir[2] = 1.0f;
+        d.shadows = false;
+        ASSERT_TRUE(md_compose(fx.gfx, cx, fx.view, &d) && f_read(&fx, out, px0, P * 8));
+        d.shadows = true;
+        ASSERT_TRUE(md_compose(fx.gfx, cx, fx.view, &d) && f_read(&fx, out, px1, P * 8));
+        EXPECT_EQ(0, memcmp(px0, px1, P * 8));
     }
 
-    md_render_view_destroy(fx.gfx, lv);
     md_gpu_texture_destroy(out);
     md_compose_destroy(cx);
     free(px0); free(px1);

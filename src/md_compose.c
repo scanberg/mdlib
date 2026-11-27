@@ -14,9 +14,11 @@ typedef struct gpu_compose_args_t {
     md_gpu_float4        ip0, ip1, ip2, ip3;
     md_gpu_float4        light, dir_radiance, sky, ground, misc;
     md_gpu_float4        pa, pb, pc;
-    md_gpu_addr_t        layers, lin, ao;
+    md_gpu_addr_t        layers, lin, ao, sh;
     uint32_t             count, stride, width, height;
     uint32_t             level, dir, src, use_ao;
+    uint32_t             use_sh;
+    float                light_radius;
     md_gpu_storage_tex_t target;
     md_gpu_sampled_tex_t depth, color, normal;
     md_gpu_addr_t        vols;
@@ -32,27 +34,23 @@ typedef struct gpu_compose_args_t {
     uint32_t             slice_count, _sp;
     md_gpu_sampled_tex_t sf[8];         /* the slices' fields */
     md_gpu_sampled_tex_t st[8];         /* and transfer functions */
-    md_gpu_float4        lt0, lt1, lt2, lt3;   /* view space to the light's clip space */
-    md_gpu_float4        sp;            /* the shadow map's texels across and down, a texel's world size along x, y */
-    md_gpu_float4        sq;            /* world per unit of its depth, tan of the light's angular radius, 1: shadows, the contact ray's texels */
-    md_gpu_sampled_tex_t shadow;
     float                jit[2];        /* the raster's subpixel offset: the rays through it */
     md_gpu_addr_t        blocks;        /* the volumes' blocks, 1 where one may hold a crossing or emit */
     uint32_t             block_vol, _bp;
     md_gpu_addr_t        tf;            /* the volumes' transfer functions, linear: colour, extinction */
 } gpu_compose_args_t;
-_Static_assert(sizeof(gpu_compose_args_t) == 784, "Args mirror");
+_Static_assert(sizeof(gpu_compose_args_t) == 688, "Args mirror");
 
 enum { AO_LEVELS = 6, VOL_STRIDE = 37, SLICE_STRIDE = 14, BLOCK = 8 };   /* md_compose.slang's */
 
 struct md_compose {
     md_gpu_device_t  dev;
-    md_gpu_kernel_t  k_linear, k_estimate, k_quality, k_blur, k_compose, k_blocks, k_tf;
+    md_gpu_kernel_t  k_linear, k_estimate, k_quality, k_shadow, k_blur, k_compose, k_blocks, k_tf;
     md_gpu_sampler_t trilinear;
     /* What the compose's volume arguments hold without volumes, never read: a
        null pointer or handle there let lavapipe crash (a load hoisted out of
        a loop that does not run) */
-    md_gpu_texture_t none_field, none_transfer, none_color, none_depth;
+    md_gpu_texture_t none_field, none_transfer, none_color;
 };
 
 md_compose_ctx_t md_compose_create(md_gpu_device_t device) {
@@ -68,6 +66,7 @@ md_compose_ctx_t md_compose_create(md_gpu_device_t device) {
     kd = md_shader_md_compose_ao_linear_kernel();   c->k_linear   = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_compose_ao_estimate_kernel(); c->k_estimate = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_compose_ao_estimate_quality_kernel(); c->k_quality = md_gpu_kernel_create(device, &kd);
+    kd = md_shader_md_compose_shadow_estimate_kernel(); c->k_shadow = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_compose_ao_blur_kernel();     c->k_blur     = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_compose_compose_kernel();     c->k_compose  = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_compose_vol_blocks_kernel();  c->k_blocks   = md_gpu_kernel_create(device, &kd);
@@ -75,7 +74,7 @@ md_compose_ctx_t md_compose_create(md_gpu_device_t device) {
     md_gpu_sampler_desc_t sd = {0};
     sd.min_filter = sd.mag_filter = MD_GPU_FILTER_LINEAR;
     c->trilinear = md_gpu_sampler(device, &sd);
-    if (!c->k_linear || !c->k_estimate || !c->k_quality || !c->k_blur || !c->k_compose || !c->k_blocks || !c->k_tf || !c->trilinear.handle) {
+    if (!c->k_linear || !c->k_estimate || !c->k_quality || !c->k_shadow || !c->k_blur || !c->k_compose || !c->k_blocks || !c->k_tf || !c->trilinear.handle) {
         MD_LOG_ERROR("md_compose: kernel creation failed: %s", md_gpu_last_error());
         md_compose_destroy(c);
         return NULL;
@@ -89,7 +88,7 @@ bool md_compose_debug_kernel_info(md_compose_ctx_t c, uint32_t i, const char** n
     if (!c) return false;
     const struct { const char* n; md_gpu_kernel_t k; } ks[] = {
         { "compose", c->k_compose }, { "vol_blocks", c->k_blocks }, { "vol_transfer_prep", c->k_tf }, { "ao_linear", c->k_linear }, { "ao_estimate", c->k_estimate },
-        { "ao_quality", c->k_quality }, { "ao_blur", c->k_blur },
+        { "ao_quality", c->k_quality }, { "shadow_estimate", c->k_shadow }, { "ao_blur", c->k_blur },
     };
     if (i >= sizeof(ks) / sizeof(ks[0])) return false;
     if (name) *name = ks[i].n;
@@ -101,6 +100,7 @@ void md_compose_destroy(md_compose_ctx_t c) {
     if (c->k_linear)   md_gpu_kernel_destroy(c->k_linear);
     if (c->k_estimate) md_gpu_kernel_destroy(c->k_estimate);
     if (c->k_quality)  md_gpu_kernel_destroy(c->k_quality);
+    if (c->k_shadow)   md_gpu_kernel_destroy(c->k_shadow);
     if (c->k_blur)     md_gpu_kernel_destroy(c->k_blur);
     if (c->k_compose)  md_gpu_kernel_destroy(c->k_compose);
     if (c->k_blocks)   md_gpu_kernel_destroy(c->k_blocks);
@@ -108,7 +108,6 @@ void md_compose_destroy(md_compose_ctx_t c) {
     if (c->none_field)    md_gpu_texture_destroy(c->none_field);
     if (c->none_transfer) md_gpu_texture_destroy(c->none_transfer);
     if (c->none_color)    md_gpu_texture_destroy(c->none_color);
-    if (c->none_depth)    md_gpu_texture_destroy(c->none_depth);
     md_free(md_get_heap_allocator(), c, sizeof(*c));
 }
 
@@ -136,6 +135,20 @@ static bool vol_tex_ok(md_gpu_texture_t t, md_gpu_tex_type_t type, md_gpu_format
 
 static bool launch(md_gpu_stream_t s, md_gpu_kernel_t k, uint32_t w, uint32_t h, const gpu_compose_args_t* a) {
     return md_gpu_launch(s, k, md_gpu_grid_for(k, w, h, 1), a, sizeof(*a));
+}
+
+/* A visibility at half resolution (hw x hh): the estimator k into the first of
+   two new planes (a->ao), the blur through the second back into it. The
+   planes' address; 0 on failure. */
+static md_gpu_addr_t visibility(md_gpu_stream_t s, md_gpu_temp_t scope, md_compose_ctx_t c, md_gpu_kernel_t k, gpu_compose_args_t* a,
+                                uint32_t hw, uint32_t hh) {
+    a->ao = md_gpu_temp_alloc(scope, MD_GPU_MEM_DEVICE, (size_t)hw * hh * 2u * 8u).gpu;
+    bool ok = a->ao != 0 && launch(s, k, hw, hh, a);
+    a->dir = 0; a->src = 0;
+    ok = ok && launch(s, c->k_blur, hw, hh, a);
+    a->dir = 1; a->src = 1;
+    ok = ok && launch(s, c->k_blur, hw, hh, a);
+    return ok ? a->ao : 0;
 }
 
 bool md_compose(md_gpu_stream_t s, md_compose_ctx_t c, md_render_view_t view, const md_compose_desc_t* d) {
@@ -166,6 +179,7 @@ bool md_compose(md_gpu_stream_t s, md_compose_ctx_t c, md_render_view_t view, co
     if (ll > 0.0f) { L[0] /= ll; L[1] /= ll; L[2] /= ll; } else { L[2] = 1.0f; }
     const bool ortho = P[3] == 0.0f && P[7] == 0.0f && P[11] == 0.0f && P[15] == 1.0f;
     const bool use_ao = d->ao > 0.0f;
+    const bool use_sh = d->shadows && sh->light_strength > 0.0f;
 
     gpu_compose_args_t a;
     md_memset(&a, 0, sizeof(a));
@@ -187,6 +201,8 @@ bool md_compose(md_gpu_stream_t s, md_compose_ctx_t c, md_render_view_t view, co
     a.width        = W;
     a.height       = H;
     a.use_ao       = use_ao ? 1u : 0u;
+    a.use_sh       = use_sh ? 1u : 0u;
+    a.light_radius = d->light_radius > 1.0e-3f ? d->light_radius : 1.0e-3f;
     a.target       = md_gpu_texture_storage(d->target, 0);
     a.depth        = md_gpu_texture_sampled(t.depth);
     a.color        = md_gpu_texture_sampled(t.color);
@@ -280,9 +296,7 @@ bool md_compose(md_gpu_stream_t s, md_compose_ctx_t c, md_render_view_t view, co
         c->none_color = md_gpu_texture_create(s, &nd);
         nd.type = MD_GPU_TEX_2D; nd.format = MD_GPU_FORMAT_RGBA8_UNORM; nd.depth_or_layers = 1; nd.label = "md_compose.none_transfer";
         c->none_transfer = md_gpu_texture_create(s, &nd);
-        nd.format = MD_GPU_FORMAT_R32_FLOAT; nd.label = "md_compose.none_depth";
-        c->none_depth = md_gpu_texture_create(s, &nd);
-        if (!c->none_field || !c->none_transfer || !c->none_color || !c->none_depth) {
+        if (!c->none_field || !c->none_transfer || !c->none_color) {
             MD_LOG_ERROR("md_compose: %s", md_gpu_last_error());
             return false;
         }
@@ -347,56 +361,32 @@ bool md_compose(md_gpu_stream_t s, md_compose_ctx_t c, md_render_view_t view, co
     a.jit[1]    = d->jitter[1];
     a.trilinear = c->trilinear;
 
-    /* The shadows: the frame's view space to the light's clip space, the map */
-    a.shadow = md_gpu_texture_sampled(c->none_depth);
-    if (d->shadow) {
-        const md_compose_shadow_t* sd = d->shadow;
-        const md_gpu_texture_desc_t* md = sd->depth ? md_gpu_texture_desc(sd->depth) : NULL;
-        const float* LP = sd->light.proj;
-        if (!md || md->type != MD_GPU_TEX_2D || md->format != MD_GPU_FORMAT_D32_FLOAT || !(md->usage & MD_GPU_TEX_SAMPLED) ||
-            !(LP[3] == 0.0f && LP[7] == 0.0f && LP[11] == 0.0f && LP[15] == 1.0f) || !(LP[0] > 0.0f && LP[5] > 0.0f && LP[10] > 0.0f)) {
-            MD_LOG_ERROR("md_compose: the shadow map is to be a SAMPLED 2D texture of D32_FLOAT, of an orthographic camera (reverse Z)");
-            return false;
-        }
-        md_float4x4_t V, LV, LPM;
-        md_memcpy(&V, d->camera.view, sizeof(V));
-        md_memcpy(&LV, sd->light.view, sizeof(LV));
-        md_memcpy(&LPM, LP, sizeof(LPM));
-        const md_float4x4_t VL = md_float4x4_mul(LPM, md_float4x4_mul(LV, md_float4x4_inverse(V)));
-        const float* vl = (const float*)&VL;
-        a.lt0 = f4(vl[0],  vl[1],  vl[2],  vl[3]);
-        a.lt1 = f4(vl[4],  vl[5],  vl[6],  vl[7]);
-        a.lt2 = f4(vl[8],  vl[9],  vl[10], vl[11]);
-        a.lt3 = f4(vl[12], vl[13], vl[14], vl[15]);
-        const float sw = (float)md->width, sh2 = (float)md->height;
-        a.sp = f4(sw, sh2, 2.0f / (LP[0] * sw), 2.0f / (LP[5] * sh2));
-        a.sq = f4(1.0f / LP[10], tanf(sd->angular_radius > 0.0f ? sd->angular_radius : 0.0f), 1.0f, sd->contact > 0.0f ? sd->contact : 0.0f);
-        a.shadow = md_gpu_texture_sampled(sd->depth);
-    }
-
     const md_gpu_ordering_t prev = md_gpu_stream_set_ordering(s, MD_GPU_ORDER_IMPLICIT);
     md_gpu_temp_t scope = md_gpu_temp_begin(s);
     bool ok = true;
     a.vols   = md_gpu_temp_upload(scope, rec, (size_t)(nv ? nv : 1u) * VOL_STRIDE * sizeof(md_gpu_float4));
     a.slices = md_gpu_temp_upload(scope, srec, (size_t)(ns ? ns : 1u) * SLICE_STRIDE * sizeof(md_gpu_float4));
     ok = a.vols != 0 && a.slices != 0;
-    if (use_ao) {
-        /* the linear depth's levels, and two planes at half resolution */
+    if (ok && (use_ao || use_sh)) {
+        /* the linear depth's levels, then the shadows' and the occlusion's planes */
         size_t lin = 0;
         for (uint32_t l = 0; l < AO_LEVELS; ++l) lin += (size_t)level_dim(W, l) * level_dim(H, l);
         const uint32_t hw = level_dim(W, 1), hh = level_dim(H, 1);
         a.lin = md_gpu_temp_alloc(scope, MD_GPU_MEM_DEVICE, lin * sizeof(float)).gpu;
-        a.ao  = md_gpu_temp_alloc(scope, MD_GPU_MEM_DEVICE, (size_t)hw * hh * 2u * 8u).gpu;
-        ok = a.lin && a.ao;
+        ok = a.lin != 0;
         for (uint32_t l = 0; ok && l < AO_LEVELS; ++l) {
             a.level = l;
             ok = launch(s, c->k_linear, level_dim(W, l), level_dim(H, l), &a);
         }
-        ok = ok && launch(s, d->ao_mode == MD_COMPOSE_AO_PERFORMANCE ? c->k_estimate : c->k_quality, hw, hh, &a);
-        a.dir = 0; a.src = 0;
-        ok = ok && launch(s, c->k_blur, hw, hh, &a);
-        a.dir = 1; a.src = 1;
-        ok = ok && launch(s, c->k_blur, hw, hh, &a);   /* back into plane 0 */
+        if (ok && use_sh) {
+            a.sh = visibility(s, scope, c, c->k_shadow, &a, hw, hh);
+            a.ao = 0;
+            ok = a.sh != 0;
+        }
+        if (ok && use_ao) {
+            a.ao = visibility(s, scope, c, d->ao_mode == MD_COMPOSE_AO_PERFORMANCE ? c->k_estimate : c->k_quality, &a, hw, hh);
+            ok = a.ao != 0;
+        }
     }
     if (ok && nv) {
         /* the blocks a ray may skip */

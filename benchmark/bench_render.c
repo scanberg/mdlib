@@ -43,7 +43,8 @@ md_render_bench: what clusters to cull by, and what md_render costs.
       md_compose over a small molecule inside a volume of N^3 voxels (an
       orbital: two lobes of opposite sign, filling most of the view), timed
       on the GPU (the compose's own submission, md_gpu_sync_gpu_seconds):
-      without the volume, with its two isosurfaces (opaque, then
+      without the volume (then with the key light's shadows too; the ambient
+      occlusion is on throughout), with its two isosurfaces (opaque, then
       translucent), its emission (DVR) through a transfer function, and
       both. Default sizes 48 and 96, 1920x1080. --dump writes each case's
       image, PREFIX_<N>_<case>.ppm (tone mapped, sRGB): what was timed.
@@ -2040,6 +2041,14 @@ static int run_compose(int argc, char** argv) {
         snprintf(path, sizeof(path), "%s_none.ppm", dump);
         dump_compose(s, out, W, H, path);
     }
+    d.shadows = true; d.light_radius = 0.0873f;    /* 5 degrees */
+    if (time_compose(s, cx, view, &d, reps, &best, &med)) printf("no volume, shadows               %8.3f %8.3f\n", best, med);
+    if (dump) {
+        char path[512];
+        snprintf(path, sizeof(path), "%s_shadows.ppm", dump);
+        dump_compose(s, out, W, H, path);
+    }
+    d.shadows = false;
 
     for (uint32_t si = 0; si < n_sizes; ++si) {
         const uint32_t N = sizes[si];

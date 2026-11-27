@@ -1,7 +1,8 @@
-// md_compose.slang -- the kernels of md_compose.c: the ambient occlusion of
-// the opaque surface (viamd's ssao/ssao.frag, blur.frag, upsample.frag,
+// md_compose.slang -- the kernels of md_compose.c: the ambient occlusion and
+// the key light's shadows of the opaque surface (viamd's ssao/ssao.frag,
+// ssao_bitmask.frag, shadows/screen_space.frag, blur.frag, upsample.frag,
 // depth_downsample.frag), and the compose: the opaque surface shaded under
-// it (viamd's compose_deferred.frag, both models), the transparent layers
+// them (viamd's compose_deferred.frag, both models), the transparent layers
 // shaded and composited over it front to back.
 //
 // Pixels are x right, y down, their centres at + 0.5 (md_render's). View
@@ -24,7 +25,9 @@ struct Args {
                                 // orthographic), the occlusion's intensity
     uint*   layers;             // md_render_targets_t.layers: colour, normal, depth planes
     float*  lin;                // the linear depth's levels 0..AO_LEVELS - 1, one after another
-    float2* ao;                 // two planes of the half resolution (level 1): (visibility, linear depth)
+    float2* ao;                 // two planes of the half resolution (level 1): (visibility, linear depth);
+                                // the estimators write plane 0, the blur goes through plane 1 back to it
+    float2* sh;                 // compose: the shadows' two planes (the estimators' ao, shadow_estimate's)
     uint   count;               // layers a pixel (K)
     uint   stride;              // words of a layer (pixels)
     uint   width;
@@ -32,7 +35,9 @@ struct Args {
     uint   level;               // ao_linear: the level made
     uint   dir;                 // ao_blur: 0 along x, 1 along y
     uint   src;                 // ao_blur: the plane read (the other is written)
-    uint   use_ao;              // compose: plane 0 holds the occlusion
+    uint   use_ao;              // compose: ao's plane 0 holds the occlusion
+    uint   use_sh;              // compose: sh's plane 0 holds the key light's visibility
+    float  light_radius;        // shadow_estimate: the light's angular radius (radians, > 0)
     DescriptorHandle<RWTexture2D<float4>> target;
     DescriptorHandle<Texture2D<float>>    depth;    // md_render's: reverse Z, 0 where nothing
     DescriptorHandle<Texture2D<float4>>   color;    // sRGB-encoded base colour, a: covered
@@ -52,11 +57,6 @@ struct Args {
     uint   _sp;
     DescriptorHandle<Texture3D<float>>    sf0, sf1, sf2, sf3, sf4, sf5, sf6, sf7;   // the slices' fields
     DescriptorHandle<Texture2D<float4>>   st0, st1, st2, st3, st4, st5, st6, st7;   // and transfer functions
-    float4 lt0, lt1, lt2, lt3;  // view space to the light's clip space (columns)
-    float4 sp;                  // the shadow map's texels across, down, a texel's world size along x, y
-    float4 sq;                  // x: world per unit of its depth (1 / P22), y: tan of the light's angular
-                                // radius, z: 1 shadows, w: the contact ray's reach, the map's texels
-    DescriptorHandle<Texture2D<float>>    shadow;   // the light view's depth: reverse Z, orthographic
     float2 jit;                 // the raster's subpixel offset, pixels: the rays through it
     uint*  blocks;              // the volumes' blocks: 1 where one may hold a crossing or emit (vol_blocks)
     uint   block_vol;           // vol_blocks' and vol_transfer_prep's: the volume
@@ -397,9 +397,157 @@ void ao_blur(uint3 tid : SV_DispatchThreadID) {
     dp[tid.y * hs.x + tid.x] = float2(sum / wsum, c.y);
 }
 
-// The occlusion at a full resolution pixel of linear depth z: a joint
-// bilateral upsample of plane 0's 2 x 2 about it
-float ao_at(Args a, int2 q, float z) {
+// ---- Shadows ------------------------------------------------------------------
+// The key light's visibility (viamd's shadows/screen_space.frag), at half
+// resolution into plane 0 as the occlusion is (md_compose.c points ao at the
+// shadows' planes), then through the same blur and upsample. The light is a
+// disk of angular radius light_radius about light.xyz. The view rays through
+// the pixels on the line from a pixel toward the light, on screen, span a
+// plane that holds the light's direction: walking that line finds the
+// occluders of the light's chord in that plane, a slice along the light
+// (Jimenez et al. 2016). As in ao_estimate_quality, each depth sample
+// occludes the arc between the directions to its front and to the same point
+// pushed back by an assumed thickness, and the union of the arcs is a
+// 32-sector bitmask (Therrien et al. 2023), here over the chord: a thin
+// occluder shadows only the part of the light it covers, and how much of the
+// chord is covered makes the penumbra. The chord is at an offset from the
+// disk's centre across the slice, one of 16 by the 4 x 4 pattern, with the
+// density of the disk's chord lengths: the sectors are uniform along each
+// chord, and the blur averages the chords into the disk.
+//
+// Scale free: the steps log-uniform on screen between SH_R_MIN pixels and
+// SH_R_MAX of the view's height (shadows reach further than the occlusion),
+// the thickness proportional to the lateral distance. Every step reads level
+// 1, not a level growing with the distance as the occlusion does: a coarser
+// level would find an occluder's edge only to within its texel, the same one
+// for all the pixels about it, a fixed mottle in the soft shadows. The steps
+// of neighbouring pixels lie along nearly the same line, so they read close
+// texels.
+//
+// What it cannot see: occluders outside the view, and what is hidden behind
+// the nearest surface, whose thickness is a guess. The constants are those
+// closest to the ray traced visibility of the light over the atoms of
+// proteins in space fill (tubulin, 4EB6, and the dengue envelope protein,
+// 1K4R; a 10 degree light): a mean error of 0.05 and 0.07, unbiased. A
+// thicker guess darkens what a thin part in front does not shadow, a thinner
+// one misses what the atoms hidden behind those in front shadow.
+
+static const uint  SH_NUM_STEPS = 20u;
+static const float SH_THICKNESS = 1.0;    // an occluder's, as a multiple of its lateral distance
+static const float SH_BIAS_PX   = 0.5;    // pixel footprints above the tangent plane up to which a
+                                          // sample is taken for the receiving surface itself
+static const float SH_R_MIN     = 1.0;    // pixels
+static const float SH_R_MAX     = 0.3;    // of the view's height
+
+// The chord's offsets from the disk's centre, in its radius: the quantiles
+// (k + 0.5) / 16 of the semicircle distribution, the density of the chords'
+// lengths
+static const float CHORD_OFFSET[16] = {
+    -0.85853, -0.70068, -0.57309, -0.45839, -0.35096, -0.24800, -0.14780, -0.04911,
+     0.04911,  0.14780,  0.24800,  0.35096,  0.45839,  0.57309,  0.70068,  0.85853 };
+
+// The angle in a slice of the in-plane direction e = (along V, along o), from
+// V toward o
+float slice_angle(float2 e) {
+    float c = e.x * rsqrt(max(dot(e, e), 1e-30));
+    return (e.y < 0.0 ? -1.0 : 1.0) * fast_acos(clamp(c, -1.0, 1.0));
+}
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void shadow_estimate(uint3 tid : SV_DispatchThreadID) {
+    Args  a  = MD_ARGS;
+    uint2 hs = level_size(a, 1u);
+    if (tid.x >= hs.x || tid.y >= hs.y) return;
+    int2  hp = int2(tid.xy);
+    uint  o  = tid.y * hs.x + tid.x;
+    float z  = lin_at(a, 1u, hp);
+    if (z >= Z_MAX) { a.ao[o] = float2(1.0, z); return; }
+    int2   fp   = pick(hp);
+    float2 fpx  = float2(fp) + 0.5;
+    float3 P    = view_at(a, fpx, z);
+    float3 N    = normal_at(a, fp);
+    bool   orth = a.misc.w > 0.5;
+    float3 V    = orth ? float3(0.0, 0.0, 1.0) : -normalize(P);
+    float  pw   = px_world(a, z);
+    float2 full = float2(float(a.width), float(a.height));
+    float  r_max = max(SH_R_MAX * full.y, 2.0 * SH_R_MIN);
+
+    // the 4 x 4 pattern of the occlusion: k picks the chord, its bit reversal
+    // the steps' phase
+    uint  k  = BAYER[(hp.y & 3) * 4 + (hp.x & 3)];
+    float rk = float(bit_reverse4(k)) / 16.0;
+
+    // the chord: the light's direction turned across the plane of V and the
+    // light, and the disk's half width there
+    float3 L  = a.light.xyz;
+    float3 b  = cross(V, L);
+    float  bl = length(b);
+    if (bl < 1e-3) { a.ao[o] = float2(1.0, z); return; }   // the light along the view: what it shadows is hidden
+    b /= bl;
+    float  rad = a.light_radius;
+    float  y   = CHORD_OFFSET[k] * rad;
+    float3 Lk  = L * cos(y) + b * sin(y);
+    float  half_chord = sqrt(max(rad * rad - y * y, 1e-8));
+
+    // the slice: o in the plane of V and Lk, perpendicular to V on the
+    // light's side. On screen, the line from the pixel along the projection
+    // of Lk: the derivative of the point's NDC along Lk, times w (> 0), to
+    // pixels (y down)
+    float3 ov = normalize(Lk - V * dot(Lk, V));
+    float2 n  = ndc_of(a, fpx);
+    float2 dn = float2(a.pa.x * Lk.x + Lk.z * (a.pa.z - n.x * a.pc.x), a.pa.y * Lk.y + Lk.z * (a.pa.w - n.y * a.pc.x));
+    float2 d  = float2(dn.x * full.x, -dn.y * full.y);
+    float  dl = length(d);
+    if (dl < 1e-6) { a.ao[o] = float2(1.0, z); return; }
+    d /= dl;
+
+    // the chord as angles in the slice from V
+    float arc_lo  = fast_acos(clamp(dot(Lk, V), -1.0, 1.0)) - half_chord;
+    float inv_arc = 1.0 / (2.0 * half_chord);
+    float bias    = SH_BIAS_PX * pw;
+
+    // steps at r_min * ratio^(i + phase)
+    float log_ratio  = log2(r_max / SH_R_MIN);
+    float step_ratio = exp2(log_ratio / float(SH_NUM_STEPS));
+    float s          = SH_R_MIN * exp2(rk * log_ratio / float(SH_NUM_STEPS));
+    // the arcs onto the sectors with a stochastic rounding: small arcs unbiased on average
+    float bit_ofs = frac(rk * 7.0 + 0.5);
+    uint  bits = 0u;
+    for (uint i = 0u; i < SH_NUM_STEPS; ++i, s *= step_ratio) {
+        float2 spx = fpx + d * s;                   // s: the lateral distance, full resolution pixels
+        if (any(spx < float2(0.0)) || any(spx >= full)) break;
+        int2  th = int2(spx) >> 1;
+        float sz = lin_at(a, 1u, th);
+        if (sz >= Z_MAX) continue;
+        float3 S = view_at(a, float2(pick(th)) + 0.5, sz);
+        // its front, and the same point pushed back along its view ray
+        float  thick = SH_THICKNESS * s * pw;
+        float3 push  = orth ? float3(0.0, 0.0, -thick) : normalize(S) * thick;
+        float3 Df = S - P;
+        float  hf = dot(Df, N);
+        float  hb = hf + dot(push, N);
+        if (hf <= bias && hb <= bias) continue;     // under the tangent plane: the receiver, or behind it
+        float3 Db = Df + push;
+        float uf = (slice_angle(float2(dot(Df, V), dot(Df, ov))) - arc_lo) * inv_arc;
+        float ub = (slice_angle(float2(dot(Db, V), dot(Db, ov))) - arc_lo) * inv_arc;
+        float lo = min(uf, ub);
+        float hi = max(uf, ub);
+        if (hi <= 0.0 || lo >= 1.0) continue;
+        uint b0 = uint(clamp(floor(lo * 32.0 + bit_ofs), 0.0, 32.0));
+        uint b1 = uint(clamp(floor(hi * 32.0 + bit_ofs), 0.0, 32.0));
+        if (b1 > b0) {
+            uint count = b1 - b0;
+            bits |= (count >= 32u ? 0xFFFFFFFFu : ((1u << count) - 1u)) << b0;
+            if (bits == 0xFFFFFFFFu) break;
+        }
+    }
+    a.ao[o] = float2(1.0 - float(countbits(bits)) / 32.0, z);
+}
+
+// A visibility (the occlusion's, the shadows') at a full resolution pixel of
+// linear depth z: a joint bilateral upsample of the 2 x 2 of plane 0 about it
+float vis_at(Args a, float2* planes, int2 q, float z) {
     uint2  hs   = level_size(a, 1u);
     float2 hq   = (float2(q) + 0.5) * 0.5 - 0.5;
     float2 base = floor(hq);
@@ -409,7 +557,7 @@ float ao_at(Args a, int2 q, float z) {
     [ForceUnroll] for (int j = 0; j < 4; ++j) {
         int2   o  = int2(j & 1, j >> 1);
         int2   t  = clamp(int2(base) + o, int2(0), int2(hs) - 1);
-        float2 s  = a.ao[uint(t.y) * hs.x + uint(t.x)];
+        float2 s  = planes[uint(t.y) * hs.x + uint(t.x)];
         float  wb = (o.x == 1 ? f.x : 1.0 - f.x) * (o.y == 1 ? f.y : 1.0 - f.y);
         float  wz = 1.0 / (1.0 + abs(s.y - z) / (2.0 * fpw));
         float  w  = wb * wz * wz + 1e-5;
@@ -860,128 +1008,6 @@ float3 unproject(Args a, float2 ndc, float d) {
     return h.xyz / h.w;
 }
 
-// ---- Shadows ------------------------------------------------------------------
-// The key light's visibility at the opaque surface's point P (view space), of
-// normal N: from the shadow map, percentage-closer soft shadows (Fernando,
-// 2005): the blockers' mean depth in a search around P, the penumbra the
-// light's angular radius makes below them, filtered with a disc of samples
-// turned by the pixel and the frame. Every sample is compared with P's
-// tangent plane there (the receiver plane), at its texel's centre, so a
-// filter wider than a texel does not shadow a plane by itself. Then a short
-// ray toward the light in the frame's own depth: the contacts finer than
-// the map's texels.
-
-static const uint  SHADOW_TAPS    = 16u;
-static const float SHADOW_REACH   = 48.0;    // the search's and the filter's radius at most, texels
-static const float SHADOW_BIAS    = 1.0;     // texels, along the normal and in depth
-static const float SHADOW_SLOPE   = 0.2;     // the receiver plane's slope at most: 1 / this
-static const uint  CONTACT_STEPS  = 8u;
-
-// the map's depth at the texel of uv (its centre's uv out); outside: 0
-float shadow_texel(Args a, float2 uv, out float2 c) {
-    int2 t = int2(floor(uv * a.sp.xy));
-    c = (float2(t) + 0.5) / a.sp.xy;
-    if (any(t < int2(0)) || any(t >= int2(a.sp.xy))) return 0.0;
-    return a.shadow.Load(int3(t, 0));
-}
-
-// the receiver plane's depth at uv: dr at uv0, g its slope (world along the
-// light's view z per world along its x, y)
-float plane_depth(Args a, float dr, float2 g, float2 uv0, float2 uv) {
-    float2 o = (uv - uv0) * float2(a.sp.x * a.sp.z, -a.sp.y * a.sp.w);   // world, the light view's x, y
-    return dr + dot(g, o) / a.sq.x;
-}
-
-float shadow_map(Args a, float3 P, float3 N, float rot) {
-    float  texel = max(a.sp.z, a.sp.w);
-    float3 Po = P + N * (SHADOW_BIAS * texel);
-    float4 c  = a.lt0 * Po.x + a.lt1 * Po.y + a.lt2 * Po.z + a.lt3;
-    float2 uv = float2(c.x * 0.5 + 0.5, 0.5 - c.y * 0.5);
-    float  dr = c.z;
-    if (dr >= 1.0) return 1.0;          // nearer the light than the map: lit
-    // N in the light's view: the clip's linear part over its scales
-    float3 m  = a.lt0.xyz * N.x + a.lt1.xyz * N.y + a.lt2.xyz * N.z;
-    float3 Nl = m * float3(0.5 * a.sp.x * a.sp.z, 0.5 * a.sp.y * a.sp.w, a.sq.x);
-    float2 g  = -Nl.xy / max(Nl.z, SHADOW_SLOPE);
-    float  bias = SHADOW_BIAS * texel / a.sq.x;
-    float2 to_uv = float2(1.0 / (a.sp.x * a.sp.z), -1.0 / (a.sp.y * a.sp.w));   // world to uv
-    float  cr = cos(rot), sr = sin(rot);
-    float  reach = SHADOW_REACH * texel;
-
-    // the blockers: within the light's cone above P, up to the map's near plane
-    float  rs = min((1.0 - dr) * a.sq.x * a.sq.y, reach);
-    float  db = 0.0, nb = 0.0;
-    if (rs > 0.5 * texel) {
-        for (uint i = 0u; i < SHADOW_TAPS; ++i) {
-            float  r  = sqrt((float(i) + 0.5) / float(SHADOW_TAPS)) * rs;
-            float  ph = float(i) * GOLDEN_ANGLE;
-            float2 o  = r * float2(cos(ph), sin(ph));
-            o = float2(o.x * cr - o.y * sr, o.x * sr + o.y * cr);
-            float2 tc;
-            float  d  = shadow_texel(a, uv + o * to_uv, tc);
-            if (d > plane_depth(a, dr, g, uv, tc) + bias) { db += d; nb += 1.0; }
-        }
-        if (nb == 0.0) return 1.0;
-        db /= nb;
-    }
-
-    // the penumbra below them; a texel at least (hard light: its edge antialiased)
-    float rp = clamp((db - dr) * a.sq.x * a.sq.y, texel, reach);
-    float lit = 0.0;
-    for (uint i = 0u; i < SHADOW_TAPS; ++i) {
-        float  r  = sqrt((float(i) + 0.5) / float(SHADOW_TAPS)) * rp;
-        float  ph = float(i) * GOLDEN_ANGLE;
-        float2 o  = r * float2(cos(ph), sin(ph));
-        o = float2(o.x * cr - o.y * sr, o.x * sr + o.y * cr);
-        float2 tc;
-        float  d  = shadow_texel(a, uv + o * to_uv, tc);
-        lit += d > plane_depth(a, dr, g, uv, tc) + bias ? 0.0 : 1.0;
-    }
-    return lit / float(SHADOW_TAPS);
-}
-
-// The frame's pixel of the view-space point X
-float2 px_of(Args a, float3 X) {
-    float  w = a.pc.x * X.z + a.pc.y;
-    float2 n = float2(a.pa.x * X.x + a.pa.z * X.z + a.pb.x, a.pa.y * X.y + a.pa.w * X.z + a.pb.y) / w;
-    return float2((n.x * 0.5 + 0.5) * float(a.width), (0.5 - n.y * 0.5) * float(a.height));
-}
-
-// The ray toward the light from P, sq.w of the map's texels long, in the
-// frame's depth: a surface in front of a step, by no more than the ray's
-// length, blocks it; the nearer, the darker
-float shadow_contact(Args a, float3 P, float3 N, float jit) {
-    float pw  = px_world(a, -P.z);
-    float len = a.sq.w * max(a.sp.z, a.sp.w);
-    float3 O  = P + N * pw;
-    for (uint i = 0u; i < CONTACT_STEPS; ++i) {
-        float  t = (float(i) + jit) / float(CONTACT_STEPS) * len;
-        float3 X = O + a.light.xyz * t;
-        if (a.misc.w < 0.5 && X.z >= 0.0) break;
-        float2 x = px_of(a, X);
-        if (any(x < float2(0.0)) || x.x >= float(a.width) || x.y >= float(a.height)) break;
-        float  d = a.depth.Load(int3(int2(x), 0));
-        if (d == 0.0) continue;
-        float  zs = linear_depth(a, d), zx = -X.z;
-        if (zs < zx - 0.5 * px_world(a, zx) && zx - zs < len) return t / len;
-    }
-    return 1.0;
-}
-
-float shadow_at(Args a, float3 P, float3 N, uint p) {
-    if (a.sq.z < 0.5) return 1.0;
-    float NdotL = dot(N, a.light.xyz);
-    if (NdotL <= 0.0) return 0.0;       // facing away: in its own shadow
-    uint  h   = hash_u(p * 0x9E3779B9u ^ hash_u(a.frame * 0x85EBCA6Bu + 0x5bd1e995u));
-    float rot = float(h >> 8) / 16777216.0 * 2.0 * PI;
-    float jit = float(hash_u(h) >> 8) / 16777216.0;
-    float s   = shadow_map(a, P, N, rot);
-    if (s > 0.0 && a.sq.w > 0.0) s = min(s, shadow_contact(a, P, N, jit));
-    // basic shading lights past the terminator: fade the shadow's edge there
-    if (a.misc.y > 0.5) s *= saturate(4.0 * NdotL);
-    return s;
-}
-
 // Isosurface i of volume v's colour at pt (texture space), P (view space),
 // of view-space normal N, seen through the pixel at ndc
 float4 surface_color(Args a, uint v, uint i, float3 pt, float3 P, float3 N, float2 ndc) {
@@ -1152,9 +1178,11 @@ void compose(uint3 tid : SV_DispatchThreadID) {
         top = dot(unproject(a, ndc, dop) - O, D);
     } else if (cov > 0.0) {
         float3 N  = normal_at(a, q);
-        float  ao = a.use_ao != 0u ? ao_at(a, q, a.lin[tid.y * a.width + tid.x]) : 1.0;
+        float  zl = (a.use_ao | a.use_sh) != 0u ? a.lin[tid.y * a.width + tid.x] : 0.0;
+        float  ao = a.use_ao != 0u ? vis_at(a, a.ao, q, zl) : 1.0;
+        float  sh = a.use_sh != 0u ? vis_at(a, a.sh, q, zl) : 1.0;
         float3 P  = unproject(a, ndc, dop);
-        Lit l = shade(a, col.rgb, V, N, ao, shadow_at(a, P, N, p));
+        Lit l = shade(a, col.rgb, V, N, ao, sh);
         S   = l.diffuse + l.specular;
         top = dot(P - O, D);
     }
