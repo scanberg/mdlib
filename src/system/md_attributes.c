@@ -885,16 +885,6 @@ static bool attr_build(md_attributes_t* attributes, const md_attribute_desc_t* d
         return false;
     }
 
-    // PACKED_SYMMETRIC is a claim about the innermost axis, and checked for the same reason TEMPORAL
-    // is below: an extent that is not triangular cannot be the upper triangle of anything.
-    if (desc->flags & MD_ATTRIBUTE_FLAG_PACKED_SYMMETRIC) {
-        if (desc->format.rank == 0 || desc->format.components != 1 ||
-            md_attribute_packed_symmetric_dim(desc->format.shape[desc->format.rank - 1]) == 0) {
-            MD_LOG_ERROR("Attribute '" MD_STR_FMT "' is packed symmetric but its innermost axis is not the upper triangle of a square matrix", MD_STR_ARG(path));
-            return false;
-        }
-    }
-
     // PRINCIPAL is a claim about the group: one quantity is what it is about, so a second is a publisher contradicting
     // itself. The one being replaced (the same path) is not a second.
     if (desc->flags & MD_ATTRIBUTE_FLAG_PRINCIPAL) {
@@ -1738,17 +1728,6 @@ void* md_attribute_io_block(md_attribute_io_t* io, uint64_t key, size_t bytes, b
     io->block[lru].bytes    = bytes;
     io->block[lru].last_use = io->tick;
     return io->block[lru].data;
-}
-
-size_t md_attribute_packed_symmetric_dim(size_t extent) {
-    if (extent == 0) {
-        return 0;
-    }
-    // N = (sqrt(8L + 1) - 1) / 2, and the floating point root is corrected to the exact integer one
-    size_t n = (size_t)((sqrt(8.0 * (double)extent + 1.0) - 1.0) * 0.5);
-    while (n * (n + 1) / 2 > extent) --n;
-    while ((n + 1) * (n + 2) / 2 <= extent) ++n;
-    return n * (n + 1) / 2 == extent ? n : 0;
 }
 
 size_t md_attribute_io_read_at(md_attribute_io_t* io, md_str_t path, int64_t offset, void* dst, size_t bytes) {

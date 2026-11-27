@@ -92,13 +92,7 @@ static bool src_load(src_t* s, const char* path, size_t want_mo) {
     md_system_state_t state = { .alloc = s->arena };
     if (!md_vlx_system_init_from_file(&sys, &state, md_str_from_cstr(path), NULL)) return false;
     const md_attribute_t* c = md_attributes_find(&sys.attributes, MD_STR_LIT("qm/atom/coordinate"));
-    const md_attribute_t* d = md_attributes_find(&sys.attributes, MD_STR_LIT("orbital/total/density"));
-    double scale = 1.0;
-    if (!d) {
-        d = md_attributes_find(&sys.attributes, MD_STR_LIT("orbital/alpha/density"));
-        scale = 2.0;    // a closed shell's alpha density: half the total
-    }
-    if (!c || !d || !md_gto_basis_extract_attributes(&s->basis, &sys.attributes, s->arena)) {
+    if (!c || !md_qm_density_available(&sys) || !md_gto_basis_extract_attributes(&s->basis, &sys.attributes, s->arena)) {
         fprintf(stderr, "%s: no basis, geometry or density\n", path);
         return false;
     }
@@ -115,9 +109,12 @@ static bool src_load(src_t* s, const char* path, size_t want_mo) {
         s->hi = md_float3_max(s->hi, p);
     }
     s->num_ao = md_gto_basis_num_ao(&s->basis);
-    s->D = md_arena_allocator_push(s->arena, sizeof(double) * s->num_ao * s->num_ao);
-    md_attribute_extract_f64(s->D, s->num_ao * s->num_ao, &sys.attributes, d, md_attribute_slice_all(), md_unit_none());
-    if (scale != 1.0) for (size_t i = 0; i < s->num_ao * s->num_ao; ++i) s->D[i] *= scale;
+    size_t nd = 0;
+    s->D = qm_test_total_density_of(&sys, s->arena, NULL, &nd, NULL);    // the whole matrix, made from the orbitals
+    if (!s->D || nd != s->num_ao) {
+        fprintf(stderr, "%s: no density of %zu AOs\n", path, s->num_ao);
+        return false;
+    }
 
     // the dmat's run: the orbitals of the total density
     {

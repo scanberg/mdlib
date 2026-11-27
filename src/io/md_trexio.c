@@ -975,7 +975,6 @@ static bool trexio_publish(md_system_t* sys, const trexio_t* trexio, md_allocato
             return false;
         }
         md_qm_publish_overlap(sys);
-        md_qm_publish_orbital_densities(sys);
     }
 
     return true;

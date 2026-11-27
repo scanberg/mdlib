@@ -677,8 +677,8 @@ UTEST(gto, density_gpu_algorithms_agree) {
     const size_t num_ao = md_gto_basis_num_ao(&basis);
 
     size_t dim = 0;
-    double* D = qm_test_matrix(&t, MD_STR_LIT("orbital/total/density"), &dim);
-    if (!D) D = qm_test_matrix(&t, MD_STR_LIT("orbital/alpha/density"), &dim);
+    double* D = qm_test_density(&t, MD_STR_LIT("orbital/total/density"), &dim);
+    if (!D) D = qm_test_density(&t, MD_STR_LIT("orbital/alpha/density"), &dim);
     ASSERT_TRUE(D != NULL);
     ASSERT_EQ(dim, num_ao);
 
@@ -980,8 +980,8 @@ UTEST(gto, gradients_gpu_match_cpu) {
         ASSERT_EQ(qm_test_row(mo[m], num_ao, &t, MD_STR_LIT("orbital/alpha/coefficient"), m), num_ao);
     }
     size_t dim = 0;
-    double* D = qm_test_matrix(&t, MD_STR_LIT("orbital/total/density"), &dim);
-    if (!D) D = qm_test_matrix(&t, MD_STR_LIT("orbital/alpha/density"), &dim);
+    double* D = qm_test_density(&t, MD_STR_LIT("orbital/total/density"), &dim);
+    if (!D) D = qm_test_density(&t, MD_STR_LIT("orbital/alpha/density"), &dim);
     ASSERT_TRUE(D != NULL);
     ASSERT_EQ(dim, num_ao);
 

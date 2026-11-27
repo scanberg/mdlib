@@ -39,8 +39,8 @@ static bool box_test_load(box_test_qm_t* m, md_gto_int_charges_t* q, vlx_test_t*
     m->atom_z = (double*)md_alloc(t->alloc, sizeof(double) * m->num_atoms);
     if (qm_test_series(m->atom_z, m->num_atoms, t, MD_STR_LIT("qm/atom/nuclear_charge")) != m->num_atoms) return false;
     size_t dim = 0;
-    m->D = qm_test_matrix(t, MD_STR_LIT("orbital/total/density"), &dim);
-    if (!m->D) m->D = qm_test_matrix(t, MD_STR_LIT("orbital/alpha/density"), &dim);
+    m->D = qm_test_density(t, MD_STR_LIT("orbital/total/density"), &dim);
+    if (!m->D) m->D = qm_test_density(t, MD_STR_LIT("orbital/alpha/density"), &dim);
     if (!m->D || dim != m->num_ao) return false;
     if (!qm_test_dmat_from_matrix(&m->dm, &m->basis, m->atom_xyz, 0, m->D, t->alloc)) return false;
     md_gto_int_charges_desc_t desc = {

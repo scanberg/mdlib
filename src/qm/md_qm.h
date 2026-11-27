@@ -193,43 +193,11 @@ bool md_qm_publish_atoms(struct md_system_t* sys, const uint8_t atomic_number[],
 // Mulliken partitioning and tr(DS) and fatal for anything that inverts or factorises it.
 bool md_qm_publish_overlap(struct md_system_t* sys);
 
-// SYMMETRIC AO MATRICES. A density - or an overlap - is a symmetric N x N matrix in the AO basis, and is
-// published one of two ways: square ({A,A}, or {S,A,A} indexed by state), or as its packed upper
-// triangle (MD_ATTRIBUTE_FLAG_PACKED_SYMMETRIC, {A(A+1)/2} or {S,A(A+1)/2}) when it is large and read
-// from disk on demand. These two read either one, so a consumer never has to know which it was given.
-// 'slice' narrows 'attr' (of 'table') to ONE matrix. Both return N, or 0 on failure; with dst NULL they
-// return N and extract nothing. cap is in elements.
-
-// The packed upper triangle as float - row i holding columns i..N-1, N(N+1)/2 values - which is the
-// layout the GTO density kernels take. A packed attribute is extracted straight into dst, so nothing
-// larger than the triangle is ever made; a square one is extracted whole into scratch first.
-size_t md_qm_extract_packed_symmetric_f32(float* dst, size_t cap, const struct md_attributes_t* table, const struct md_attribute_t* attr, md_attribute_slice_t slice, md_attribute_io_t* io);
-
-// The packed upper triangle as double, the same layout, half the square's size. A square attribute is extracted
-// whole into scratch first and its symmetric part kept, (D_ij + D_ji) / 2; a packed one is widened from its float.
-size_t md_qm_extract_packed_symmetric_f64(double* dst, size_t cap, const struct md_attributes_t* table, const struct md_attribute_t* attr, md_attribute_slice_t slice, md_attribute_io_t* io);
-
-// The whole N x N matrix as double, row major: a packed attribute is extracted into scratch and its
-// lower half mirrored from the upper; a square one is extracted as it is.
-//
-// Both through io (may be NULL): a density computed on demand (orbital/*/density, from the orbitals) is built on
-// its executor (md_attribute_io_create).
-size_t md_qm_extract_symmetric_f64(double* dst, size_t cap, const struct md_attributes_t* table, const struct md_attribute_t* attr, md_attribute_slice_t slice, md_attribute_io_t* io);
-
 // S[a][b] over the basis's Cartesian AOs, row major, md_gto_basis_num_ao(basis) on a side.
 // 'atom_coord_bohr' holds one position per atom the shell list indexes, in BOHR - the unit the
 // exponents are stated in, not the Angstrom the system's own coordinates use.
 // Returns the dimension written, 0 on failure.
 size_t md_qm_compute_overlap(double* out, const struct md_gto_basis_t* basis, const md_double3_t atom_coord_bohr[], size_t num_atoms);
-
-// orbital/{alpha,beta}/density, and orbital/{total,difference}/density when both spins are present,
-// as VIRTUAL attributes computed from orbital/{alpha,beta}/{coefficient,occupation} - which must
-// already be published, since this reads them back rather than taking them as arguments.
-//
-// Virtual rather than resident because a density is an exact function of the coefficients and the
-// occupations beside it: a resident copy would be a second {A,A} matrix with nothing keeping it in
-// step. See the provider notes in md_system.h; 'sys' is borrowed and must outlive the table.
-bool md_qm_publish_orbital_densities(struct md_system_t* sys);
 
 // The orbitals an SCF density is a sum of squares of: D = sum_k w_k c_k c_k^T, for 'density_path' one of
 // orbital/{alpha,beta,total,difference}/density, from orbital/{alpha,beta}/{coefficient,occupation}.
@@ -253,7 +221,10 @@ size_t md_qm_density_orbitals(double** out_rows, double** out_weights, size_t* o
 size_t md_qm_density_factors(double** out_rows, double** out_weights, size_t* out_num_ao, const struct md_system_t* sys,
                              md_str_t density_path, const struct md_attribute_slice_t* slice, struct md_allocator_i* alloc);
 
-// Whether the density at density_path is published as factors (<density_path>/factor). Cheap: a lookup.
+// Whether md_qm_density_factors has the density at density_path: an SCF density's orbitals (orbital/alpha/density: the
+// alpha orbitals and occupations; beta: the beta ones, which a restricted calculation publishes as a second name for
+// alpha's; total and difference: both, over the same AOs), any other density's <density_path>/factor. Cheap: lookups.
+// The SCF densities are names, not attributes: no AO matrix is published, a density is made from its factors.
 bool md_qm_density_factors_available(const struct md_system_t* sys, md_str_t density_path);
 
 // The orbitals of the AVERAGE LOCAL IONIZATION ENERGY (Sjoberg, Murray, Brinck and Politzer, Can. J. Chem. 68,
@@ -414,12 +385,6 @@ bool md_qm_density_available(const struct md_system_t* sys);
 // count, 0 on failure.
 size_t md_qm_elf_evaluate(double* out_elf, double* out_lol, const float* xyz, size_t count, size_t stride,
                           const struct md_system_t* sys, const float* atom_xyz, size_t atom_xyz_stride, double rho_min, double d_min);
-
-// orbital/{total,difference}/density (alpha + beta, alpha - beta) as virtual attributes over whatever
-// orbital/{alpha,beta}/density are: for a producer that publishes those two itself (read from a file
-// that stores them, say). Where beta is an alias of alpha, alpha is read once for the total and not
-// at all for the difference. md_qm_publish_orbital_densities ends with this.
-bool md_qm_publish_orbital_density_combinations(struct md_system_t* sys);
 
 #ifdef __cplusplus
 }

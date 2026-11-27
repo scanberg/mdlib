@@ -52,9 +52,6 @@ struct md_system_state_t;
 //      symmetry}
 //   orbital/{alpha,beta}/    {M,A} MO coefficients, Cartesian AO order
 //     coefficient
-//   orbital/{alpha,beta,     {A,A}, computed on demand from the coefficients and occupations
-//     total,difference}/
-//     density
 //
 // SPIN CHANNELS. TREXIO states one occupation per molecular orbital and an optional mo_spin column.
 // Where that column is absent or all zero the calculation is restricted, the occupation is the

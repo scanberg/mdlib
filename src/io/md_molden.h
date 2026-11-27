@@ -49,9 +49,6 @@ struct md_system_state_t;
 //   orbital/{alpha,beta}/    {M,A} MO coefficients, Cartesian AO order - see the AO CONVENTION
 //     coefficient            block in md_gto.h. A file which stored spherical coefficients is
 //                            converted once, here
-//   orbital/{alpha,beta,     {A,A}, computed on demand from the coefficients and occupations
-//     total,difference}/
-//     density
 //
 //   molden/vib/frequency,    {D} per normal mode, from [FREQ] and [INT]
 //   molden/vib/ir_intensity

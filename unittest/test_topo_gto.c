@@ -31,7 +31,7 @@ static bool topo_gto_load_water(topo_gto_input_t* in) {
     if (!md_molden_system_init_from_file(&in->t.sys, &in->t.state, md_str_from_cstr(MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden"), NULL)) return false;
     if (!qm_test_basis(&in->basis, &in->t)) return false;
     size_t dim = 0;
-    in->density = qm_test_matrix(&in->t, MD_STR_LIT("orbital/total/density"), &dim);
+    in->density = qm_test_density(&in->t, MD_STR_LIT("orbital/total/density"), &dim);
     if (!in->density || dim != md_gto_basis_num_ao(&in->basis)) return false;
     double xyz[9] = {0};
     const md_attribute_t* coord = qm_test_attr(&in->t, MD_STR_LIT("qm/atom/coordinate"));   // Angstrom

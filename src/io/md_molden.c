@@ -1144,7 +1144,6 @@ static bool molden_publish(md_system_t* sys, molden_t* molden, md_allocator_i* t
             return false;
         }
         md_qm_publish_overlap(sys);
-        md_qm_publish_orbital_densities(sys);
     }
 
     molden_publish_vibrations(sys, molden);

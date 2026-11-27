@@ -1,4 +1,5 @@
 ﻿#include "ubench.h"
+#include "../unittest/qm_test_util.h"    // qm_test_total_density_of: the whole matrix, which only a measurement makes
 
 #include <md_vlx.h>
 #include <md_system.h>
@@ -64,11 +65,9 @@ static bool bench_gto_load(bench_gto_t* b) {
         return false;
     }
     const md_attribute_t* c   = md_attributes_find(&sys.attributes, MD_STR_LIT("qm/atom/coordinate"));
-    const md_attribute_t* d   = md_attributes_find(&sys.attributes, MD_STR_LIT("orbital/total/density"));
     const md_attribute_t* mo  = md_attributes_find(&sys.attributes, MD_STR_LIT("orbital/alpha/coefficient"));
     const md_attribute_t* occ = md_attributes_find(&sys.attributes, MD_STR_LIT("orbital/alpha/occupation"));
-    if (!d) d = md_attributes_find(&sys.attributes, MD_STR_LIT("orbital/alpha/density"));
-    if (!c || !d || !mo || !occ || !md_gto_basis_extract_attributes(&b->basis, &sys.attributes, b->arena)) {
+    if (!c || !mo || !occ || !md_gto_basis_extract_attributes(&b->basis, &sys.attributes, b->arena)) {
         MD_LOG_ERROR("Benchmark file lacks a basis, a geometry, a density or orbitals");
         bench_gto_free(b);
         return false;
@@ -89,9 +88,14 @@ static bool bench_gto_load(bench_gto_t* b) {
 
     const size_t n = md_gto_basis_num_ao(&b->basis);
     b->num_ao = n;
-    b->D  = md_arena_allocator_push(b->arena, sizeof(double) * n * n);
+    size_t nd = 0;
+    b->D  = qm_test_total_density_of(&sys, b->arena, NULL, &nd, NULL);
     b->mo = md_arena_allocator_push(b->arena, sizeof(double) * n);
-    md_attribute_extract_f64(b->D, n * n, &sys.attributes, d, md_attribute_slice_all(), md_unit_none());
+    if (!b->D || nd != n) {
+        MD_LOG_ERROR("Benchmark file lacks a density");
+        bench_gto_free(b);
+        return false;
+    }
 
     {   // the tiles as viamd makes them: from the occupied orbitals (md_qm_density_orbitals), in double
         double* rows = NULL;

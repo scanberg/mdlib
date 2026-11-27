@@ -1530,17 +1530,17 @@ UTEST(gto_iso_density, matches_products_of_orbitals) {
         ASSERT_TRUE(iso_dens_src_load(&s, iso_dens_files[fi]));
         const size_t nao = s.num_ao;
 
-        // the products agree with the matrices md_vlx publishes for the same densities
+        // the products agree with the whole matrix of the same density
         {
             iso_dens_prod_t p;
             iso_dens_products(&p, &s, ISO_D_SCF);
             double* D = iso_dens_matrix(&p, nao);
             size_t dim = 0;
-            const double* ref = qm_test_matrix(&s.t, MD_STR_LIT("orbital/total/density"), &dim);
+            const double* ref = qm_test_density(&s.t, MD_STR_LIT("orbital/total/density"), &dim);
             ASSERT_TRUE(ref != NULL);
             ASSERT_EQ(dim, nao);
             const double e = iso_rel_diff(ref, D, nao * nao);
-            printf("  %-9s %zu AOs, %zu occupied, %zu NTO pairs; SCF products vs orbital/total/density: %.1e\n",
+            printf("  %-9s %zu AOs, %zu occupied, %zu NTO pairs; SCF products vs the whole matrix: %.1e\n",
                 iso_dens_files[fi], nao, p.count, s.num_nto, e);
             EXPECT_LT(e, 1.0e-10);
             free(D);

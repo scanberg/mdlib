@@ -90,7 +90,7 @@ static void src_free(src_t* s) {
     memset(s, 0, sizeof(*s));
 }
 
-static bool src_load(src_t* s, const char* path) {
+static bool src_load(src_t* s, const char* path, const md_executor_t* ex) {
     memset(s, 0, sizeof(*s));
     s->arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(64));
     md_system_t sys = { .alloc = s->arena };
@@ -100,13 +100,7 @@ static bool src_load(src_t* s, const char* path) {
     s->ms_open = ms_since(t0);
     const md_attribute_t* c = md_attributes_find(&sys.attributes, MD_STR_LIT("qm/atom/coordinate"));
     const md_attribute_t* z = md_attributes_find(&sys.attributes, MD_STR_LIT("qm/atom/nuclear_charge"));
-    const md_attribute_t* d = md_attributes_find(&sys.attributes, MD_STR_LIT("orbital/total/density"));
-    double scale = 1.0;
-    if (!d) {
-        d = md_attributes_find(&sys.attributes, MD_STR_LIT("orbital/alpha/density"));
-        scale = 2.0;    // a closed shell's alpha density: half the total
-    }
-    if (!c || !z || !d || !md_gto_basis_extract_attributes(&s->basis, &sys.attributes, s->arena)) {
+    if (!c || !z || !md_qm_density_available(&sys) || !md_gto_basis_extract_attributes(&s->basis, &sys.attributes, s->arena)) {
         fprintf(stderr, "%s: no basis, geometry, nuclear charges or density\n", path);
         return false;
     }
@@ -119,16 +113,15 @@ static bool src_load(src_t* s, const char* path) {
     s->Z = md_arena_allocator_push(s->arena, sizeof(double) * s->num_atoms);
     md_attribute_extract_f64(s->Z, s->num_atoms, &sys.attributes, z, md_attribute_slice_all(), md_unit_elementary_charge());
     s->num_ao = md_gto_basis_num_ao(&s->basis);
-    const size_t nd = s->num_ao * s->num_ao;
-    s->D = md_alloc(md_get_heap_allocator(), sizeof(double) * nd);
+    // the whole matrix, which only this measurement makes: from the orbitals (no reader publishes it)
+    size_t nd = 0;
     t0 = md_tick_now();
-    const size_t got = md_attribute_extract_f64(s->D, nd, &sys.attributes, d, md_attribute_slice_all(), md_unit_none());
+    s->D = qm_test_total_density_of(&sys, md_get_heap_allocator(), ex, &nd, NULL);
     s->ms_read_d = ms_since(t0);
-    if (got != nd) {
-        fprintf(stderr, "%s: the density is not %zu x %zu\n", path, s->num_ao, s->num_ao);
+    if (!s->D || nd != s->num_ao) {
+        fprintf(stderr, "%s: no density of %zu AOs\n", path, s->num_ao);
         return false;
     }
-    if (scale != 1.0) for (size_t i = 0; i < nd; ++i) s->D[i] *= scale;
     // the SCF density's orbitals, as viamd builds its GPU tiles from them: only the read is timed
     double* rows = NULL;
     double* w = NULL;
@@ -466,13 +459,13 @@ typedef struct opts_t {
 static void run(const char* path, const opts_t* o, const md_executor_t* ex) {
     src_t src;
     printf("%s\n", path);
-    if (!src_load(&src, path)) { printf("  could not load\n\n"); src_free(&src); return; }
+    if (!src_load(&src, path, ex)) { printf("  could not load\n\n"); src_free(&src); return; }
     shells_t S;
     shells_make(&S, &src, 1e-6);    // one layout for every pattern: viamd's density dmat's
     const size_t N = src.num_ao;
     const double MB = 1.0 / (1024.0 * 1024.0);
     printf("  %zu atoms, %u shells, %zu AOs, %zu occupied orbitals\n", src.num_atoms, S.ns, N, src.num_occ);
-    printf("  read: open %.0f ms, the dense matrix %.0f ms (%.1f MB), the orbitals %.0f ms (%.1f MB)\n",
+    printf("  read: open %.0f ms, the dense matrix made from the orbitals %.0f ms (%.1f MB), the orbitals %.0f ms (%.1f MB)\n",
            src.ms_open, src.ms_read_d, 8.0 * N * N * MB, src.ms_read_orbitals, 8.0 * src.num_occ * N * MB);
     const double tri = (double)N * (N + 1) / 2;
     const double tiles_total = (double)S.nt * (S.nt + 1) / 2;

@@ -124,6 +124,55 @@ static inline double* qm_test_matrix(const qm_test_t* t, md_str_t path, size_t* 
     return dst;
 }
 
+// An SCF density - orbital/{alpha,beta,total,difference}/density - as its whole matrix, dim x dim, made from the
+// orbitals and occupations (md_qm_density_orbitals). No reader publishes the matrix: this is what tests and
+// measurements compare against. A zero density (a closed shell's difference) is a matrix of zeros; NULL when the system
+// has no such density.
+static inline double* qm_test_density_of(const md_system_t* sys, md_str_t path, md_allocator_i* alloc, const struct md_executor_t* executor,
+                                         size_t* out_dim) {
+    if (!md_qm_density_factors_available(sys, path)) {
+        return NULL;
+    }
+    double *rows = NULL, *w = NULL;
+    size_t na = 0;
+    const size_t count = md_qm_density_orbitals(&rows, &w, &na, sys, path, alloc);
+    if (count == 0) {
+        const md_attribute_t* c = md_attributes_find(&sys->attributes, MD_STR_LIT("orbital/alpha/coefficient"));
+        na = c && c->format.rank == 2 ? c->format.shape[1] : 0;
+    }
+    double* D = na ? (double*)md_alloc(alloc, sizeof(double) * na * na) : NULL;
+    bool ok = D != NULL;
+    if (ok && count == 0) {
+        md_memset(D, 0, sizeof(double) * na * na);
+    } else if (ok) {
+        ok = md_gto_density_from_orbitals(D, rows, na, 1, w, count, na, executor);
+    }
+    if (rows) md_free(alloc, rows, sizeof(double) * count * na);
+    if (w)    md_free(alloc, w, sizeof(double) * count);
+    if (!ok) {
+        if (D) md_free(alloc, D, sizeof(double) * na * na);
+        return NULL;
+    }
+    if (out_dim) {
+        *out_dim = na;
+    }
+    return D;
+}
+
+// The total density, or alpha's for a file with one spin channel (whose occupations are then the totals): what a
+// measurement of "the density" of a file takes. The path taken into *out_path when given.
+static inline double* qm_test_total_density_of(const md_system_t* sys, md_allocator_i* alloc, const struct md_executor_t* executor,
+                                               size_t* out_dim, md_str_t* out_path) {
+    md_str_t path = md_qm_density_factors_available(sys, MD_STR_LIT("orbital/total/density")) ? MD_STR_LIT("orbital/total/density")
+                                                                                              : MD_STR_LIT("orbital/alpha/density");
+    if (out_path) *out_path = path;
+    return qm_test_density_of(sys, path, alloc, executor, out_dim);
+}
+
+static inline double* qm_test_density(const qm_test_t* t, md_str_t path, size_t* out_dim) {
+    return qm_test_density_of(&t->sys, path, t->alloc, NULL, out_dim);
+}
+
 // The basis, rebuilt from basis/shell/* and basis/primitive/* - the format neutral paths, so this
 // is the same call a consumer of any QM reader makes.
 static inline bool qm_test_basis(md_gto_basis_t* out, const qm_test_t* t) {
@@ -184,7 +233,7 @@ static inline double qm_test_orthonormality(const qm_test_t* t, md_str_t coeffic
 // asserting separately from orthonormality.
 static inline double qm_test_electron_count(const qm_test_t* t, md_str_t density_path) {
     size_t dn = 0, sn = 0;
-    double* D = qm_test_matrix(t, density_path, &dn);
+    double* D = qm_test_density(t, density_path, &dn);
     double* S = qm_test_matrix(t, MD_STR_LIT("basis/overlap"), &sn);
     if (!D || !S || dn != sn) {
         return -1.0;

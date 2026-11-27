@@ -65,14 +65,15 @@ static bool dc_init(md_gto_dmat_t* dm, const dc_src_t* s, double cutoff, double 
     return md_gto_dmat_init(dm, &desc, md_get_heap_allocator());
 }
 
-UTEST(gto_dmat_cpu, matches_file_matrix) {
+UTEST(gto_dmat_cpu, matches_whole_matrix) {
     static const char* files[] = { "h2o.h5", "amide.h5", "mol.h5" };
     for (int fi = 0; fi < 3; ++fi) {
         dc_src_t s;
         ASSERT_TRUE(dc_load(&s, files[fi]));
         size_t n = 0;
-        // What VeloxChem wrote: its D, read from the file (symmetrised, in shell order and Cartesian)
-        const double* F = qm_test_matrix(&s.t, MD_STR_LIT("orbital/total/density"), &n);
+        // The whole matrix of the same orbitals (VeloxChem's own D agrees with it to 1e-12: test_vlx's
+        // file_density_is_the_orbitals)
+        const double* F = qm_test_density(&s.t, MD_STR_LIT("orbital/total/density"), &n);
         ASSERT_TRUE(F != NULL);
         ASSERT_EQ(n, s.num_ao);
         md_gto_dmat_t dm;
@@ -89,7 +90,7 @@ UTEST(gto_dmat_cpu, matches_file_matrix) {
                 d = fmax(d, fabs(v - F[(size_t)i * n + j]));
             }
         }
-        printf("  %s: %zu AOs, %llu tile pairs; the %zu entries kept against the file's D: max |diff| %.2e (max |D| %.3g)\n",
+        printf("  %s: %zu AOs, %llu tile pairs; the %zu entries kept against the whole D: max |diff| %.2e (max |D| %.3g)\n",
                files[fi], s.num_ao, (unsigned long long)dm.num_tiles, kept, d, m);
         EXPECT_LT(d, 1.0e-9 * m);
         md_gto_dmat_free(&dm);

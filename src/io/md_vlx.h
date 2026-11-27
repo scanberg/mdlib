@@ -109,7 +109,11 @@ struct md_executor_t;
 //                                                            state's when they fit in 256 MB). Read
 //                                                            a state once on a worker thread to
 //                                                            have it ready without waiting
-//   vlx/rsp/transition_density/*                             {S,A,A}, computed on demand
+//   vlx/rsp/transition_density/<name>/{factor,weight}        {S,R,A} and {S,R}: an excited state's
+//                                                            attachment, detachment and difference
+//                                                            densities as their factors (read with
+//                                                            md_qm_density_factors), computed on
+//                                                            demand: slice by state
 //   vlx/rsp/solution_matrix, vlx/rsp/num_{core,valence,       the raw response eigenvectors and the
 //   virtual}                                                  occupied/virtual split they are
 //                                                             indexed by. Not meant for direct
@@ -127,19 +131,12 @@ struct md_executor_t;
 //   vlx/opt/{energy,coordinate}                              {P} per optimisation step;
 //                                                            vlx/opt/state_index and
 //                                                            vlx/opt/irc_ts_index are rank 0
-//   vlx/density_property/<dataset name>                      {A(A+1)/2} f32, PACKED_SYMMETRIC: the
-//                                                            upper triangle of each density property
-//                                                            the file carries, Cartesian. Virtual:
-//                                                            read from the file on every extract, so
-//                                                            the file has to stay where it was
 //   atom/<dataset name>                                      per atom properties from the file; NAN
 //                                                            for the embedding's sites when they are
 //                                                            atoms of the system
 //   orbital/{alpha,beta}/coefficient                         {M,A} MO coefficients, Cartesian AO
 //                                                            order - see the AO CONVENTION block in
 //                                                            md_gto.h
-//   orbital/{alpha,beta,total,difference}/density            {A,A}, computed on demand from the
-//                                                            coefficients and occupations
 //   basis/shell/*, basis/primitive/*                         the GTO basis, in the format neutral
 //                                                            layout md_gto_basis_extract_attributes
 //                                                            reads

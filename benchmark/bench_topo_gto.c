@@ -176,16 +176,10 @@ static bool input_load(input_t* in, const char* path) {
     in->num_atoms = md_gto_basis_num_atoms(&in->basis);
 
     // QTAIM is defined on the total density; a file with one spin channel publishes only alpha, which is then the total.
-    md_str_t dpath = MD_STR_LIT("orbital/total/density");
-    const md_attribute_t* d = md_attributes_find(&in->sys.attributes, dpath);
-    if (!d) { dpath = MD_STR_LIT("orbital/alpha/density"); d = md_attributes_find(&in->sys.attributes, dpath); }
-    if (!d || d->format.rank != 2 || d->format.shape[0] != in->num_ao || d->format.shape[1] != in->num_ao) {
-        fprintf(stderr, "%s: no density matrix matching the basis (%zu AOs)\n", path, in->num_ao);
-        return false;
-    }
-    in->density = (double*)md_alloc(in->alloc, sizeof(double) * in->num_ao * in->num_ao);
-    if (md_attribute_extract_f64(in->density, in->num_ao * in->num_ao, &in->sys.attributes, d, md_attribute_slice_all(), md_unit_none()) != in->num_ao * in->num_ao) {
-        fprintf(stderr, "%s: density matrix could not be read\n", path);
+    size_t nd = 0;
+    in->density = qm_test_total_density_of(&in->sys, in->alloc, NULL, &nd, NULL);   // the whole matrix, made from the orbitals
+    if (!in->density || nd != in->num_ao) {
+        fprintf(stderr, "%s: no density matching the basis (%zu AOs)\n", path, in->num_ao);
         return false;
     }
 

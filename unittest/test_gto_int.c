@@ -66,8 +66,8 @@ static bool int_test_extract(int_test_qm_t* out, const qm_test_t* t) {
     if (qm_test_series(out->atom_z, out->num_atoms, t, MD_STR_LIT("qm/atom/nuclear_charge")) != out->num_atoms) return false;
 
     size_t dim = 0;
-    out->D = qm_test_matrix(t, MD_STR_LIT("orbital/total/density"), &dim);
-    if (!out->D) out->D = qm_test_matrix(t, MD_STR_LIT("orbital/alpha/density"), &dim);
+    out->D = qm_test_density(t, MD_STR_LIT("orbital/total/density"), &dim);
+    if (!out->D) out->D = qm_test_density(t, MD_STR_LIT("orbital/alpha/density"), &dim);
     return out->D && dim == out->num_ao && qm_test_dmat_from_matrix(&out->dm, &out->basis, out->atom_xyz, 0, out->D, t->alloc);
 }
 

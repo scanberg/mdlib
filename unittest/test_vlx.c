@@ -10,6 +10,8 @@
 #include <md_qm.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <hdf5.h>
 
 #include <math.h>
 #include <float.h>
@@ -291,143 +293,117 @@ UTEST(vlx, acro_xps) {
 	qm_test_free(&t);
 }
 
-// 'orbital/alpha/density' is never held: it is read on demand from the file's D_alpha (computed from
-// the coefficients and occupations for a file that has none). This is the check that it is the matrix
-// the coefficient and occupation attributes published beside it describe - recomputed here from them,
-// independently of the provider - and not merely a plausible one.
-//
-// NOT checked by tr(D S) against the electron count, which is the obvious test and a wrong one here:
-// 'basis/overlap' is the Cartesian embedding of a spherical overlap (25 Cartesian AOs for 24
-// spherical ones in this file), so it is rank deficient and its diagonal is not unity - tr(S) is 91,
-// not 25. tr(D S) comes out 5.36 against 5 alpha electrons for both the reconstructed density AND
-// the one the file stores, so the discrepancy is in the overlap conversion and nothing a density
-// test can pin. See the AO CONVENTION block in md_gto.h.
-UTEST(vlx, orbital_density_matches_coefficients_and_occupations) {
-	vlx_test_t t = {0};
-	ASSERT_TRUE(vlx_test_load(&t, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5"), MD_MEGABYTES(16)));
-
-	const md_attribute_t* coeff = qm_test_attr(&t, MD_STR_LIT("orbital/alpha/coefficient"));
-	const md_attribute_t* occup = qm_test_attr(&t, MD_STR_LIT("orbital/alpha/occupation"));
-	const md_attribute_t* dens  = qm_test_attr(&t, MD_STR_LIT("orbital/alpha/density"));
-	ASSERT_TRUE(coeff != NULL && occup != NULL && dens != NULL);
-
-	// {M,A} coefficients, {M} occupations, {A,A} density - the three have to agree on M and A or the
-	// reconstruction is indexing a matrix it does not belong to.
-	ASSERT_EQ(coeff->format.rank, 2u);
-	const size_t num_mo = coeff->format.shape[0];
-	const size_t num_ao = coeff->format.shape[1];
-	ASSERT_EQ(md_attribute_element_count(&occup->format), num_mo);
-	ASSERT_EQ(dens->format.shape[0], (uint32_t)num_ao);
-	ASSERT_EQ(dens->format.shape[1], (uint32_t)num_ao);
-
-	EXPECT_TRUE(md_attribute_is_virtual(dens));
-	EXPECT_TRUE(md_attributes_data(&t.sys.attributes, dens->id, MD_ATTRIBUTE_TYPE_F64) == NULL);
-
-	const size_t plane = num_ao * num_ao;
-	double* C = (double*)md_alloc(t.alloc, sizeof(double) * num_mo * num_ao);
-	double* occ = (double*)md_alloc(t.alloc, sizeof(double) * num_mo);
-	double* D = (double*)md_alloc(t.alloc, sizeof(double) * plane);
-	double* ref = (double*)md_alloc(t.alloc, sizeof(double) * plane);
-
-	ASSERT_EQ(md_attribute_extract_f64(C, num_mo * num_ao, &t.sys.attributes, coeff, md_attribute_slice_all(), md_unit_none()), num_mo * num_ao);
-	ASSERT_EQ(md_attribute_extract_f64(occ, num_mo, &t.sys.attributes, occup, md_attribute_slice_all(), md_unit_none()), num_mo);
-	ASSERT_EQ(md_attribute_extract_f64(D, plane, &t.sys.attributes, dens, md_attribute_slice_all(), md_unit_none()), plane);
-
-	// D = sum over molecular orbitals of occ_i * c_i c_i^T, which is the definition and not a
-	// restatement of the provider: it reads the same two attributes any consumer would.
-	md_memset(ref, 0, sizeof(double) * plane);
-	double occ_sum = 0.0;
-	for (size_t mo = 0; mo < num_mo; ++mo) {
-		occ_sum += occ[mo];
-		if (occ[mo] == 0.0) continue;
-		const double* c = C + mo * num_ao;
-		for (size_t i = 0; i < num_ao; ++i) {
-			for (size_t j = 0; j < num_ao; ++j) {
-				ref[i * num_ao + j] += occ[mo] * c[i] * c[j];
-			}
+// One dataset of an .h5 file straight through HDF5, as double (heap; dims[0..rank) and *out_rank set): what a
+// test compares the reader against, read without it
+static double* vlx_test_h5_dataset(size_t dims[2], int* out_rank, const char* path, const char* name) {
+	double* out = NULL;
+	hid_t file = H5Fopen(path, H5F_ACC_RDONLY, H5P_DEFAULT);
+	if (file < 0) return NULL;
+	hid_t dset  = H5Lexists(file, name, H5P_DEFAULT) > 0 ? H5Dopen2(file, name, H5P_DEFAULT) : -1;
+	hid_t space = dset >= 0 ? H5Dget_space(dset) : -1;
+	hsize_t d[2] = {1, 1};
+	const int rank = space >= 0 ? H5Sget_simple_extent_dims(space, d, NULL) : -1;
+	if (rank == 1 || rank == 2) {
+		out = (double*)malloc(sizeof(double) * d[0] * d[1]);
+		if (out && H5Dread(dset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, out) < 0) {
+			free(out);
+			out = NULL;
 		}
+		dims[0] = (size_t)d[0];
+		dims[1] = rank == 2 ? (size_t)d[1] : 1;
+		*out_rank = rank;
 	}
-
-	// The occupations account for every alpha electron the file says the calculation had.
-	EXPECT_NEAR(qm_test_scalar(&t, MD_STR_LIT("vlx/electron_count/alpha"), -1.0), occ_sum, 1.0e-9);
-
-	double max_diff = 0.0, max_asym = 0.0, magnitude = 0.0;
-	for (size_t i = 0; i < num_ao; ++i) {
-		for (size_t j = 0; j < num_ao; ++j) {
-			max_diff  = MD_MAX(max_diff,  fabs(D[i * num_ao + j] - ref[i * num_ao + j]));
-			max_asym  = MD_MAX(max_asym,  fabs(D[i * num_ao + j] - D[j * num_ao + i]));
-			magnitude = MD_MAX(magnitude, fabs(D[i * num_ao + j]));
-		}
-	}
-	EXPECT_NEAR(0.0, max_diff, 1.0e-12);
-
-	// The density evaluation path packs only the upper triangle, so an asymmetric matrix would be
-	// silently half consumed.
-	EXPECT_NEAR(0.0, max_asym, 1.0e-12);
-
-	// Guards both against the all zeros case, which every difference above would also satisfy.
-	EXPECT_TRUE(magnitude > 1.0e-8);
-
-	qm_test_free(&t);
+	if (space >= 0) H5Sclose(space);
+	if (dset >= 0) H5Dclose(dset);
+	H5Fclose(file);
+	return out;
 }
 
-// The combined spin densities, which are derivations over derivations: alpha and beta are each
-// computed on demand, and these read both. That is legal because the graph stays acyclic, and it is
-// the case that broke - beta is an ALIAS of alpha in a restricted calculation, and reading an alias
-// of a computed attribute used to return nothing at all, silently.
-//
-// A restricted calculation gives the invariants for free and needs no reference values: the total
-// is exactly twice alpha, and the difference is exactly zero.
-UTEST(vlx, combined_spin_densities_h2o) {
+// VeloxChem's own SCF density, D_alpha, which no reader publishes: a density is made from the orbitals and their
+// occupations (md_qm_density_factors). This is the check that nothing is lost by that, and the one place the file's
+// matrix is read at all: in the file's own AO order and spherical basis, D_alpha is sum_k n_k C_k C_k^T over the
+// orbitals and occupations the file stores beside it (C_alpha [AO][MO], as VeloxChem writes it). That those orbitals
+// reach md_gto's Cartesian basis intact is what the orthonormality and electron count tests check.
+UTEST(vlx, file_density_is_the_orbitals) {
+	static const char* files[] = { MD_UNITTEST_DATA_DIR "/vlx/h2o.h5", MD_UNITTEST_DATA_DIR "/vlx/amide.h5" };
+	for (int fi = 0; fi < 2; ++fi) {
+		size_t dd[2] = {0}, cd[2] = {0}, od[2] = {0};
+		int dr = 0, cr = 0, orank = 0;
+		double* D   = vlx_test_h5_dataset(dd, &dr, files[fi], "scf/D_alpha");
+		double* C   = vlx_test_h5_dataset(cd, &cr, files[fi], "scf/C_alpha");
+		double* occ = vlx_test_h5_dataset(od, &orank, files[fi], "scf/occ_alpha");
+		ASSERT_TRUE(D && C && occ);
+		ASSERT_EQ(2, dr);
+		ASSERT_EQ(2, cr);
+		const size_t na = dd[0], nm = cd[1];
+		ASSERT_EQ(na, dd[1]);
+		ASSERT_EQ(na, cd[0]);
+		ASSERT_EQ(nm, od[0]);
+
+		double max_diff = 0.0, magnitude = 0.0;
+		for (size_t i = 0; i < na; ++i) {
+			for (size_t j = 0; j < na; ++j) {
+				double v = 0.0;
+				for (size_t k = 0; k < nm; ++k) v += occ[k] * C[i * nm + k] * C[j * nm + k];
+				max_diff  = MD_MAX(max_diff, fabs(D[i * na + j] - v));
+				magnitude = MD_MAX(magnitude, fabs(D[i * na + j]));
+			}
+		}
+		printf("  %s: %zu AOs, %zu orbitals; D_alpha against sum_k n_k C_k C_k^T: max |diff| %.1e (max |D| %.3g)\n",
+			files[fi], na, nm, max_diff, magnitude);
+		EXPECT_LT(max_diff, 1.0e-12 * MD_MAX(magnitude, 1.0));
+		// guards against the all zeros case, which the difference would also satisfy
+		EXPECT_TRUE(magnitude > 1.0e-8);
+		free(D);
+		free(C);
+		free(occ);
+	}
+}
+
+// The SCF densities are names, not attributes: orbital/{alpha,beta,total,difference}/density, which
+// md_qm_density_factors makes from the orbitals and occupations. A restricted calculation gives the invariants for
+// free and needs no reference values: beta is alpha (beta's orbitals a second name for alpha's), the total is exactly
+// twice alpha, and the difference is zero - no factors at all.
+UTEST(vlx, scf_density_names_h2o) {
 	vlx_test_t t = {0};
 	ASSERT_TRUE(vlx_test_load(&t, MD_STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.h5"), MD_MEGABYTES(16)));
-
 	EXPECT_TRUE(md_str_eq(qm_test_string(&t, MD_STR_LIT("vlx/scf/type")), MD_STR_LIT("restricted")));
 
-	const md_attribute_t* alpha = qm_test_attr(&t, MD_STR_LIT("orbital/alpha/density"));
-	ASSERT_TRUE(alpha != NULL);
-	ASSERT_EQ(alpha->format.rank, 2u);
-	const size_t num_ao = alpha->format.shape[0];
-	const size_t plane  = num_ao * num_ao;
-
-	md_str_t paths[4] = {
+	static const md_str_t paths[4] = {
 		MD_STR_INIT("orbital/alpha/density"),
 		MD_STR_INIT("orbital/beta/density"),
 		MD_STR_INIT("orbital/total/density"),
 		MD_STR_INIT("orbital/difference/density"),
 	};
-
-	double* mat[4] = {0};
 	for (int i = 0; i < 4; ++i) {
-		const md_attribute_t* a = qm_test_attr(&t, paths[i]);
-		ASSERT_TRUE(a != NULL);
-		ASSERT_EQ(a->format.rank, 2u);
-		EXPECT_EQ(a->format.shape[0], (uint32_t)num_ao);
-		EXPECT_EQ(a->format.shape[1], (uint32_t)num_ao);
-
-		mat[i] = (double*)md_alloc(t.alloc, sizeof(double) * plane);
-		ASSERT_EQ(md_attribute_extract_f64(mat[i], plane, &t.sys.attributes, a, md_attribute_slice_all(), md_unit_none()), plane);
+		EXPECT_TRUE(md_qm_density_factors_available(&t.sys, paths[i]));
+		EXPECT_FALSE(qm_test_has(&t, paths[i]));	// no AO matrix is published
 	}
 
-	// Restricted: beta is a second NAME for alpha, not a second reconstruction.
-	const md_attribute_t* beta = qm_test_attr(&t, MD_STR_LIT("orbital/beta/density"));
-	EXPECT_TRUE(md_attribute_is_alias(beta));
-	EXPECT_TRUE(md_attribute_same_data(beta, alpha));
-
-	double max_total = 0.0, max_diff = 0.0, max_beta = 0.0, magnitude = 0.0;
-	for (size_t i = 0; i < plane; ++i) {
-		max_beta  = MD_MAX(max_beta,  fabs(mat[1][i] - mat[0][i]));            // beta IS alpha
-		max_total = MD_MAX(max_total, fabs(mat[2][i] - 2.0 * mat[0][i]));      // total = alpha + beta
-		max_diff  = MD_MAX(max_diff,  fabs(mat[3][i]));                        // difference = 0
-		magnitude = MD_MAX(magnitude, fabs(mat[0][i]));
+	// alpha: its occupied orbitals, weighted by their occupations, which add up to the alpha electrons
+	double *rows[4] = {0}, *w[4] = {0};
+	size_t count[4] = {0}, na[4] = {0};
+	for (int i = 0; i < 4; ++i) {
+		count[i] = md_qm_density_factors(&rows[i], &w[i], &na[i], &t.sys, paths[i], NULL, t.alloc);
 	}
-	EXPECT_NEAR(0.0, max_beta,  1.0e-12);
-	EXPECT_NEAR(0.0, max_total, 1.0e-12);
-	EXPECT_NEAR(0.0, max_diff,  1.0e-12);
+	ASSERT_TRUE(count[0] > 0);
+	double occ_sum = 0.0;
+	for (size_t k = 0; k < count[0]; ++k) occ_sum += w[0][k];
+	EXPECT_NEAR(qm_test_scalar(&t, MD_STR_LIT("vlx/electron_count/alpha"), -1.0), occ_sum, 1.0e-9);
 
-	// Guards the invariants above against the case where every matrix is zero, which would satisfy
-	// all three and is exactly what a declining provider used to produce.
-	EXPECT_TRUE(magnitude > 1.0e-8);
+	// beta is alpha, and the total the same orbitals at twice the weight
+	ASSERT_EQ(count[0], count[1]);
+	ASSERT_EQ(count[0], count[2]);
+	for (size_t k = 0; k < count[0]; ++k) {
+		EXPECT_EQ(w[0][k], w[1][k]);
+		EXPECT_EQ(2.0 * w[0][k], w[2][k]);
+		for (size_t a = 0; a < na[0]; ++a) {
+			EXPECT_EQ(rows[0][k * na[0] + a], rows[1][k * na[0] + a]);
+			EXPECT_EQ(rows[0][k * na[0] + a], rows[2][k * na[0] + a]);
+		}
+	}
+	// the difference: nothing
+	EXPECT_EQ(0u, count[3]);
 
 	qm_test_free(&t);
 }
@@ -657,7 +633,6 @@ UTEST(vlx, nto_coefficients_share_the_ao_axis) {
 // it has been read - before any assertion that could end the test early.
 // ---------------------------------------------------------------------------
 
-#include <hdf5.h>
 #include <stdio.h>	// remove
 #include <core/md_file.h>
 #include <md_infer.h>
@@ -1391,324 +1366,6 @@ UTEST(vlx, pe_induced_dipoles_from_file) {
 	EXPECT_EQ(6, md_system_residue_seq_id(&t.sys, lys));
 	EXPECT_TRUE(md_str_eq(md_atom_name(&t.sys.atom, num_qm + 109), MD_STR_LIT("N")));
 	EXPECT_EQ(mu[0], atom_mu[3 * (num_qm + 109)]);
-
-	qm_test_free(&t);
-}
-
-// ---------------------------------------------------------------------------
-// DENSITY PROPERTIES
-//
-// What gives an AO matrix its meaning is the basis set, and the ROOT of the file names it along with
-// the nuclear charges - not the SCF block. And a density property is not held: it is a virtual
-// attribute read from the file on every extract, as the packed upper triangle of its Cartesian
-// matrix. These make copies of h2o.h5 carrying one - the SCF alpha density itself, in the file's own
-// AO order and spherical basis, which is what a density property written by VeloxChem is.
-// ---------------------------------------------------------------------------
-
-#define VLX_TEST_DENSITY_PROPERTY "vlx/density_property/test_density"
-#define VLX_TEST_H2O_NUM_CART 25u	// 24 spherical AOs, one d shell
-
-typedef struct vlx_test_density_file_t {
-	bool drop_scf;		// delete the SCF block afterwards
-	bool compress;		// store the property chunked (and deflated where HDF5 has the filter): not one run of bytes
-	bool padding;		// write a same sized dataset of 1e6 ahead of it, which takes the place it would otherwise have had
-	bool move_atom;		// a different geometry: the first atom moved by 0.1 bohr
-} vlx_test_density_file_t;
-
-// A copy of h2o.h5 with scf/D_alpha added at the root as the density property 'test_density'
-static bool vlx_test_write_density_property_h5(md_str_t dst, vlx_test_density_file_t opt) {
-	md_file_t in = {0};
-	if (!md_file_open(&in, MD_STR_LIT(VLX_PE_DIR "h2o.h5"), MD_FILE_READ)) return false;
-	const size_t size = (size_t)md_file_size(in);
-	void* bytes = md_alloc(md_get_heap_allocator(), size);
-	const bool read = md_file_read(in, bytes, size) == size;
-	md_file_close(&in);
-	const bool written = read && vlx_test_write_file(dst, bytes, size);
-	md_free(md_get_heap_allocator(), bytes, size);
-	if (!written) return false;
-
-	char path[1024];
-	md_str_copy_to_char_buf(path, sizeof(path), dst);
-	hid_t file = H5Fopen(path, H5F_ACC_RDWR, H5P_DEFAULT);
-	if (file < 0) return false;
-
-	bool ok = false;
-	double* data = NULL;
-	size_t  count = 0;
-	hid_t src = H5Dopen2(file, "scf/D_alpha", H5P_DEFAULT);
-	if (src >= 0) {
-		hid_t   space = H5Dget_space(src);
-		hsize_t dims[2] = {0};
-		if (H5Sget_simple_extent_ndims(space) == 2 && H5Sget_simple_extent_dims(space, dims, NULL) == 2) {
-			count = (size_t)(dims[0] * dims[1]);
-			data  = md_alloc(md_get_heap_allocator(), sizeof(double) * count);
-			ok = H5Dread(src, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, data) >= 0;
-
-			if (ok && opt.padding) {
-				double* pad = md_alloc(md_get_heap_allocator(), sizeof(double) * count);
-				for (size_t i = 0; i < count; ++i) pad[i] = 1.0e6;
-				hid_t pad_set = H5Dcreate2(file, "aaa_padding", H5T_NATIVE_DOUBLE, space, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-				ok = pad_set >= 0 && H5Dwrite(pad_set, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, pad) >= 0;
-				if (pad_set >= 0) H5Dclose(pad_set);
-				md_free(md_get_heap_allocator(), pad, sizeof(double) * count);
-			}
-
-			hid_t dcpl = H5Pcreate(H5P_DATASET_CREATE);
-			if (opt.compress) {
-				const hsize_t chunk[2] = { dims[0], dims[1] };
-				H5Pset_chunk(dcpl, 2, chunk);
-				if (H5Zfilter_avail(H5Z_FILTER_DEFLATE) > 0) H5Pset_deflate(dcpl, 6);
-			}
-			hid_t dst_set = ok ? H5Dcreate2(file, "test_density", H5T_NATIVE_DOUBLE, space, H5P_DEFAULT, dcpl, H5P_DEFAULT) : -1;
-			H5Pclose(dcpl);
-			if (dst_set >= 0) {
-				ok = H5Dwrite(dst_set, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, data) >= 0;
-
-				const char* label = "Test Density";
-				hid_t type   = H5Tcopy(H5T_C_S1);
-				H5Tset_size(type, H5T_VARIABLE);
-				H5Tset_cset(type, H5T_CSET_UTF8);
-				hid_t scalar = H5Screate(H5S_SCALAR);
-				hid_t attr   = H5Acreate2(dst_set, "density_property", type, scalar, H5P_DEFAULT, H5P_DEFAULT);
-				ok = ok && attr >= 0 && H5Awrite(attr, type, &label) >= 0;
-				if (attr >= 0) H5Aclose(attr);
-				H5Sclose(scalar);
-				H5Tclose(type);
-				H5Dclose(dst_set);
-			} else {
-				ok = false;
-			}
-		}
-		H5Sclose(space);
-		H5Dclose(src);
-	}
-	if (data) md_free(md_get_heap_allocator(), data, sizeof(double) * count);
-
-	if (ok && opt.move_atom) {
-		hid_t coord = H5Dopen2(file, "atom_coordinates", H5P_DEFAULT);
-		double xyz[3 * 3] = {0};
-		ok = coord >= 0 && H5Dread(coord, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, xyz) >= 0;
-		xyz[0] += 0.1;
-		ok = ok && H5Dwrite(coord, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, xyz) >= 0;
-		if (coord >= 0) H5Dclose(coord);
-	}
-	if (ok && opt.drop_scf) {
-		ok = H5Ldelete(file, "scf", H5P_DEFAULT) >= 0;
-	}
-	H5Fclose(file);
-	return ok;
-}
-
-// The packed upper triangle of the symmetric matrix at 'path', from the test's own arena. NULL when absent
-// or not symmetric; *out_n receives N.
-static float* vlx_test_packed(size_t* out_n, const vlx_test_t* t, md_str_t path) {
-	const md_attribute_t* attr = qm_test_attr(t, path);
-	const size_t n = md_qm_extract_packed_symmetric_f32(NULL, 0, &t->sys.attributes, attr, md_attribute_slice_all(), NULL);
-	if (n == 0) return NULL;
-	const size_t len = n * (n + 1) / 2;
-	float* dst = (float*)md_alloc(t->alloc, sizeof(float) * len);
-	if (!dst || md_qm_extract_packed_symmetric_f32(dst, len, &t->sys.attributes, attr, md_attribute_slice_all(), NULL) != n) return NULL;
-	*out_n = n;
-	return dst;
-}
-
-static double vlx_test_max_abs_diff_f32(const float* a, const float* b, size_t n) {
-	double m = 0.0;
-	for (size_t i = 0; i < n; ++i) {
-		const double d = fabs((double)a[i] - (double)b[i]);
-		m = d > m ? d : m;
-	}
-	return m;
-}
-
-// Not held: a virtual attribute, read from the file each time, as the packed float upper triangle
-UTEST(vlx, density_property_is_read_from_the_file) {
-	const md_str_t h5 = MD_STR_LIT(VLX_PE_DIR "unittest_density_property_virtual.h5");
-	ASSERT_TRUE(vlx_test_write_density_property_h5(h5, (vlx_test_density_file_t){0}));
-
-	vlx_test_t t = {0};
-	const bool loaded = vlx_test_load(&t, h5, MD_MEGABYTES(64));
-	ASSERT_TRUE(loaded);
-
-	const md_attribute_t* attr = qm_test_attr(&t, MD_STR_LIT(VLX_TEST_DENSITY_PROPERTY));
-	ASSERT_TRUE(attr != NULL);
-	EXPECT_TRUE(md_attribute_is_virtual(attr));
-	EXPECT_TRUE((attr->flags & MD_ATTRIBUTE_FLAG_PACKED_SYMMETRIC) != 0);
-	EXPECT_EQ(MD_ATTRIBUTE_TYPE_F32, attr->format.type);
-	EXPECT_EQ(1u, attr->format.rank);
-	EXPECT_EQ(VLX_TEST_H2O_NUM_CART * (VLX_TEST_H2O_NUM_CART + 1) / 2, attr->format.shape[0]);
-
-	// Readable as either form, and the two agree
-	size_t n = 0;
-	float* packed = vlx_test_packed(&n, &t, MD_STR_LIT(VLX_TEST_DENSITY_PROPERTY));
-	ASSERT_TRUE(packed != NULL);
-	ASSERT_EQ(VLX_TEST_H2O_NUM_CART, n);
-	double full[VLX_TEST_H2O_NUM_CART * VLX_TEST_H2O_NUM_CART];
-	ASSERT_EQ(n, md_qm_extract_symmetric_f64(full, MD_COUNTOF(full), &t.sys.attributes, attr, md_attribute_slice_all(), NULL));
-	size_t k = 0;
-	double max_diff = 0.0;
-	for (size_t i = 0; i < n; ++i) {
-		for (size_t j = i; j < n; ++j, ++k) {
-			max_diff = fmax(max_diff, fabs(full[i * n + j] - (double)packed[k]));
-			max_diff = fmax(max_diff, fabs(full[j * n + i] - (double)packed[k]));
-		}
-	}
-	EXPECT_EQ(0.0, max_diff);
-
-	// Gone with its file
-	remove(h5.ptr);
-	EXPECT_EQ(0u, md_qm_extract_packed_symmetric_f32(packed, n * (n + 1) / 2, &t.sys.attributes, attr, md_attribute_slice_all(), NULL));
-
-	qm_test_free(&t);
-}
-
-// A density property is an AO matrix in the same order as the SCF density, so it has to go through
-// the same permutation into shell order: the SCF density written back as a property must come out
-// equal to the density reconstructed from the coefficients.
-UTEST(vlx, density_property_is_in_the_order_of_the_basis) {
-	const md_str_t h5 = MD_STR_LIT(VLX_PE_DIR "unittest_density_property.h5");
-	ASSERT_TRUE(vlx_test_write_density_property_h5(h5, (vlx_test_density_file_t){0}));
-
-	vlx_test_t t = {0};
-	const bool loaded = vlx_test_load(&t, h5, MD_MEGABYTES(64));
-	ASSERT_TRUE(loaded);
-
-	size_t n_prop = 0, n_dens = 0;
-	float* prop = vlx_test_packed(&n_prop, &t, MD_STR_LIT(VLX_TEST_DENSITY_PROPERTY));
-	float* dens = vlx_test_packed(&n_dens, &t, MD_STR_LIT("orbital/alpha/density"));
-	remove(h5.ptr);
-	ASSERT_TRUE(prop != NULL);
-	ASSERT_TRUE(dens != NULL);
-	ASSERT_EQ(VLX_TEST_H2O_NUM_CART, n_prop);
-	ASSERT_EQ(n_dens, n_prop);
-	EXPECT_LT(vlx_test_max_abs_diff_f32(prop, dens, n_prop * (n_prop + 1) / 2), 1.0e-6);
-
-	qm_test_free(&t);
-}
-
-// Without an SCF block: the AO dimension still comes from the basis set and the nuclear charges at
-// the root, so the density property and everything else that belongs to the basis or to the response
-// is there - and nothing that only the SCF can state is made up in its place.
-UTEST(vlx, density_property_without_scf) {
-	const md_str_t h5_scf    = MD_STR_LIT(VLX_PE_DIR "unittest_density_property_scf.h5");
-	const md_str_t h5_no_scf = MD_STR_LIT(VLX_PE_DIR "unittest_density_property_no_scf.h5");
-	ASSERT_TRUE(vlx_test_write_density_property_h5(h5_scf,    (vlx_test_density_file_t){0}));
-	ASSERT_TRUE(vlx_test_write_density_property_h5(h5_no_scf, (vlx_test_density_file_t){ .drop_scf = true }));
-
-	vlx_test_t ref = {0};
-	vlx_test_t t   = {0};
-	const bool loaded_ref = vlx_test_load(&ref, h5_scf,    MD_MEGABYTES(64));
-	const bool loaded     = vlx_test_load(&t,   h5_no_scf, MD_MEGABYTES(64));
-	ASSERT_TRUE(loaded_ref);
-	ASSERT_TRUE(loaded);
-
-	EXPECT_EQ(3u, t.sys.atom.count);
-
-	// The density property, identical to the one read alongside an SCF block
-	size_t n = 0, n_ref = 0;
-	float* prop     = vlx_test_packed(&n,     &t,   MD_STR_LIT(VLX_TEST_DENSITY_PROPERTY));
-	float* prop_ref = vlx_test_packed(&n_ref, &ref, MD_STR_LIT(VLX_TEST_DENSITY_PROPERTY));
-	remove(h5_scf.ptr);
-	remove(h5_no_scf.ptr);
-	ASSERT_TRUE(prop != NULL);
-	ASSERT_TRUE(prop_ref != NULL);
-	ASSERT_EQ(n_ref, n);
-	EXPECT_EQ(0.0, vlx_test_max_abs_diff_f32(prop, prop_ref, n * (n + 1) / 2));
-
-	// The basis and its overlap belong to the basis set, not to the orbitals
-	md_gto_basis_t basis = {0};
-	ASSERT_TRUE(qm_test_basis(&basis, &t));
-	EXPECT_EQ(n, md_gto_basis_num_ao(&basis));
-	EXPECT_TRUE(qm_test_has(&t, MD_STR_LIT("basis/overlap")));
-
-	// Nothing only the SCF states
-	EXPECT_FALSE(qm_test_has(&t, MD_STR_LIT("orbital/alpha/coefficient")));
-	EXPECT_FALSE(qm_test_has(&t, MD_STR_LIT("orbital/alpha/density")));
-	EXPECT_FALSE(qm_test_has(&t, MD_STR_LIT("vlx/scf/type")));
-	EXPECT_FALSE(qm_test_has(&t, MD_STR_LIT("dipole/ground_state/vector")));
-	EXPECT_FALSE(qm_test_has(&t, MD_STR_LIT("vlx/rsp/transition_density/attachment/factor")));
-	EXPECT_FALSE(qm_test_has(&t, MD_STR_LIT("vlx/rsp/nto/particle/coefficient")));
-
-	// The response stands on its own: its occupied/virtual split comes from the electron count at the
-	// root and the basis set's AO count, and agrees with the one derived alongside the SCF. The NTO
-	// weights need nothing more than that, and the transition dipoles are drawn from the centre of
-	// nuclear charge.
-	EXPECT_EQ(qm_test_scalar(&ref, MD_STR_LIT("vlx/rsp/num_valence"), -1.0), qm_test_scalar(&t, MD_STR_LIT("vlx/rsp/num_valence"), -2.0));
-	EXPECT_EQ(qm_test_scalar(&ref, MD_STR_LIT("vlx/rsp/num_virtual"), -1.0), qm_test_scalar(&t, MD_STR_LIT("vlx/rsp/num_virtual"), -2.0));
-	EXPECT_TRUE(qm_test_has(&t, MD_STR_LIT("vlx/rsp/nto/lambda")));
-	EXPECT_TRUE(qm_test_has(&t, MD_STR_LIT("dipole/electric_transition/vector")));
-	EXPECT_TRUE(qm_test_has(&t, MD_STR_LIT("dipole/electric_transition/origin")));
-
-	qm_test_free(&ref);
-	qm_test_free(&t);
-}
-
-// A dataset that is not one run of bytes - chunked, compressed - is read through HDF5, to the same values
-UTEST(vlx, density_property_compressed_is_read_through_hdf5) {
-	const md_str_t h5_plain = MD_STR_LIT(VLX_PE_DIR "unittest_density_property_plain.h5");
-	const md_str_t h5_comp  = MD_STR_LIT(VLX_PE_DIR "unittest_density_property_compressed.h5");
-	ASSERT_TRUE(vlx_test_write_density_property_h5(h5_plain, (vlx_test_density_file_t){0}));
-	ASSERT_TRUE(vlx_test_write_density_property_h5(h5_comp,  (vlx_test_density_file_t){ .compress = true }));
-
-	vlx_test_t plain = {0};
-	vlx_test_t comp  = {0};
-	ASSERT_TRUE(vlx_test_load(&plain, h5_plain, MD_MEGABYTES(64)));
-	ASSERT_TRUE(vlx_test_load(&comp,  h5_comp,  MD_MEGABYTES(64)));
-
-	size_t n = 0, n_comp = 0;
-	float* a = vlx_test_packed(&n,      &plain, MD_STR_LIT(VLX_TEST_DENSITY_PROPERTY));
-	float* b = vlx_test_packed(&n_comp, &comp,  MD_STR_LIT(VLX_TEST_DENSITY_PROPERTY));
-	remove(h5_plain.ptr);
-	remove(h5_comp.ptr);
-	ASSERT_TRUE(a != NULL);
-	ASSERT_TRUE(b != NULL);
-	ASSERT_EQ(n, n_comp);
-	EXPECT_EQ(0.0, vlx_test_max_abs_diff_f32(a, b, n * (n + 1) / 2));
-
-	qm_test_free(&plain);
-	qm_test_free(&comp);
-}
-
-// Rewritten in place with the same calculation, the property has moved within the file: the old
-// offset now holds the padding. It is found again where it is now.
-UTEST(vlx, density_property_follows_a_rewritten_file) {
-	const md_str_t h5 = MD_STR_LIT(VLX_PE_DIR "unittest_density_property_rewritten.h5");
-	ASSERT_TRUE(vlx_test_write_density_property_h5(h5, (vlx_test_density_file_t){0}));
-
-	vlx_test_t t = {0};
-	ASSERT_TRUE(vlx_test_load(&t, h5, MD_MEGABYTES(64)));
-	size_t n = 0, n_after = 0;
-	float* before = vlx_test_packed(&n, &t, MD_STR_LIT(VLX_TEST_DENSITY_PROPERTY));
-	ASSERT_TRUE(before != NULL);
-
-	ASSERT_TRUE(vlx_test_write_density_property_h5(h5, (vlx_test_density_file_t){ .padding = true }));
-	float* after = vlx_test_packed(&n_after, &t, MD_STR_LIT(VLX_TEST_DENSITY_PROPERTY));
-	remove(h5.ptr);
-	ASSERT_TRUE(after != NULL);
-	ASSERT_EQ(n, n_after);
-	EXPECT_EQ(0.0, vlx_test_max_abs_diff_f32(before, after, n * (n + 1) / 2));
-
-	qm_test_free(&t);
-}
-
-// Rewritten with a different geometry, the file no longer holds the calculation that was loaded, and
-// its density is not drawn over these atoms
-UTEST(vlx, density_property_refuses_a_different_calculation) {
-	const md_str_t h5 = MD_STR_LIT(VLX_PE_DIR "unittest_density_property_moved.h5");
-	ASSERT_TRUE(vlx_test_write_density_property_h5(h5, (vlx_test_density_file_t){0}));
-
-	vlx_test_t t = {0};
-	ASSERT_TRUE(vlx_test_load(&t, h5, MD_MEGABYTES(64)));
-	size_t n = 0;
-	float* before = vlx_test_packed(&n, &t, MD_STR_LIT(VLX_TEST_DENSITY_PROPERTY));
-	ASSERT_TRUE(before != NULL);
-
-	// Padded as well, so the change is seen by size even where the file system keeps coarse times
-	ASSERT_TRUE(vlx_test_write_density_property_h5(h5, (vlx_test_density_file_t){ .padding = true, .move_atom = true }));
-	const md_attribute_t* attr = qm_test_attr(&t, MD_STR_LIT(VLX_TEST_DENSITY_PROPERTY));
-	const size_t got = md_qm_extract_packed_symmetric_f32(before, n * (n + 1) / 2, &t.sys.attributes, attr, md_attribute_slice_all(), NULL);
-	remove(h5.ptr);
-	EXPECT_EQ(0u, got);
 
 	qm_test_free(&t);
 }
