@@ -871,7 +871,7 @@ if (MD_ENABLE_GPU)
     TARGET    mdlib
     NAMESPACE md_shader
     SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/render/md_compose.slang
-    ENTRIES   ao_linear ao_estimate ao_estimate_quality shadow_estimate vis_temporal ao_blur compose vol_blocks vol_transfer_prep
+    ENTRIES   ao_linear ao_estimate ao_estimate_quality shadow_estimate vis_temporal ao_blur compose compose_opaque vol_blocks vol_transfer_prep
   )
   # md_post: the scene into the image shown, display transform, temporal resolve, marks (md_post.h)
   target_sources(mdlib PRIVATE src/md_post.c src/md_post.h)

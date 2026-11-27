@@ -604,6 +604,7 @@ struct md_render_view {
     uint32_t            hiz_w, hiz_h, hiz_levels;
     bool                hiz_ok;            /* holds the last raster            */
     uint32_t            raster_count;
+    bool                moved;          /* of the latest raster: md_render_targets_t.moved */
 
     struct {
         md_gpu_mem_t    host;
@@ -1312,6 +1313,25 @@ static const float* prev_transforms(const md_render_view_t v, const md_render_fr
         }
     }
     return cur;
+}
+
+/* Whether a surface can have moved since the last raster, so the motion of
+   this one is not 0 everywhere: its camera (but for the jitter) or an instance
+   transform differs from that raster's, or it has velocities and its time
+   does (the motion's three terms; positions themselves carry none). */
+static bool surfaces_moved(const md_render_view_t v, const md_render_frame_t* f) {
+    if (!v->has_raster) return false;
+    if (memcmp(f->camera.view, v->raster_view, sizeof(v->raster_view)) != 0 ||
+        memcmp(f->camera.proj, v->raster_proj, sizeof(v->raster_proj)) != 0) return true;
+    const bool dt = (float)(f->time - v->raster_time) != 0.0f;
+    for (uint32_t i = 0; i < f->batch_count; ++i) {
+        const md_render_batch_t* b = &f->batches[i];
+        if (dt && b->points.velocity) return true;
+        const float* cur = (b->transform && b->transform_count) ? b->transform : IDENTITY;
+        const float* prv = prev_transforms(v, &v->last, v->batches, v->xforms, v->xform_offset, b, cur);
+        if (prv != cur && memcmp(prv, cur, instance_count(b) * 16 * sizeof(float)) != 0) return true;
+    }
+    return false;
 }
 
 /* A batch's fade bands for this camera. The scale (pixels per unit) at
@@ -2162,6 +2182,7 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
             v->state_lists_ok = true;
             PASS_DONE("state lists");
         }
+        v->moved = surfaces_moved(v, f);
         v->raster_count++;
         record_stats(s, v, total, gv.total_cluster_work, refit, hiz_valid);
 
@@ -2251,6 +2272,7 @@ md_render_targets_t md_render_view_targets(md_render_view_t v) {
     if (v) {
         t = v->t;
         t.raster = v->raster_count;
+        t.moved  = v->moved;
     }
     return t;
 }

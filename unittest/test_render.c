@@ -4080,6 +4080,65 @@ UTEST(render, compose_volume_coloring) {
     f_close(&fx);
 }
 
+/* The opaque twin: a frame without transparent layers, slices or volumes is
+   composed by compose_opaque, with a slice (behind the camera, so no ray meets
+   it) by compose; lit, with ambient occlusion and shadows, the two images are
+   the same to the bit. */
+UTEST(render, compose_opaque_twin) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    const uint32_t W = 96, H = 72, P = W * H;
+    cam_t c = { .tan_half = 0.5f, .aspect = (float)W / H, .n = 0.1f };
+    md_render_camera_t cam = make_camera(&c);
+    const float sp[12] = { -1.8f, -0.5f, -9.0f,   0.0f, 0.4f, -9.8f,   1.7f, -0.4f, -8.8f,   0.2f, -2.0f, -9.3f };
+    md_render_batch_t b = {0};
+    b.key = 1; b.kind = MD_RENDER_SPHERES; b.count = 4; b.points.count = 4; b.points.position = f_buf(&fx, sp, sizeof(sp));
+    b.style.spheres.radius_add = 1.6f;
+    b.color.mode = MD_RENDER_COLOR_UNIFORM; b.color.uniform = 0xFF60A0E0u;
+    md_render_frame_t f = frame_of(W, H, cam, &b, 1);
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+    md_compose_ctx_t cx = md_compose_create(fx.dev);
+    ASSERT_TRUE(cx != NULL);
+    md_gpu_texture_t out = f_tex(&fx, MD_GPU_FORMAT_RGBA16_FLOAT, MD_GPU_TEX_STORAGE, W, H, "compose");
+    uint16_t* img[2] = { malloc(P * 8), malloc(P * 8) };
+    md_compose_slice_t sl = {0};
+    sl.rect[0] = 4.0f; sl.rect[5] = 4.0f; sl.rect[10] = 1.0f; sl.rect[12] = -2.0f; sl.rect[13] = -2.0f; sl.rect[14] = 5.0f; sl.rect[15] = 1.0f;
+    sl.edge[0] = sl.edge[1] = sl.edge[2] = 1.0f; sl.edge[3] = 1.0f; sl.edge_px = 1.0f;     /* its edge alone, behind the camera */
+    char ran[2][48] = { "", "" };       /* the compose kernel each ran */
+    md_gpu_timing_t tm[64];
+    for (int i = 0; i < 2; ++i) {
+        md_compose_desc_t d = {0};
+        d.camera = cam; d.target = out;
+        d.slices = i ? &sl : NULL; d.slice_count = i ? 1 : 0;
+        d.shading.mode = MD_COMPOSE_SHADING_PBR;
+        d.shading.light_dir[0] = 0.4f; d.shading.light_dir[1] = 0.6f; d.shading.light_dir[2] = 0.7f;
+        d.shading.light_strength = 1.0f;
+        for (int k = 0; k < 3; ++k) { d.shading.dir_radiance[k] = 2.7f; d.shading.sky_radiance[k] = 0.59f; d.shading.ground_radiance[k] = 0.49f; }
+        d.shading.roughness = 0.4f; d.shading.f0 = 0.04f;
+        d.ao = 1.0f; d.shadows = true; d.light_radius = 0.1f; d.frame = 3;
+        md_gpu_stream_profile(fx.gfx, true);
+        ASSERT_TRUE(md_compose(fx.gfx, cx, fx.view, &d));
+        ASSERT_TRUE(f_read(&fx, out, img[i], P * 8));
+        const size_t n = md_gpu_stream_profile_take(fx.gfx, tm, 64);
+        md_gpu_stream_profile(fx.gfx, false);
+        for (size_t k = 0; k < n && k < 64; ++k) if (strncmp(tm[k].name, "md_compose.compose", 18) == 0) snprintf(ran[i], sizeof(ran[i]), "%s", tm[k].name);
+    }
+    int lit = 0, off = 0;
+    for (uint32_t p = 0; p < P; ++p) {
+        lit += half_bits_to_float(img[0][4 * p + 3]) > 0.5f;
+        off += memcmp(img[0] + 4 * p, img[1] + 4 * p, 8) != 0;
+    }
+    printf("    without the slice: %s; with it: %s; %d pixels lit, %d differ\n", ran[0], ran[1], lit, off);
+    EXPECT_STREQ("md_compose.compose_opaque", ran[0]);
+    EXPECT_STREQ("md_compose.compose", ran[1]);
+    EXPECT_GT(lit, (int)(P / 5));
+    EXPECT_EQ(0, off);
+    md_gpu_texture_destroy(out);
+    md_compose_destroy(cx);
+    free(img[0]); free(img[1]);
+    f_close(&fx);
+}
+
 /* Slices: a rectangle x in [-1.5, 1.5], y in [-1, 1] at z -12 facing the
    view (orthographic, a pixel 1/16 of a unit), showing the world's x through
    a red-to-blue map at opacity 0.6: inside it, 0.6 of the map's colour and
@@ -5364,7 +5423,9 @@ UTEST(render, post_resolve_unjitters_and_settles) {
    Across its right edge, along the motion, the image shown goes from it to the background over the smear: 11 taps
    over D times the strength weighted 6 - |i|, so 10 to 90 % over 6 of their 10 spacings and the taps' bilinear
    pixel (15 px at 24, 7.8 at 12), within a fifth and 2 px (the noise that offsets the taps; 5 rows averaged); the
-   history over a pixel or two. Across its top edge, along which the motion runs, as sharp as the history. */
+   history over a pixel or two. Across its top edge, along which the motion runs, as sharp as the history. Still,
+   but for the jitter (the second raster at another given offset): the targets say nothing moved and the image shown
+   is the history, to the bit; moved, they say it did. */
 UTEST(render, post_motion_blur) {
     fix_t fx;
     if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
@@ -5390,18 +5451,30 @@ UTEST(render, post_motion_blur) {
     uint16_t* h_none = malloc(P * 8);
     uint16_t* s_img  = malloc(P * 8);
 
-    const struct { float D, strength; } runs[] = { { 24.0f, 1.0f }, { 24.0f, 0.5f }, { 1.0f, 1.0f } };
-    for (int run = 0; run < 3; ++run) {
+    const struct { float D, strength; } runs[] = { { 24.0f, 1.0f }, { 24.0f, 0.5f }, { 1.0f, 1.0f }, { 0.0f, 1.0f } };
+    for (int run = 0; run < 4; ++run) {
         const float D = runs[run].D, k = runs[run].strength;
         md_render_camera_t ca = make_camera(&c), cb = ca;
-        ca.view[12] = (float)(-0.5 * D * pw);       /* the rectangle 0.5 D left of the centre, then 0.5 D right of it */
-        cb.view[12] = (float)( 0.5 * D * pw);
+        if (D > 0.0f) {                             /* (not -0 against 0, a camera that moved) */
+            ca.view[12] = (float)(-0.5 * D * pw);   /* the rectangle 0.5 D left of the centre, then 0.5 D right of it */
+            cb.view[12] = (float)( 0.5 * D * pw);
+        }
         md_render_frame_t f = frame_of(W, H, ca, &b, 1);
+        f.jitter = MD_RENDER_JITTER_GIVEN;          /* the second raster at another offset: a raster also when still */
+        f.jitter_offset[0] = 0.25f; f.jitter_offset[1] = -0.25f;
         ASSERT_TRUE(f_frame(&fx, &fp, &f, NULL));
-        md_post_resolve_t r = { .view = fx.view, .camera = ca, .frame = fp.frame, .history = hist[0], .feedback_min = 0.8f, .feedback_max = 0.95f };
+        md_post_resolve_t r = { .view = fx.view, .camera = ca, .frame = fp.frame, .history = hist[0], .feedback_min = 0.8f, .feedback_max = 0.95f,
+                                .jitter = { 0.25f, -0.25f } };
         ASSERT_TRUE(md_post_resolve(fx.gfx, fp.pc, &r));
+        const uint32_t raster0 = md_render_view_targets(fx.view).raster;
         f = frame_of(W, H, cb, &b, 1);
+        f.jitter = MD_RENDER_JITTER_GIVEN;
+        f.jitter_offset[0] = -0.25f; f.jitter_offset[1] = 0.25f;
         ASSERT_TRUE(f_frame(&fx, &fp, &f, NULL));
+        const md_render_targets_t tb = md_render_view_targets(fx.view);
+        EXPECT_NE(raster0, tb.raster);
+        EXPECT_EQ(D > 0.0f, tb.moved);
+        r.jitter[0] = -0.25f; r.jitter[1] = 0.25f;
         r.camera = cb;
         r.history_prev = hist[0];
         r.history = hist[1];
@@ -5536,10 +5609,91 @@ UTEST(render, post_present_sharpens) {
     f_close(&fx);
 }
 
+/* md_post_present's marks at output pixel (px, py) (its centre) by their formula, from the masks m (RGBA8, mw x mh)
+   over an image of grey c: the masks' set channels filtered bilinearly at 4 points 0.5 out diagonally (m) and, with
+   an outline w wider than 1, the mean of those and of 4 points w - 0.5 out (the ring); the tints by m, the outline by
+   the ring, the highlight's in its group's colour (its texel's tag, else the largest of the 3 x 3 about it, those in
+   view first). The coordinates in float, as the shader's. */
+static double ref_mask_set(const uint8_t* m, int mw, int mh, int x, int y, int ch) {
+    x = x < 0 ? 0 : x >= mw ? mw - 1 : x;
+    y = y < 0 ? 0 : y >= mh ? mh - 1 : y;
+    return m[4 * ((size_t)y * mw + x) + ch] ? 1.0 : 0.0;
+}
+static void ref_marks_about(const uint8_t* m, int mw, int mh, float px, float py, float r, float tx, float ty, double o[4]) {
+    for (int ch = 0; ch < 4; ++ch) o[ch] = 0.0;
+    for (int i = 0; i < 4; ++i) {
+        const float mx = (px + (i & 1 ? r : -r)) * tx, my = (py + (i & 2 ? r : -r)) * ty;
+        const float bx = floorf(mx - 0.5f), by = floorf(my - 0.5f), fx = mx - 0.5f - bx, fy = my - 0.5f - by;
+        const int x = (int)bx, y = (int)by;
+        for (int ch = 0; ch < 4; ++ch) {
+            const double t = ref_mask_set(m, mw, mh, x, y, ch) * (1 - fx) + ref_mask_set(m, mw, mh, x + 1, y, ch) * fx;
+            const double u = ref_mask_set(m, mw, mh, x, y + 1, ch) * (1 - fx) + ref_mask_set(m, mw, mh, x + 1, y + 1, ch) * fx;
+            o[ch] += 0.25 * (t * (1 - fy) + u * fy);
+        }
+    }
+}
+static const uint8_t* ref_texel(const uint8_t* m, int mw, int mh, int x, int y) {
+    x = x < 0 ? 0 : x >= mw ? mw - 1 : x;
+    y = y < 0 ? 0 : y >= mh ? mh - 1 : y;
+    return m + 4 * ((size_t)y * mw + x);
+}
+static int ref_tag_of(const uint8_t* t) {
+    if (t[2]) return (int)lround(t[2] / 255.0 * 15.0) - 8;
+    if (t[3]) return (int)lround(t[3] / 255.0 * 15.0) - 8;
+    return -1;
+}
+static void ref_present_marks(const uint8_t* m, int mw, int mh, int ow, int oh, const md_post_marks_t* mk, double c, int x, int y, double out[3]) {
+    const float tx = (float)mw / (float)ow, ty = (float)mh / (float)oh, px = x + 0.5f, py = y + 0.5f;
+    const float w = (float)(mk->outline_px ? mk->outline_px : 1u);
+    double a[4], ring[4], b[4];
+    ref_marks_about(m, mw, mh, px, py, 0.5f, tx, ty, a);
+    if (w > 1.0f) {
+        ref_marks_about(m, mw, mh, px, py, w - 0.5f, tx, ty, b);
+        for (int ch = 0; ch < 4; ++ch) ring[ch] = 0.5 * (a[ch] + b[ch]);
+    } else {
+        for (int ch = 0; ch < 4; ++ch) ring[ch] = a[ch];
+    }
+    for (int k = 0; k < 3; ++k) out[k] = c;
+    if (fmax(fmax(ring[1], ring[3]), fmax(a[1], a[3])) <= 0.0) return;
+    const double vis[2] = { a[0], a[2] }, hidden[2] = { fmax(a[1] - a[0], 0.0), fmax(a[3] - a[2], 0.0) };
+    double edge[2];
+    for (int i = 0; i < 2; ++i) { const double e = 2.0 - 2.0 * fabs(2.0 * ring[2 * i + 1] - 1.0); edge[i] = e < 0 ? 0 : e > 1 ? 1 : e; }
+    const float* v1 = mk->visible[1]; const float* h1 = mk->hidden[1]; const float* o1 = mk->outline[1];
+    float gc[3];
+    if (fmax(ring[3], a[3]) > 0.0) {
+        const int qx = (int)floorf(px * tx), qy = (int)floorf(py * ty);
+        int t = ref_tag_of(ref_texel(m, mw, mh, qx, qy));
+        if (t < 0) {
+            int best = -1;
+            for (int i = 0; i < 9; ++i) {
+                const uint8_t* q = ref_texel(m, mw, mh, qx + i % 3 - 1, qy + i / 3 - 1);
+                const int s = ref_tag_of(q);
+                if (s >= 0 && s + (q[2] ? 8 : 0) > best) best = s + (q[2] ? 8 : 0);
+            }
+            t = best >= 0 ? best % 8 : -1;
+        }
+        if (t > 0) { for (int k = 0; k < 3; ++k) gc[k] = mk->groups[t - 1][k]; v1 = h1 = o1 = gc; }
+    }
+    const double hl = mk->highlight < 0 ? 0 : mk->highlight > 1 ? 1 : mk->highlight;
+    for (int k = 0; k < 3; ++k) {
+        double v = out[k];
+        v += (mk->visible[0][k] - v) * mk->visible[0][3] * vis[0];
+        v += (mk->hidden[0][k]  - v) * mk->hidden[0][3]  * hidden[0];
+        v += (mk->outline[0][k] - v) * mk->outline[0][3] * edge[0];
+        v += (v1[k] - v) * mk->visible[1][3] * vis[1] * hl;
+        v += (h1[k] - v) * mk->hidden[1][3]  * hidden[1] * hl;
+        v += (o1[k] - v) * mk->outline[1][3] * edge[1] * hl;
+        out[k] = v;
+    }
+}
+
 /* The marks over an image: a selected sphere in front of a highlighted one
    of tag 3 (its group's colour): the selection's tint where it is, the
    highlight's in its group's colour where it shows, its fill where it is
-   behind the selected sphere, the image (dithered) elsewhere */
+   behind the selected sphere, the image (dithered) elsewhere. Every pixel by
+   the formula (ref_present_marks), within the dither and the 8 bits, with
+   outlines 1 and 3 pixels wide and onto an output 1.5 times the masks' size;
+   without marks, the image. */
 UTEST(render, post_present_marks) {
     fix_t fx;
     if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
@@ -5589,6 +5743,40 @@ UTEST(render, post_present_marks) {
     }
     #undef PIX
     EXPECT_EQ(0, bad);
+    /* every pixel by the formula */
+    mk.outline[0][0] = 1.0f; mk.outline[0][3] = 1.0f;                       /* outlined: red, and the highlight white */
+    mk.outline[1][0] = mk.outline[1][1] = mk.outline[1][2] = 1.0f; mk.outline[1][3] = 0.75f;
+    uint8_t* mask = malloc(P * 4);
+    ASSERT_TRUE(f_read(&fx, md_render_view_targets(fx.view).mask, mask, P * 4));
+    const struct { uint32_t w, h, outline; } cfg[] = { { W, H, 1 }, { W, H, 3 }, { 3 * W / 2, 3 * H / 2, 3 } };
+    for (int ci = 0; ci < 3; ++ci) {
+        const uint32_t ow = cfg[ci].w, oh = cfg[ci].h;
+        md_gpu_texture_t tg = f_tex(&fx, MD_GPU_FORMAT_RGBA8_UNORM, MD_GPU_TEX_STORAGE, ow, oh, "shown");
+        uint32_t* o = malloc((size_t)ow * oh * 4);
+        mk.outline_px = cfg[ci].outline;
+        md_post_present_t pf = { .image = image, .marks_view = fx.view, .marks = &mk, .target = tg, .frame = 9 };
+        ASSERT_TRUE(md_post_present(fx.gfx, pc, &pf) && f_read(&fx, tg, o, (size_t)ow * oh * 4));
+        int off_f = 0, marked = 0;
+        double worst = 0.0;
+        for (uint32_t y = 0; y < oh; ++y) for (uint32_t x = 0; x < ow; ++x) {
+            double want[3];
+            ref_present_marks(mask, (int)W, (int)H, (int)ow, (int)oh, &mk, 0.5, (int)x, (int)y, want);
+            marked += fabs(want[0] - 0.5) + fabs(want[1] - 0.5) + fabs(want[2] - 0.5) > 1.0 / 255.0;
+            for (int k = 0; k < 3; ++k) {
+                const double e = want[k] < 0 ? 0 : want[k] > 1 ? 1 : want[k];
+                const double d = fabs((double)((o[(size_t)y * ow + x] >> (8 * k)) & 0xFFu) - 255.0 * e);
+                if (d > worst) worst = d;
+                off_f += d > 1.6;
+            }
+        }
+        printf("    %u x %u, outline %u: %d of %u pixels marked, %d channels off the formula (%.2f steps at most)\n",
+               ow, oh, cfg[ci].outline, marked, ow * oh, off_f, worst);
+        EXPECT_GT(marked, (int)(ow * oh / 8));
+        EXPECT_EQ(0, off_f);
+        md_gpu_texture_destroy(tg);
+        free(o);
+    }
+    free(mask);
     /* without marks: the image, dithered by at most a step */
     md_post_present_t pn = { .image = image, .target = target, .frame = 8 };
     ASSERT_TRUE(md_post_present(fx.gfx, pc, &pn));
@@ -6475,6 +6663,7 @@ UTEST(render, motion_from_velocity) {
     md_render_frame_t f = frame_of(W, H, cam, &b, 1);
     f.time = 0.0;
     ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+    EXPECT_FALSE(md_render_view_targets(fx.view).moved);   /* no raster before */
 
     /* 0.25 s later the point has moved by v * dt; its motion is that, projected */
     const double dt = 0.25;
@@ -6483,6 +6672,7 @@ UTEST(render, motion_from_velocity) {
     f.content[MD_RENDER_CONTENT_GEOMETRY]++;
     f.time = dt;
     ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+    EXPECT_TRUE(md_render_view_targets(fx.view).moved);    /* by its velocity, camera and transforms as they were */
 
     float* mo = malloc(W * H * 4);
     uint16_t* raw = (uint16_t*)mo;
@@ -6509,6 +6699,15 @@ UTEST(render, motion_from_velocity) {
     EXPECT_NEAR(ey, my, 0.15 * fabs(ey));
     /* Background: no motion */
     EXPECT_EQ(0, raw[0]);
+
+    /* Drawn anew at the same time (another geometry, the same points): nothing moved, the motion 0 everywhere */
+    f.content[MD_RENDER_CONTENT_GEOMETRY]++;
+    ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, NULL));
+    EXPECT_FALSE(md_render_view_targets(fx.view).moved);
+    ASSERT_TRUE(f_read(&fx, md_render_view_targets(fx.view).motion, mo, W * H * 4));
+    int moving = 0;
+    for (uint32_t i = 0; i < W * H * 2; ++i) moving += (raw[i] & 0x7FFFu) != 0;
+    EXPECT_EQ(0, moving);
     free(mo);
     f_close(&fx);
 }

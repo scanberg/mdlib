@@ -80,7 +80,9 @@ bool md_post_display(md_gpu_stream_t stream, md_post_ctx_t post, const md_post_d
    frame sampled along that motion times motion_blur (11 samples over it, a
    triangle, offset by a noise) and blended with the temporal result by its
    speed, none below 2 output pixels and all of it from 15, into `shown`. The
-   history stays without it. */
+   history stays without it. Where nothing moved since the raster before
+   (md_render_targets_t.moved), `shown` is the temporal result and the tiles
+   are skipped. */
 typedef struct md_post_resolve_t {
     md_render_view_t view;         /* the frame's depth and motion (its targets)   */
     md_render_camera_t camera;     /* as the view was drawn: the depths' distances */

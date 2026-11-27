@@ -51,7 +51,7 @@ enum { AO_LEVELS = 6, VOL_STRIDE = 37, SLICE_STRIDE = 14, BLOCK = 8 };   /* md_c
 
 struct md_compose {
     md_gpu_device_t  dev;
-    md_gpu_kernel_t  k_linear, k_estimate, k_quality, k_shadow, k_temporal, k_blur, k_compose, k_blocks, k_tf;
+    md_gpu_kernel_t  k_linear, k_estimate, k_quality, k_shadow, k_temporal, k_blur, k_compose, k_opaque, k_blocks, k_tf;
     md_gpu_sampler_t trilinear;
     /* What the compose's volume arguments hold without volumes, never read: a
        null pointer or handle there let lavapipe crash (a load hoisted out of
@@ -76,12 +76,13 @@ md_compose_ctx_t md_compose_create(md_gpu_device_t device) {
     kd = md_shader_md_compose_vis_temporal_kernel(); c->k_temporal = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_compose_ao_blur_kernel();     c->k_blur     = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_compose_compose_kernel();     c->k_compose  = md_gpu_kernel_create(device, &kd);
+    kd = md_shader_md_compose_compose_opaque_kernel(); c->k_opaque = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_compose_vol_blocks_kernel();  c->k_blocks   = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_compose_vol_transfer_prep_kernel(); c->k_tf = md_gpu_kernel_create(device, &kd);
     md_gpu_sampler_desc_t sd = {0};
     sd.min_filter = sd.mag_filter = MD_GPU_FILTER_LINEAR;
     c->trilinear = md_gpu_sampler(device, &sd);
-    if (!c->k_linear || !c->k_estimate || !c->k_quality || !c->k_shadow || !c->k_temporal || !c->k_blur || !c->k_compose || !c->k_blocks || !c->k_tf || !c->trilinear.handle) {
+    if (!c->k_linear || !c->k_estimate || !c->k_quality || !c->k_shadow || !c->k_temporal || !c->k_blur || !c->k_compose || !c->k_opaque || !c->k_blocks || !c->k_tf || !c->trilinear.handle) {
         MD_LOG_ERROR("md_compose: kernel creation failed: %s", md_gpu_last_error());
         md_compose_destroy(c);
         return NULL;
@@ -94,7 +95,7 @@ md_compose_ctx_t md_compose_create(md_gpu_device_t device) {
 bool md_compose_debug_kernel_info(md_compose_ctx_t c, uint32_t i, const char** name, md_gpu_kernel_info_t* info) {
     if (!c) return false;
     const struct { const char* n; md_gpu_kernel_t k; } ks[] = {
-        { "compose", c->k_compose }, { "vol_blocks", c->k_blocks }, { "vol_transfer_prep", c->k_tf }, { "ao_linear", c->k_linear }, { "ao_estimate", c->k_estimate },
+        { "compose", c->k_compose }, { "compose_opaque", c->k_opaque }, { "vol_blocks", c->k_blocks }, { "vol_transfer_prep", c->k_tf }, { "ao_linear", c->k_linear }, { "ao_estimate", c->k_estimate },
         { "ao_quality", c->k_quality }, { "shadow_estimate", c->k_shadow }, { "vis_temporal", c->k_temporal }, { "ao_blur", c->k_blur },
     };
     if (i >= sizeof(ks) / sizeof(ks[0])) return false;
@@ -111,6 +112,7 @@ void md_compose_destroy(md_compose_ctx_t c) {
     if (c->k_temporal) md_gpu_kernel_destroy(c->k_temporal);
     if (c->k_blur)     md_gpu_kernel_destroy(c->k_blur);
     if (c->k_compose)  md_gpu_kernel_destroy(c->k_compose);
+    if (c->k_opaque)   md_gpu_kernel_destroy(c->k_opaque);
     if (c->k_blocks)   md_gpu_kernel_destroy(c->k_blocks);
     if (c->k_tf)       md_gpu_kernel_destroy(c->k_tf);
     if (c->none_field)    md_gpu_texture_destroy(c->none_field);
@@ -518,7 +520,8 @@ bool md_compose(md_gpu_stream_t s, md_compose_ctx_t c, md_render_view_t view, co
             }
         }
     }
-    ok = ok && launch(s, c->k_compose, W, H, &a);
+    /* without layers, slices or volumes, the twin that has none of their lists */
+    ok = ok && launch(s, (a.count || a.slice_count || a.vol_count) ? c->k_compose : c->k_opaque, W, H, &a);
     md_gpu_temp_end(scope);
     md_gpu_stream_set_ordering(s, prev);
     if (!ok) MD_LOG_ERROR("md_compose: %s", md_gpu_last_error());

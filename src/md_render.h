@@ -711,6 +711,11 @@ typedef struct md_render_targets_t {
                                   time the targets are drawn anew (their motion
                                   is from the raster before, also after a draw
                                   that only resolves)                          */
+    bool             moved;    /* the latest raster's camera (but for the
+                                  jitter) or an instance transform differs from
+                                  the raster's before, or it has velocities and
+                                  its time does: false, the motion is 0
+                                  everywhere                                   */
 } md_render_targets_t;
 
 /* Of a view drawn with depth_only frames: the depth, the rest 0 */

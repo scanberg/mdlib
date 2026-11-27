@@ -1338,9 +1338,11 @@ static const uint MAX_HITS = 12u;
 static const uint EV_BEGIN = 254u;
 static const uint EV_END   = 255u;
 
-[shader("compute")]
-[numthreads(8, 8, 1)]
-void compose(uint3 tid : SV_DispatchThreadID) {
+// The pixel tid composed: RICH, with the transparent layers, the slices and
+// the volumes along its ray; else the opaque surface alone (a frame without
+// any of them: compose_opaque, whose registers are those of the shading, not
+// of the march's lists)
+void compose_body<let RICH : bool>(uint3 tid) {
     Args a = MD_ARGS;
     if (tid.x >= a.width || tid.y >= a.height) return;
     int2   q   = int2(tid.xy);
@@ -1383,7 +1385,7 @@ void compose(uint3 tid : SV_DispatchThreadID) {
     float tl[16];
     uint  kd[16];
     float sd[16];
-    for (uint k = 0u; k < a.count && k < 8u; ++k) {
+    for (uint k = 0u; RICH && k < a.count && k < 8u; ++k) {
         float d = asfloat(a.layers[2u * a.count * a.stride + k * a.stride + p]);
         if (d == 0.0) break;
         tl[k] = dot(unproject(a, ndc, d) - O, D);
@@ -1391,7 +1393,7 @@ void compose(uint3 tid : SV_DispatchThreadID) {
         sd[k] = 0.0;
         nl = k + 1u;
     }
-    uint ns = min(a.slice_count, MAX_SLICES);
+    uint ns = RICH ? min(a.slice_count, MAX_SLICES) : 0u;
     for (uint i = 0u; i < ns; ++i) {
         float3 h = slice_hit(a, i, O, D);
         if (h.z < 0.0 || h.z > top) continue;
@@ -1417,7 +1419,7 @@ void compose(uint3 tid : SV_DispatchThreadID) {
     uint   kl = 0u;     // the next layer
 
     // the volumes: each ray in its texture space, the part of it inside
-    uint   nv = min(a.vol_count, MAX_VOL);
+    uint   nv = RICH ? min(a.vol_count, MAX_VOL) : 0u;
     float3 vo[MAX_VOL], vd[MAX_VOL];
     float2 vr[MAX_VOL];
     float  t_beg = T_FAR, t_end = -T_FAR, rate = 0.0;
@@ -1556,3 +1558,11 @@ void compose(uint3 tid : SV_DispatchThreadID) {
     for (; kl < nl; ++kl) surface(a, C, T, kd[kl], sd[kl], p, O + D * tl[kl], V);
     a.target[q] = float4(C + T * cov * S, 1.0 - T * (1.0 - cov));
 }
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void compose(uint3 tid : SV_DispatchThreadID) { compose_body<true>(tid); }
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void compose_opaque(uint3 tid : SV_DispatchThreadID) { compose_body<false>(tid); }

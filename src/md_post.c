@@ -22,7 +22,7 @@ typedef struct gpu_post_args_t {
     md_gpu_sampler_t     bilinear;
     md_gpu_storage_tex_t dst;
     float                sharpen;       /* present: the unsharp mask's weight */
-    uint32_t             _p2;
+    uint32_t             copy_shown;    /* resolve: the image shown is the temporal result as it is */
     md_gpu_float4        mb;            /* the motion blur: scale, the noise's seed, the tiles across, down */
     md_gpu_addr_t        tmax, tiles;
     md_gpu_storage_tex_t dst2;
@@ -228,8 +228,8 @@ bool md_post_resolve(md_gpu_stream_t s, md_post_ctx_t p, const md_post_resolve_t
         MD_LOG_ERROR("md_post_resolve: the history is to be another texture than the previous one");
         return false;
     }
-    const bool blur = d->motion_blur > 0.0f;
-    if (blur && (!tex_ok(d->shown, MD_GPU_FORMAT_RGBA16_FLOAT, MD_GPU_TEX_STORAGE, hd->width, hd->height) || d->shown == d->history)) {
+    const bool want_blur = d->motion_blur > 0.0f;
+    if (want_blur && (!tex_ok(d->shown, MD_GPU_FORMAT_RGBA16_FLOAT, MD_GPU_TEX_STORAGE, hd->width, hd->height) || d->shown == d->history)) {
         MD_LOG_ERROR("md_post_resolve: with the motion blur, the image shown is to be another STORAGE 2D texture of RGBA16_FLOAT, of the history's size");
         return false;
     }
@@ -253,8 +253,13 @@ bool md_post_resolve(md_gpu_stream_t s, md_post_ctx_t p, const md_post_resolve_t
     a.motion   = md_gpu_texture_sampled(t.motion);
     a.bilinear = p->bilinear;
     a.dst      = md_gpu_texture_storage(d->history, 0);
-    a.dst2     = md_gpu_texture_storage(blur ? d->shown : d->history, 0);
-    if (!blur) return launch(s, p->k_resolve, a.out_w, a.out_h, &a);
+    a.dst2     = md_gpu_texture_storage(want_blur ? d->shown : d->history, 0);
+    /* Nothing moved (md_render_targets_t.moved): no motion to blur along, the
+       tiles skipped and the image shown the temporal result */
+    if (!want_blur || !t.moved) {
+        a.copy_shown = want_blur ? 1u : 0u;
+        return launch(s, p->k_resolve, a.out_w, a.out_h, &a);
+    }
 
     /* the motion reduced to tiles, then to the fastest about each, for the
        resolve to blur along */

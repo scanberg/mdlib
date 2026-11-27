@@ -35,7 +35,7 @@ struct Args {
     DescriptorHandle<SamplerState>        bilinear; // clamp to edge
     DescriptorHandle<RWTexture2D<float4>> dst;
     float  sharpen;     // present: the unsharp mask's weight (0: none)
-    uint   _p2;
+    uint   copy_shown;  // resolve, without the blur: the image shown (dst2) is the temporal result
     float4 mb;          // the motion blur: x its scale (0: none), y the noise's seed, z, w the tiles across, down
     float2* tmax;       // vel_tilemax's: a tile's fastest motion (frame pixels)
     float2* tiles;      // vel_neighbormax's: the fastest about a tile, which the resolve blurs along
@@ -289,7 +289,10 @@ float4 sample_motion(Args a, float2 uv, float2 vt) {
 // The image shown at the output pixel tid from the temporal result c: c, or
 // blended with the frame along the motion
 void write_shown(Args a, uint3 tid, float2 g_px, float2 j, float4 c) {
-    if (a.mb.x <= 0.0) return;
+    if (a.mb.x <= 0.0) {
+        if (a.copy_shown != 0u) a.dst2[int2(tid.xy)] = c;
+        return;
+    }
     float2 in_size  = float2(float(a.in_w), float(a.in_h));
     float2 out_size = float2(float(a.out_w), float(a.out_h));
     float2 sv    = a.mb.x * tiles_at(a, g_px);                 // frame pixels
@@ -451,13 +454,41 @@ float3 group_color(Args a, int g) {
     }
 }
 
+// Whether a mark is within reach of the group's 8 x 8 output pixels: in the
+// mask texels its taps can read (marks_about's, at 0.5 and the outline's
+// width, a texel more about them), 2 x 2 to a bilinear fetch at their shared
+// corner (a set channel is 8 / 15 or more, so a quarter of it shows)
+groupshared uint pr_marks;
+bool marks_in_reach(Args a, uint2 gid, uint gi, float2 to_mask) {
+    if (gi == 0u) pr_marks = 0u;
+    GroupMemoryBarrierWithGroupSync();
+    float  r   = max(0.5, a.mk.y - 0.5);
+    float2 g0  = float2(gid * 8u);
+    int2   top = int2(int(a.in_w), int(a.in_h)) - 1;
+    int2   lo  = clamp(int2(floor((g0 + 0.5 - r) * to_mask - 0.5)) - 1, int2(0), top);
+    int2   hi  = clamp(int2(floor((g0 + 7.5 + r) * to_mask - 0.5)) + 2, int2(0), top);
+    int2   nb  = (hi - lo) / 2 + 1;                                     // the 2 x 2 blocks across, down
+    float2 in_size = float2(float(a.in_w), float(a.in_h));
+    bool   hit = false;
+    for (int k = int(gi); k < nb.x * nb.y && !hit; k += 64) {
+        float2 corner = float2(lo + 2 * int2(k % nb.x, k / nb.x) + 1);
+        hit = any(a.mask.SampleLevel(a.bilinear, corner / in_size, 0.0) > float4(0.0));
+    }
+    if (hit) InterlockedOr(pr_marks, 1u);
+    GroupMemoryBarrierWithGroupSync();
+    return pr_marks != 0u;
+}
+
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void present(uint3 tid : SV_DispatchThreadID) {
+void present(uint3 tid : SV_DispatchThreadID, uint3 gid : SV_GroupID, uint gi : SV_GroupIndex) {
     Args a = MD_ARGS;
+    float2 out_size = float2(float(a.out_w), float(a.out_h));
+    float2 to_mask  = float2(float(a.in_w), float(a.in_h)) / out_size;
+    bool   marks    = false;
+    if (a.mk.w > 0.5) marks = marks_in_reach(a, gid.xy, gi, to_mask);     // the whole group, before any leaves
     if (tid.x >= a.out_w || tid.y >= a.out_h) return;
     float2 px = float2(tid.xy) + 0.5;
-    float2 out_size = float2(float(a.out_w), float(a.out_h));
     bool   same = a.img_w == a.out_w && a.img_h == a.out_h;
     float4 c = same ? a.src.Load(int3(int2(tid.xy), 0)) : a.src.SampleLevel(a.bilinear, px / out_size, 0.0);
     // the sharpening (viamd's sharpen pass): an unsharp mask of the four
@@ -469,8 +500,7 @@ void present(uint3 tid : SV_DispatchThreadID) {
                     a.src.Load(int3(clamp(q + int2(0, -1), int2(0), hi), 0)).rgb + a.src.Load(int3(clamp(q + int2(0, 1), int2(0), hi), 0)).rgb;
         c.rgb = (1.0 + a.sharpen) * c.rgb - 0.25 * a.sharpen * n;
     }
-    if (a.mk.w > 0.5) {
-        float2 to_mask = float2(float(a.in_w), float(a.in_h)) / out_size;
+    if (marks) {
         float4 m    = marks_about(a, px, 0.5, to_mask);
         float4 ring = a.mk.y > 1.0 ? 0.5 * (m + marks_about(a, px, a.mk.y - 0.5, to_mask)) : m;
         if (max(max(ring.y, ring.w), max(m.y, m.w)) > 0.0) {
