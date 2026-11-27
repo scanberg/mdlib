@@ -48,8 +48,10 @@ The pattern's 16 strata (the samples' turn and phase) are each drawn within,
 not taken at their centres, so that they do not show as 16 fixed copies of an
 edge where those are wider than the blur. Then, with a history
 (md_compose_history_t), viamd's temporal filter (ssao_temporal.frag): the
-4 x 4 pattern permuted and the draws within its strata new every frame,
-and each texel averaged over it in its history (32 frames still, down to 4
+4 x 4 pattern permuted, which phase goes with which turn changed, and the
+draws within its strata new every frame (else the history converges to the
+mean of 16 fixed pairs, bands in a soft shadow seen close), and each texel
+averaged over it in its history (32 frames still, down to 4
 moving a pixel a frame and more), reprojected by md_render's motion and taken
 where it lies on the surface's tangent plane (no colour clamp); then a
 separable bilateral blur over one period of the pattern. Without a history,

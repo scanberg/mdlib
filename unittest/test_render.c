@@ -4827,11 +4827,12 @@ UTEST(render, compose_shadows) {
 }
 
 /* A soft shadow settles smooth: a thin rod (a capsule, radius 0.15) high over a floor, lying along the light, seen from
-   above (orthographic) under a light of 0.35 rad (20 degrees) from aside, settled over 32 frames of one raster with a
-   history (and once without). The light's chord is taken across the slice, so each chord moves the rod's narrow
-   shadow sideways: fixed chords make as many copies of it, stripes along the light (the bands of a soft shadow seen
-   close). Across the shadow, the occlusion's ripple about its own 9-pixel mean (5 columns averaged), over where it is
-   above a tenth of its peak, settled over 32 frames: below 0.017 of the peak. */
+   above (orthographic) under a light of 0.35 rad (20 degrees) from aside, with a history over one raster (and once
+   without). The light's chord is taken across the slice, so each chord moves the rod's narrow shadow sideways: fixed
+   chords make as many copies of it, stripes along the light (the bands of a soft shadow seen close), and so do chords
+   whose steps keep the same phase. Across the shadow, the occlusion's ripple about its own 9-pixel mean (5 columns
+   averaged), over where it is above a tenth of its peak, settled over 32 frames and then averaged over 64 (what the
+   history converges to, its noise averaged out): below 0.008 of the peak. */
 UTEST(render, compose_soft_shadow_settles_smooth) {
     fix_t fx;
     if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
@@ -4878,19 +4879,23 @@ UTEST(render, compose_soft_shadow_settles_smooth) {
     for (int hist = 0; hist < 2; ++hist) {
         md_compose_history_t hy = hist ? md_compose_history_create() : NULL;
         d.history = hy;
-        for (int i = 0; i < (hist ? 32 : 1); ++i) ASSERT_TRUE(md_compose(fx.gfx, cx, fx.view, &d));
-        ASSERT_TRUE(f_read(&fx, out, px1, P * 8));
+        /* settled over 32 frames, then the mean of the next NA as they are shown */
+        for (int i = 0; i < (hist ? 32 : 0); ++i) ASSERT_TRUE(md_compose(fx.gfx, cx, fx.view, &d));
+        const int NA = hist ? 64 : 1;
         /* the occlusion down the column: the mean of 5 columns */
         double o[576];
-        peak[hist] = 0.0;
-        for (uint32_t y = 0; y < H; ++y) {
-            o[y] = 0.0;
-            for (int l = -2; l <= 2; ++l) {
-                const size_t p = (size_t)y * W + (size_t)(col + l);
-                o[y] += 0.2 * (1.0 - half_bits_to_float(px1[4 * p + 1]) / half_bits_to_float(px0[4 * p + 1]));
+        memset(o, 0, sizeof(o));
+        for (int fr = 0; fr < NA; ++fr) {
+            ASSERT_TRUE(md_compose(fx.gfx, cx, fx.view, &d) && f_read(&fx, out, px1, P * 8));
+            for (uint32_t y = 0; y < H; ++y) {
+                for (int l = -2; l <= 2; ++l) {
+                    const size_t p = (size_t)y * W + (size_t)(col + l);
+                    o[y] += 0.2 / NA * (1.0 - half_bits_to_float(px1[4 * p + 1]) / half_bits_to_float(px0[4 * p + 1]));
+                }
             }
-            peak[hist] = fmax(peak[hist], o[y]);
         }
+        peak[hist] = 0.0;
+        for (uint32_t y = 0; y < H; ++y) peak[hist] = fmax(peak[hist], o[y]);
         double sum = 0.0;
         int m = 0;
         for (uint32_t y = 4; y + 4 < H; ++y) {
@@ -4901,13 +4906,15 @@ UTEST(render, compose_soft_shadow_settles_smooth) {
             m++;
         }
         ripple[hist] = m ? sqrt(sum / m) / peak[hist] : 0.0;
-        printf("    %s: the shadow across %d pixels, its peak occlusion %.3f, its ripple %.4f of it\n", hist ? "32 frames with a history" : "no history", m, peak[hist], ripple[hist]);
+        printf("    %s: the shadow across %d pixels, its peak occlusion %.3f, its ripple %.4f of it\n", hist ? "settled with a history, 64 frames' mean" : "no history", m, peak[hist], ripple[hist]);
         if (getenv("MD_DUMP_PROFILE")) { for (uint32_t y = 0; y < H; ++y) if (o[y] >= 0.1 * peak[hist]) printf("%.3f ", o[y]); printf("\n"); }
         if (hy) md_compose_history_destroy(fx.gfx, hy);
     }
-    /* the strata's centres alone (as viamd had them) make 0.025 after 32 frames, a staircase of bumps; drawn within
-       them, 0.012. Without a history the stripes become a grain of the same size, which this does not tell apart */
-    EXPECT_LT(ripple[1], 0.017);
+    /* the strata's centres alone (as viamd had them) make 0.025, a staircase of bumps; drawn within them but each
+       chord paired with the same phase every frame, 0.011 (the history converges to those 16 pairs' mean); paired
+       anew each frame, 0.005. Without a history the stripes become a grain of the same size, which this does not
+       tell apart */
+    EXPECT_LT(ripple[1], 0.008);
     EXPECT_GT(peak[1], 0.10);
     md_gpu_texture_destroy(out);
     md_compose_destroy(cx);

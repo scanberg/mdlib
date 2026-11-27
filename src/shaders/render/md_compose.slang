@@ -211,6 +211,17 @@ float2 stratum_jitter(Args a, int2 hp) {
     return float2(float(h >> 8), float(hash_u(h) >> 8)) / 16777216.0;
 }
 
+// The stratum of the steps' phase paired with pattern index k's angle or
+// chord: k's bit reversal, so that every 4 x 4 block holds all 16 of each,
+// turned by a draw a frame with a history. The pairs would otherwise be the
+// same 16 of the 256 every frame, and the history would converge to their
+// mean, not to the whole's: for each chord a phase within a 16th of a step,
+// whose log-spaced steps find an occluder's edge at fixed distances, bands
+// across a soft shadow that no number of frames removes.
+uint phase_k(Args a, uint k) {
+    return (bit_reverse4(k) + (a.seed != 0u ? hash_u(a.seed * 0x9E3779B9u + 17u) >> 28 : 0u)) & 15u;
+}
+
 // At half resolution: plane 0
 [shader("compute")]
 [numthreads(8, 8, 1)]
@@ -234,7 +245,7 @@ void ao_estimate(uint3 tid : SV_DispatchThreadID) {
     // blur integrates its periods, vis_temporal its frames
     uint   k   = pattern_k(a, hp);
     float2 u   = stratum_jitter(a, hp);
-    float  rk  = (float(bit_reverse4(k)) + u.y) / 16.0;
+    float  rk  = (float(phase_k(a, k)) + u.y) / 16.0;
     float  rot = 6.2831853 * (float(k) + u.x) / 16.0;
     float  jr  = frac(rk + 1.0 / 32.0);
     float2 cs  = float2(cos(rot), sin(rot));
@@ -326,7 +337,7 @@ void ao_estimate_quality(uint3 tid : SV_DispatchThreadID) {
     // the 4 x 4 interleaved (rotation, radial phase) pattern of ao_estimate
     uint   k    = pattern_k(a, hp);
     float2 u    = stratum_jitter(a, hp);
-    float  rk   = (float(bit_reverse4(k)) + u.y) / 16.0;
+    float  rk   = (float(phase_k(a, k)) + u.y) / 16.0;
     float  phi0 = PI * (float(k) + u.x) / (16.0 * float(AO_NUM_SLICES));
     float2 d    = float2(cos(phi0), sin(phi0));
     const float  SLICE_STEP = PI / float(AO_NUM_SLICES);
@@ -627,11 +638,11 @@ void shadow_estimate(uint3 tid : SV_DispatchThreadID) {
     float2 full = float2(float(a.width), float(a.height));
     float  r_max = max(SH_R_MAX * full.y, 2.0 * SH_R_MIN);
 
-    // the 4 x 4 pattern of the occlusion: k picks the chord's stratum, its bit
-    // reversal the steps' phase's; stratum_jitter where within them
+    // the 4 x 4 pattern of the occlusion: k picks the chord's stratum,
+    // phase_k the steps' phase's; stratum_jitter where within them
     uint   k  = pattern_k(a, hp);
     float2 u  = stratum_jitter(a, hp);
-    float  rk = (float(bit_reverse4(k)) + u.y) / 16.0;
+    float  rk = (float(phase_k(a, k)) + u.y) / 16.0;
 
     // the chord: the light's direction turned across the plane of V and the
     // light, and the disk's half width there
