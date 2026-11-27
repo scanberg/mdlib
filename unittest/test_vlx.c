@@ -404,6 +404,9 @@ UTEST(vlx, scf_density_names_h2o) {
 	}
 	// the difference: nothing
 	EXPECT_EQ(0u, count[3]);
+	// the same from the occupations alone (md_qm_density_factor_count), and one density in both spins
+	for (int i = 0; i < 4; ++i) EXPECT_EQ(count[i], md_qm_density_factor_count(&t.sys, paths[i], NULL, NULL));
+	EXPECT_TRUE(md_qm_density_spins_closed(&t.sys));
 
 	qm_test_free(&t);
 }

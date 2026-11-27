@@ -669,5 +669,40 @@ UTEST(molden, restricted_open_shell) {
     EXPECT_LT(qm_test_orthonormality(&t, MD_STR_LIT("orbital/alpha/coefficient")), 1.0e-5);
     EXPECT_NEAR(9.0, qm_test_electron_count(&t, MD_STR_LIT("orbital/total/density")), 1.0e-5);
     EXPECT_NEAR(1.0, qm_test_electron_count(&t, MD_STR_LIT("orbital/difference/density")), 1.0e-5);
+    // the same orbitals, other occupations: two densities, whose difference is the singly occupied orbital's square
+    EXPECT_FALSE(md_qm_density_spins_closed(&t.sys));
+    bool nonneg = false;
+    EXPECT_EQ(1u, md_qm_density_factor_count(&t.sys, MD_STR_LIT("orbital/difference/density"), NULL, &nonneg));
+    EXPECT_TRUE(nonneg);
     qm_test_free(&t);
+}
+
+// What md_qm_density_factor_count and md_qm_density_spins_closed answer from the occupations alone, against the
+// orbitals md_qm_density_factors reads: a restricted closed shell (one density in both spins) and an unrestricted
+// open shell (two sets of orbitals, two densities)
+UTEST(molden, density_counts_without_the_orbitals) {
+    static const struct { const char* file; bool closed; } cases[] = {
+        { MD_UNITTEST_DATA_DIR "/molden/h2o_ccpvdz.molden",  true  },
+        { MD_UNITTEST_DATA_DIR "/molden/oh_631gs_uhf.molden", false },
+    };
+    static const md_str_t paths[4] = {
+        MD_STR_INIT("orbital/alpha/density"), MD_STR_INIT("orbital/beta/density"),
+        MD_STR_INIT("orbital/total/density"), MD_STR_INIT("orbital/difference/density"),
+    };
+    for (size_t i = 0; i < MD_COUNTOF(cases); ++i) {
+        qm_test_t t = {0};
+        ASSERT_TRUE(molden_load(&t, cases[i].file, MD_MEGABYTES(32)));
+        EXPECT_EQ(cases[i].closed, md_qm_density_spins_closed(&t.sys));
+        for (int k = 0; k < 4; ++k) {
+            double *rows = NULL, *w = NULL;
+            size_t na = 0;
+            const size_t n = md_qm_density_factors(&rows, &w, &na, &t.sys, paths[k], NULL, t.alloc);
+            bool nonneg = false;
+            EXPECT_EQ(n, md_qm_density_factor_count(&t.sys, paths[k], NULL, &nonneg));
+            // sums of squares at weights >= 0, but the difference: nothing (closed) or the beta orbitals' at -n (open)
+            EXPECT_EQ(k < 3, nonneg);
+        }
+        EXPECT_EQ(0u, md_qm_density_factor_count(&t.sys, MD_STR_LIT("orbital/nothing/density"), NULL, NULL));
+        qm_test_free(&t);
+    }
 }

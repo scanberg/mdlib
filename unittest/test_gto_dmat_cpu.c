@@ -284,6 +284,43 @@ UTEST(gto_dmat_cpu, density_build_in_blocks_is_the_whole_build) {
     }
 }
 
+// The average local ionization energy's numerator in tiles (md_qm_alie_dmat_build, blocks of 5 orbitals and the
+// default) is md_gto_dmat_build of md_qm_alie_orbitals' rows at their energy weights, bit for bit; its floor the
+// smallest ratio of those weights to the occupations (|e_HOMO|); its denominator's weights the total density's.
+UTEST(gto_dmat_cpu, alie_numerator_in_blocks_is_the_whole_build) {
+    static const char* files[] = { "h2o.h5", "mol.h5" };
+    for (int fi = 0; fi < 2; ++fi) {
+        dc_src_t s;
+        ASSERT_TRUE(dc_load(&s, files[fi]));
+        double *rows = NULL, *w = NULL, *we = NULL;
+        size_t na = 0;
+        const size_t count = md_qm_alie_orbitals(&rows, &w, &we, &na, &s.t.sys, md_get_heap_allocator());
+        ASSERT_TRUE(count > 0);
+        double lowest = 1.0e300;
+        for (size_t k = 0; k < count; ++k) lowest = fmin(lowest, we[k] / w[k]);
+        EXPECT_EQ(count, md_qm_density_factor_count(&s.t.sys, MD_STR_LIT("orbital/total/density"), NULL, NULL));
+        md_gto_dmat_t ref;
+        ASSERT_TRUE(dc_init(&ref, &s, 1.0e-7, 1.0));
+        ASSERT_TRUE(md_gto_dmat_build(&ref, rows, na, 1, we, count, NULL));
+        static const size_t blocks[2] = { 5, 0 };
+        for (int b = 0; b < 2; ++b) {
+            md_gto_dmat_t dm;
+            ASSERT_TRUE(dc_init(&dm, &s, 1.0e-7, 1.0));
+            double fl = 0.0;
+            EXPECT_EQ(count, md_qm_alie_dmat_build(&dm, &fl, &s.t.sys, blocks[b], NULL));
+            EXPECT_EQ(0, memcmp(dm.tiles, ref.tiles, sizeof(double) * 256 * ref.num_tiles));
+            EXPECT_EQ(lowest, fl);
+            md_gto_dmat_free(&dm);
+        }
+        printf("  %s: the ALIE numerator of %zu orbitals, |e_HOMO| %.4f Eh\n", files[fi], count, lowest);
+        md_gto_dmat_free(&ref);
+        md_free(md_get_heap_allocator(), rows, sizeof(double) * count * na);
+        md_free(md_get_heap_allocator(), w, sizeof(double) * count);
+        md_free(md_get_heap_allocator(), we, sizeof(double) * count);
+        dc_free(&s);
+    }
+}
+
 UTEST(gto_dmat_cpu, evaluate_matches_matrix) {
     dc_src_t s;
     ASSERT_TRUE(dc_load(&s, "mol.h5"));

@@ -902,6 +902,42 @@ size_t md_qm_density_factors(double** out_rows, double** out_weights, size_t* ou
 // next read into the same place (256 MB: 320 orbitals at 100k AOs, all of a protein's occupied ones at 9.6k)
 #define QM_DMAT_BLOCK_BYTES ((size_t)256 << 20)
 
+// The orbitals of an SCF density's channels (qm_density_channels) of nonzero weight, weighted wa and wb (the channels'
+// weights, or others over the same orbitals), into dm a block at a time: alpha's then beta's, in the order
+// md_qm_density_orbitals gives them. Returns the orbitals added; 0 when there are none (dm then not touched) or on
+// failure (logged as who).
+static size_t qm_dmat_build_channels(struct md_gto_dmat_t* dm, const md_system_t* sys, const qm_density_channels_t* ch, const double* wa,
+                                     const double* wb, size_t max_rows, const struct md_executor_t* executor, const char* who) {
+    if (ch->na != dm->num_ao) {
+        MD_LOG_ERROR("%s: the orbitals are over %zu AOs, the tiles %u", who, ch->na, dm->num_ao);
+        return 0;
+    }
+    md_allocator_i* heap = md_get_heap_allocator();
+    size_t count = 0;
+    for (size_t k = 0; k < ch->nma; ++k) count += wa[k] != 0.0;
+    for (size_t k = 0; k < ch->nmb; ++k) count += wb[k] != 0.0;
+    if (count == 0) return 0;
+    const size_t rows_max = max_rows ? max_rows : MD_MAX(QM_DMAT_BLOCK_BYTES / (sizeof(double) * ch->na), (size_t)128);
+    const size_t cap = MD_MIN(rows_max, count);
+    double* rows = (double*)md_alloc(heap, sizeof(double) * cap * ch->na);
+    double* w    = (double*)md_alloc(heap, sizeof(double) * cap);
+    bool ok = rows && w && md_gto_dmat_clear(dm);
+    for (int spin = 0; ok && spin < 2; ++spin) {
+        const md_attribute_t* c = spin == 0 ? ch->ca : ch->cb;
+        const double* weight    = spin == 0 ? wa : wb;
+        const size_t  nm        = spin == 0 ? ch->nma : ch->nmb;
+        for (size_t k = 0; ok && c && k < nm;) {
+            size_t n = 0;
+            ok = qm_read_weighted_block(rows, w, &n, &k, &sys->attributes, c, weight, nm, ch->na, cap);
+            if (ok && n) ok = md_gto_dmat_add(dm, rows, ch->na, 1, w, n, executor);
+        }
+    }
+    if (rows) md_free(heap, rows, sizeof(double) * cap * ch->na);
+    if (w)    md_free(heap, w, sizeof(double) * cap);
+    if (!ok) MD_LOG_ERROR("%s: out of memory, a failed read or cancelled", who);
+    return ok ? count : 0;
+}
+
 size_t md_qm_density_dmat_build(struct md_gto_dmat_t* dm, const md_system_t* sys, md_str_t density_path, const md_attribute_slice_t* slice,
                                 size_t max_rows, const struct md_executor_t* executor) {
     if (!dm || !sys) return 0;
@@ -924,38 +960,41 @@ size_t md_qm_density_dmat_build(struct md_gto_dmat_t* dm, const md_system_t* sys
     // an SCF density: its orbitals a block at a time, alpha's then beta's, in the order md_qm_density_orbitals gives them
     md_temp_scope_t temp = md_temp_begin();
     qm_density_channels_t ch;
-    if (!qm_density_channels(&ch, sys, sa, sb, false, false, temp)) {
-        md_temp_end(temp);
-        return 0;
-    }
-    if (ch.na != dm->num_ao) {
-        MD_LOG_ERROR("md_qm_density_dmat_build: the orbitals are over %zu AOs, the tiles %u", ch.na, dm->num_ao);
-        md_temp_end(temp);
-        return 0;
-    }
+    const size_t count = qm_density_channels(&ch, sys, sa, sb, false, false, temp) ?
+                         qm_dmat_build_channels(dm, sys, &ch, ch.wa, ch.wb, max_rows, executor, "md_qm_density_dmat_build") : 0;
+    md_temp_end(temp);
+    return count;
+}
+
+size_t md_qm_alie_dmat_build(struct md_gto_dmat_t* dm, double* out_floor, const md_system_t* sys, size_t max_rows,
+                             const struct md_executor_t* executor) {
+    if (out_floor) *out_floor = 0.0;
+    if (!dm || !sys) return 0;
+    // md_qm_alie_orbitals' orbitals (both spins, canonical, with energies), weighted as its energy weights
+    md_temp_scope_t temp = md_temp_begin();
+    qm_density_channels_t ch;
     size_t count = 0;
-    for (size_t k = 0; k < ch.nma; ++k) count += ch.wa[k] != 0.0;
-    for (size_t k = 0; k < ch.nmb; ++k) count += ch.wb[k] != 0.0;
-    const size_t rows_max = max_rows ? max_rows : MD_MAX(QM_DMAT_BLOCK_BYTES / (sizeof(double) * ch.na), (size_t)128);
-    const size_t cap = MD_MIN(rows_max, MD_MAX(count, (size_t)1));
-    double* rows = count ? (double*)md_alloc(heap, sizeof(double) * cap * ch.na) : NULL;
-    double* w    = count ? (double*)md_alloc(heap, sizeof(double) * cap) : NULL;
-    bool ok = rows && w && md_gto_dmat_clear(dm);
-    for (int spin = 0; ok && spin < 2; ++spin) {
-        const md_attribute_t* c = spin == 0 ? ch.ca : ch.cb;
-        const double* weight    = spin == 0 ? ch.wa : ch.wb;
-        const size_t  nm        = spin == 0 ? ch.nma : ch.nmb;
-        for (size_t k = 0; ok && c && k < nm;) {
-            size_t n = 0;
-            ok = qm_read_weighted_block(rows, w, &n, &k, &sys->attributes, c, weight, nm, ch.na, cap);
-            if (ok && n) ok = md_gto_dmat_add(dm, rows, ch.na, 1, w, n, executor);
+    if (qm_density_channels(&ch, sys, 1.0, 1.0, true, true, temp)) {
+        double* ea = ch.nma ? (double*)md_temp_alloc(temp, sizeof(double) * ch.nma) : NULL;
+        double* eb = ch.nmb ? (double*)md_temp_alloc(temp, sizeof(double) * ch.nmb) : NULL;
+        double lowest = DBL_MAX;     // |e| over the orbitals counted
+        if ((ch.nma && !ea) || (ch.nmb && !eb)) {
+            MD_LOG_ERROR("md_qm_alie_dmat_build: out of memory");
+        } else {
+            for (size_t k = 0; k < ch.nma; ++k) {
+                ea[k] = ch.wa[k] == 0.0 ? 0.0 : ch.oa[k] * fabs(ch.ea[k]) + (ch.shared ? ch.ob[k] * fabs(ch.eb[k]) : 0.0);
+                if (ch.wa[k] != 0.0) lowest = MD_MIN(lowest, ea[k] / ch.wa[k]);
+            }
+            for (size_t k = 0; k < ch.nmb; ++k) {
+                eb[k] = ch.wb[k] * fabs(ch.eb[k]);
+                if (ch.wb[k] != 0.0) lowest = MD_MIN(lowest, fabs(ch.eb[k]));
+            }
+            count = qm_dmat_build_channels(dm, sys, &ch, ea, eb, max_rows, executor, "md_qm_alie_dmat_build");
+            if (count && out_floor) *out_floor = lowest;
         }
     }
-    if (rows) md_free(heap, rows, sizeof(double) * cap * ch.na);
-    if (w)    md_free(heap, w, sizeof(double) * cap);
     md_temp_end(temp);
-    if (!ok && count) MD_LOG_ERROR("md_qm_density_dmat_build: '" MD_STR_FMT "': out of memory, a failed read or cancelled", MD_STR_ARG(density_path));
-    return ok ? count : 0;
+    return count;
 }
 
 bool md_qm_density_factors_available(const md_system_t* sys, md_str_t density_path) {
@@ -975,6 +1014,60 @@ bool md_qm_density_factors_available(const md_system_t* sys, md_str_t density_pa
     char fp[256];
     if (md_snprintf(fp, sizeof(fp), MD_STR_FMT "/factor", MD_STR_ARG(density_path)) >= (int)sizeof(fp)) return false;
     return md_attributes_find(&sys->attributes, md_str_from_cstr(fp)) != NULL;
+}
+
+size_t md_qm_density_factor_count(const md_system_t* sys, md_str_t density_path, const md_attribute_slice_t* slice, bool* out_nonnegative) {
+    if (out_nonnegative) *out_nonnegative = false;
+    if (!sys) return 0;
+    size_t count = 0;
+    bool nonneg = true;
+    md_temp_scope_t temp = md_temp_begin();
+    double sa = 0.0, sb = 0.0;
+    if (qm_scf_density_spins(&sa, &sb, density_path)) {
+        // the orbitals md_qm_density_orbitals reads: those of nonzero weight
+        qm_density_channels_t ch;
+        if (qm_density_channels(&ch, sys, sa, sb, false, false, temp)) {
+            for (size_t k = 0; k < ch.nma; ++k) { count += ch.wa[k] != 0.0; nonneg &= ch.wa[k] >= 0.0; }
+            for (size_t k = 0; k < ch.nmb; ++k) { count += ch.wb[k] != 0.0; nonneg &= ch.wb[k] >= 0.0; }
+        }
+        md_temp_end(temp);
+        if (out_nonnegative) *out_nonnegative = count > 0 && nonneg;
+        return count;
+    }
+    char wp[256];
+    const md_attribute_t* wa = md_snprintf(wp, sizeof(wp), MD_STR_FMT "/weight", MD_STR_ARG(density_path)) < (int)sizeof(wp) ?
+                               md_attributes_find(&sys->attributes, md_str_from_cstr(wp)) : NULL;
+    const md_attribute_slice_t sl = slice ? *slice : md_attribute_slice_all();
+    md_attribute_format_t wf;
+    if (wa && md_attribute_slice_format(&wf, wa, sl) && wf.rank == 1 && wf.shape[0] > 0) {
+        const size_t R = wf.shape[0];
+        double* w = (double*)md_temp_alloc(temp, sizeof(double) * R);
+        if (w && md_attribute_extract_f64(w, R, &sys->attributes, wa, sl, md_unit_none()) == R) {
+            for (size_t r = 0; r < R; ++r) { count += w[r] != 0.0; nonneg &= w[r] >= 0.0; }
+        }
+    }
+    md_temp_end(temp);
+    if (out_nonnegative) *out_nonnegative = count > 0 && nonneg;
+    return count;
+}
+
+bool md_qm_density_spins_closed(const md_system_t* sys) {
+    if (!sys) return false;
+    const md_attribute_t *ca = NULL, *oa = NULL, *cb = NULL, *ob = NULL;
+    size_t nma = 0, naa = 0, nmb = 0, nab = 0;
+    if (!qm_spin_orbital_attrs(&ca, &oa, &nma, &naa, sys, false)) return false;
+    // no (usable) beta channel: the beta density is the alpha one, as qm_density_channels makes it
+    if (!qm_spin_orbital_attrs(&cb, &ob, &nmb, &nab, sys, true)) return true;
+    if (nma != nmb || naa != nab || !md_attribute_same_data(ca, cb)) return false;
+    if (md_attribute_same_data(oa, ob)) return true;
+    md_temp_scope_t temp = md_temp_begin();
+    double* a = (double*)md_temp_alloc(temp, sizeof(double) * nma);
+    double* b = (double*)md_temp_alloc(temp, sizeof(double) * nma);
+    bool same = a && b && md_attribute_extract_f64(a, nma, &sys->attributes, oa, md_attribute_slice_all(), md_unit_none()) == nma &&
+                md_attribute_extract_f64(b, nma, &sys->attributes, ob, md_attribute_slice_all(), md_unit_none()) == nma;
+    for (size_t k = 0; same && k < nma; ++k) same = a[k] == b[k];
+    md_temp_end(temp);
+    return same;
 }
 
 size_t md_qm_alie_orbitals(double** out_rows, double** out_weights, double** out_energy_weights, size_t* out_num_ao,

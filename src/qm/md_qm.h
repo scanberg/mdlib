@@ -238,6 +238,20 @@ size_t md_qm_density_dmat_build(struct md_gto_dmat_t* dm, const struct md_system
 // The SCF densities are names, not attributes: no AO matrix is published, a density is made from its factors.
 bool md_qm_density_factors_available(const struct md_system_t* sys, md_str_t density_path);
 
+// How many factors md_qm_density_factors gives for density_path (slice: as there) at most, from the weights alone (an
+// SCF density's occupations, another's <density_path>/weight): the factors are not read. Exact for an SCF density; for
+// another, a factor of nonzero weight whose values are all zero is counted too. 0 where there are none.
+// out_nonnegative (may be NULL): every weight counted >= 0, so that the density, a sum of squares, is positive
+// semidefinite (a restricted open shell's difference density is; an unrestricted one's is not).
+size_t md_qm_density_factor_count(const struct md_system_t* sys, md_str_t density_path, const struct md_attribute_slice_t* slice,
+                                  bool* out_nonnegative);
+
+// Whether orbital/alpha/density and orbital/beta/density are one density, a closed shell: beta's coefficients a second
+// name for alpha's (md_attribute_same_data, as a restricted calculation publishes them) and the same occupations, or no
+// beta channel at all. From the occupations alone: the orbitals are not read, so two sets of orbitals are two
+// densities even where their values agree. False without alpha orbitals.
+bool md_qm_density_spins_closed(const struct md_system_t* sys);
+
 // The orbitals of the AVERAGE LOCAL IONIZATION ENERGY (Sjoberg, Murray, Brinck and Politzer, Can. J. Chem. 68,
 // 1440 (1990)),
 //
@@ -274,6 +288,16 @@ size_t md_qm_alie_orbitals(double** out_rows, double** out_weights, double** out
 // Whether md_qm_alie_orbitals can make them: the alpha orbitals' coefficients, occupations and energies are
 // there and the occupations are those of canonical orbitals. Reads the occupations only.
 bool md_qm_alie_available(const struct md_system_t* sys);
+
+// The numerator of the average local ionization energy, sum_k n_k |e_k| |phi_k|^2 over md_qm_alie_orbitals' orbitals
+// (their energy weights), into the tiles dm (md_gto_dmat_init'ed for the system's basis) as md_qm_density_dmat_build
+// makes a density's: the orbitals read max_rows at a time (0: 256 MB of them), so a protein's are never all held. The
+// denominator is the total density's tiles (orbital/total/density: md_qm_alie_orbitals' weights are its occupations).
+// out_floor (may be NULL): the smallest |e_k| over those orbitals, the bound I(r) never goes below (|e_HOMO|), hartree.
+// Over executor (NULL: the calling thread). Returns the orbitals added; 0 where md_qm_alie_orbitals has none (not
+// canonical, no energies) or on failure (logged).
+size_t md_qm_alie_dmat_build(struct md_gto_dmat_t* dm, double* out_floor, const struct md_system_t* sys, size_t max_rows,
+                             const struct md_executor_t* executor);
 
 // The orbitals of the LOCAL ELECTRON ATTACHMENT ENERGY (Brinck, Carlqvist and Stenlid, J. Phys. Chem. A 120,
 // 10023 (2016)),
