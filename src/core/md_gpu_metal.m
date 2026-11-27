@@ -208,10 +208,41 @@ static void md_mtl_timing_release(md_mtl_timing_t* t) {
     if (t && __atomic_sub_fetch(&t->refs, 1, __ATOMIC_ACQ_REL) == 0) md_free(md_get_heap_allocator(), t, sizeof(*t));
 }
 
+/* Profiling (md_gpu_stream_profile): each operation a submission of its own,
+   recorded here with its name and tag and the value it signals; its command
+   buffer's completed handler writes its GPU time and then publishes `done` =
+   that value, once it is still the record's (a ring that wrapped before the
+   handler ran has given the slot to a newer operation). An allocation of its
+   own, held like md_mtl_timing_t by the stream and by every handler not yet
+   run. */
+#define MD_MTL_PROF_RING 4096u
+
+typedef struct md_mtl_prof_t {
+    char     name[48];
+    uint32_t tag;
+    uint64_t value;                         /* __atomic */
+    uint64_t done;                          /* __atomic */
+    double   seconds;
+} md_mtl_prof_t;
+
+typedef struct md_mtl_prof_ring_t {
+    int32_t       refs;                     /* __atomic */
+    md_mtl_prof_t rec[MD_MTL_PROF_RING];
+} md_mtl_prof_ring_t;
+
+static void md_mtl_prof_release(md_mtl_prof_ring_t* r) {
+    if (r && __atomic_sub_fetch(&r->refs, 1, __ATOMIC_ACQ_REL) == 0) md_free(md_get_heap_allocator(), r, sizeof(*r));
+}
+
 typedef struct md_gpu_stream {
     md_gpu_device_t      device;
     md_gpu_stream_kind_t kind;
     md_mtl_timing_t*     timing;          /* NULL: not timed */
+    md_mtl_prof_ring_t*  prof;            /* made the first time the stream profiles */
+    bool                 prof_on;
+    uint32_t             prof_tag;
+    uint64_t             prof_head, prof_tail;     /* the records not taken */
+    char                 pass_label[48];
     __unsafe_unretained id<MTLCommandQueue>          queue;
     __unsafe_unretained id<MTLSharedEvent>           timeline;
     __unsafe_unretained id<MTLCommandBuffer>         cmd;
@@ -866,8 +897,37 @@ static id<MTLBlitCommandEncoder> md_mtl_blit_encoder(md_gpu_stream_t s) {
     return s->blit_enc;
 }
 
-static void md_mtl_did_op(md_gpu_stream_t s) {
+static bool md_mtl_stream_submit(md_gpu_stream_t s);
+
+/* While the stream profiles: the operation just recorded, `name`, is ended as
+   a submission of its own, its GPU time to be taken */
+static void md_mtl_prof_op(md_gpu_stream_t s, const char* name) {
+    if (!s->prof_on || !s->prof || !s->timing || !s->cmd || !s->has_work) return;
+    md_mtl_prof_ring_t* ring = s->prof;
+    if (s->prof_head - s->prof_tail >= MD_MTL_PROF_RING) s->prof_tail++;     /* the oldest, not taken: dropped */
+    const uint32_t i = (uint32_t)(s->prof_head++ % MD_MTL_PROF_RING);
+    md_mtl_prof_t* r = &ring->rec[i];
+    const uint64_t v = s->next_value;
+    md_snprintf(r->name, sizeof(r->name), "%s", name ? name : "operation");
+    r->tag = s->prof_tag;
+    __atomic_store_n(&r->done, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&r->value, v, __ATOMIC_RELEASE);
+    __atomic_add_fetch(&ring->refs, 1, __ATOMIC_RELAXED);
+    [s->cmd addCompletedHandler:^(id<MTLCommandBuffer> cb) {
+        md_mtl_prof_t* q = &ring->rec[i];
+        if (__atomic_load_n(&q->value, __ATOMIC_ACQUIRE) == v) {
+            const CFTimeInterval t0 = cb.GPUStartTime, t1 = cb.GPUEndTime;
+            q->seconds = (t0 > 0.0 && t1 >= t0) ? (double)(t1 - t0) : -1.0;
+            __atomic_store_n(&q->done, v, __ATOMIC_RELEASE);
+        }
+        md_mtl_prof_release(ring);
+    }];
+    md_mtl_stream_submit(s);
+}
+
+static void md_mtl_did_op(md_gpu_stream_t s, const char* name) {
     md_mtl_mark_work(s);
+    md_mtl_prof_op(s, name);
 }
 
 md_gpu_ordering_t md_gpu_stream_set_ordering(md_gpu_stream_t s, md_gpu_ordering_t ordering) {
@@ -1118,11 +1178,46 @@ bool md_gpu_sync_gpu_seconds(md_gpu_sync_t sync, double* seconds) {
     return true;
 }
 
+void md_gpu_stream_profile(md_gpu_stream_t s, bool on) {
+    if (!s) return;
+    if (on && !s->prof) {
+        if (!s->timing) return;                        /* not timed */
+        s->prof = (md_mtl_prof_ring_t*)md_alloc(md_get_heap_allocator(), sizeof(md_mtl_prof_ring_t));
+        if (!s->prof) { md_gpu_fail("out of memory"); return; }
+        md_memset(s->prof, 0, sizeof(*s->prof));
+        s->prof->refs = 1;
+    }
+    s->prof_on = on;
+}
+
+void md_gpu_stream_profile_tag(md_gpu_stream_t s, uint32_t tag) {
+    if (s) s->prof_tag = tag;
+}
+
+size_t md_gpu_stream_profile_take(md_gpu_stream_t s, md_gpu_timing_t* out, size_t cap) {
+    if (!s || !s->prof || !out) return 0;
+    size_t n = 0;
+    while (n < cap && s->prof_tail < s->prof_head) {
+        md_mtl_prof_t* r = &s->prof->rec[s->prof_tail % MD_MTL_PROF_RING];
+        const uint64_t v = __atomic_load_n(&r->value, __ATOMIC_RELAXED);
+        if (__atomic_load_n(&r->done, __ATOMIC_ACQUIRE) != v) break;           /* still running, or its handler is */
+        s->prof_tail++;
+        if (r->seconds < 0.0) continue;
+        md_gpu_timing_t* o = &out[n++];
+        md_memcpy(o->name, r->name, sizeof(o->name));
+        o->tag     = r->tag;
+        o->seconds = r->seconds;
+    }
+    return n;
+}
+
 /* Free a stream's own objects. The stream must be idle. */
 static void md_mtl_stream_free(md_gpu_stream_t s) {
     md_gpu_device_t dev = s->device;
     md_mtl_timing_release(s->timing);    /* the handlers still to run hold it */
     s->timing = NULL;
+    md_mtl_prof_release(s->prof);
+    s->prof = NULL;
     md_mtl_close_encoder(s, false);
     if (s->cmd) { MD_MTL_RELEASE(s->cmd); s->cmd = nil; }
     md_mtl_arena_free(dev, &s->arena);
@@ -1268,7 +1363,7 @@ static bool md_mtl_record_buffer_copy(md_gpu_stream_t s, id<MTLBuffer> src, uint
     id<MTLBlitCommandEncoder> enc = md_mtl_blit_encoder(s);
     if (!enc) return false;
     [enc copyFromBuffer:src sourceOffset:src_off toBuffer:dst destinationOffset:dst_off size:size];
-    md_mtl_did_op(s);
+    md_mtl_did_op(s, "copy");
     return true;
 }
 
@@ -1333,7 +1428,7 @@ bool md_gpu_memset(md_gpu_stream_t s, md_gpu_addr_t dst, uint8_t value, size_t s
         id<MTLBlitCommandEncoder> enc = md_mtl_blit_encoder(s);
         if (!enc) return false;
         [enc fillBuffer:b.buffer range:NSMakeRange((NSUInteger)abeg, (NSUInteger)(aend - abeg)) value:value];
-        md_mtl_did_op(s);
+        md_mtl_did_op(s, "memset");
         if (abeg > begin && !md_mtl_byte_op(s, dst, 0, abeg - begin, value)) return false;
         if (end  > aend  && !md_mtl_byte_op(s, dst + (aend - begin), 0, end - aend, value)) return false;
         return true;
@@ -1871,7 +1966,7 @@ static bool md_mtl_record_texture_copy(md_gpu_stream_t s, md_gpu_texture_t t, id
                          options:opt];
         }
     }
-    md_mtl_did_op(s);
+    md_mtl_did_op(s, "copy");
     return true;
 }
 
@@ -2250,7 +2345,7 @@ static bool md_mtl_dispatch(md_gpu_stream_t s, md_gpu_kernel_t k, uint64_t args_
     } else {
         [enc dispatchThreadgroups:MTLSizeMake(grid.x, grid.y, grid.z) threadsPerThreadgroup:tg];
     }
-    md_mtl_did_op(s);
+    md_mtl_did_op(s, k->label);
     return true;
 }
 
@@ -2747,6 +2842,7 @@ bool md_gpu_render_begin(md_gpu_stream_t s, const md_gpu_render_desc_t* desc) {
         if (!enc) return md_gpu_fail("renderCommandEncoderWithDescriptor failed on stream '%s'", s->label);
         MD_MTL_RETAIN(enc);
         if (desc->label) enc.label = [NSString stringWithUTF8String:desc->label];
+        md_snprintf(s->pass_label, sizeof(s->pass_label), "%s", desc->label ? desc->label : "render pass");
         if (s->fence_valid) [enc waitForFence:s->fence beforeStages:MTLRenderStageVertex | MTLRenderStageFragment];
         s->render_enc   = enc;
         s->declared_res = 0;
@@ -2779,6 +2875,7 @@ bool md_gpu_render_end(md_gpu_stream_t s) {
     md_mtl_close_encoder(s, true);
     s->in_pass        = false;
     s->bound_pipeline = NULL;
+    md_mtl_prof_op(s, s->pass_label);
     return true;
 }
 
@@ -3047,7 +3144,7 @@ bool md_gpu_copy_texture(md_gpu_stream_t s, md_gpu_texture_t dst, const md_gpu_t
                    toTexture:dst->texture destinationSlice:dr.first_layer + l destinationLevel:dr.mip
            destinationOrigin:dr.origin];
     }
-    md_mtl_did_op(s);
+    md_mtl_did_op(s, "copy");
     return true;
 }
 

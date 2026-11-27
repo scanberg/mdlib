@@ -418,6 +418,93 @@ UTEST(gpu, sync_gpu_seconds) {
     gpu_close(&f);
 }
 
+/* PROFILING (md_gpu_stream_profile): nothing timed before a stream profiles; then each operation, by the kernel's
+   label or what it is, with the tag set before it, in order, once its submission has completed (on Metal a moment
+   after, from its completed handler); 64 launches of a kernel take longer than one of the same; nothing after
+   profiling stops; and of more operations than are kept, the last 4096. Skipped where the queue cannot time. */
+static size_t gpu_profile_take_all(md_gpu_stream_t s, md_gpu_timing_t* out, size_t cap, size_t want) {
+    md_gpu_stream_sync(s);
+    size_t n = 0;
+    for (int i = 0; i < 1000 && n < want; ++i) {
+        n += md_gpu_stream_profile_take(s, out + n, cap - n);
+        if (n < want) md_thread_sleep(1);
+    }
+    return n;
+}
+
+UTEST(gpu, stream_profile) {
+    gpu_fixture_t f;
+    if (!gpu_open(&f)) UTEST_SKIP(gpu_no_device_reason());
+    md_gpu_device_info_t info;
+    md_gpu_device_info(f.dev, &info);
+    if (!info.timestamps) { gpu_close(&f); UTEST_SKIP("the compute queue does not time"); }
+
+    enum { N = 1 << 16, STEPS = 64, CAP = 8192 };
+    md_gpu_timing_t* t = (md_gpu_timing_t*)malloc(CAP * sizeof(md_gpu_timing_t));
+    md_gpu_addr_t a = gpu_alloc(&f, f.compute, N * sizeof(uint32_t));
+    md_gpu_addr_t b = gpu_alloc(&f, f.compute, N * sizeof(uint32_t));
+    ASSERT_TRUE(t && a && b);
+    const md_gpu_kernel_desc_t kf = md_shader_gpu_test_fill_kernel(), ks = md_shader_gpu_test_scale_add_kernel();
+
+    /* not profiling: nothing */
+    fill_args_t fa = {0};
+    fa.n = N; fa.base = 0; fa.dst = a;
+    ASSERT_TRUE(MD_GPU_LAUNCH(f.compute, f.k_fill, grid1(f.k_fill, N), fa));
+    md_gpu_stream_sync(f.compute);
+    EXPECT_EQ(0u, md_gpu_stream_profile_take(f.compute, t, CAP));
+
+    md_gpu_stream_profile(f.compute, true);
+    md_gpu_stream_profile_tag(f.compute, 1);
+    ASSERT_TRUE(MD_GPU_LAUNCH(f.compute, f.k_fill, grid1(f.k_fill, N), fa));
+    md_gpu_stream_profile_tag(f.compute, 2);
+    md_gpu_addr_t src = a, dst = b;
+    for (int i = 0; i < STEPS; ++i) {
+        scale_args_t sa = {0};
+        sa.n = N; sa.mul = 1; sa.add = 1; sa.src = src; sa.dst = dst;
+        ASSERT_TRUE(MD_GPU_LAUNCH(f.compute, f.k_scale, grid1(f.k_scale, N), sa));
+        md_gpu_addr_t tmp = src; src = dst; dst = tmp;
+    }
+    md_gpu_stream_profile_tag(f.compute, 3);
+    ASSERT_TRUE(md_gpu_memset(f.compute, a, 0, 256));
+    const size_t n = gpu_profile_take_all(f.compute, t, CAP, 2 + STEPS);
+    ASSERT_EQ((size_t)(2 + STEPS), n);
+    double fill_s = 0.0, scale_s = 0.0;
+    int bad = 0;
+    for (size_t i = 0; i < n; ++i) {
+        const char* want = i == 0 ? (kf.label ? kf.label : kf.entry_point) : i <= STEPS ? (ks.label ? ks.label : ks.entry_point) : "memset";
+        const uint32_t tag = i == 0 ? 1u : i <= STEPS ? 2u : 3u;
+        if (strcmp(t[i].name, want) != 0 || t[i].tag != tag || !(t[i].seconds >= 0.0 && t[i].seconds < 10.0)) {
+            if (bad++ < 4) printf("  timing %zu: '%s' tag %u %g s, wanted '%s' tag %u\n", i, t[i].name, t[i].tag, t[i].seconds, want, tag);
+        }
+        if (i == 0) fill_s = t[i].seconds; else if (i <= STEPS) scale_s += t[i].seconds;
+    }
+    printf("  '%s' %.3f ms, %d launches of '%s' %.3f ms\n", t[0].name, fill_s * 1e3, (int)STEPS, t[1].name, scale_s * 1e3);
+    EXPECT_EQ(0, bad);
+    EXPECT_GT(scale_s, fill_s);
+    EXPECT_EQ(0u, md_gpu_stream_profile_take(f.compute, t, CAP));    /* taken */
+
+    /* stopped: nothing more */
+    md_gpu_stream_profile(f.compute, false);
+    ASSERT_TRUE(MD_GPU_LAUNCH(f.compute, f.k_fill, grid1(f.k_fill, N), fa));
+    md_gpu_stream_sync(f.compute);
+    EXPECT_EQ(0u, md_gpu_stream_profile_take(f.compute, t, CAP));
+
+    /* more than are kept, not taken: the last 4096 */
+    md_gpu_stream_profile(f.compute, true);
+    for (int i = 0; i < 4200; ++i) {
+        ASSERT_TRUE(md_gpu_memset(f.compute, a, 0, 64));
+        if (i % 512 == 511) md_gpu_stream_record(f.compute);
+    }
+    const size_t m = gpu_profile_take_all(f.compute, t, CAP, 4096);
+    EXPECT_EQ((size_t)4096, m);
+    md_gpu_stream_profile(f.compute, false);
+
+    md_gpu_free(f.compute, a);
+    md_gpu_free(f.compute, b);
+    free(t);
+    gpu_close(&f);
+}
+
 /* PIECES (md_gpu_pieces.h): an evaluation over N elements issued as ranges, each its
    own submission, a few ahead; the result as one launch would make it, the progress
    from 0 to 1, more than one piece. Then the same issued all at once (ahead < 0)

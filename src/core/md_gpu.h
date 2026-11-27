@@ -502,6 +502,43 @@ void md_gpu_sync_wait(md_gpu_sync_t sync);
    queue family without timestamps, a transfer-only stream). Never waits. */
 bool md_gpu_sync_gpu_seconds(md_gpu_sync_t sync, double* seconds);
 
+/* ---- Profiling --------------------------------------------------------------
+
+   A stream that profiles times on the GPU each operation it records: each
+   launch, render pass, copy and upload, named after it -- a kernel by its label
+   (md_gpu_kernel_desc_t.label, its entry point without one), a render pass by
+   its label, the rest by what they are ("copy", "upload", "clear") -- and
+   tagged with the stream's tag at the time (md_gpu_stream_profile_tag: the
+   caller's section, say). md_gpu_stream_profile_take hands the timings over
+   once their submission has completed. For finding where a frame's GPU time
+   goes, on devices the vendors' profilers no longer support among others.
+
+   Vulkan: a timestamp after each operation. An operation's time runs from the
+   end of the one before it in its command buffer (or the buffer's start) to
+   its own end: the barrier before it counts to it, and in EXPLICIT ordering,
+   where operations may overlap, it is the time it added. Metal: each
+   operation is a submission of its own while the stream profiles, timed from
+   its start to its end on the GPU, so the submissions' own cost counts to
+   small ones. Where the queue cannot time (md_gpu_device_info_t.timestamps)
+   nothing is timed. Profiling off, a stream records as it did before. */
+
+typedef struct md_gpu_timing_t {
+    char     name[48];
+    uint32_t tag;
+    double   seconds;
+} md_gpu_timing_t;
+
+void md_gpu_stream_profile(md_gpu_stream_t stream, bool on);
+
+/* Recorded with each operation that follows (0 at first) */
+void md_gpu_stream_profile_tag(md_gpu_stream_t stream, uint32_t tag);
+
+/* The timings of the operations not taken before whose submissions have
+   completed, oldest first, at most `cap` of them: how many were written to
+   `out`. Those of more than the last 4096 operations recorded are dropped.
+   Never waits. */
+size_t md_gpu_stream_profile_take(md_gpu_stream_t stream, md_gpu_timing_t* out, size_t cap);
+
 /* ---- Ordering ---------------------------------------------------------------
 
    IMPLICIT (the default): each operation is ordered after everything before it

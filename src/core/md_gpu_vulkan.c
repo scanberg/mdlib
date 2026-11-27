@@ -93,6 +93,11 @@ written on one and read on another needs no queue-family ownership transfer.
 /* Submissions a stream keeps the GPU times of (md_gpu_sync_gpu_seconds): two
    timestamps each, in a ring of query pairs */
 #define MD_VK_TS_RING                256u
+/* Profiling (md_gpu_stream_profile): the operations a stream keeps the times
+   of until they are taken, and twice as many timestamps (an operation's end,
+   and a command buffer's start) */
+#define MD_VK_PROF_RING              4096u
+#define MD_VK_PROF_QUERIES           (2u * MD_VK_PROF_RING)
 #define MD_VK_DEFAULT_TEXTURE_SLOTS 4096u /* sampled + storage views share them */
 #define MD_VK_MAX_SAMPLERS         256u
 #define MD_VK_ARENA_PAGE_SIZE   (256u * 1024u)
@@ -194,6 +199,16 @@ typedef struct md_vk_queue_t {
     md_mutex_t mutex;
 } md_vk_queue_t;
 
+/* A profiled operation: its name and tag, the submission it is in, and the
+   timestamps its time runs between (counts of the stream's timestamps: query
+   count % MD_VK_PROF_QUERIES) */
+typedef struct md_vk_prof_t {
+    char     name[48];
+    uint32_t tag;
+    uint64_t value;
+    uint64_t q0, q1;
+} md_vk_prof_t;
+
 typedef struct md_gpu_stream {
     md_gpu_device_t      device;
     md_gpu_stream_kind_t kind;
@@ -269,6 +284,18 @@ typedef struct md_gpu_stream {
     VkQueryPool          ts_pool;
     uint64_t             ts_mask;          /* the valid bits of a timestamp */
     uint64_t             ts_value[MD_VK_TS_RING];
+
+    /* Profiling (md_gpu_stream_profile): a timestamp after each operation in
+       prof_pool, made with the records the first time the stream profiles.
+       prof_q counts the timestamps written; prof_prev is the one the next
+       operation's time starts at, + 1 (0: none yet in this command buffer);
+       the records run from prof_tail (the next to take) to prof_head. */
+    bool                 prof_on;
+    uint32_t             prof_tag;
+    VkQueryPool          prof_pool;
+    md_vk_prof_t*        prof;
+    uint64_t             prof_q, prof_prev, prof_head, prof_tail;
+    char                 pass_label[48];
 
     bool                 is_default;
     char                 label[64];
@@ -2281,6 +2308,15 @@ md_gpu_stream_t md_gpu_stream_default(md_gpu_device_t dev, md_gpu_stream_kind_t 
 
 md_gpu_device_t md_gpu_stream_device(md_gpu_stream_t s) { return s ? s->device : NULL; }
 
+/* A timestamp into the open command buffer, outside a render pass: its count */
+static uint64_t md_vk_prof_stamp(md_gpu_stream_t s, VkPipelineStageFlags2 stage) {
+    const uint64_t q = s->prof_q++;
+    const uint32_t i = (uint32_t)(q % MD_VK_PROF_QUERIES);
+    vkCmdResetQueryPool(s->open, s->prof_pool, i, 1);
+    vkCmdWriteTimestamp2(s->open, stage, s->prof_pool, i);
+    return q;
+}
+
 /* Acquire a command buffer, recycling any whose submission has completed. */
 static bool md_vk_stream_ensure_cmd(md_gpu_stream_t s) {
     if (s->open) return true;
@@ -2324,6 +2360,8 @@ static bool md_vk_stream_ensure_cmd(md_gpu_stream_t s) {
         vkCmdResetQueryPool(s->open, s->ts_pool, q, 2);
         vkCmdWriteTimestamp2(s->open, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, s->ts_pool, q);
     }
+    /* Profiling: where the time of its first operation starts */
+    s->prof_prev = s->prof_on && s->prof_pool ? md_vk_prof_stamp(s, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT) + 1 : 0;
     /* The first operation recorded here still needs a dependency on earlier
        work: batches submitted to one queue may overlap -- submission order
        alone creates no memory dependency. A barrier's first synchronisation
@@ -2437,10 +2475,26 @@ static VkCommandBuffer md_vk_begin_op(md_gpu_stream_t s, md_gpu_stage_flags_t co
     return s->open;
 }
 
-/* Mark that an operation was recorded, writing in `producers`. */
-static void md_vk_end_op(md_gpu_stream_t s, md_gpu_stage_flags_t producers) {
+/* Mark that an operation was recorded, writing in `producers`; `name` is what
+   profiling calls it. */
+static void md_vk_end_op(md_gpu_stream_t s, md_gpu_stage_flags_t producers, const char* name) {
     s->written |= producers;
     md_vk_mark_work(s);
+    if (!s->prof_on || !s->prof_pool) return;
+    /* Its end, after everything before it: its time runs from the end of the
+       operation before it (or the command buffer's start). The first after
+       profiling began within a command buffer only starts the next one's. */
+    const uint64_t q = md_vk_prof_stamp(s, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+    if (s->prof_prev) {
+        if (s->prof_head - s->prof_tail >= MD_VK_PROF_RING) s->prof_tail++;      /* the oldest, not taken: dropped */
+        md_vk_prof_t* r = &s->prof[s->prof_head++ % MD_VK_PROF_RING];
+        md_snprintf(r->name, sizeof(r->name), "%s", name ? name : "operation");
+        r->tag   = s->prof_tag;
+        r->value = s->next_value;
+        r->q0    = s->prof_prev - 1;
+        r->q1    = q;
+    }
+    s->prof_prev = q + 1;
 }
 
 /* Both edges of an EXPLICIT region are ordered: its first operation after
@@ -2690,6 +2744,57 @@ bool md_gpu_sync_gpu_seconds(md_gpu_sync_t sync, double* seconds) {
     return true;
 }
 
+void md_gpu_stream_profile(md_gpu_stream_t s, bool on) {
+    if (!s) return;
+    if (on && !s->prof_pool) {
+        if (!s->ts_pool) return;                       /* the queue cannot time */
+        md_gpu_device_t dev = s->device;
+        s->prof = (md_vk_prof_t*)md_alloc(dev->alloc, MD_VK_PROF_RING * sizeof(md_vk_prof_t));
+        if (!s->prof) { md_gpu_fail("out of memory"); return; }
+        VkQueryPoolCreateInfo qpci = {VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+        qpci.queryType  = VK_QUERY_TYPE_TIMESTAMP;
+        qpci.queryCount = MD_VK_PROF_QUERIES;
+        if (!md_vk_check(vkCreateQueryPool(dev->device, &qpci, NULL, &s->prof_pool), "vkCreateQueryPool")) {
+            md_free(dev->alloc, s->prof, MD_VK_PROF_RING * sizeof(md_vk_prof_t));
+            s->prof = NULL;
+            s->prof_pool = VK_NULL_HANDLE;
+            return;
+        }
+    }
+    /* The first operation of an open command buffer only starts the times */
+    if (on && !s->prof_on) s->prof_prev = 0;
+    s->prof_on = on;
+}
+
+void md_gpu_stream_profile_tag(md_gpu_stream_t s, uint32_t tag) {
+    if (s) s->prof_tag = tag;
+}
+
+size_t md_gpu_stream_profile_take(md_gpu_stream_t s, md_gpu_timing_t* out, size_t cap) {
+    if (!s || !s->prof || !out) return 0;
+    const uint64_t done = md_vk_stream_completed(s);
+    const double   scale = (double)s->device->ts_period * 1.0e-9;
+    size_t n = 0;
+    while (n < cap && s->prof_tail < s->prof_head) {
+        const md_vk_prof_t* r = &s->prof[s->prof_tail % MD_VK_PROF_RING];
+        if (r->value > done) break;                                            /* still running */
+        s->prof_tail++;
+        if (s->prof_q - r->q0 > MD_VK_PROF_QUERIES) continue;                  /* its timestamps reused */
+        uint64_t t0 = 0, t1 = 0;
+        if (vkGetQueryPoolResults(s->device->device, s->prof_pool, (uint32_t)(r->q0 % MD_VK_PROF_QUERIES), 1, sizeof(t0), &t0,
+                                  sizeof(uint64_t), VK_QUERY_RESULT_64_BIT) != VK_SUCCESS ||
+            vkGetQueryPoolResults(s->device->device, s->prof_pool, (uint32_t)(r->q1 % MD_VK_PROF_QUERIES), 1, sizeof(t1), &t1,
+                                  sizeof(uint64_t), VK_QUERY_RESULT_64_BIT) != VK_SUCCESS) {
+            continue;
+        }
+        md_gpu_timing_t* o = &out[n++];
+        md_memcpy(o->name, r->name, sizeof(o->name));
+        o->tag     = r->tag;
+        o->seconds = (double)(((t1 & s->ts_mask) - (t0 & s->ts_mask)) & s->ts_mask) * scale;
+    }
+    return n;
+}
+
 void md_gpu_sync_wait(md_gpu_sync_t sync) {
     if (!md_gpu_sync_is_valid(sync)) return;
     VkSemaphoreWaitInfo wi = {VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
@@ -2715,6 +2820,8 @@ static void md_vk_stream_free(md_gpu_stream_t s) {
     md_vk_arena_free(dev, &s->arena);
     md_gpu_heap_temps_free(&dev->heap, &s->temps);
     if (s->ts_pool) vkDestroyQueryPool(dev->device, s->ts_pool, NULL);
+    if (s->prof_pool) vkDestroyQueryPool(dev->device, s->prof_pool, NULL);
+    if (s->prof) md_free(dev->alloc, s->prof, MD_VK_PROF_RING * sizeof(md_vk_prof_t));
     vkDestroyCommandPool(dev->device, s->cmd_pool, NULL);
     if (s->timeline) vkDestroySemaphore(dev->device, s->timeline, NULL);
     md_mutex_destroy(&s->wait_mutex);
@@ -2855,7 +2962,7 @@ static bool md_vk_record_buffer_copy(md_gpu_stream_t s, VkBuffer src, uint64_t s
     if (!cmd) return false;
     VkBufferCopy region = {src_off, dst_off, size};
     vkCmdCopyBuffer(cmd, src, dst, 1, &region);
-    md_vk_end_op(s, MD_GPU_STAGE_TRANSFER);
+    md_vk_end_op(s, MD_GPU_STAGE_TRANSFER, "copy");
     return true;
 }
 
@@ -2919,7 +3026,7 @@ bool md_gpu_memset(md_gpu_stream_t s, md_gpu_addr_t dst, uint8_t value, size_t s
         VkCommandBuffer cmd = md_vk_begin_op(s, MD_GPU_STAGE_TRANSFER);
         if (!cmd) return false;
         vkCmdFillBuffer(cmd, b.buffer, abeg, aend - abeg, ((uint32_t)value) * 0x01010101u);
-        md_vk_end_op(s, MD_GPU_STAGE_TRANSFER);
+        md_vk_end_op(s, MD_GPU_STAGE_TRANSFER, "memset");
     }
 
     /* Unaligned head and tail go through a small staged copy. */
@@ -3673,7 +3780,7 @@ static bool md_vk_record_texture_copy(md_gpu_stream_t s, md_gpu_texture_t t, VkB
     if (!cmd) return false;
     if (to_texture) vkCmdCopyBufferToImage(cmd, buffer, t->image, VK_IMAGE_LAYOUT_GENERAL, 1, copy);
     else            vkCmdCopyImageToBuffer(cmd, t->image, VK_IMAGE_LAYOUT_GENERAL, buffer, 1, copy);
-    md_vk_end_op(s, MD_GPU_STAGE_TRANSFER);
+    md_vk_end_op(s, MD_GPU_STAGE_TRANSFER, "copy");
     return true;
 }
 
@@ -3754,7 +3861,7 @@ bool md_gpu_copy_texture(md_gpu_stream_t s, md_gpu_texture_t dst, const md_gpu_t
     VkCommandBuffer cmd = md_vk_begin_op(s, MD_GPU_STAGE_TRANSFER);
     if (!cmd) return false;
     vkCmdCopyImage(cmd, src->image, VK_IMAGE_LAYOUT_GENERAL, dst->image, VK_IMAGE_LAYOUT_GENERAL, 1, &ic);
-    md_vk_end_op(s, MD_GPU_STAGE_TRANSFER);
+    md_vk_end_op(s, MD_GPU_STAGE_TRANSFER, "copy");
     return true;
 }
 
@@ -4075,7 +4182,7 @@ static bool md_vk_dispatch(md_gpu_stream_t s, md_gpu_kernel_t k, uint64_t args_a
     if (indirect) vkCmdDispatchIndirect(cmd, indirect->buffer, indirect->offset);
     else          vkCmdDispatch(cmd, grid.x, grid.y, grid.z);
     md_vk_dispatch_label_end(dev, cmd);
-    md_vk_end_op(s, MD_GPU_STAGE_COMPUTE);
+    md_vk_end_op(s, MD_GPU_STAGE_COMPUTE, k->label);
     return true;
 }
 
@@ -4667,6 +4774,7 @@ bool md_gpu_render_begin(md_gpu_stream_t s, const md_gpu_render_desc_t* desc) {
     if (!cmd) return false;
     md_gpu_device_t dev = s->device;
     s->pass_labelled = desc->label && md_vk_debug_labels(dev);
+    md_snprintf(s->pass_label, sizeof(s->pass_label), "%s", desc->label ? desc->label : "render pass");
     if (s->pass_labelled) {
         VkDebugUtilsLabelEXT l = {VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT};
         l.pLabelName = desc->label;
@@ -4713,7 +4821,7 @@ bool md_gpu_render_end(md_gpu_stream_t s) {
     s->in_pass        = false;
     s->pass_labelled  = false;
     s->bound_pipeline = NULL;
-    md_vk_end_op(s, MD_GPU_STAGE_VERTEX | MD_GPU_STAGE_FRAGMENT | MD_GPU_STAGE_ATTACHMENT);
+    md_vk_end_op(s, MD_GPU_STAGE_VERTEX | MD_GPU_STAGE_FRAGMENT | MD_GPU_STAGE_ATTACHMENT, s->pass_label);
     return true;
 }
 
