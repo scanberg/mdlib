@@ -3417,6 +3417,162 @@ UTEST(render, compose_occlusion) {
     f_close(&fx);
 }
 
+/* The visibilities' history (the temporal filter), by what it must do: white spheres heaped on a floor under BASIC
+   shading with no light and an ambient of 1, so a pixel's value is the occlusion's visibility. Converged at one
+   view (16 frames: the pattern's cycle, of one raster, so md_render's motion is stale and taken as none), the view
+   moved by a few pixels and composed once: the history reprojected by md_render's motion lands on the same surfaces.
+   Against what 16 frames at the new view converge to, where occluded: shifted 4 pixels (whole texels of the history,
+   the rotated grid's picks alike) within a third of a fresh start's (one frame) difference, 5 pixels (half texels:
+   other picks, interpolated) within three quarters. Turned 3 degrees about the heap and 1 nearer it (perspective):
+   no further than a fresh start, as the occlusion itself changes with the view (its reach is a fraction of the
+   screen) and moving content keeps 4 frames; there the history is taken almost everywhere, and the motion or the
+   camera's left out of the reprojection make it 2 to 4 times as far. Then the raster jittered every frame at a still
+   view converges near what the unjittered one does (the history is a jitter average). */
+static bool hist_compose(fix_t* fx, md_compose_ctx_t cx, md_render_camera_t cam, const float jit[2], md_compose_history_t h,
+                         md_gpu_texture_t out, uint16_t* px, size_t n) {
+    md_compose_desc_t d = {0};
+    d.camera = cam;
+    d.target = out;
+    d.ao = 5.0f;
+    d.ao_mode = MD_COMPOSE_AO_QUALITY;
+    d.history = h;
+    d.jitter[0] = jit[0]; d.jitter[1] = jit[1];
+    d.shading.mode = MD_COMPOSE_SHADING_BASIC;
+    d.shading.linear_colors = true;
+    d.shading.light_dir[2] = 1.0f;
+    d.shading.ambient = 1.0f;
+    return md_compose(fx->gfx, cx, fx->view, &d) && (!px || f_read(fx, out, px, n * 8));
+}
+
+static bool hist_draw(fix_t* fx, md_render_camera_t cam, const md_render_batch_t* b, uint32_t W, uint32_t H, const float jit[2]) {
+    md_render_frame_t f = frame_of(W, H, cam, b, 2);
+    if (jit) {
+        f.jitter = MD_RENDER_JITTER_GIVEN;
+        f.jitter_offset[0] = jit[0]; f.jitter_offset[1] = jit[1];
+    }
+    return md_render_view_draw(fx->gfx, fx->view, &f, NULL);
+}
+
+/* the mean difference of the visibility from the reference ref, where it is occluded (below 0.95) */
+static double hist_diff(const uint16_t* a, const uint16_t* ref, size_t n, int* count) {
+    double sum = 0.0;
+    int c = 0;
+    for (size_t p = 0; p < n; ++p) {
+        if (half_bits_to_float(a[4 * p + 3]) == 0.0f || half_bits_to_float(ref[4 * p + 3]) == 0.0f || half_bits_to_float(ref[4 * p]) > 0.95f) continue;
+        sum += fabs(half_bits_to_float(a[4 * p]) - half_bits_to_float(ref[4 * p]));
+        c++;
+    }
+    if (count) *count = c;
+    return c ? sum / c : 0.0;
+}
+
+UTEST(render, compose_history) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    const uint32_t W = 256, H = 192;
+    const size_t P = (size_t)W * H;
+    const float z0 = -20.0f;
+    float quad[12] = { -30, -30, z0,  30, -30, z0,  30, 30, z0,  -30, 30, z0 };
+    const uint32_t tri[6] = { 0, 1, 2, 0, 2, 3 };
+    enum { NS = 40 };
+    float pos[3 * NS], rad[NS];
+    uint32_t seed = 4242u;
+    for (int i = 0; i < NS; ++i) {
+        for (int k = 0; k < 3; ++k) { seed = seed * 1664525u + 1013904223u; pos[3 * i + k] = ((seed >> 8) / 16777216.0f * 2.0f - 1.0f) * (k == 2 ? 0.8f : 3.0f); }
+        pos[3 * i + 2] += z0 + 1.0f;
+        rad[i] = 0.4f + 0.08f * (float)(i % 5);
+    }
+    md_render_batch_t b[2];
+    memset(b, 0, sizeof(b));
+    b[0].key = 1; b[0].kind = MD_RENDER_TRIANGLES; b[0].count = 2; b[0].points.count = 4;
+    b[0].points.position = f_buf(&fx, quad, sizeof(quad)); b[0].index = f_buf(&fx, tri, sizeof(tri));
+    b[1].key = 2; b[1].kind = MD_RENDER_SPHERES; b[1].count = NS; b[1].points.count = NS;
+    b[1].points.position = f_buf(&fx, pos, sizeof(pos)); b[1].points.radius = f_buf(&fx, rad, sizeof(rad));
+    b[1].style.spheres.radius_scale = 1.0f;
+    for (int i = 0; i < 2; ++i) { b[i].color.mode = MD_RENDER_COLOR_UNIFORM; b[i].color.uniform = 0xFFFFFFFFu; }
+
+    md_compose_ctx_t cx = md_compose_create(fx.dev);
+    ASSERT_TRUE(cx != NULL);
+    md_gpu_texture_desc_t td = {0};
+    td.type = MD_GPU_TEX_2D; td.usage = MD_GPU_TEX_STORAGE; td.width = W; td.height = H;
+    td.format = MD_GPU_FORMAT_RGBA16_FLOAT; td.label = "compose";
+    md_gpu_texture_t out = md_gpu_texture_create(fx.gfx, &td);
+    ASSERT_TRUE(out != NULL);
+    uint16_t* moved = malloc(P * 8);
+    uint16_t* fresh = malloc(P * 8);
+    uint16_t* conv  = malloc(P * 8);
+    const float none[2] = { 0.0f, 0.0f };
+
+    for (int run = 0; run < 3; ++run) {
+        cam_t c = run < 2 ? (cam_t){ .ortho = true, .half_h = 6.0f, .aspect = (float)W / H, .n = 0.0f, .far_ = 100.0f }
+                          : (cam_t){ .tan_half = 0.3f, .aspect = (float)W / H, .n = 0.1f };
+        md_render_camera_t ca = make_camera(&c), cb = ca;
+        const char* what;
+        const double bound = run == 0 ? 0.35 : run == 1 ? 0.75 : 1.25;     /* of a fresh start's difference */
+        if (run < 2) {
+            const float px = run == 0 ? 4.0f : 5.0f;    /* pixels: 2 history texels, and 2.5 */
+            cb.view[12] -= px * 2.0f * c.half_h / H;
+            what = run == 0 ? "orthographic, moved 4 px" : "orthographic, moved 5 px";
+        } else {
+            /* turned 3 degrees about y about the heap's centre, (0, 0, z0 + 1), and 1 nearer it: every depth changes */
+            const float t = 3.0f * 3.14159265f / 180.0f, cz = z0 + 1.0f;
+            memset(cb.view, 0, sizeof(cb.view));                /* v = R (p - c) + c + (0, 0, 1) */
+            cb.view[0] = cosf(t);  cb.view[2] = -sinf(t);
+            cb.view[5] = 1.0f;
+            cb.view[8] = sinf(t);  cb.view[10] = cosf(t);
+            cb.view[12] = -sinf(t) * cz; cb.view[14] = cz - cosf(t) * cz + 1.0f; cb.view[15] = 1.0f;
+            what = "perspective, turned 3 degrees and 1 nearer";
+        }
+        md_compose_history_t h1 = md_compose_history_create(), h2 = md_compose_history_create();
+        ASSERT_TRUE(h1 && h2);
+        /* converged at a, then a frame at b */
+        ASSERT_TRUE(hist_draw(&fx, ca, b, W, H, NULL));
+        for (int i = 0; i < 16; ++i) ASSERT_TRUE(hist_compose(&fx, cx, ca, none, h1, out, NULL, P));
+        ASSERT_TRUE(hist_draw(&fx, cb, b, W, H, NULL));
+        ASSERT_TRUE(hist_compose(&fx, cx, cb, none, h1, out, moved, P));
+        /* at b from nothing: a frame, then 16 */
+        ASSERT_TRUE(hist_compose(&fx, cx, cb, none, h2, out, fresh, P));
+        for (int i = 0; i < 15; ++i) ASSERT_TRUE(hist_compose(&fx, cx, cb, none, h2, out, i == 14 ? conv : NULL, P));
+        int n = 0;
+        const double e_moved = hist_diff(moved, conv, P, &n), e_fresh = hist_diff(fresh, conv, P, NULL);
+        printf("    %s: against 16 frames there, where occluded (%d px), the history carried over %.4f off, a fresh start %.4f\n", what, n, e_moved, e_fresh);
+        EXPECT_GT(n, 2000);
+        EXPECT_GT(e_fresh, 0.01);
+        EXPECT_LT(e_moved, bound * e_fresh);
+        md_compose_history_destroy(fx.gfx, h1);
+        md_compose_history_destroy(fx.gfx, h2);
+    }
+
+    /* jittered every frame at a still view: as unjittered */
+    {
+        cam_t c = { .tan_half = 0.3f, .aspect = (float)W / H, .n = 0.1f };
+        md_render_camera_t ca = make_camera(&c);
+        md_compose_history_t h1 = md_compose_history_create(), h2 = md_compose_history_create();
+        ASSERT_TRUE(h1 && h2);
+        ASSERT_TRUE(hist_draw(&fx, ca, b, W, H, NULL));
+        for (int i = 0; i < 32; ++i) ASSERT_TRUE(hist_compose(&fx, cx, ca, none, h1, out, i == 31 ? conv : NULL, P));
+        for (int i = 0; i < 32; ++i) {
+            const float jit[2] = { (float)((i * 5) % 8) / 8.0f - 0.4375f, (float)((i * 3) % 8) / 8.0f - 0.4375f };
+            ASSERT_TRUE(hist_draw(&fx, ca, b, W, H, jit));
+            ASSERT_TRUE(hist_compose(&fx, cx, ca, jit, h2, out, i == 31 ? moved : NULL, P));
+        }
+        ASSERT_TRUE(hist_draw(&fx, ca, b, W, H, NULL));
+        md_compose_history_t h3 = md_compose_history_create();
+        ASSERT_TRUE(hist_compose(&fx, cx, ca, none, h3, out, fresh, P));
+        const double e_jit = hist_diff(moved, conv, P, NULL), e_fresh = hist_diff(fresh, conv, P, NULL);
+        printf("    still, jittered for 32 frames: %.4f off the unjittered 32, a single frame %.4f\n", e_jit, e_fresh);
+        EXPECT_LT(e_jit, 0.7 * e_fresh);
+        md_compose_history_destroy(fx.gfx, h1);
+        md_compose_history_destroy(fx.gfx, h2);
+        md_compose_history_destroy(fx.gfx, h3);
+    }
+
+    md_gpu_texture_destroy(out);
+    md_compose_destroy(cx);
+    free(moved); free(fresh); free(conv);
+    f_close(&fx);
+}
+
 static uint16_t float_to_half(float f);
 
 /* ---- Volumes in the compose ---------------------------------------------------------- */

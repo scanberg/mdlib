@@ -705,6 +705,10 @@ typedef struct md_render_targets_t {
        front to back, nearer than the opaque surface. */
     md_gpu_addr_t    layers;
     uint32_t         layer_count, layer_stride;
+    uint32_t         raster;   /* the view's rasters so far: another value each
+                                  time the targets are drawn anew (their motion
+                                  is from the raster before, also after a draw
+                                  that only resolves)                          */
 } md_render_targets_t;
 
 /* Of a view drawn with depth_only frames: the depth, the rest 0 */

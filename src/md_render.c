@@ -2229,7 +2229,10 @@ void md_render_marks_tag(uint8_t* dst, size_t count, md_bitset_t set, uint32_t t
 
 md_render_targets_t md_render_view_targets(md_render_view_t v) {
     md_render_targets_t t = {0};
-    if (v) t = v->t;
+    if (v) {
+        t = v->t;
+        t.raster = v->raster_count;
+    }
     return t;
 }
 

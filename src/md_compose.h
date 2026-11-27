@@ -44,9 +44,14 @@ log-uniformly between 2 pixels and a tenth of the view's height:
   PERFORMANCE  obscurance (ssao.frag): 16 point samples, each judged at its
                own scale (its falloff radius 2.5 times its distance).
                1 - ao x the obscurance
-Then a separable bilateral blur over two periods of their 4 x 4 pattern and
-a joint bilateral upsample. The pattern is fixed: no history (a temporal
-resolve after it accumulates what it would).
+Then, with a history (md_compose_history_t), viamd's temporal filter
+(ssao_temporal.frag): the 4 x 4 pattern of the samples permuted every frame,
+and each texel averaged over it in its history (32 frames still, down to 4
+moving a pixel a frame and more), reprojected by md_render's motion and taken
+where it lies on the surface's tangent plane (no colour clamp); then a
+separable bilateral blur over one period of the pattern. Without a history,
+the pattern fixed and the blur over two periods. Then a joint bilateral
+upsample.
 
 THE SHADOWS of the key light are viamd's screen-space estimate
 (shadows/screen_space.frag), from the same depth at half resolution and
@@ -57,11 +62,11 @@ log-uniform between a pixel and 0.3 of the view's height), a slice along the
 light, where each depth sample occludes the arc from its front to its front
 pushed back by its distance beside the point, and the union of the arcs is a
 32-sector bitmask over a chord of the disk (16 chords by the 4 x 4 pattern,
-averaged by the blur): a thin occluder shadows the part of the light it
-covers, which makes the penumbra. Only what is on screen casts them, and of
-what lies behind the nearest surface its thickness is a guess. The opaque
-surface takes them; the transparent layers and the volumes neither cast nor
-take them.
+averaged by the blur and the history): a thin occluder shadows the part of
+the light it covers, which makes the penumbra. Only what is on screen casts
+them, and of what lies behind the nearest surface its thickness is a guess.
+The opaque surface takes them; the transparent layers and the volumes
+neither cast nor take them.
 
 A transparent surface is a dielectric film of coverage a (its layer's
 opacity), as viamd's isosurfaces were (isosurface.frag, isomesh.frag): of
@@ -220,6 +225,16 @@ typedef struct md_compose_slice_t {
     float            edge_px;          /* half the line's width, pixels              */
 } md_compose_slice_t;
 
+/* The visibilities' history (the temporal filter): of one view, kept by the
+   caller and passed to each md_compose of it, as md_post_resolve's history.
+   md_compose is then called once for each raster of the view (md_render's
+   motion is from the raster before). Its planes are made at the first call,
+   at the view's size; destroyed with them (deferred on the stream). */
+typedef struct md_compose_history* md_compose_history_t;
+
+md_compose_history_t md_compose_history_create(void);
+void                 md_compose_history_destroy(md_gpu_stream_t stream, md_compose_history_t history);
+
 typedef enum md_compose_ao_mode_t {
     MD_COMPOSE_AO_QUALITY = 0,
     MD_COMPOSE_AO_PERFORMANCE,
@@ -238,6 +253,9 @@ typedef struct md_compose_desc_t {
     float                light_radius;     /* the key light's angular radius,
                                               radians: the shadows' softness (at
                                               least 1e-3)                           */
+    md_compose_history_t history;  /* the occlusion's and the shadows'
+                                      accumulation over frames; 0: none (the
+                                      pattern fixed)                                */
     const md_compose_volume_t* volumes;    /* read at the call                      */
     uint32_t             volume_count;     /* at most MD_COMPOSE_MAX_VOLUMES        */
     const md_compose_slice_t*  slices;     /* read at the call                      */

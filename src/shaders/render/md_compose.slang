@@ -62,6 +62,17 @@ struct Args {
     uint   block_vol;           // vol_blocks' and vol_transfer_prep's: the volume
     uint   _bp;
     float4* tf;                 // the volumes' transfer functions, linear: colour, extinction (vol_transfer_prep)
+    float2* hist_prev;          // vis_temporal: the history it reads (n + VIS_PACK x visibility, linear depth)
+    float2* hist_cur;           // and writes, both at half resolution
+    float4 cp0, cp1, cp2, cp3;  // vis_temporal: this frame's view space to the previous frame's (columns)
+    float4 qa, qb, qc;          // the previous frame's projection, as pa, pb, pc
+    DescriptorHandle<Texture2D<float2>>   motion;   // md_render's: pixels from where the surface was
+    float2 jit_delta;           // this frame's raster offset less the previous frame's, pixels
+    uint   hist_valid;          // vis_temporal: hist_prev holds the previous frame's
+    uint   pattern;             // the estimators: the offset added to the 4 x 4 pattern's indices (the frame's)
+    uint   radius;              // ao_blur: taps a side
+    uint   still;               // vis_temporal: the raster of the previous frame's (its motion is stale: none)
+    uint   _tp0, _tp1;
 };
 MD_SHADER_ARGS(Args);
 
@@ -149,7 +160,6 @@ static const float AO_BIAS          = 0.05;   // against self occlusion from dep
 static const float AO_R_MIN         = 2.0;    // pixels
 static const float AO_R_MAX         = 0.1;    // of the view's height
 static const float GOLDEN_ANGLE     = 2.39996323;
-static const int   BLUR_RADIUS      = 4;      // two periods of the 4 x 4 pattern
 static const float BLUR_TOLERANCE   = 2.0;    // tangent-plane distance, pixel footprints
 
 // Level `a.level` of the linear depth: 0 from md_render's depth, each other
@@ -173,6 +183,16 @@ static const uint BAYER[16] = { 0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 1
 
 uint bit_reverse4(uint k) { return reversebits(k) >> 28u; }
 
+// The index of the half resolution texel hp in the 4 x 4 pattern of the
+// estimators: Bayer ordered, so that neighbours differ, offset by the frame
+// (a.pattern) where vis_temporal integrates it. The offset permutes the
+// pattern and never turns it: every 4 x 4 block holds the same 16 indices
+// each frame (smooth surfaces, where the blur averages a whole period, do not
+// change), while each texel steps through all of them in 16 frames. A global
+// rotation would change the whole set at once: blotches of the blur's size,
+// which a 3 x 3 TAA neighbourhood cannot tell from content.
+uint pattern_k(Args a, int2 hp) { return (BAYER[(hp.y & 3) * 4 + (hp.x & 3)] + a.pattern) & 15u; }
+
 // At half resolution: plane 0
 [shader("compute")]
 [numthreads(8, 8, 1)]
@@ -192,9 +212,9 @@ void ao_estimate(uint3 tid : SV_DispatchThreadID) {
     float2 full = float2(float(a.width), float(a.height));
     float  r_max = max(AO_R_MAX * full.y, 2.0 * AO_R_MIN);
 
-    // a 4 x 4 interleaved pattern: 16 (rotation, radial phase) pairs, Bayer
-    // ordered; the blur integrates its periods
-    uint   k   = BAYER[(hp.y & 3) * 4 + (hp.x & 3)];
+    // a 4 x 4 interleaved pattern: 16 (rotation, radial phase) pairs; the
+    // blur integrates its periods, vis_temporal its frames
+    uint   k   = pattern_k(a, hp);
     float  rk  = float(bit_reverse4(k)) / 16.0;
     float  rot = 6.2831853 * (float(k) + 0.5) / 16.0;
     float  jr  = frac(rk + 1.0 / 32.0);
@@ -285,7 +305,7 @@ void ao_estimate_quality(uint3 tid : SV_DispatchThreadID) {
     float  r_max = max(AO_R_MAX * full.y, 2.0 * AO_R_MIN);
 
     // the 4 x 4 interleaved (rotation, radial phase) pattern of ao_estimate
-    uint   k    = BAYER[(hp.y & 3) * 4 + (hp.x & 3)];
+    uint   k    = pattern_k(a, hp);
     float  rk   = float(bit_reverse4(k)) / 16.0;
     float  phi0 = PI * (float(k) + 0.5) / (16.0 * float(AO_NUM_SLICES));
     float2 d    = float2(cos(phi0), sin(phi0));
@@ -363,9 +383,120 @@ void ao_estimate_quality(uint3 tid : SV_DispatchThreadID) {
     a.ao[o] = float2(pow(saturate(vis), a.pc.w * AO_POWER_SCALE), z);
 }
 
+// ---- The temporal filter --------------------------------------------------------
+// viamd's ssao_temporal.frag: the accumulation of a visibility (the
+// occlusion's, the shadows') over frames, between its estimator and the blur,
+// in place in plane 0. The blur removes the pattern only where it finds a
+// whole period of it on the same surface; in crevices, on small atoms and
+// along silhouettes its weights cut it short and the raw estimate shows. There
+// is no neighbourhood left to borrow samples from there, so this borrows from
+// the frames before: the estimators permute the pattern every frame
+// (pattern_k), and the history averages each texel over all of it.
+//
+// Unlike the TAA's, the history is not clamped to the colours about the pixel
+// (the estimate's noise is much coarser than a 3 x 3); a texel of it is taken
+// or not by its geometry: where it lies on the tangent plane of this surface
+// point, both in the previous frame's view space. It is a jitter average, as
+// the TAA's history: reprojected by md_render's motion, which leaves the
+// jitter out, so with a still camera every texel reads its own history while
+// the jitter moves the sample under it.
+
+static const float N_STILL   = 32.0;    // the history's length (frames) for still content: two cycles of the pattern
+static const float N_MOVING  = 4.0;     // for content that moves MOVING_PX or more a frame: the estimate changes
+static const float MOVING_PX = 1.0;     // with the view, so a long history lags behind a rotation
+static const float TOL_PX    = 1.5;     // tangent-plane distance, pixel footprints, below which a texel is trusted
+static const float MIN_NZ    = 0.25;    // |N.z| at least in the plane test: a texel far behind a silhouette is not on it
+static const float VIS_PACK  = 0.5;     // the history's x: n + VIS_PACK x visibility (the count and the visibility)
+
+// The view-space point at a pixel and linear depth z, of the previous
+// frame's projection (view_at's)
+float3 view_at_prev(Args a, float2 px, float z) {
+    float2 n  = ndc_of(a, px);
+    float  zv = -z;
+    float  w  = a.qc.x * zv + a.qc.y;
+    return float3((n.x * w - a.qa.z * zv - a.qb.x) / a.qa.x, (n.y * w - a.qa.w * zv - a.qb.y) / a.qa.y, zv);
+}
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void vis_temporal(uint3 tid : SV_DispatchThreadID) {
+    Args  a  = MD_ARGS;
+    uint2 hs = level_size(a, 1u);
+    if (tid.x >= hs.x || tid.y >= hs.y) return;
+    int2   hp = int2(tid.xy);
+    uint   o  = tid.y * hs.x + tid.x;
+    float2 c  = a.ao[o];
+    if (c.y >= Z_MAX) { a.hist_cur[o] = float2(VIS_PACK, c.y); return; }
+    int2   fp  = pick(hp);
+    float2 px  = float2(fp) + 0.5;
+    float3 P   = view_at(a, px, c.y);
+    float3 N   = normal_at(a, fp);
+    float2 vel = a.still != 0u ? float2(0.0) : a.motion.Load(int3(fp, 0));
+    float  pw  = px_world(a, c.y);
+
+    // this point in the previous frame: its depth from the camera's motion,
+    // where it was on screen from md_render's motion, which also carries the
+    // atoms' (only theirs along the view's axis is left out)
+    float3 Pc = a.cp0.xyz * P.x + a.cp1.xyz * P.y + a.cp2.xyz * P.z + a.cp3.xyz;
+    float3 Pp = view_at_prev(a, px - vel + a.jit_delta, -Pc.z);
+    float3 Np = a.cp0.xyz * N.x + a.cp1.xyz * N.y + a.cp2.xyz * N.z;
+    Np = normalize(float3(Np.xy, (Np.z < 0.0 ? -1.0 : 1.0) * max(abs(Np.z), MIN_NZ)));
+    float inv_tol = 1.0 / (TOL_PX * pw);
+
+    // where its history is, in half resolution texels, the jitter left out;
+    // interpolated on the regular grid: still content then reads exactly its
+    // own texel (the rotated grid's picks of diagonal neighbours are a pixel
+    // and a half apart: a filter on their true places would blend them in
+    // every frame)
+    float2 hq = float2(hp) - 0.5 * vel;
+    float  n_prev = 0.0, v_prev = 0.0;
+    if (a.hist_valid != 0u && all(hq > float2(-0.5)) && all(hq < float2(hs) - 0.5)) {
+        int2   h0 = int2(floor(hq));
+        float2 f  = hq - float2(h0);
+        float  w_sum  = 0.0, v_sum  = 0.0, n_sum  = 0.0;    // bilinear (the 2 x 2 at h0) x geometric
+        float  wf_sum = 0.0, vf_sum = 0.0, nf_sum = 0.0;    // geometric alone (the 3 x 3 about h0): the fallback
+        for (int y = -1; y <= 1; ++y) {
+            for (int x = -1; x <= 1; ++x) {
+                int2 h = h0 + int2(x, y);
+                if (any(h < int2(0)) || any(h >= int2(hs))) continue;
+                float2 wb2 = lerp(1.0 - f, f, float2(float(x), float(y)));
+                float  wb  = (x >= 0 && y >= 0) ? wb2.x * wb2.y : 0.0;
+                float2 hist = a.hist_prev[uint(h.y) * hs.x + uint(h.x)];
+                if (hist.y >= Z_MAX) continue;              // nothing there before: disoccluded
+                float3 H  = view_at_prev(a, float2(pick(h)) + 0.5, hist.y);
+                float  wg = saturate(2.0 - abs(dot(H - Pp, Np)) * inv_tol);
+                if (wg <= 0.0) continue;
+                float n = floor(hist.x);
+                float v = (hist.x - n) * (1.0 / VIS_PACK);
+                w_sum  += wb * wg;  v_sum  += wb * wg * v;  n_sum  += wb * wg * n;
+                wf_sum += wg;       vf_sum += wg * v;       nf_sum += wg * n;
+            }
+        }
+        if (w_sum > 1e-3) {
+            v_prev = v_sum / w_sum;
+            n_prev = n_sum / w_sum;
+        } else if (wf_sum > 1e-3) {
+            // its own history is of another surface, as in crevices, where the
+            // jitter moves the picked pixel from one atom to the next: go on from
+            // the neighbours on this surface, trusted less
+            v_prev = vf_sum / wf_sum;
+            n_prev = 0.5 * nf_sum / wf_sum;
+        }
+    }
+
+    // n integral: it shares the history's x with the visibility
+    float n_max = floor(lerp(N_STILL, N_MOVING, saturate(length(vel) / MOVING_PX)) + 0.5);
+    float n     = min(floor(n_prev + 1e-3) + 1.0, n_max);
+    float vis   = lerp(v_prev, c.x, 1.0 / n);
+    a.hist_cur[o] = float2(n + VIS_PACK * min(vis, 1.0), c.y);
+    a.ao[o]       = float2(vis, c.y);
+}
+
 // A separable bilateral blur at half resolution: a box with half-weight end
-// taps over two periods of the pattern, stopped by the distance of a tap from
-// the centre's tangent plane in pixel footprints (scale free)
+// taps, a.radius a side (4: two periods of the pattern; 2, one, after
+// vis_temporal, which already averages each texel over the whole pattern),
+// stopped by the distance of a tap from the centre's tangent plane in pixel
+// footprints (scale free)
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void ao_blur(uint3 tid : SV_DispatchThreadID) {
@@ -384,13 +515,14 @@ void ao_blur(uint3 tid : SV_DispatchThreadID) {
     float  inv_tol = 1.0 / (BLUR_TOLERANCE * px_world(a, c.y));
     int2   dir = a.dir == 0u ? int2(1, 0) : int2(0, 1);
     float  sum = c.x, wsum = 1.0;
-    for (int i = -BLUR_RADIUS; i <= BLUR_RADIUS; ++i) {
+    int    rad = int(a.radius);
+    for (int i = -rad; i <= rad; ++i) {
         if (i == 0) continue;
         int2   q = clamp(p + dir * i, int2(0), int2(hs) - 1);
         float2 s = sp[uint(q.y) * hs.x + uint(q.x)];
         float3 S = view_at(a, float2(pick(q)) + 0.5, s.y);
         float  d = abs(dot(S - P, N)) * inv_tol;
-        float  w = (abs(i) == BLUR_RADIUS ? 0.5 : 1.0) * saturate(1.0 - d);
+        float  w = (abs(i) == rad ? 0.5 : 1.0) * saturate(1.0 - d);
         sum  += s.x * w;
         wsum += w;
     }
@@ -475,7 +607,7 @@ void shadow_estimate(uint3 tid : SV_DispatchThreadID) {
 
     // the 4 x 4 pattern of the occlusion: k picks the chord, its bit reversal
     // the steps' phase
-    uint  k  = BAYER[(hp.y & 3) * 4 + (hp.x & 3)];
+    uint  k  = pattern_k(a, hp);
     float rk = float(bit_reverse4(k)) / 16.0;
 
     // the chord: the light's direction turned across the plane of V and the

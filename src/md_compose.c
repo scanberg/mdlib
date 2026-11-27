@@ -38,14 +38,20 @@ typedef struct gpu_compose_args_t {
     md_gpu_addr_t        blocks;        /* the volumes' blocks, 1 where one may hold a crossing or emit */
     uint32_t             block_vol, _bp;
     md_gpu_addr_t        tf;            /* the volumes' transfer functions, linear: colour, extinction */
+    md_gpu_addr_t        hist_prev, hist_cur;
+    md_gpu_float4        cp0, cp1, cp2, cp3;   /* this frame's view space to the previous frame's */
+    md_gpu_float4        qa, qb, qc;    /* the previous frame's projection, as pa, pb, pc */
+    md_gpu_sampled_tex_t motion;
+    float                jit_delta[2];
+    uint32_t             hist_valid, pattern, radius, still, _tp[2];
 } gpu_compose_args_t;
-_Static_assert(sizeof(gpu_compose_args_t) == 688, "Args mirror");
+_Static_assert(sizeof(gpu_compose_args_t) == 864, "Args mirror");
 
 enum { AO_LEVELS = 6, VOL_STRIDE = 37, SLICE_STRIDE = 14, BLOCK = 8 };   /* md_compose.slang's */
 
 struct md_compose {
     md_gpu_device_t  dev;
-    md_gpu_kernel_t  k_linear, k_estimate, k_quality, k_shadow, k_blur, k_compose, k_blocks, k_tf;
+    md_gpu_kernel_t  k_linear, k_estimate, k_quality, k_shadow, k_temporal, k_blur, k_compose, k_blocks, k_tf;
     md_gpu_sampler_t trilinear;
     /* What the compose's volume arguments hold without volumes, never read: a
        null pointer or handle there let lavapipe crash (a load hoisted out of
@@ -67,6 +73,7 @@ md_compose_ctx_t md_compose_create(md_gpu_device_t device) {
     kd = md_shader_md_compose_ao_estimate_kernel(); c->k_estimate = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_compose_ao_estimate_quality_kernel(); c->k_quality = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_compose_shadow_estimate_kernel(); c->k_shadow = md_gpu_kernel_create(device, &kd);
+    kd = md_shader_md_compose_vis_temporal_kernel(); c->k_temporal = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_compose_ao_blur_kernel();     c->k_blur     = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_compose_compose_kernel();     c->k_compose  = md_gpu_kernel_create(device, &kd);
     kd = md_shader_md_compose_vol_blocks_kernel();  c->k_blocks   = md_gpu_kernel_create(device, &kd);
@@ -74,7 +81,7 @@ md_compose_ctx_t md_compose_create(md_gpu_device_t device) {
     md_gpu_sampler_desc_t sd = {0};
     sd.min_filter = sd.mag_filter = MD_GPU_FILTER_LINEAR;
     c->trilinear = md_gpu_sampler(device, &sd);
-    if (!c->k_linear || !c->k_estimate || !c->k_quality || !c->k_shadow || !c->k_blur || !c->k_compose || !c->k_blocks || !c->k_tf || !c->trilinear.handle) {
+    if (!c->k_linear || !c->k_estimate || !c->k_quality || !c->k_shadow || !c->k_temporal || !c->k_blur || !c->k_compose || !c->k_blocks || !c->k_tf || !c->trilinear.handle) {
         MD_LOG_ERROR("md_compose: kernel creation failed: %s", md_gpu_last_error());
         md_compose_destroy(c);
         return NULL;
@@ -88,7 +95,7 @@ bool md_compose_debug_kernel_info(md_compose_ctx_t c, uint32_t i, const char** n
     if (!c) return false;
     const struct { const char* n; md_gpu_kernel_t k; } ks[] = {
         { "compose", c->k_compose }, { "vol_blocks", c->k_blocks }, { "vol_transfer_prep", c->k_tf }, { "ao_linear", c->k_linear }, { "ao_estimate", c->k_estimate },
-        { "ao_quality", c->k_quality }, { "shadow_estimate", c->k_shadow }, { "ao_blur", c->k_blur },
+        { "ao_quality", c->k_quality }, { "shadow_estimate", c->k_shadow }, { "vis_temporal", c->k_temporal }, { "ao_blur", c->k_blur },
     };
     if (i >= sizeof(ks) / sizeof(ks[0])) return false;
     if (name) *name = ks[i].n;
@@ -101,6 +108,7 @@ void md_compose_destroy(md_compose_ctx_t c) {
     if (c->k_estimate) md_gpu_kernel_destroy(c->k_estimate);
     if (c->k_quality)  md_gpu_kernel_destroy(c->k_quality);
     if (c->k_shadow)   md_gpu_kernel_destroy(c->k_shadow);
+    if (c->k_temporal) md_gpu_kernel_destroy(c->k_temporal);
     if (c->k_blur)     md_gpu_kernel_destroy(c->k_blur);
     if (c->k_compose)  md_gpu_kernel_destroy(c->k_compose);
     if (c->k_blocks)   md_gpu_kernel_destroy(c->k_blocks);
@@ -109,6 +117,35 @@ void md_compose_destroy(md_compose_ctx_t c) {
     if (c->none_transfer) md_gpu_texture_destroy(c->none_transfer);
     if (c->none_color)    md_gpu_texture_destroy(c->none_color);
     md_free(md_get_heap_allocator(), c, sizeof(*c));
+}
+
+/* The visibilities' history: for each of the occlusion and the shadows, two
+   planes at half resolution, (n + 0.5 visibility, linear depth), written in
+   turn; and the frame they were written in */
+enum { VIS_AO = 0, VIS_SH = 1 };
+
+struct md_compose_history {
+    md_gpu_addr_t        planes;    /* [visibility][turn], hw x hh float2 each; 0: none yet */
+    uint32_t             hw, hh;
+    uint32_t             turn;      /* the plane of each pair written last */
+    bool                 valid[2];  /* written by the last call */
+    md_compose_ao_mode_t ao_mode;   /* of the occlusion's */
+    bool                 ortho;
+    uint32_t             frame;     /* calls: the estimators' pattern */
+    uint32_t             raster;    /* the view's raster the last call was of */
+    float                view[16], proj[16], jitter[2];    /* the last call's */
+};
+
+md_compose_history_t md_compose_history_create(void) {
+    md_compose_history_t h = md_alloc(md_get_heap_allocator(), sizeof(*h));
+    if (h) md_memset(h, 0, sizeof(*h));
+    return h;
+}
+
+void md_compose_history_destroy(md_gpu_stream_t stream, md_compose_history_t h) {
+    if (!h) return;
+    if (h->planes) md_gpu_free(stream, h->planes);
+    md_free(md_get_heap_allocator(), h, sizeof(*h));
 }
 
 static md_gpu_float4 f4(float x, float y, float z, float w) {
@@ -138,12 +175,19 @@ static bool launch(md_gpu_stream_t s, md_gpu_kernel_t k, uint32_t w, uint32_t h,
 }
 
 /* A visibility at half resolution (hw x hh): the estimator k into the first of
-   two new planes (a->ao), the blur through the second back into it. The
-   planes' address; 0 on failure. */
+   two new planes (a->ao); with a history (hist_cur), the temporal filter in
+   place, from hist_prev (when valid) into hist_cur; the blur through the
+   second plane back into the first. The planes' address; 0 on failure. */
 static md_gpu_addr_t visibility(md_gpu_stream_t s, md_gpu_temp_t scope, md_compose_ctx_t c, md_gpu_kernel_t k, gpu_compose_args_t* a,
-                                uint32_t hw, uint32_t hh) {
+                                uint32_t hw, uint32_t hh, md_gpu_addr_t hist_prev, md_gpu_addr_t hist_cur, bool valid) {
     a->ao = md_gpu_temp_alloc(scope, MD_GPU_MEM_DEVICE, (size_t)hw * hh * 2u * 8u).gpu;
     bool ok = a->ao != 0 && launch(s, k, hw, hh, a);
+    if (hist_cur) {
+        a->hist_prev  = hist_prev;
+        a->hist_cur   = hist_cur;
+        a->hist_valid = valid ? 1u : 0u;
+        ok = ok && launch(s, c->k_temporal, hw, hh, a);
+    }
     a->dir = 0; a->src = 0;
     ok = ok && launch(s, c->k_blur, hw, hh, a);
     a->dir = 1; a->src = 1;
@@ -361,6 +405,51 @@ bool md_compose(md_gpu_stream_t s, md_compose_ctx_t c, md_render_view_t view, co
     a.jit[1]    = d->jitter[1];
     a.trilinear = c->trilinear;
 
+    /* The visibilities' history: the previous call's camera, the planes at
+       this size; what of it is of the previous call, at this projection's
+       kind and the occlusion's mode */
+    const uint32_t hw = level_dim(W, 1), hh = level_dim(H, 1);
+    md_compose_history_t hi = (use_ao || use_sh) && t.motion ? d->history : NULL;
+    bool hv[2] = { false, false };
+    a.motion  = md_gpu_texture_sampled(t.motion ? t.motion : t.normal);    /* RG16_FLOAT either way; read with a history */
+    a.radius  = 4;
+    if (hi) {
+        if (!hi->planes || hi->hw != hw || hi->hh != hh) {
+            if (hi->planes) md_gpu_free(s, hi->planes);
+            hi->planes = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, (size_t)hw * hh * 8u * 4u).gpu;
+            hi->hw = hw; hi->hh = hh;
+            hi->valid[VIS_AO] = hi->valid[VIS_SH] = false;
+            if (!hi->planes) {
+                MD_LOG_ERROR("md_compose: the history: %s", md_gpu_last_error());
+                hi->hw = hi->hh = 0;
+                return false;
+            }
+        }
+        hv[VIS_AO] = hi->valid[VIS_AO] && hi->ortho == ortho && hi->ao_mode == d->ao_mode;
+        hv[VIS_SH] = hi->valid[VIS_SH] && hi->ortho == ortho;
+        md_float4x4_t V, VP;
+        md_memcpy(&V, d->camera.view, sizeof(V));
+        md_memcpy(&VP, hi->view, sizeof(VP));
+        const md_float4x4_t CP = md_float4x4_mul(VP, md_float4x4_inverse(V));
+        const float* cp = (const float*)&CP;
+        a.cp0 = f4(cp[0],  cp[1],  cp[2],  cp[3]);
+        a.cp1 = f4(cp[4],  cp[5],  cp[6],  cp[7]);
+        a.cp2 = f4(cp[8],  cp[9],  cp[10], cp[11]);
+        a.cp3 = f4(cp[12], cp[13], cp[14], cp[15]);
+        const float* Q = hi->proj;
+        a.qa = f4(Q[0], Q[5], Q[8], Q[9]);
+        a.qb = f4(Q[12], Q[13], Q[10], Q[14]);
+        a.qc = f4(Q[11], Q[15], 0.0f, 0.0f);
+        a.jit_delta[0] = d->jitter[0] - hi->jitter[0];
+        a.jit_delta[1] = d->jitter[1] - hi->jitter[1];
+        /* the same raster as the last call's: its motion is from the raster
+           before, and nothing moved since */
+        a.still = (hi->valid[VIS_AO] || hi->valid[VIS_SH]) && hi->raster == t.raster ? 1u : 0u;
+        const uint32_t f = hi->frame & 15u;     /* bit reversed: any aligned run of 2^n frames spreads evenly */
+        a.pattern = ((f & 1u) << 3) | ((f & 2u) << 1) | ((f & 4u) >> 1) | ((f & 8u) >> 3);
+        a.radius  = 2;
+    }
+
     const md_gpu_ordering_t prev = md_gpu_stream_set_ordering(s, MD_GPU_ORDER_IMPLICIT);
     md_gpu_temp_t scope = md_gpu_temp_begin(s);
     bool ok = true;
@@ -371,21 +460,42 @@ bool md_compose(md_gpu_stream_t s, md_compose_ctx_t c, md_render_view_t view, co
         /* the linear depth's levels, then the shadows' and the occlusion's planes */
         size_t lin = 0;
         for (uint32_t l = 0; l < AO_LEVELS; ++l) lin += (size_t)level_dim(W, l) * level_dim(H, l);
-        const uint32_t hw = level_dim(W, 1), hh = level_dim(H, 1);
         a.lin = md_gpu_temp_alloc(scope, MD_GPU_MEM_DEVICE, lin * sizeof(float)).gpu;
         ok = a.lin != 0;
         for (uint32_t l = 0; ok && l < AO_LEVELS; ++l) {
             a.level = l;
             ok = launch(s, c->k_linear, level_dim(W, l), level_dim(H, l), &a);
         }
+        /* each visibility's history: the plane written last, and the other */
+        md_gpu_addr_t h_prev[2] = { 0, 0 }, h_cur[2] = { 0, 0 };
+        for (uint32_t v = 0; hi && v < 2; ++v) {
+            h_prev[v] = hi->planes + (md_gpu_addr_t)((2u * v + hi->turn) * (size_t)hw * hh * 8u);
+            h_cur[v]  = hi->planes + (md_gpu_addr_t)((2u * v + (hi->turn ^ 1u)) * (size_t)hw * hh * 8u);
+        }
         if (ok && use_sh) {
-            a.sh = visibility(s, scope, c, c->k_shadow, &a, hw, hh);
+            a.sh = visibility(s, scope, c, c->k_shadow, &a, hw, hh, h_prev[VIS_SH], h_cur[VIS_SH], hv[VIS_SH]);
             a.ao = 0;
             ok = a.sh != 0;
         }
         if (ok && use_ao) {
-            a.ao = visibility(s, scope, c, d->ao_mode == MD_COMPOSE_AO_PERFORMANCE ? c->k_estimate : c->k_quality, &a, hw, hh);
+            const md_gpu_kernel_t k = d->ao_mode == MD_COMPOSE_AO_PERFORMANCE ? c->k_estimate : c->k_quality;
+            a.ao = visibility(s, scope, c, k, &a, hw, hh, h_prev[VIS_AO], h_cur[VIS_AO], hv[VIS_AO]);
             ok = a.ao != 0;
+        }
+        if (hi && !ok) {
+            hi->valid[VIS_AO] = hi->valid[VIS_SH] = false;
+        } else if (hi) {
+            hi->turn ^= 1u;
+            hi->valid[VIS_AO] = use_ao;
+            hi->valid[VIS_SH] = use_sh;
+            hi->ao_mode = d->ao_mode;
+            hi->ortho   = ortho;
+            hi->frame  += 1u;
+            hi->raster  = t.raster;
+            md_memcpy(hi->view, d->camera.view, sizeof(hi->view));
+            md_memcpy(hi->proj, d->camera.proj, sizeof(hi->proj));
+            hi->jitter[0] = d->jitter[0];
+            hi->jitter[1] = d->jitter[1];
         }
     }
     if (ok && nv) {
