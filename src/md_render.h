@@ -48,10 +48,14 @@ The model, in full
     per molecule or per representation.
 
   * A VIEW owns the targets of one camera. Rasterisation writes depth and a
-    64-bit id per pixel. The view then RESOLVES the surfaces (base colour,
-    normal, motion) by intersecting again the one primitive that won each
-    pixel, and makes MASKS of the two state bits (visible, and present at all
-    including behind other surfaces), with their tags.
+    64-bit id per pixel; spheres and capsules also shade there (base colour,
+    normal, motion), from what the vertex stage fetched once per element.
+    The view then RESOLVES the other surfaces by intersecting again the one
+    primitive that won each pixel: triangles, spline parts, polygons, and the
+    elements a few pixels across that it rasterises in a compute kernel. An
+    appearance's change resolves every pixel. Then it makes MASKS of the two
+    state bits (visible, and present at all including behind other surfaces),
+    with their tags.
 
   * A view does the least work that keeps its targets correct:
 
@@ -675,7 +679,8 @@ bool md_render_view_draw(md_gpu_stream_t stream, md_render_view_t view,
 
 /* ---- Targets ----------------------------------------------------------------
    Owned by the view, valid until a draw changes the size. All SAMPLED; id,
-   color, normal and mask also STORAGE, so external renderers can merge. */
+   color, normal, motion and mask also STORAGE, so external renderers can
+   merge. */
 
 typedef struct md_render_targets_t {
     md_gpu_texture_t depth;    /* D32_FLOAT, reverse Z; 0 where nothing was drawn   */

@@ -35,6 +35,7 @@ struct ViewData {
     float4 view_prev0, view_prev1, view_prev2, view_prev3;// of the previous raster
     float4 proj_prev0, proj_prev1, proj_prev2, proj_prev3;// of the previous raster, unjittered
     float4 proj_cur0, proj_cur1, proj_cur2, proj_cur3;  // unjittered
+    float4 cv_prev0, cv_prev1, cv_prev2, cv_prev3;      // this view -> the previous raster's clip (proj_prev view_prev inv_view)
     float4 viewport;            // w, h, 1/w, 1/h
     float  dt;                  // time since the previous raster
     uint   ortho;
@@ -332,6 +333,7 @@ struct Args {
     uint      _pad0;
     DescriptorHandle<RWTexture2D<float4>>  out_color;
     DescriptorHandle<RWTexture2D<float4>>  out_surface;
+    DescriptorHandle<Texture2D<float4>>    shaded;      // the resolve: the colour target as the raster left it (alpha 0: to resolve)
 };
 MD_SHADER_ARGS(Args);
 
@@ -864,6 +866,8 @@ struct Geo {
     float3 b;
     float  r;                   // capsules: the larger of rr
     float2 rr;                  // capsules: the radii at a and b (shaped: capsule_shape)
+    float3 fa;                  // capsules: the whole's ends, displaced, before a periodic cut and a dash's trim
+    float3 fb;                  // (what colours and moves the part drawn: eval_hit's fa, fb)
 };
 
 // Fading with distance (md_render_batch_t.fade). A band is a ramp in
@@ -1642,6 +1646,8 @@ Geo element_geo(ViewData v, Batch b, uint inst, uint e, bool fade) {
     g.st   = 0u;
     g.a    = float3(0.0);
     g.b    = float3(0.0);
+    g.fa   = float3(0.0);
+    g.fb   = float3(0.0);
     g.r    = 0.0;
     g.rr   = float2(0.0);
     if (!id_visible(b, e)) return g;
@@ -1677,6 +1683,8 @@ Geo element_geo(ViewData v, Batch b, uint inst, uint e, bool fade) {
         g.b  = mulp(M(v, view), mulp(T, l1));
         float3 mid  = 0.5 * (g.a + g.b);
         float3 side = (b.flags & F_DISPLACED) != 0u ? capsule_side(v, T, s, b, e, g.a, g.b) : float3(0.0);
+        g.fa = g.a;                                             // a dash's whole: untrimmed
+        g.fb = g.b;
         if ((b.flags & F_DASHED) != 0u && !dash_trim(b, p0, p1, s, g.r, g.a, g.b)) return g;   // the spheres meet
         if (fade && (b.flags & F_FADE) != 0u && g.r > 0.0) {
             if ((b.flags & F_FADE_KEY) != 0u) {                  // each end by its own key
@@ -1692,6 +1700,14 @@ Geo element_geo(ViewData v, Batch b, uint inst, uint e, bool fade) {
             }
         }
         if ((b.flags & F_DISPLACED) != 0u) capsule_displace(b, e, side, g.r, g.a, g.b);   // by its radius as drawn
+        if ((b.flags & F_DASHED) == 0u) {                       // the whole: as drawn, but for the cut below
+            g.fa = g.a;
+            g.fb = g.b;
+        } else if ((b.flags & F_DISPLACED) != 0u) {             // a dash's: moved aside, not pulled in (eval_hit's)
+            float3 dsp = side * (b.cap_offset * g.r);
+            g.fa += dsp;
+            g.fb += dsp;
+        }
         if (split && !capsule_cut(b, mid, g.a, g.b)) return g;
         g.rr = float2(g.r);
         if (shaped && g.r > 0.0 && !g.faded) {
@@ -1728,6 +1744,8 @@ Geo spline_geo(ViewData v, Batch b, uint inst, uint e, bool fade) {
     g.st    = 0u;
     g.a     = float3(0.0);
     g.b     = float3(0.0);
+    g.fa    = float3(0.0);
+    g.fb    = float3(0.0);
     g.r     = 0.0;
     g.rr    = float2(0.0);
     uint ie = b.index[e];
@@ -3393,9 +3411,11 @@ FullV merge_vs(uint vid : SV_VertexID) {
 }
 
 struct MergeOut {
-    uint2  id    : SV_Target0;
-    float2 n     : SV_Target1;  // the resolve's (VisOut)
-    float  depth : SV_Depth;
+    uint2  id     : SV_Target0;
+    float2 n      : SV_Target1;  // the resolve's (VisOut)
+    float4 color  : SV_Target2;  // alpha 0: the resolve's (ShadedOut)
+    float2 motion : SV_Target3;
+    float  depth  : SV_Depth;
 };
 
 [shader("fragment")]
@@ -3406,8 +3426,10 @@ MergeOut merge_fs(FullV i) {
     uint64_t val = a.lists->vis64[px.y * a.width + px.x];
     if (val == 0ull) discard;
     MergeOut o;
-    o.n     = float2(0.0);
-    o.depth = asfloat(uint(val >> 32));
+    o.n      = float2(0.0);
+    o.color  = float4(0.0);
+    o.motion = float2(0.0);
+    o.depth  = asfloat(uint(val >> 32));
     o.id    = elem_id(a.batches, decode_work(a.batches, a.view->batch_count, a.lists->small[uint(val & 0xFFFFFFFFull)]));
     return o;
 }
@@ -3474,6 +3496,8 @@ struct SphereV {
     nointerpolation float4 sph   : SPH;     // view-space centre, radius
     nointerpolation uint2  idv   : IDV;
     nointerpolation uint   state : STATE;
+    nointerpolation float4 color : COLOR;   // finished (finish_color): what the colour target takes
+    nointerpolation float4 dprev : DPREV;   // its move since the previous raster, in that raster's clip space (motion_of)
 };
 
 [shader("vertex")]
@@ -3486,6 +3510,8 @@ SphereV sphere_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
     o.sph   = float4(0.0);
     o.idv   = uint2(0u);
     o.state = 0u;
+    o.color = float4(0.0);
+    o.dprev = float4(0.0);
 
     uint  corner = md_draw_vertex(vid, base_vertex);
     Elem  el     = decode_work(a.batches, v.batch_count, list_entry(a, base_instance + md_draw_instance(iid, base_instance)));
@@ -3533,7 +3559,29 @@ SphereV sphere_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
     o.sph   = float4(c, rad);
     o.idv   = ent;
     o.state = g.st;
+    // what the fragments write besides (sphere_fs), as eval_hit and the resolve make them
+    Batch b  = a.batches[el.slot];
+    uint  pi = point_of(b, el.e, 0u, 1u);
+    float3 lc = load_pos(b, pi);
+    float3 dw = mulp(load_transform(b.transforms, el.inst), lc) - mulp(load_transform(b.transforms_prev, el.inst), lc - load_vel(b, pi) * v.dt);
+    o.color = finish_color(attr_color(b, attr_of(b, pi)).rgb, color_desat(b, el.e), b.tint, b.unlit != 0u);
+    o.dprev = prev_offset(v, dw);
     return o;
+}
+
+// A world-space move since the previous raster, in that raster's clip space
+// (w 0): what the point's previous position lacks (motion_of)
+float4 prev_offset(ViewData v, float3 dw) {
+    return mul4(M(v, proj_prev), mul4(M(v, view_prev), float4(dw, 0.0)));
+}
+
+// The motion of view-space point p (pixels, as the resolve's): where it is in
+// this raster (unjittered), less where it was in the previous one, which is
+// p carried into that raster's clip space less its move there (prev_offset)
+float2 motion_of(ViewData v, float3 p, float4 dprev) {
+    float4 cur  = mul4(M(v, proj_cur), float4(p, 1.0));
+    float4 prev = mul4(M(v, cv_prev), float4(p, 1.0)) - dprev;
+    return to_pixels(v, cur) - to_pixels(v, prev);
 }
 
 // n: the hit's view-space normal, octahedral (oct_encode), into the
@@ -3560,16 +3608,33 @@ struct DepthOut {
     float depth : SV_DepthLessEqual;
 };
 
+// Spheres and capsules shade in the raster (forward, as viamd's GL renderer
+// did): the colour, the normal and the motion the resolve would make of the
+// pixel, from what the vertex stage fetched once per element. The resolve
+// leaves their pixels (the colour's alpha is never 0 here) but for the
+// compute raster's (merge_fs) and frames it alone makes (an appearance's
+// change: md_render.c).
+struct ShadedOut {
+    uint2  id     : SV_Target0;
+    float2 n      : SV_Target1;
+    float4 color  : SV_Target2;
+    float2 motion : SV_Target3;
+    float  depth  : SV_DepthLessEqual;
+};
+
 [shader("fragment")]
-VisOut sphere_fs(SphereV i) {
+ShadedOut sphere_fs(SphereV i) {
     ViewData v = *MD_ARGS.view;
     Ray   r = pixel_ray(v, i.pos.xy);
     float t = sphere_hit(r, i.sph.xyz, i.sph.w, false);
     if (t < 0.0) discard;
-    VisOut o;
-    o.id    = i.idv;
-    o.n     = float2(0.0);
-    o.depth = clip_depth(v, r.o + r.d * t);
+    float3 p = r.o + r.d * t;
+    ShadedOut o;
+    o.id     = i.idv;
+    o.n      = oct_encode(normalize(p - i.sph.xyz));
+    o.color  = i.color;
+    o.motion = motion_of(v, p, i.dprev);
+    o.depth  = clip_depth(v, p);
     return o;
 }
 
@@ -3605,6 +3670,13 @@ struct CapsuleV {
     nointerpolation uint   shape : SHAPE;   // 0: round caps, one radius; 1: shaped, round; 2: shaped, flat
     nointerpolation uint2  idv   : IDV;
     nointerpolation uint   state : STATE;
+    nointerpolation float4 fa    : FA;      // the whole's ends (Geo.fa, fb), w: the sharpness of its two colours' edge
+    nointerpolation float4 fb    : FB;      // w: its desaturation (color_desat)
+    nointerpolation float4 c0    : COLORA;  // the ends' colours, finished (finish_color)
+    nointerpolation float4 c1    : COLORB;
+    nointerpolation uint2  raw   : RAW;     // and as they are (packed), for the blend between them
+    nointerpolation float4 d0    : DPREVA;  // the ends' moves (prev_offset)
+    nointerpolation float4 d1    : DPREVB;
 };
 
 // The box around a capsule: drawn indexed (md_render.c holds the 36 indices,
@@ -3626,6 +3698,13 @@ CapsuleV capsule_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
     o.shape = 0u;
     o.idv   = uint2(0u);
     o.state = 0u;
+    o.fa    = float4(0.0);
+    o.fb    = float4(0.0);
+    o.c0    = float4(0.0);
+    o.c1    = float4(0.0);
+    o.raw   = uint2(0u);
+    o.d0    = float4(0.0);
+    o.d1    = float4(0.0);
 
     uint  vk  = md_draw_vertex(vid, base_vertex);
     Elem  el  = decode_work(a.batches, v.batch_count, list_entry(a, base_instance + md_draw_instance(iid, base_instance)));
@@ -3644,6 +3723,24 @@ CapsuleV capsule_vs(uint vid : SV_VertexID, uint iid : SV_InstanceID,
     o.shape = (b.flags & F_SHAPED) == 0u ? 0u : (b.flags & F_FLAT) != 0u ? 2u : 1u;
     o.idv   = ent;
     o.state = g.st;
+    // what the fragments write besides (capsule_fs), as eval_hit and the resolve make them
+    uint   p0 = point_of(b, el.e, 0u, 2u);
+    uint   p1 = point_of(b, el.e, 1u, 2u);
+    float3 l0 = load_pos(b, p0), l1 = load_pos(b, p1);
+    bool   split;
+    capsule_images(b, l0, l1, split);
+    Mat    T  = load_transform(b.transforms, el.inst);
+    Mat    Tp = load_transform(b.transforms_prev, el.inst);
+    float  ds = color_desat(b, el.e);
+    uint   r0 = attr_color_packed(b, attr_of(b, p0));
+    uint   r1 = attr_color_packed(b, attr_of(b, p1));
+    o.fa  = float4(g.fa, saturate(b.sharpness));
+    o.fb  = float4(g.fb, ds);
+    o.raw = uint2(r0, r1);
+    o.c0  = finish_color(unpack_rgba8(r0).rgb, ds, b.tint, b.unlit != 0u);
+    o.c1  = finish_color(unpack_rgba8(r1).rgb, ds, b.tint, b.unlit != 0u);
+    o.d0  = prev_offset(v, mulp(T, l0) - mulp(Tp, l0 - load_vel(b, p0) * v.dt));
+    o.d1  = prev_offset(v, mulp(T, l1) - mulp(Tp, l1 - load_vel(b, p1) * v.dt));
     return o;
 }
 
@@ -3669,22 +3766,48 @@ float4 capsule_box_corner(ViewData v, Geo g, uint c) {
     return mul4(M(v, proj), float4(p, 1.0));
 }
 
+// t, and the normal there (eval_hit's)
+float capsule_fragment_hit(Ray r, CapsuleV i, out float3 n) {
+    n = float3(0.0);
+    if (i.shape != 0u) {
+        ConeHit ch = shaped_hit(r, i.pa.xyz, i.pb.xyz, float2(i.pa.w, i.rb), i.shape == 2u);
+        n = ch.n;
+        return ch.t;
+    }
+    if (i.pb.w > 0.0) return dash_hit(r, i.pa.xyz, i.pb.xyz, i.pa.w, i.pb.w, i.per, n);
+    float  t = capsule_hit(r, i.pa.xyz, i.pb.xyz, i.pa.w);
+    float3 p = r.o + r.d * t;
+    n = normalize(p - lerp(i.pa.xyz, i.pb.xyz, capsule_param(p, i.pa.xyz, i.pb.xyz)));
+    return t;
+}
 float capsule_fragment_hit(Ray r, CapsuleV i) {
     float3 n;
-    if (i.shape != 0u) return shaped_hit(r, i.pa.xyz, i.pb.xyz, float2(i.pa.w, i.rb), i.shape == 2u).t;
-    return i.pb.w > 0.0 ? dash_hit(r, i.pa.xyz, i.pb.xyz, i.pa.w, i.pb.w, i.per, n) : capsule_hit(r, i.pa.xyz, i.pb.xyz, i.pa.w);
+    return capsule_fragment_hit(r, i, n);
 }
 
 [shader("fragment")]
-VisOut capsule_fs(CapsuleV i) {
+ShadedOut capsule_fs(CapsuleV i) {
     ViewData v = *MD_ARGS.view;
-    Ray   r = pixel_ray(v, i.pos.xy);
-    float t = capsule_fragment_hit(r, i);
+    Ray    r = pixel_ray(v, i.pos.xy);
+    float3 n;
+    float  t = capsule_fragment_hit(r, i, n);
     if (t < 0.0) discard;
-    VisOut o;
-    o.n     = float2(0.0);
-    o.id    = i.idv;
-    o.depth = capsule_depth(clip_depth(v, r.o + r.d * t));
+    float3 p  = r.o + r.d * t;
+    // its two colours along the whole, with their edge sharpened; the blend
+    // between them made as the resolve makes it, where there is one
+    float  k  = capsule_param(p, i.fa.xyz, i.fb.xyz);
+    float  kk = saturate((k - 0.5) / max(1.0 - i.fa.w, 1e-3) + 0.5);
+    float4 c  = kk <= 0.0 ? i.c0 : i.c1;
+    if (kk > 0.0 && kk < 1.0) {
+        Batch b = MD_ARGS.batches[(i.idv.y >> 20) - 1u];
+        c = finish_color(lerp(unpack_rgba8(i.raw.x), unpack_rgba8(i.raw.y), kk).rgb, i.fb.w, b.tint, b.unlit != 0u);
+    }
+    ShadedOut o;
+    o.id     = i.idv;
+    o.n      = oct_encode(n);
+    o.color  = c;
+    o.motion = motion_of(v, p, lerp(i.d0, i.d1, k));
+    o.depth  = capsule_depth(clip_depth(v, p));
     return o;
 }
 
@@ -4118,7 +4241,9 @@ float4 unpack_rgba8(uint c) {
     return float4(float(c & 0xFFu), float((c >> 8) & 0xFFu), float((c >> 16) & 0xFFu), float(c >> 24)) / 255.0;
 }
 
-float4 attr_color(Batch b, uint ai) {
+float4 attr_color(Batch b, uint ai) { return unpack_rgba8(attr_color_packed(b, ai)); }
+
+uint attr_color_packed(Batch b, uint ai) {
     uint c;
     if (b.color_mode == COLOR_UNIFORM) {
         c = b.uniform_color;
@@ -4133,7 +4258,7 @@ float4 attr_color(Batch b, uint ai) {
     } else {
         c = ((b.flags & F_COLOR) != 0u) ? b.color[gated(b, F_COLOR, ai)] : 0xFFFFFFFFu;
     }
-    return unpack_rgba8(c);
+    return c;
 }
 
 float3 srgb_to_linear(float3 c) {
@@ -4142,6 +4267,25 @@ float3 srgb_to_linear(float3 c) {
 
 float3 linear_to_srgb(float3 c) {
     return select(c <= 0.0031308, c * 12.92, 1.055 * pow(c, 1.0 / 2.4) - 0.055);
+}
+
+// An element's desaturation: its batch's, more where the batch desaturates
+// what is not marked and it is not
+float color_desat(Batch b, uint e) {
+    float ds = b.desaturate;
+    if (b.desat_unmarked > 0.0 && (b.flags & F_MARKS) != 0u && (elem_state(b, e) & 1u) == 0u) ds = 1.0 - (1.0 - ds) * (1.0 - b.desat_unmarked);
+    return ds;
+}
+
+// A colour (sRGB-encoded) as the colour target holds it (md_render_targets_t):
+// desaturated by ds and tinted, alpha 1, or 1 / 255 for an unlit batch. The
+// raster's (forward) and the resolve's, so that both give the same bits.
+float4 finish_color(float3 srgb, float ds, float4 tint, bool unlit) {
+    float3 lin = srgb_to_linear(srgb);
+    float  g   = dot(lin, float3(0.2126, 0.7152, 0.0722));
+    lin = lerp(lin, float3(g), saturate(ds));
+    lin = lerp(lin, lin * tint.rgb, saturate(tint.a));
+    return float4(linear_to_srgb(saturate(lin)), unlit ? 1.0 / 255.0 : 1.0);
 }
 
 // A float's half bits, rounded to the nearest (ties away from zero), for finite values within the half's range
@@ -4414,7 +4558,7 @@ uint resolve_body<let SPL : int>(uint3 tid) {
     int2  px  = int2(tid.xy);
     uint2 idv = a.id.Load(int3(px, 0));
     if ((idv.y >> 20) == 0u) {
-        if (SPL != 0) return 0u;
+        if (SPL != 0 || a.mode == 0u) return 0u;        // a raster's frame: the raster cleared it
         a.color[px]  = float4(0.0);
         a.normal[px] = float2(0.0);
         a.motion[px] = float2(0.0);
@@ -4422,19 +4566,16 @@ uint resolve_body<let SPL : int>(uint3 tid) {
     }
     uint kind = a.batches[(idv.y >> 20) - 1u].kind;
     if (SPL == 0 && heavy_kind(kind)) return kind == KIND_SPLINES ? 1u : kind == KIND_POLYGONS ? 2u : 0u;
+    // a raster's frame: spheres and capsules the raster shaded (forward),
+    // all but the compute raster's, which leaves the colour's alpha 0
+    if (SPL == 0 && a.mode == 0u && (kind == KIND_SPHERES || kind == KIND_CAPSULES) && a.shaded.Load(int3(px, 0)).a > 0.0) return 0u;
     if (SPL == 2 ? kind != KIND_SPLINES : SPL == 3 ? kind != KIND_POLYGONS : false) return 0u;
     ViewData v = *a.view;
     Hit h = eval_hit<SPL>(v, a.batches, idv, float2(tid.xy) + 0.5, SPL >= 2 ? a.src.Load(int3(px, 0)) : 0.0);
     if (!h.valid) return 0u;    // EXTERNAL: the caller's
 
     Batch  b   = a.batches[h.batch];
-    float3 lin = srgb_to_linear(h.color.rgb);
-    float  g   = dot(lin, float3(0.2126, 0.7152, 0.0722));
-    float  ds  = b.desaturate;
-    if (b.desat_unmarked > 0.0 && (b.flags & F_MARKS) != 0u && (elem_state(b, h.element) & 1u) == 0u) ds = 1.0 - (1.0 - ds) * (1.0 - b.desat_unmarked);
-    lin = lerp(lin, float3(g), saturate(ds));
-    lin = lerp(lin, lin * b.tint.rgb, saturate(b.tint.a));
-    a.color[px]  = float4(linear_to_srgb(saturate(lin)), b.unlit != 0u ? 1.0 / 255.0 : 1.0);
+    a.color[px]  = finish_color(h.color.rgb, color_desat(b, h.element), b.tint, b.unlit != 0u);
     if (SPL == 0) a.normal[px] = oct_encode(h.n_view);   // the heavy kinds': the raster's (VisOut)
 
     float4 cur  = mul4(M(v, proj_cur),  mul4(M(v, view),      float4(h.p_world, 1.0)));

@@ -6644,6 +6644,140 @@ UTEST(render, color_modes) {
     f_close(&fx);
 }
 
+/* Spheres and capsules shade in the raster (forward) what the resolve
+   would make of their pixels: drawn with moved instances, velocities, marks,
+   per-point colours (capsules' two ends blended across a soft edge),
+   desaturation and a tint, dashed, displaced and tapered capsules; without
+   the compute raster (the frame then has no resolve at all), and with it and
+   spheres small enough for it (the resolve takes those). Drawn again with
+   only the appearance changed, the resolve makes every pixel itself: the
+   same colours, normals and motion. */
+UTEST(render, forward_matches_resolve) {
+    fix_t fx;
+    if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());
+    const uint32_t W = 192, H = 144, P = W * H;
+    cam_t c = { .tan_half = 0.4f, .aspect = (float)W / H, .n = 0.1f };
+    md_render_camera_t cam = make_camera(&c);
+    enum { NS = 6, NC = 4, NT = 24 };
+    const float sp[NS][4] = { { -4.0f, 2.5f, -14.0f, 0 }, { -1.5f, 2.0f, -13.0f, 0 }, { 1.0f, 2.6f, -15.0f, 0 },
+                              { 3.5f, 2.2f, -14.0f, 0 }, { -3.0f, 0.4f, -16.0f, 0 }, { 2.2f, 0.6f, -13.5f, 0 } };
+    const uint32_t scol[NS] = { 0xFF3050E0u, 0xFF40C060u, 0xFFE0A020u, 0xFF8080FFu, 0xFFFFFFFFu, 0xFF202020u };
+    const uint8_t  smark[NS] = { 1, 0, 1, 0, 0, 1 };
+    const float cp[2 * NC][4] = { { -5.0f, -1.2f, -14.0f, 0 }, { -1.5f, -0.6f, -13.0f, 0 },
+                                  { -1.0f, -2.0f, -15.0f, 0 }, {  2.5f, -1.0f, -12.5f, 0 },
+                                  {  2.0f, -2.6f, -13.0f, 0 }, {  5.0f, -1.6f, -15.5f, 0 },
+                                  { -4.5f, -3.4f, -14.0f, 0 }, { -0.5f, -3.2f, -16.0f, 0 } };
+    const uint32_t ccol[2 * NC] = { 0xFF2060F0u, 0xFFF06020u, 0xFF20D0D0u, 0xFFD020D0u, 0xFF808080u, 0xFF40FF40u, 0xFFFF4040u, 0xFF4040FFu };
+    const float side[NC][4] = { { 0, 1, 0, 0 }, { 0, 0.3f, 1, 0 }, { 0.2f, 1, 0.1f, 0 }, { 0, 1, 0.5f, 0 } };
+    uint32_t sv[NS][2], cv[2 * NC][2];
+    for (int i = 0; i < NS; ++i) { const float vel[3] = { 0.4f * (i - 2), 0.3f, -0.2f * i }; md_render_pack_velocity(vel, sv[i]); }
+    for (int i = 0; i < 2 * NC; ++i) { const float vel[3] = { -0.3f, 0.2f * (i & 3), 0.5f }; md_render_pack_velocity(vel, cv[i]); }
+    float tiny[NT][4];
+    for (int i = 0; i < NT; ++i) { tiny[i][0] = -6.0f + 0.5f * i; tiny[i][1] = 4.2f - 0.1f * (i & 3); tiny[i][2] = -22.0f; tiny[i][3] = 0; }
+    float xf[2][32] = { { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1,   1,0,0,0, 0,1,0,0, 0,0,1,0, 0.4f,-0.3f,-3.0f,1 },
+                        { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0.2f,0.1f,0,1,   1,0,0,0, 0,1,0,0, 0,0,1,0, 0.7f,-0.2f,-3.2f,1 } };
+
+    md_render_batch_t b[6];
+    memset(b, 0, sizeof(b));
+    b[0].key = 1; b[0].kind = MD_RENDER_SPHERES; b[0].count = NS; b[0].points.count = NS;
+    b[0].points.position = f_buf(&fx, sp, sizeof(sp)); b[0].points.stride = 16;
+    b[0].points.velocity = f_buf(&fx, sv, sizeof(sv));
+    b[0].points.color = f_buf(&fx, scol, sizeof(scol));
+    b[0].points.marks = f_buf(&fx, smark, sizeof(smark));
+    b[0].style.spheres.radius_add = 0.9f;
+    b[0].color.mode = MD_RENDER_COLOR_POINTS;
+    b[0].color.desaturate = 0.2f; b[0].color.desaturate_unmarked = 0.6f;
+    b[0].color.tint[0] = 1.0f; b[0].color.tint[1] = 0.6f; b[0].color.tint[2] = 0.4f; b[0].color.tint[3] = 0.3f;
+    b[0].transform_count = 2;
+    b[1].key = 2; b[1].kind = MD_RENDER_CAPSULES; b[1].count = NC; b[1].points.count = 2 * NC;
+    b[1].points.position = f_buf(&fx, cp, sizeof(cp)); b[1].points.stride = 16;
+    b[1].points.velocity = f_buf(&fx, cv, sizeof(cv));
+    b[1].points.color = f_buf(&fx, ccol, sizeof(ccol));
+    b[1].color.mode = MD_RENDER_COLOR_POINTS; b[1].color.sharpness = 0.4f;     /* a soft edge: the blend */
+    b[1].style.capsules.radius = 0.35f;
+    b[1].transform_count = 2;
+    b[2] = b[1]; b[2].key = 3; b[2].style.capsules.radius = 0.2f; b[2].style.capsules.dash_length = 0.5f; b[2].style.capsules.gap_length = 0.3f;
+    b[2].color.sharpness = 1.0f; b[2].transform_count = 1;
+    b[3] = b[1]; b[3].key = 4; b[3].style.capsules.radius = 0.15f; b[3].style.capsules.offset = 1.8f;
+    b[3].style.capsules.side = f_buf(&fx, side, sizeof(side)); b[3].transform_count = 1;
+    b[4] = b[1]; b[4].key = 5; b[4].style.capsules.radius = 0.5f; b[4].style.capsules.tapered = true; b[4].style.capsules.end_radius = 0.15f;
+    b[4].transform_count = 1;
+    {   /* the dashed, displaced and tapered ones elsewhere: below and behind the plain ones */
+        static float cp2[3][2 * NC][4];
+        for (int i = 0; i < 3; ++i) for (int k = 0; k < 2 * NC; ++k) {
+            cp2[i][k][0] = cp[k][0] + 0.4f * i; cp2[i][k][1] = cp[k][1] + 4.6f + 0.25f * i; cp2[i][k][2] = cp[k][2] - 6.0f - 2.0f * i; cp2[i][k][3] = 0;
+        }
+        for (int i = 0; i < 3; ++i) b[2 + i].points.position = f_buf(&fx, cp2[i], sizeof(cp2[i]));
+    }
+    b[5].key = 6; b[5].kind = MD_RENDER_SPHERES; b[5].count = NT; b[5].points.count = NT;
+    b[5].points.position = f_buf(&fx, tiny, sizeof(tiny)); b[5].points.stride = 16;
+    b[5].style.spheres.radius_add = 0.09f;
+    b[5].color.mode = MD_RENDER_COLOR_UNIFORM; b[5].color.uniform = 0xFF20A0F0u;
+
+    md_render_targets_t t;
+    uint8_t*  col[2] = { malloc(P * 4), malloc(P * 4) };
+    uint16_t* nrm[2] = { malloc(P * 4), malloc(P * 4) };
+    uint16_t* mot[2] = { malloc(P * 4), malloc(P * 4) };
+    for (int run = 0; run < 2; ++run) {
+        const bool compute = run == 1;
+        md_render_debug_view(fx.view, compute ? 0u : MD_RENDER_DEBUG_NO_COMPUTE_RASTER, 0.0f);
+        const uint32_t nb = compute ? 6 : 5;
+        b[0].transform = xf[0]; b[1].transform = xf[0];
+        md_render_frame_t f = frame_of(W, H, cam, b, nb);
+        f.time = 0.0;
+        md_render_status_t st;
+        ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, &st));
+        b[0].transform = xf[1]; b[1].transform = xf[1];          /* moved, and later: the motion */
+        f = frame_of(W, H, cam, b, nb);
+        f.time = 0.25;
+        f.content[MD_RENDER_CONTENT_GEOMETRY] = 1 + run * 2;
+        md_gpu_stream_profile(fx.gfx, true);
+        ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, &st));
+        EXPECT_NE(0u, st.work & MD_RENDER_WORK_RASTER);
+        t = md_render_view_targets(fx.view);
+        ASSERT_TRUE(f_read(&fx, t.color, col[0], P * 4) && f_read(&fx, t.normal, nrm[0], P * 4) && f_read(&fx, t.motion, mot[0], P * 4));
+        md_gpu_timing_t tm[64];
+        const size_t nt = md_gpu_stream_profile_take(fx.gfx, tm, 64);
+        md_gpu_stream_profile(fx.gfx, false);
+        int resolved = 0;
+        for (size_t k = 0; k < nt && k < 64; ++k) resolved += strcmp(tm[k].name, "md_render.resolve") == 0;
+        f.content[MD_RENDER_CONTENT_APPEARANCE]++;                   /* the resolve alone, every pixel */
+        ASSERT_TRUE(md_render_view_draw(fx.gfx, fx.view, &f, &st));
+        EXPECT_EQ(0u, st.work & MD_RENDER_WORK_RASTER);
+        EXPECT_NE(0u, st.work & MD_RENDER_WORK_RESOLVE);
+        ASSERT_TRUE(f_read(&fx, t.color, col[1], P * 4) && f_read(&fx, t.normal, nrm[1], P * 4) && f_read(&fx, t.motion, mot[1], P * 4));
+        md_render_stats_t rs;
+        int covered = 0, moving = 0, off_c = 0, off_n = 0, off_m = 0;
+        double dn = 0, dm = 0;
+        for (uint32_t p = 0; p < P; ++p) {
+            covered += col[1][4 * p + 3] != 0;
+            for (int k = 0; k < 4; ++k) off_c += abs((int)col[0][4 * p + k] - (int)col[1][4 * p + k]) > 1;
+            for (int k = 0; k < 2; ++k) {
+                const double a0 = half_bits_to_float(nrm[0][2 * p + k]), a1 = half_bits_to_float(nrm[1][2 * p + k]);
+                const double m0 = half_bits_to_float(mot[0][2 * p + k]), m1 = half_bits_to_float(mot[1][2 * p + k]);
+                if (fabs(a0 - a1) > dn) dn = fabs(a0 - a1);
+                if (fabs(m0 - m1) > dm) dm = fabs(m0 - m1);
+                off_n += fabs(a0 - a1) > 2e-3;
+                off_m += fabs(m0 - m1) > 0.02 + 2e-3 * fabs(m1);
+                moving += k == 0 && fabs(m1) > 0.1;
+            }
+        }
+        const bool have_stats = md_render_view_stats(fx.view, &rs);
+        printf("    %s: %d px covered, %d moving; resolve kernels after the raster %d; off: colour %d, normal %d (%.1e), motion %d (%.1e)%s%u in compute\n",
+               compute ? "compute raster" : "no compute raster", covered, moving, resolved, off_c, off_n, dn, off_m, dm,
+               have_stats ? "; " : "", have_stats ? rs.compute[0] + rs.compute[1] : 0u);
+        EXPECT_GT(covered, (int)(P / 6));
+        EXPECT_GT(moving, (int)(P / 10));
+        EXPECT_EQ(compute ? 1 : 0, resolved);          /* without the compute raster nothing is left to the resolve */
+        EXPECT_EQ(0, off_c);
+        EXPECT_EQ(0, off_n);
+        EXPECT_EQ(0, off_m);
+    }
+    md_render_debug_view(fx.view, 0u, 0.0f);
+    for (int i = 0; i < 2; ++i) { free(col[i]); free(nrm[i]); free(mot[i]); }
+    f_close(&fx);
+}
+
 UTEST(render, motion_from_velocity) {
     fix_t fx;
     if (!f_open(&fx)) UTEST_SKIP(f_skip_reason());

@@ -14,7 +14,7 @@
    in the shader build holds the Slang side to md_gpu's ABI rule; these are the
    C side of the same rule (md_gpu_float4 at 16-byte offsets, handles at 8). */
 
-enum { M_VIEW, M_PROJ, M_INV_PROJ, M_INV_VIEW, M_VIEW_PREV, M_PROJ_PREV, M_PROJ_CUR, M_COUNT };
+enum { M_VIEW, M_PROJ, M_INV_PROJ, M_INV_VIEW, M_VIEW_PREV, M_PROJ_PREV, M_PROJ_CUR, M_CV_PREV, M_COUNT };
 
 typedef struct gpu_view_t {
     md_gpu_float4 m[M_COUNT][4];   /* columns */
@@ -38,7 +38,7 @@ typedef struct gpu_view_t {
     uint32_t      _vpad6;
     uint32_t      _vpad3[2];
 } gpu_view_t;
-_Static_assert(sizeof(gpu_view_t) == 560, "ViewData mirror");
+_Static_assert(sizeof(gpu_view_t) == 624, "ViewData mirror");
 
 /* Occlusion settings, measured on the M4 at 10M atoms (camera moving):
    - Elements no wider than occl_min_px pixels are not tested one by one
@@ -199,8 +199,9 @@ typedef struct gpu_args_t {
     md_gpu_storage_tex_t dst;
     uint32_t             src_mip, src_w, src_h, dst_w, dst_h, _pad0;
     md_gpu_storage_tex_t out_color, out_surface;
+    md_gpu_sampled_tex_t shaded;    /* the resolve: the colour target as the raster left it */
 } gpu_args_t;
-_Static_assert(sizeof(gpu_args_t) == 160, "Args mirror");
+_Static_assert(sizeof(gpu_args_t) == 168, "Args mirror");
 
 typedef struct gpu_lists_t {
     md_gpu_addr_t cvis, cocc, cst, hw0, hw1, st0, st1, small, occ, counters, vis64, hw2, st2, hw3, st3;
@@ -290,7 +291,9 @@ struct md_render {
     uint32_t          vendor_id;       /* the device's (spline_group_for) */
 };
 
-enum { PIPE_VIS, PIPE_MASK, PIPE_KB, PIPE_DEPTH };
+/* PIPE_VIS: the ids and the heavy kinds' normals; PIPE_SHADED: all four
+   targets (spheres and capsules shade in the raster, ShadedOut) */
+enum { PIPE_VIS, PIPE_SHADED, PIPE_MASK, PIPE_KB, PIPE_DEPTH };
 static md_gpu_pipeline_t make_pipeline(md_gpu_device_t dev, md_gpu_shader_t vs, md_gpu_shader_t fs, int kind, const char* label) {
     const bool mask = kind == PIPE_MASK;
     md_gpu_pipeline_desc_t pd = {0};
@@ -320,9 +323,18 @@ static md_gpu_pipeline_t make_pipeline(md_gpu_device_t dev, md_gpu_shader_t vs, 
         pd.color[0].blend.alpha_op      = MD_GPU_BLEND_OP_MAX;
         pd.color[0].write_disable       = MD_GPU_COLOR_R | MD_GPU_COLOR_B;   /* the visible part is the kernel's */
     } else {
-        pd.color_count     = 2;                         /* the ids, and the heavy kinds' normals (VisOut) */
+        /* the raster's targets: ids, normals, colours, motion (run_raster).
+           The colours and the motion are the shaded kinds' (ShadedOut); the
+           others leave them to the resolve */
+        pd.color_count     = 4;
         pd.color[0].format = MD_GPU_FORMAT_RG32_UINT;
         pd.color[1].format = MD_GPU_FORMAT_RG16_FLOAT;
+        pd.color[2].format = MD_GPU_FORMAT_RGBA8_UNORM;
+        pd.color[3].format = MD_GPU_FORMAT_RG16_FLOAT;
+        if (kind != PIPE_SHADED) {
+            pd.color[2].write_disable = MD_GPU_COLOR_R | MD_GPU_COLOR_G | MD_GPU_COLOR_B | MD_GPU_COLOR_A;
+            pd.color[3].write_disable = MD_GPU_COLOR_R | MD_GPU_COLOR_G | MD_GPU_COLOR_B | MD_GPU_COLOR_A;
+        }
     }
     return md_gpu_pipeline_create(dev, &pd);
 }
@@ -344,9 +356,9 @@ md_render_ctx_t md_render_create(md_gpu_device_t device, const md_render_desc_t*
     r->dev   = device;
     r->alloc = alloc;
 
-    r->sphere_vis   = make_pipeline(device, md_shader_md_render_sphere_vs_shader(),  md_shader_md_render_sphere_fs_shader(),       PIPE_VIS,  "md_render.sphere");
+    r->sphere_vis   = make_pipeline(device, md_shader_md_render_sphere_vs_shader(),  md_shader_md_render_sphere_fs_shader(),       PIPE_SHADED, "md_render.sphere");
     r->sphere_mask  = make_pipeline(device, md_shader_md_render_sphere_vs_shader(),  md_shader_md_render_sphere_mask_fs_shader(),  PIPE_MASK, "md_render.sphere_mask");
-    r->capsule_vis  = make_pipeline(device, md_shader_md_render_capsule_vs_shader(), md_shader_md_render_capsule_fs_shader(),      PIPE_VIS,  "md_render.capsule");
+    r->capsule_vis  = make_pipeline(device, md_shader_md_render_capsule_vs_shader(), md_shader_md_render_capsule_fs_shader(),      PIPE_SHADED, "md_render.capsule");
     r->capsule_mask = make_pipeline(device, md_shader_md_render_capsule_vs_shader(), md_shader_md_render_capsule_mask_fs_shader(), PIPE_MASK, "md_render.capsule_mask");
     r->spline_vis   = make_pipeline(device, md_shader_md_render_spline_vs_shader(),  md_shader_md_render_spline_fs_shader(),       PIPE_VIS,  "md_render.spline");
     r->spline_mask  = make_pipeline(device, md_shader_md_render_spline_vs_shader(),  md_shader_md_render_spline_mask_fs_shader(),  PIPE_MASK, "md_render.spline_mask");
@@ -354,7 +366,7 @@ md_render_ctx_t md_render_create(md_gpu_device_t device, const md_render_desc_t*
     r->polygon_mask = make_pipeline(device, md_shader_md_render_polygon_vs_shader(), md_shader_md_render_polygon_mask_fs_shader(), PIPE_MASK, "md_render.polygon_mask");
     r->triangle_vis  = make_pipeline(device, md_shader_md_render_triangle_vs_shader(), md_shader_md_render_triangle_fs_shader(),      PIPE_VIS,  "md_render.triangle");
     r->triangle_mask = make_pipeline(device, md_shader_md_render_triangle_vs_shader(), md_shader_md_render_triangle_mask_fs_shader(), PIPE_MASK, "md_render.triangle_mask");
-    r->merge        = make_pipeline(device, md_shader_md_render_merge_vs_shader(),   md_shader_md_render_merge_fs_shader(),        PIPE_VIS,  "md_render.merge");
+    r->merge        = make_pipeline(device, md_shader_md_render_merge_vs_shader(),   md_shader_md_render_merge_fs_shader(),        PIPE_SHADED, "md_render.merge");
     const md_gpu_shader_t no_fs = {0};
     r->sphere_depth   = make_pipeline(device, md_shader_md_render_sphere_vs_shader(),   md_shader_md_render_sphere_depth_fs_shader(),  PIPE_DEPTH, "md_render.sphere_depth");
     r->capsule_depth  = make_pipeline(device, md_shader_md_render_capsule_vs_shader(),  md_shader_md_render_capsule_depth_fs_shader(), PIPE_DEPTH, "md_render.capsule_depth");
@@ -707,9 +719,9 @@ static bool ensure_targets(md_gpu_stream_t s, md_render_view_t v, uint32_t w, ui
     v->t.depth = make_target(s, MD_GPU_FORMAT_D32_FLOAT, RT | SA, w, h, "md_render.depth");
     if (!depth_only) {
         v->t.id     = make_target(s, MD_GPU_FORMAT_RG32_UINT,   RT | SA | ST, w, h, "md_render.id");
-        v->t.color  = make_target(s, MD_GPU_FORMAT_RGBA8_UNORM, SA | ST,      w, h, "md_render.color");
+        v->t.color  = make_target(s, MD_GPU_FORMAT_RGBA8_UNORM, RT | SA | ST, w, h, "md_render.color");
         v->t.normal = make_target(s, MD_GPU_FORMAT_RG16_FLOAT,  RT | SA | ST, w, h, "md_render.normal");
-        v->t.motion = make_target(s, MD_GPU_FORMAT_RG16_FLOAT,  SA | ST,      w, h, "md_render.motion");
+        v->t.motion = make_target(s, MD_GPU_FORMAT_RG16_FLOAT,  RT | SA | ST, w, h, "md_render.motion");
         v->t.mask   = make_target(s, MD_GPU_FORMAT_RGBA8_UNORM, RT | SA | ST, w, h, "md_render.mask");
     }
     if (!v->t.depth || (!depth_only && (!v->t.id || !v->t.color || !v->t.normal || !v->t.motion || !v->t.mask))) {
@@ -1641,13 +1653,15 @@ static bool run_raster(md_gpu_stream_t s, md_render_view_t v, uint32_t phase, bo
     md_render_ctx_t r = v->r;
     const bool d = v->depth_only;       /* the depth alone: no colour attachment */
     md_gpu_render_desc_t rd = {0};
-    rd.color_count       = d ? 0 : 2;
+    rd.color_count       = d ? 0 : 4;
     rd.color[0].texture  = v->t.id;
-    rd.color[0].load     = phase == 1 ? MD_GPU_LOAD_CLEAR : MD_GPU_LOAD;
-    rd.color[0].store    = MD_GPU_STORE;
-    rd.color[1].texture  = v->t.normal;                 /* the heavy kinds' hit normals (VisOut); the resolve's for the rest */
-    rd.color[1].load     = phase == 1 ? MD_GPU_LOAD_CLEAR : MD_GPU_LOAD;
-    rd.color[1].store    = MD_GPU_STORE;
+    rd.color[1].texture  = v->t.normal;                 /* the shaded and the heavy kinds' normals; the resolve's for the rest */
+    rd.color[2].texture  = v->t.color;                  /* the shaded kinds' (ShadedOut); alpha 0: the resolve's */
+    rd.color[3].texture  = v->t.motion;
+    for (int i = 0; i < 4; ++i) {
+        rd.color[i].load  = phase == 1 ? MD_GPU_LOAD_CLEAR : MD_GPU_LOAD;
+        rd.color[i].store = MD_GPU_STORE;
+    }
     rd.depth.texture     = v->t.depth;
     rd.depth.load        = phase == 1 ? MD_GPU_LOAD_CLEAR : MD_GPU_LOAD;
     rd.depth.store       = MD_GPU_STORE;
@@ -1714,23 +1728,33 @@ static bool run_raster_kb(md_gpu_stream_t s, md_render_view_t v, const uint64_t 
     return true;
 }
 
-/* The main resolve, then its heavy twin over the spline and polygon pixels */
 /* The light kinds' kernel, then a kernel for each heavy kind the frame has:
    splines and polygons together held 255 registers on the 1060 and spilled.
-   The last pass is left for the caller to mark (md_render_debug_pass_hook). */
-static const char* run_resolve(md_gpu_stream_t s, md_render_view_t v, const md_render_frame_t* f) {
-    bool spl = false, poly = false;
+   After a raster (rastered) the light kernel takes only what the raster did
+   not shade, spheres and capsules shading there (ShadedOut): triangles, the
+   compute raster's pixels, and the heavy kinds' tiles; it is skipped where
+   the frame can have none of those. Without one (an appearance's change) it
+   takes every pixel. The last pass is left for the caller to mark
+   (md_render_debug_pass_hook). */
+static const char* run_resolve(md_gpu_stream_t s, md_render_view_t v, const md_render_frame_t* f, bool rastered, bool compute) {
+    bool spl = false, poly = false, tri = false;
     /* (the heavy kernels: the raster's depth, the point of the hit it took) */
     for (uint32_t i = 0; i < f->batch_count; ++i) {
         if (!batch_work(&f->batches[i])) continue;
         spl  |= f->batches[i].kind == MD_RENDER_SPLINES;
         poly |= f->batches[i].kind == MD_RENDER_POLYGONS;
+        tri  |= f->batches[i].kind == MD_RENDER_TRIANGLES;
     }
     gpu_args_t a = base_args(v);
-    a.src = md_gpu_texture_sampled(v->t.depth);
-    md_gpu_grid_t g = md_gpu_grid_for(v->r->k_resolve, v->width, v->height, 1);
-    if (!md_gpu_launch(s, v->r->k_resolve, g, &a, sizeof(a))) return NULL;
-    const char* last = "resolve";
+    a.src    = md_gpu_texture_sampled(v->t.depth);
+    a.shaded = md_gpu_texture_sampled(v->t.color);
+    a.mode   = rastered ? 0u : 1u;
+    const char* last = NULL;
+    if (!rastered || compute || tri || spl || poly) {
+        md_gpu_grid_t g = md_gpu_grid_for(v->r->k_resolve, v->width, v->height, 1);
+        if (!md_gpu_launch(s, v->r->k_resolve, g, &a, sizeof(a))) return NULL;
+        last = "resolve";
+    }
     if (spl || poly) {
         /* the heavy ones over the tiles the main one listed (C_TILES): a group
            a tile, so many groups taking them in turn (Args.mode) */
@@ -1752,11 +1776,11 @@ static const char* run_resolve(md_gpu_stream_t s, md_render_view_t v, const md_r
     /* The layers last: where one makes more of the pixel than the opaque
        surface, the motion is the layer's (over every kind's resolve) */
     if (v->kbuf_k) {
-        PASS_DONE(last);
+        if (last) PASS_DONE(last);
         if (!md_gpu_launch(s, v->r->k_resolve_layers, md_gpu_grid_for(v->r->k_resolve_layers, v->width, v->height, 1), &a, sizeof(a))) return NULL;
         last = "resolve layers";
     }
-    return last;
+    return last ? last : "";
 }
 
 /* The visible part from the ids; the hidden part by rasterising the state
@@ -2026,6 +2050,13 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
         put_mat(gv.m[M_VIEW_PREV], v->has_raster ? v->raster_view : f->camera.view);
         put_mat(gv.m[M_PROJ_PREV], v->has_raster ? v->raster_proj : f->camera.proj);
         put_mat(gv.m[M_PROJ_CUR],  f->camera.proj);
+        {
+            /* this view to the previous raster's clip space: the raster's motion (motion_of) */
+            float cv[16];
+            mat_mul(cv, v->has_raster ? v->raster_view : f->camera.view, inv_view);
+            mat_mul(cv, v->has_raster ? v->raster_proj : f->camera.proj, cv);
+            put_mat(gv.m[M_CV_PREV], cv);
+        }
         gv.viewport.x = (float)f->width;
         gv.viewport.y = (float)f->height;
         gv.viewport.z = 1.0f / (float)f->width;
@@ -2220,9 +2251,9 @@ bool md_render_view_draw(md_gpu_stream_t s, md_render_view_t v, const md_render_
     }
 
     if (resolve) {
-        const char* last = run_resolve(s, v, f);
+        const char* last = run_resolve(s, v, f, raster, compute);
         if (!last) return false;
-        PASS_DONE(last);
+        if (last[0]) PASS_DONE(last);
     }
     if (mask && !run_masks(s, v, f)) return false;
     if (mask) PASS_DONE("mask");
