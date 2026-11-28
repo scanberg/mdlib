@@ -125,6 +125,20 @@ md_post_ctx_t md_post_create(md_gpu_device_t device) {
     return p;
 }
 
+/* For profiling (md_compose_debug_kernel_info's twin): the compiled kernels,
+   by index, with what the driver reports of each (registers, ...). False
+   past the last. Not in the header. */
+bool md_post_debug_kernel_info(md_post_ctx_t p, uint32_t i, const char** name, md_gpu_kernel_info_t* info) {
+    if (!p) return false;
+    const struct { const char* n; md_gpu_kernel_t k; } ks[] = {
+        { "display", p->k_display }, { "resolve", p->k_resolve }, { "present", p->k_present },
+        { "vel_tilemax", p->k_tilemax }, { "vel_neighbormax", p->k_neighbormax },
+    };
+    if (i >= sizeof(ks) / sizeof(ks[0])) return false;
+    if (name) *name = ks[i].n;
+    return info ? md_gpu_kernel_info(ks[i].k, info) : true;
+}
+
 void md_post_destroy(md_post_ctx_t p) {
     if (!p) return;
     if (p->k_display) md_gpu_kernel_destroy(p->k_display);
